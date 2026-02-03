@@ -3,4 +3,5 @@
 //! Handles append-only file logging, point-in-time snapshots,
 //! and crash recovery.
 
+pub mod aof;
 pub mod format;
