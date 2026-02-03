@@ -138,10 +138,7 @@ mod tests {
         assert_eq!(t.key_count(), 1);
         // new value is longer, so usage should increase
         assert!(t.used_bytes() > before);
-        assert_eq!(
-            t.used_bytes(),
-            entry_size("k", &new),
-        );
+        assert_eq!(t.used_bytes(), entry_size("k", &new),);
     }
 
     #[test]

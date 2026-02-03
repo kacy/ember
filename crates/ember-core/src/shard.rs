@@ -22,12 +22,27 @@ const EXPIRY_TICK: Duration = Duration::from_millis(100);
 /// A protocol-agnostic command sent to a shard.
 #[derive(Debug)]
 pub enum ShardRequest {
-    Get { key: String },
-    Set { key: String, value: Bytes, expire: Option<Duration> },
-    Del { key: String },
-    Exists { key: String },
-    Expire { key: String, seconds: u64 },
-    Ttl { key: String },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: Bytes,
+        expire: Option<Duration>,
+    },
+    Del {
+        key: String,
+    },
+    Exists {
+        key: String,
+    },
+    Expire {
+        key: String,
+        seconds: u64,
+    },
+    Ttl {
+        key: String,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -281,9 +296,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
 
         let resp = handle
-            .send(ShardRequest::Get {
-                key: "temp".into(),
-            })
+            .send(ShardRequest::Get { key: "temp".into() })
             .await
             .unwrap();
         assert!(matches!(resp, ShardResponse::Value(None)));

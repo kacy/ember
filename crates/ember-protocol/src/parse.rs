@@ -123,14 +123,16 @@ fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Frame, ProtocolError> {
     match prefix {
         b'+' => {
             let line = read_line(cursor)?;
-            let s = std::str::from_utf8(line)
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid utf-8 in simple string".into()))?;
+            let s = std::str::from_utf8(line).map_err(|_| {
+                ProtocolError::InvalidCommandFrame("invalid utf-8 in simple string".into())
+            })?;
             Ok(Frame::Simple(s.to_owned()))
         }
         b'-' => {
             let line = read_line(cursor)?;
-            let s = std::str::from_utf8(line)
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid utf-8 in error string".into()))?;
+            let s = std::str::from_utf8(line).map_err(|_| {
+                ProtocolError::InvalidCommandFrame("invalid utf-8 in error string".into())
+            })?;
             Ok(Frame::Error(s.to_owned()))
         }
         b':' => {
@@ -228,8 +230,7 @@ fn remaining(cursor: &Cursor<&[u8]>) -> usize {
 
 fn parse_i64(buf: &[u8]) -> Result<i64, ProtocolError> {
     let s = std::str::from_utf8(buf).map_err(|_| ProtocolError::InvalidInteger)?;
-    s.parse::<i64>()
-        .map_err(|_| ProtocolError::InvalidInteger)
+    s.parse::<i64>().map_err(|_| ProtocolError::InvalidInteger)
 }
 
 #[cfg(test)]

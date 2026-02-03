@@ -90,10 +90,7 @@ impl Engine {
     /// Dispatches to all shards first (so they start processing in
     /// parallel), then collects the replies. Used for commands like
     /// DBSIZE and INFO that need data from all shards.
-    pub async fn broadcast<F>(
-        &self,
-        make_req: F,
-    ) -> Result<Vec<ShardResponse>, ShardError>
+    pub async fn broadcast<F>(&self, make_req: F) -> Result<Vec<ShardResponse>, ShardError>
     where
         F: Fn() -> ShardRequest,
     {
@@ -127,9 +124,7 @@ impl Engine {
         let mut receivers = Vec::with_capacity(keys.len());
         for key in keys {
             let idx = self.shard_for_key(key);
-            let rx = self.shards[idx]
-                .dispatch(make_req(key.clone()))
-                .await?;
+            let rx = self.shards[idx].dispatch(make_req(key.clone())).await?;
             receivers.push(rx);
         }
 
@@ -160,8 +155,8 @@ fn shard_index(key: &str, shard_count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
     use crate::types::Value;
+    use bytes::Bytes;
 
     #[test]
     fn same_key_same_shard() {
@@ -205,7 +200,12 @@ mod tests {
         assert!(matches!(resp, ShardResponse::Ok));
 
         let resp = engine
-            .route("greeting", ShardRequest::Get { key: "greeting".into() })
+            .route(
+                "greeting",
+                ShardRequest::Get {
+                    key: "greeting".into(),
+                },
+            )
             .await
             .unwrap();
         match resp {
@@ -239,7 +239,12 @@ mod tests {
         let mut count = 0i64;
         for key in &["a", "b", "c", "d", "missing"] {
             let resp = engine
-                .route(key, ShardRequest::Del { key: key.to_string() })
+                .route(
+                    key,
+                    ShardRequest::Del {
+                        key: key.to_string(),
+                    },
+                )
                 .await
                 .unwrap();
             if let ShardResponse::Bool(true) = resp {
