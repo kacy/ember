@@ -111,6 +111,35 @@ impl Engine {
         Ok(results)
     }
 
+    /// Routes requests for multiple keys concurrently.
+    ///
+    /// Dispatches all requests without waiting, then collects responses.
+    /// The response order matches the key order. Used for multi-key
+    /// commands like DEL and EXISTS.
+    pub async fn route_multi<F>(
+        &self,
+        keys: &[String],
+        make_req: F,
+    ) -> Result<Vec<ShardResponse>, ShardError>
+    where
+        F: Fn(String) -> ShardRequest,
+    {
+        let mut receivers = Vec::with_capacity(keys.len());
+        for key in keys {
+            let idx = self.shard_for_key(key);
+            let rx = self.shards[idx]
+                .dispatch(make_req(key.clone()))
+                .await?;
+            receivers.push(rx);
+        }
+
+        let mut results = Vec::with_capacity(receivers.len());
+        for rx in receivers {
+            results.push(rx.await.map_err(|_| ShardError::Unavailable)?);
+        }
+        Ok(results)
+    }
+
     /// Determines which shard owns a given key.
     fn shard_for_key(&self, key: &str) -> usize {
         shard_index(key, self.shards.len())
