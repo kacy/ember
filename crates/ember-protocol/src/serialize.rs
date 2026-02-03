@@ -1,8 +1,8 @@
 //! Direct-to-buffer RESP3 serialization.
 //!
 //! Writes frames directly into a `BytesMut` buffer with no intermediate
-//! allocations. Integer-to-string conversion uses a small stack buffer
-//! via `itoa` (inlined here to avoid the dependency).
+//! allocations. Integer-to-string conversion uses `itoa` for fast
+//! stack-based formatting.
 
 use bytes::BufMut;
 use bytes::BytesMut;
@@ -64,7 +64,6 @@ impl Frame {
 
 /// Writes an i64 as its decimal ASCII representation directly into the buffer.
 fn write_i64(val: i64, dst: &mut BytesMut) {
-    // itoa on the stack — avoids pulling in the itoa crate for one function.
     let mut buf = itoa::Buffer::new();
     dst.put_slice(buf.format(val).as_bytes());
 }
