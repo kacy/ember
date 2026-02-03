@@ -127,9 +127,7 @@ fn extract_bytes(frame: &Frame) -> Result<Bytes, ProtocolError> {
 fn parse_u64(frame: &Frame, cmd: &str) -> Result<u64, ProtocolError> {
     let s = extract_string(frame)?;
     s.parse::<u64>().map_err(|_| {
-        ProtocolError::InvalidCommandFrame(format!(
-            "value is not a valid integer for '{cmd}'"
-        ))
+        ProtocolError::InvalidCommandFrame(format!("value is not a valid integer for '{cmd}'"))
     })
 }
 
@@ -536,9 +534,7 @@ mod tests {
     fn ttl_basic() {
         assert_eq!(
             Command::from_frame(cmd(&["TTL", "key"])).unwrap(),
-            Command::Ttl {
-                key: "key".into()
-            },
+            Command::Ttl { key: "key".into() },
         );
     }
 

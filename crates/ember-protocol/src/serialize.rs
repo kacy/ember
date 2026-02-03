@@ -87,10 +87,7 @@ mod tests {
 
     #[test]
     fn error() {
-        assert_eq!(
-            serialize(&Frame::Error("ERR bad".into())),
-            b"-ERR bad\r\n"
-        );
+        assert_eq!(serialize(&Frame::Error("ERR bad".into())), b"-ERR bad\r\n");
     }
 
     #[test]
@@ -123,14 +120,8 @@ mod tests {
 
     #[test]
     fn array() {
-        let frame = Frame::Array(vec![
-            Frame::Simple("hello".into()),
-            Frame::Integer(42),
-        ]);
-        assert_eq!(
-            serialize(&frame),
-            b"*2\r\n+hello\r\n:42\r\n"
-        );
+        let frame = Frame::Array(vec![Frame::Simple("hello".into()), Frame::Integer(42)]);
+        assert_eq!(serialize(&frame), b"*2\r\n+hello\r\n:42\r\n");
     }
 
     #[test]
@@ -140,13 +131,8 @@ mod tests {
 
     #[test]
     fn map() {
-        let frame = Frame::Map(vec![
-            (Frame::Simple("key".into()), Frame::Integer(1)),
-        ]);
-        assert_eq!(
-            serialize(&frame),
-            b"%1\r\n+key\r\n:1\r\n"
-        );
+        let frame = Frame::Map(vec![(Frame::Simple("key".into()), Frame::Integer(1))]);
+        assert_eq!(serialize(&frame), b"%1\r\n+key\r\n:1\r\n");
     }
 
     #[test]

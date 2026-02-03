@@ -400,10 +400,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("first"), None);
         ks.set("key".into(), Bytes::from("second"), None);
-        assert_eq!(
-            ks.get("key"),
-            Some(Value::String(Bytes::from("second")))
-        );
+        assert_eq!(ks.get("key"), Some(Value::String(Bytes::from("second"))));
     }
 
     #[test]
@@ -579,16 +576,8 @@ mod tests {
     fn stats_tracks_expiry_count() {
         let mut ks = Keyspace::new();
         ks.set("a".into(), Bytes::from("1"), None);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(100)),
-        );
-        ks.set(
-            "c".into(),
-            Bytes::from("3"),
-            Some(Duration::from_secs(200)),
-        );
+        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(100)));
+        ks.set("c".into(), Bytes::from("3"), Some(Duration::from_secs(200)));
 
         let stats = ks.stats();
         assert_eq!(stats.key_count, 3);
@@ -647,10 +636,7 @@ mod tests {
         assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
 
         // overwriting with same-size value should succeed — no net increase
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("new"), None),
-            SetResult::Ok
-        );
+        assert_eq!(ks.set("a".into(), Bytes::from("new"), None), SetResult::Ok);
         assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("new"))));
     }
 
