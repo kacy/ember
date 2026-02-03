@@ -16,6 +16,15 @@ use tokio::net::TcpStream;
 /// without over-allocating for simple PING/SET/GET workloads.
 const BUF_CAPACITY: usize = 4096;
 
+/// Maximum read buffer size before we disconnect the client. Prevents
+/// a single slow or malicious client from consuming unbounded memory
+/// with incomplete frames.
+const MAX_BUF_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+
+/// How long a connection can be idle (no data received) before we
+/// close it. Prevents abandoned connections from leaking resources.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
 /// Drives a single client connection to completion.
 ///
 /// Reads data into a buffer, parses complete frames, dispatches commands
@@ -26,38 +35,49 @@ pub async fn handle(
     engine: Engine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
+    let mut out = BytesMut::with_capacity(BUF_CAPACITY);
 
     loop {
-        // read some data — returns 0 on clean disconnect
-        let n = stream.read_buf(&mut buf).await?;
-        if n == 0 {
+        // guard against unbounded buffer growth from incomplete frames
+        if buf.len() > MAX_BUF_SIZE {
+            let msg = "ERR max buffer size exceeded, closing connection";
+            let mut err_buf = BytesMut::new();
+            Frame::Error(msg.into()).serialize(&mut err_buf);
+            let _ = stream.write_all(&err_buf).await;
             return Ok(());
         }
 
-        // process as many complete frames as the buffer holds (pipelining)
+        // read some data — returns 0 on clean disconnect, times out
+        // after IDLE_TIMEOUT to reclaim resources from abandoned connections
+        match tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(&mut buf)).await {
+            Ok(Ok(0)) => return Ok(()),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Ok(()), // idle timeout — close silently
+        }
+
+        // process as many complete frames as the buffer holds (pipelining),
+        // batching all responses into a single write buffer
+        out.clear();
         loop {
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-
                     let response = process(frame, &engine).await;
-
-                    let mut out = BytesMut::new();
                     response.serialize(&mut out);
-                    stream.write_all(&out).await?;
                 }
                 Ok(None) => break, // need more data
                 Err(e) => {
                     let msg = format!("ERR protocol error: {e}");
-                    let err_frame = Frame::Error(msg);
-
-                    let mut out = BytesMut::new();
-                    err_frame.serialize(&mut out);
+                    Frame::Error(msg).serialize(&mut out);
                     stream.write_all(&out).await?;
-
                     return Ok(());
                 }
             }
+        }
+
+        if !out.is_empty() {
+            stream.write_all(&out).await?;
         }
     }
 }
@@ -105,9 +125,9 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-                Ok(ShardResponse::OutOfMemory) => Frame::Error(
-                    "OOM command not allowed when used memory > 'maxmemory'".into(),
-                ),
+                Ok(ShardResponse::OutOfMemory) => {
+                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
+                }
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -137,59 +157,55 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         }
 
         // -- multi-key fan-out --
-        Command::Del { keys } => multi_key_bool(engine, &keys, |k| ShardRequest::Del { key: k }).await,
+        Command::Del { keys } => {
+            multi_key_bool(engine, &keys, |k| ShardRequest::Del { key: k }).await
+        }
 
         Command::Exists { keys } => {
             multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
         }
 
         // -- broadcast commands --
-        Command::DbSize => {
-            match engine.broadcast(|| ShardRequest::DbSize).await {
-                Ok(responses) => {
-                    let total: usize = responses
-                        .iter()
-                        .map(|r| match r {
-                            ShardResponse::KeyCount(n) => *n,
-                            _ => 0,
-                        })
-                        .sum();
-                    Frame::Integer(total as i64)
-                }
-                Err(e) => Frame::Error(format!("ERR {e}")),
+        Command::DbSize => match engine.broadcast(|| ShardRequest::DbSize).await {
+            Ok(responses) => {
+                let total: usize = responses
+                    .iter()
+                    .map(|r| match r {
+                        ShardResponse::KeyCount(n) => *n,
+                        _ => 0,
+                    })
+                    .sum();
+                Frame::Integer(total as i64)
             }
-        }
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        },
 
         Command::Info { section } => {
             let section_upper = section.as_deref().map(|s| s.to_ascii_uppercase());
             match section_upper.as_deref() {
-                None | Some("KEYSPACE") => {
-                    match engine.broadcast(|| ShardRequest::Stats).await {
-                        Ok(responses) => {
-                            let mut total = KeyspaceStats {
-                                key_count: 0,
-                                used_bytes: 0,
-                                keys_with_expiry: 0,
-                            };
-                            for r in &responses {
-                                if let ShardResponse::Stats(stats) = r {
-                                    total.key_count += stats.key_count;
-                                    total.used_bytes += stats.used_bytes;
-                                    total.keys_with_expiry += stats.keys_with_expiry;
-                                }
+                None | Some("KEYSPACE") => match engine.broadcast(|| ShardRequest::Stats).await {
+                    Ok(responses) => {
+                        let mut total = KeyspaceStats {
+                            key_count: 0,
+                            used_bytes: 0,
+                            keys_with_expiry: 0,
+                        };
+                        for r in &responses {
+                            if let ShardResponse::Stats(stats) = r {
+                                total.key_count += stats.key_count;
+                                total.used_bytes += stats.used_bytes;
+                                total.keys_with_expiry += stats.keys_with_expiry;
                             }
-                            let info = format!(
-                                "# Keyspace\r\ndb0:keys={},expires={},used_bytes={}\r\n",
-                                total.key_count, total.keys_with_expiry, total.used_bytes
-                            );
-                            Frame::Bulk(Bytes::from(info))
                         }
-                        Err(e) => Frame::Error(format!("ERR {e}")),
+                        let info = format!(
+                            "# Keyspace\r\ndb0:keys={},expires={},used_bytes={}\r\n",
+                            total.key_count, total.keys_with_expiry, total.used_bytes
+                        );
+                        Frame::Bulk(Bytes::from(info))
                     }
-                }
-                Some(other) => {
-                    Frame::Error(format!("ERR unsupported INFO section '{other}'"))
-                }
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                },
+                Some(other) => Frame::Error(format!("ERR unsupported INFO section '{other}'")),
             }
         }
 
@@ -199,21 +215,21 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
 
 /// Fans out a boolean-result command across shards for multiple keys
 /// and returns the count of `true` results as an integer frame.
+///
+/// Uses `route_multi` to dispatch all keys concurrently rather than
+/// awaiting each one sequentially.
 async fn multi_key_bool<F>(engine: &Engine, keys: &[String], make_req: F) -> Frame
 where
     F: Fn(String) -> ShardRequest,
 {
-    let mut count: i64 = 0;
-    for key in keys {
-        let req = make_req(key.clone());
-        match engine.route(key, req).await {
-            Ok(ShardResponse::Bool(true)) => count += 1,
-            Ok(ShardResponse::Bool(false)) => {}
-            Ok(other) => {
-                return Frame::Error(format!("ERR unexpected shard response: {other:?}"));
-            }
-            Err(e) => return Frame::Error(format!("ERR {e}")),
+    match engine.route_multi(keys, make_req).await {
+        Ok(responses) => {
+            let count = responses
+                .iter()
+                .filter(|r| matches!(r, ShardResponse::Bool(true)))
+                .count();
+            Frame::Integer(count as i64)
         }
+        Err(e) => Frame::Error(format!("ERR {e}")),
     }
-    Frame::Integer(count)
 }

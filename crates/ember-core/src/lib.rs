@@ -13,7 +13,7 @@ pub mod shard;
 pub mod types;
 
 pub use engine::{Engine, EngineConfig};
-pub use error::{KeyspaceError, ShardError};
+pub use error::ShardError;
 pub use keyspace::{EvictionPolicy, Keyspace, KeyspaceStats, ShardConfig, TtlResult};
 pub use shard::{ShardRequest, ShardResponse};
 pub use types::Value;

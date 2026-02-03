@@ -116,6 +116,8 @@ pub struct Keyspace {
     entries: HashMap<String, Entry>,
     memory: MemoryTracker,
     config: ShardConfig,
+    /// Number of entries that currently have an expiration set.
+    expiry_count: usize,
 }
 
 impl Keyspace {
@@ -130,6 +132,7 @@ impl Keyspace {
             entries: HashMap::new(),
             memory: MemoryTracker::new(),
             config,
+            expiry_count: 0,
         }
     }
 
@@ -184,8 +187,19 @@ impl Keyspace {
 
         if let Some(old_entry) = self.entries.get(&key) {
             self.memory.replace(&key, &old_entry.value, &new_value);
+            // adjust expiry count if the TTL status changed
+            let had_expiry = old_entry.expires_at.is_some();
+            let has_expiry = expires_at.is_some();
+            match (had_expiry, has_expiry) {
+                (false, true) => self.expiry_count += 1,
+                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
+                _ => {}
+            }
         } else {
             self.memory.add(&key, &new_value);
+            if expires_at.is_some() {
+                self.expiry_count += 1;
+            }
         }
 
         self.entries.insert(key, Entry::new(new_value, expires_at));
@@ -216,6 +230,9 @@ impl Keyspace {
         if let Some(key) = victim {
             if let Some(entry) = self.entries.remove(&key) {
                 self.memory.remove(&key, &entry.value);
+                if entry.expires_at.is_some() {
+                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                }
                 return true;
             }
         }
@@ -229,6 +246,9 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
+            if entry.expires_at.is_some() {
+                self.expiry_count = self.expiry_count.saturating_sub(1);
+            }
             true
         } else {
             false
@@ -251,6 +271,9 @@ impl Keyspace {
         }
         match self.entries.get_mut(key) {
             Some(entry) => {
+                if entry.expires_at.is_none() {
+                    self.expiry_count += 1;
+                }
                 entry.expires_at = Some(Instant::now() + Duration::from_secs(seconds));
                 true
             }
@@ -279,17 +302,13 @@ impl Keyspace {
     }
 
     /// Returns aggregated stats for this keyspace.
+    ///
+    /// All fields are tracked incrementally — this is O(1).
     pub fn stats(&self) -> KeyspaceStats {
-        let keys_with_expiry = self
-            .entries
-            .values()
-            .filter(|e| e.expires_at.is_some())
-            .count();
-
         KeyspaceStats {
             key_count: self.memory.key_count(),
             used_bytes: self.memory.used_bytes(),
-            keys_with_expiry,
+            keys_with_expiry: self.expiry_count,
         }
     }
 
@@ -343,6 +362,9 @@ impl Keyspace {
         if expired {
             if let Some(entry) = self.entries.remove(key) {
                 self.memory.remove(key, &entry.value);
+                if entry.expires_at.is_some() {
+                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                }
             }
         }
         expired
@@ -378,10 +400,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("first"), None);
         ks.set("key".into(), Bytes::from("second"), None);
-        assert_eq!(
-            ks.get("key"),
-            Some(Value::String(Bytes::from("second")))
-        );
+        assert_eq!(ks.get("key"), Some(Value::String(Bytes::from("second"))));
     }
 
     #[test]
@@ -557,16 +576,8 @@ mod tests {
     fn stats_tracks_expiry_count() {
         let mut ks = Keyspace::new();
         ks.set("a".into(), Bytes::from("1"), None);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(100)),
-        );
-        ks.set(
-            "c".into(),
-            Bytes::from("3"),
-            Some(Duration::from_secs(200)),
-        );
+        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(100)));
+        ks.set("c".into(), Bytes::from("3"), Some(Duration::from_secs(200)));
 
         let stats = ks.stats();
         assert_eq!(stats.key_count, 3);
@@ -625,10 +636,7 @@ mod tests {
         assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
 
         // overwriting with same-size value should succeed — no net increase
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("new"), None),
-            SetResult::Ok
-        );
+        assert_eq!(ks.set("a".into(), Bytes::from("new"), None), SetResult::Ok);
         assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("new"))));
     }
 

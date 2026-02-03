@@ -1,8 +1,8 @@
 //! Direct-to-buffer RESP3 serialization.
 //!
 //! Writes frames directly into a `BytesMut` buffer with no intermediate
-//! allocations. Integer-to-string conversion uses a small stack buffer
-//! via `itoa` (inlined here to avoid the dependency).
+//! allocations. Integer-to-string conversion uses `itoa` for fast
+//! stack-based formatting.
 
 use bytes::BufMut;
 use bytes::BytesMut;
@@ -64,7 +64,6 @@ impl Frame {
 
 /// Writes an i64 as its decimal ASCII representation directly into the buffer.
 fn write_i64(val: i64, dst: &mut BytesMut) {
-    // itoa on the stack — avoids pulling in the itoa crate for one function.
     let mut buf = itoa::Buffer::new();
     dst.put_slice(buf.format(val).as_bytes());
 }
@@ -88,10 +87,7 @@ mod tests {
 
     #[test]
     fn error() {
-        assert_eq!(
-            serialize(&Frame::Error("ERR bad".into())),
-            b"-ERR bad\r\n"
-        );
+        assert_eq!(serialize(&Frame::Error("ERR bad".into())), b"-ERR bad\r\n");
     }
 
     #[test]
@@ -124,14 +120,8 @@ mod tests {
 
     #[test]
     fn array() {
-        let frame = Frame::Array(vec![
-            Frame::Simple("hello".into()),
-            Frame::Integer(42),
-        ]);
-        assert_eq!(
-            serialize(&frame),
-            b"*2\r\n+hello\r\n:42\r\n"
-        );
+        let frame = Frame::Array(vec![Frame::Simple("hello".into()), Frame::Integer(42)]);
+        assert_eq!(serialize(&frame), b"*2\r\n+hello\r\n:42\r\n");
     }
 
     #[test]
@@ -141,13 +131,8 @@ mod tests {
 
     #[test]
     fn map() {
-        let frame = Frame::Map(vec![
-            (Frame::Simple("key".into()), Frame::Integer(1)),
-        ]);
-        assert_eq!(
-            serialize(&frame),
-            b"%1\r\n+key\r\n:1\r\n"
-        );
+        let frame = Frame::Map(vec![(Frame::Simple("key".into()), Frame::Integer(1))]);
+        assert_eq!(serialize(&frame), b"%1\r\n+key\r\n:1\r\n");
     }
 
     #[test]

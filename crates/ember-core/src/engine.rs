@@ -87,19 +87,50 @@ impl Engine {
 
     /// Sends a request to every shard and collects all responses.
     ///
-    /// Used for commands like DBSIZE and INFO that need data from all
-    /// shards. The request factory `make_req` is called once per shard.
-    pub async fn broadcast<F>(
-        &self,
-        make_req: F,
-    ) -> Result<Vec<ShardResponse>, ShardError>
+    /// Dispatches to all shards first (so they start processing in
+    /// parallel), then collects the replies. Used for commands like
+    /// DBSIZE and INFO that need data from all shards.
+    pub async fn broadcast<F>(&self, make_req: F) -> Result<Vec<ShardResponse>, ShardError>
     where
         F: Fn() -> ShardRequest,
     {
-        let mut results = Vec::with_capacity(self.shards.len());
+        // dispatch to all shards without waiting for responses
+        let mut receivers = Vec::with_capacity(self.shards.len());
         for shard in &self.shards {
-            let resp = shard.send(make_req()).await?;
-            results.push(resp);
+            receivers.push(shard.dispatch(make_req()).await?);
+        }
+
+        // now collect all responses
+        let mut results = Vec::with_capacity(receivers.len());
+        for rx in receivers {
+            results.push(rx.await.map_err(|_| ShardError::Unavailable)?);
+        }
+        Ok(results)
+    }
+
+    /// Routes requests for multiple keys concurrently.
+    ///
+    /// Dispatches all requests without waiting, then collects responses.
+    /// The response order matches the key order. Used for multi-key
+    /// commands like DEL and EXISTS.
+    pub async fn route_multi<F>(
+        &self,
+        keys: &[String],
+        make_req: F,
+    ) -> Result<Vec<ShardResponse>, ShardError>
+    where
+        F: Fn(String) -> ShardRequest,
+    {
+        let mut receivers = Vec::with_capacity(keys.len());
+        for key in keys {
+            let idx = self.shard_for_key(key);
+            let rx = self.shards[idx].dispatch(make_req(key.clone())).await?;
+            receivers.push(rx);
+        }
+
+        let mut results = Vec::with_capacity(receivers.len());
+        for rx in receivers {
+            results.push(rx.await.map_err(|_| ShardError::Unavailable)?);
         }
         Ok(results)
     }
@@ -124,8 +155,8 @@ fn shard_index(key: &str, shard_count: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
     use crate::types::Value;
+    use bytes::Bytes;
 
     #[test]
     fn same_key_same_shard() {
@@ -169,7 +200,12 @@ mod tests {
         assert!(matches!(resp, ShardResponse::Ok));
 
         let resp = engine
-            .route("greeting", ShardRequest::Get { key: "greeting".into() })
+            .route(
+                "greeting",
+                ShardRequest::Get {
+                    key: "greeting".into(),
+                },
+            )
             .await
             .unwrap();
         match resp {
@@ -203,7 +239,12 @@ mod tests {
         let mut count = 0i64;
         for key in &["a", "b", "c", "d", "missing"] {
             let resp = engine
-                .route(key, ShardRequest::Del { key: key.to_string() })
+                .route(
+                    key,
+                    ShardRequest::Del {
+                        key: key.to_string(),
+                    },
+                )
                 .await
                 .unwrap();
             if let ShardResponse::Bool(true) = resp {
