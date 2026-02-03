@@ -72,7 +72,7 @@ async fn main() {
 
     info!("ember server starting...");
 
-    if let Err(e) = server::run(addr, shard_count, engine_config).await {
+    if let Err(e) = server::run(addr, shard_count, engine_config, None).await {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }
