@@ -36,7 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 
 # internal crates
-ember-core = { path = "crates/ember-core", version = "0.1.0" }
+emberkv-core = { path = "crates/ember-core", version = "0.1.0" }
 ember-protocol = { path = "crates/ember-protocol", version = "0.1.0" }
 ember-persistence = { path = "crates/ember-persistence", version = "0.1.0" }
 ember-cluster = { path = "crates/ember-cluster", version = "0.1.0" }

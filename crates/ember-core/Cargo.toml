@@ -1,10 +1,13 @@
 [package]
-name = "ember-core"
+name = "emberkv-core"
 description = "Core engine for ember: keyspace, data types, sharding"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[lib]
+name = "ember_core"
 
 [dependencies]
 ember-protocol = { workspace = true }

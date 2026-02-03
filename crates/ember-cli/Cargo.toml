@@ -1,10 +1,14 @@
 [package]
-name = "ember-cli"
+name = "emberkv-cli"
 description = "Interactive CLI tool for ember"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[[bin]]
+name = "ember-cli"
+path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }

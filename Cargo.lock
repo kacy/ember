@@ -126,28 +126,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
-name = "ember-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
-]
-
-[[package]]
 name = "ember-cluster"
 version = "0.1.0"
 dependencies = [
  "thiserror",
-]
-
-[[package]]
-name = "ember-core"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "ember-protocol",
- "rand",
- "thiserror",
- "tokio",
 ]
 
 [[package]]
@@ -172,11 +154,29 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
- "ember-core",
  "ember-protocol",
+ "emberkv-core",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "emberkv-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
+name = "emberkv-core"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ember-protocol",
+ "rand",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
