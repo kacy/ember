@@ -35,6 +35,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # cli
 clap = { version = "4", features = ["derive"] }
 
+# checksums
+crc32fast = "1"
+
 # internal crates
 emberkv-core = { path = "crates/ember-core", version = "0.1.0" }
 ember-protocol = { path = "crates/ember-protocol", version = "0.1.0" }

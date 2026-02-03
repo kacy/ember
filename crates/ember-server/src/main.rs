@@ -3,11 +3,13 @@ mod connection;
 mod server;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::Parser;
+use ember_core::ShardPersistenceConfig;
 use tracing::info;
 
-use crate::config::{build_engine_config, parse_byte_size, parse_eviction_policy};
+use crate::config::{build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy};
 
 #[derive(Parser)]
 #[command(name = "ember-server", about = "ember cache server")]
@@ -27,6 +29,18 @@ struct Args {
     /// eviction policy when memory limit is reached: noeviction or allkeys-lru
     #[arg(long, default_value = "noeviction")]
     eviction_policy: String,
+
+    /// directory for AOF and snapshot files. required if --appendonly is set
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+
+    /// enable append-only file logging for durability
+    #[arg(long)]
+    appendonly: bool,
+
+    /// fsync policy for the AOF: always, everysec, or no
+    #[arg(long, default_value = "everysec")]
+    appendfsync: String,
 }
 
 #[tokio::main]
@@ -60,13 +74,46 @@ async fn main() {
         .map(|n| n.get())
         .unwrap_or(1);
 
-    let engine_config = build_engine_config(max_memory, eviction_policy, shard_count);
+    // build persistence config if data-dir is set or appendonly is enabled
+    let persistence = if args.appendonly || args.data_dir.is_some() {
+        let data_dir = args.data_dir.unwrap_or_else(|| {
+            if args.appendonly {
+                eprintln!("--data-dir is required when --appendonly is set");
+                std::process::exit(1);
+            }
+            PathBuf::from(".")
+        });
+
+        let fsync_policy = parse_fsync_policy(&args.appendfsync).unwrap_or_else(|e| {
+            eprintln!("invalid --appendfsync value: {e}");
+            std::process::exit(1);
+        });
+
+        Some(ShardPersistenceConfig {
+            data_dir,
+            append_only: args.appendonly,
+            fsync_policy,
+        })
+    } else {
+        None
+    };
+
+    let engine_config = build_engine_config(max_memory, eviction_policy, shard_count, persistence);
 
     if let Some(limit) = max_memory {
         info!(
             "memory limit: {} bytes ({} per shard)",
             limit,
             limit / shard_count
+        );
+    }
+
+    if let Some(ref p) = engine_config.persistence {
+        info!(
+            data_dir = %p.data_dir.display(),
+            appendonly = p.append_only,
+            fsync = ?p.fsync_policy,
+            "persistence enabled"
         );
     }
 

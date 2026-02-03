@@ -55,6 +55,12 @@ pub enum Command {
     /// INFO [section]. Returns server info. Currently only supports "keyspace".
     Info { section: Option<String> },
 
+    /// BGSAVE. Triggers a background snapshot.
+    BgSave,
+
+    /// BGREWRITEAOF. Triggers an AOF rewrite (snapshot + truncate).
+    BgRewriteAof,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -94,6 +100,8 @@ impl Command {
             "TTL" => parse_ttl(&frames[1..]),
             "DBSIZE" => parse_dbsize(&frames[1..]),
             "INFO" => parse_info(&frames[1..]),
+            "BGSAVE" => parse_bgsave(&frames[1..]),
+            "BGREWRITEAOF" => parse_bgrewriteaof(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -260,6 +268,20 @@ fn parse_info(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         _ => Err(ProtocolError::WrongArity("INFO".into())),
     }
+}
+
+fn parse_bgsave(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("BGSAVE".into()));
+    }
+    Ok(Command::BgSave)
+}
+
+fn parse_bgrewriteaof(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("BGREWRITEAOF".into()));
+    }
+    Ok(Command::BgRewriteAof)
 }
 
 #[cfg(test)]
@@ -591,6 +613,54 @@ mod tests {
     #[test]
     fn info_too_many_args() {
         let err = Command::from_frame(cmd(&["INFO", "a", "b"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- bgsave ---
+
+    #[test]
+    fn bgsave_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BGSAVE"])).unwrap(),
+            Command::BgSave,
+        );
+    }
+
+    #[test]
+    fn bgsave_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["bgsave"])).unwrap(),
+            Command::BgSave,
+        );
+    }
+
+    #[test]
+    fn bgsave_extra_args() {
+        let err = Command::from_frame(cmd(&["BGSAVE", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- bgrewriteaof ---
+
+    #[test]
+    fn bgrewriteaof_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BGREWRITEAOF"])).unwrap(),
+            Command::BgRewriteAof,
+        );
+    }
+
+    #[test]
+    fn bgrewriteaof_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["bgrewriteaof"])).unwrap(),
+            Command::BgRewriteAof,
+        );
+    }
+
+    #[test]
+    fn bgrewriteaof_extra_args() {
+        let err = Command::from_frame(cmd(&["BGREWRITEAOF", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 

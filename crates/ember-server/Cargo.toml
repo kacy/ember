@@ -10,6 +10,7 @@ repository.workspace = true
 bytes = { workspace = true }
 emberkv-core = { workspace = true }
 ember-protocol = { workspace = true }
+ember-persistence = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
