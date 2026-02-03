@@ -21,6 +21,10 @@ const BUF_CAPACITY: usize = 4096;
 /// with incomplete frames.
 const MAX_BUF_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
+/// How long a connection can be idle (no data received) before we
+/// close it. Prevents abandoned connections from leaking resources.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
 /// Drives a single client connection to completion.
 ///
 /// Reads data into a buffer, parses complete frames, dispatches commands
@@ -43,10 +47,13 @@ pub async fn handle(
             return Ok(());
         }
 
-        // read some data — returns 0 on clean disconnect
-        let n = stream.read_buf(&mut buf).await?;
-        if n == 0 {
-            return Ok(());
+        // read some data — returns 0 on clean disconnect, times out
+        // after IDLE_TIMEOUT to reclaim resources from abandoned connections
+        match tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(&mut buf)).await {
+            Ok(Ok(0)) => return Ok(()),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Ok(()), // idle timeout — close silently
         }
 
         // process as many complete frames as the buffer holds (pipelining),
