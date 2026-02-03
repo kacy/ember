@@ -4,9 +4,6 @@ debug/
 *.d
 *.o
 
-# cargo
-Cargo.lock
-
 # editor
 *.swp
 *.swo
