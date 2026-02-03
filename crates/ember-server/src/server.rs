@@ -2,7 +2,7 @@
 
 use std::net::SocketAddr;
 
-use ember_core::Engine;
+use ember_core::{Engine, EngineConfig};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
@@ -10,10 +10,14 @@ use crate::connection;
 
 /// Binds to `addr` and runs the accept loop.
 ///
-/// Spawns a sharded engine with one shard per CPU core, then hands
-/// each incoming connection a cheap clone of the engine handle.
-pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = Engine::with_available_cores();
+/// Spawns a sharded engine with the given shard count and config, then
+/// hands each incoming connection a cheap clone of the engine handle.
+pub async fn run(
+    addr: SocketAddr,
+    shard_count: usize,
+    config: EngineConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let engine = Engine::with_config(shard_count, config);
     let listener = TcpListener::bind(addr).await?;
 
     info!(
