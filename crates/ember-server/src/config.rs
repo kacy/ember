@@ -78,6 +78,7 @@ pub fn build_engine_config(
         shard: ShardConfig {
             max_memory: per_shard_memory,
             eviction_policy,
+            ..ShardConfig::default()
         },
     }
 }
