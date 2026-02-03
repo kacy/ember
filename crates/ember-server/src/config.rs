@@ -3,7 +3,8 @@
 //! Handles conversion from CLI-friendly strings (like "100M", "1G")
 //! to the internal config types used by the engine.
 
-use ember_core::{EngineConfig, EvictionPolicy, ShardConfig};
+use ember_core::{EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig};
+use ember_persistence::aof::FsyncPolicy;
 
 /// Parses a human-readable byte size string into a number of bytes.
 ///
@@ -59,6 +60,18 @@ pub fn parse_eviction_policy(input: &str) -> Result<EvictionPolicy, String> {
     }
 }
 
+/// Parses an fsync policy name from a CLI string.
+pub fn parse_fsync_policy(input: &str) -> Result<FsyncPolicy, String> {
+    match input.to_ascii_lowercase().as_str() {
+        "always" => Ok(FsyncPolicy::Always),
+        "everysec" => Ok(FsyncPolicy::EverySec),
+        "no" => Ok(FsyncPolicy::No),
+        _ => Err(format!(
+            "unknown fsync policy '{input}'. valid options: always, everysec, no"
+        )),
+    }
+}
+
 /// Builds an `EngineConfig` from parsed CLI options.
 ///
 /// `max_memory` is the total server limit — it gets divided evenly
@@ -67,6 +80,7 @@ pub fn build_engine_config(
     max_memory: Option<usize>,
     eviction_policy: EvictionPolicy,
     shard_count: usize,
+    persistence: Option<ShardPersistenceConfig>,
 ) -> EngineConfig {
     let per_shard_memory = max_memory.map(|total| {
         // divide evenly, rounding down — better to be slightly
@@ -80,7 +94,7 @@ pub fn build_engine_config(
             eviction_policy,
             ..ShardConfig::default()
         },
-        persistence: None,
+        persistence,
     }
 }
 
@@ -145,15 +159,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_fsync_policies() {
+        assert_eq!(parse_fsync_policy("always").unwrap(), FsyncPolicy::Always);
+        assert_eq!(parse_fsync_policy("everysec").unwrap(), FsyncPolicy::EverySec);
+        assert_eq!(parse_fsync_policy("no").unwrap(), FsyncPolicy::No);
+        assert_eq!(parse_fsync_policy("ALWAYS").unwrap(), FsyncPolicy::Always);
+    }
+
+    #[test]
+    fn parse_unknown_fsync_policy_is_error() {
+        assert!(parse_fsync_policy("sometimes").is_err());
+    }
+
+    #[test]
     fn build_config_divides_memory() {
-        let cfg = build_engine_config(Some(400), EvictionPolicy::AllKeysLru, 4);
+        let cfg = build_engine_config(Some(400), EvictionPolicy::AllKeysLru, 4, None);
         assert_eq!(cfg.shard.max_memory, Some(100));
         assert_eq!(cfg.shard.eviction_policy, EvictionPolicy::AllKeysLru);
     }
 
     #[test]
     fn build_config_no_limit() {
-        let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4);
+        let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None);
         assert_eq!(cfg.shard.max_memory, None);
     }
 }
