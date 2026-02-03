@@ -123,11 +123,15 @@ fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Frame, ProtocolError> {
     match prefix {
         b'+' => {
             let line = read_line(cursor)?;
-            Ok(Frame::Simple(String::from_utf8_lossy(line).into_owned()))
+            let s = std::str::from_utf8(line)
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid utf-8 in simple string".into()))?;
+            Ok(Frame::Simple(s.to_owned()))
         }
         b'-' => {
             let line = read_line(cursor)?;
-            Ok(Frame::Error(String::from_utf8_lossy(line).into_owned()))
+            let s = std::str::from_utf8(line)
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid utf-8 in error string".into()))?;
+            Ok(Frame::Error(s.to_owned()))
         }
         b':' => {
             let val = read_integer_line(cursor)?;
