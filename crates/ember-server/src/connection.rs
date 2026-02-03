@@ -1,14 +1,13 @@
 //! Per-connection handler.
 //!
-//! Reads RESP3 frames from a TCP stream, routes them to commands,
-//! and writes responses back. Supports pipelining by processing
-//! multiple frames from a single read.
+//! Reads RESP3 frames from a TCP stream, routes them through the
+//! sharded engine, and writes responses back. Supports pipelining
+//! by processing multiple frames from a single read.
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::BytesMut;
-use ember_core::{Keyspace, TtlResult, Value};
+use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -19,12 +18,12 @@ const BUF_CAPACITY: usize = 4096;
 
 /// Drives a single client connection to completion.
 ///
-/// Reads data into a buffer, parses complete frames, dispatches commands,
-/// and writes serialized responses back. The loop exits when the client
-/// disconnects or a protocol error occurs.
+/// Reads data into a buffer, parses complete frames, dispatches commands
+/// through the engine, and writes serialized responses back. The loop
+/// exits when the client disconnects or a protocol error occurs.
 pub async fn handle(
     mut stream: TcpStream,
-    keyspace: Arc<Mutex<Keyspace>>,
+    engine: Engine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
 
@@ -41,7 +40,7 @@ pub async fn handle(
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
 
-                    let response = process(frame, &keyspace);
+                    let response = process(frame, &engine).await;
 
                     let mut out = BytesMut::new();
                     response.serialize(&mut out);
@@ -64,25 +63,33 @@ pub async fn handle(
 }
 
 /// Converts a raw frame into a command and executes it.
-fn process(frame: Frame, keyspace: &Arc<Mutex<Keyspace>>) -> Frame {
+async fn process(frame: Frame, engine: &Engine) -> Frame {
     match Command::from_frame(frame) {
-        Ok(cmd) => execute(cmd, keyspace),
+        Ok(cmd) => execute(cmd, engine).await,
         Err(e) => Frame::Error(format!("ERR {e}")),
     }
 }
 
 /// Executes a parsed command and returns the response frame.
-fn execute(cmd: Command, keyspace: &Arc<Mutex<Keyspace>>) -> Frame {
+///
+/// Ping and Echo are handled inline (no shard routing needed).
+/// Single-key commands route to the owning shard. Multi-key commands
+/// (DEL, EXISTS) fan out across shards and aggregate results.
+async fn execute(cmd: Command, engine: &Engine) -> Frame {
     match cmd {
+        // -- no shard needed --
         Command::Ping(None) => Frame::Simple("PONG".into()),
         Command::Ping(Some(msg)) => Frame::Bulk(msg),
         Command::Echo(msg) => Frame::Bulk(msg),
 
+        // -- single-key commands --
         Command::Get { key } => {
-            let mut ks = keyspace.lock().expect("keyspace lock poisoned");
-            match ks.get(&key) {
-                Some(Value::String(data)) => Frame::Bulk(data),
-                None => Frame::Null,
+            let req = ShardRequest::Get { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
 
@@ -91,40 +98,69 @@ fn execute(cmd: Command, keyspace: &Arc<Mutex<Keyspace>>) -> Frame {
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
-            let mut ks = keyspace.lock().expect("keyspace lock poisoned");
-            ks.set(key, value, duration);
-            Frame::Simple("OK".into())
-        }
-
-        Command::Del { keys } => {
-            let mut ks = keyspace.lock().expect("keyspace lock poisoned");
-            let count = keys.iter().filter(|k| ks.del(k)).count() as i64;
-            Frame::Integer(count)
-        }
-
-        Command::Exists { keys } => {
-            let mut ks = keyspace.lock().expect("keyspace lock poisoned");
-            let count = keys.iter().filter(|k| ks.exists(k)).count() as i64;
-            Frame::Integer(count)
-        }
-
-        Command::Expire { key, seconds } => {
-            let mut ks = keyspace.lock().expect("keyspace lock poisoned");
-            let result = if ks.expire(&key, seconds) { 1 } else { 0 };
-            Frame::Integer(result)
-        }
-
-        Command::Ttl { key } => {
-            let mut ks = keyspace.lock().expect("keyspace lock poisoned");
-            match ks.ttl(&key) {
-                TtlResult::Seconds(s) => Frame::Integer(s as i64),
-                TtlResult::NoExpiry => Frame::Integer(-1),
-                TtlResult::NotFound => Frame::Integer(-2),
+            let req = ShardRequest::Set {
+                key: key.clone(),
+                value,
+                expire: duration,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
 
-        Command::Unknown(name) => {
-            Frame::Error(format!("ERR unknown command '{name}'"))
+        Command::Expire { key, seconds } => {
+            let req = ShardRequest::Expire {
+                key: key.clone(),
+                seconds,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Ttl { key } => {
+            let req = ShardRequest::Ttl { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ttl(TtlResult::Seconds(s))) => Frame::Integer(s as i64),
+                Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
+                Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        // -- multi-key fan-out --
+        Command::Del { keys } => multi_key_bool(engine, &keys, |k| ShardRequest::Del { key: k }).await,
+
+        Command::Exists { keys } => {
+            multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
+        }
+
+        Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
+    }
+}
+
+/// Fans out a boolean-result command across shards for multiple keys
+/// and returns the count of `true` results as an integer frame.
+async fn multi_key_bool<F>(engine: &Engine, keys: &[String], make_req: F) -> Frame
+where
+    F: Fn(String) -> ShardRequest,
+{
+    let mut count: i64 = 0;
+    for key in keys {
+        let req = make_req(key.clone());
+        match engine.route(key, req).await {
+            Ok(ShardResponse::Bool(true)) => count += 1,
+            Ok(ShardResponse::Bool(false)) => {}
+            Ok(other) => {
+                return Frame::Error(format!("ERR unexpected shard response: {other:?}"));
+            }
+            Err(e) => return Frame::Error(format!("ERR {e}")),
         }
     }
+    Frame::Integer(count)
 }
