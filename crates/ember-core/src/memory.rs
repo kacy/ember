@@ -4,8 +4,6 @@
 //! on every mutation so the engine can enforce memory limits and
 //! report stats without scanning the entire keyspace.
 
-use bytes::Bytes;
-
 use crate::types::Value;
 
 /// Estimated overhead per entry in the HashMap.
@@ -88,13 +86,8 @@ pub fn entry_size(key: &str, value: &Value) -> usize {
 /// Returns the byte size of a value's payload.
 fn value_size(value: &Value) -> usize {
     match value {
-        Value::String(data) => data_size(data),
+        Value::String(data) => data.len(),
     }
-}
-
-/// Returns the byte length of a `Bytes` buffer.
-fn data_size(data: &Bytes) -> usize {
-    data.len()
 }
 
 #[cfg(test)]
