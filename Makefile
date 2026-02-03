@@ -7,16 +7,16 @@ release:
 	cargo build --release
 
 test:
-	cargo test
+	cargo test --workspace
 
 fmt:
-	cargo fmt
+	cargo fmt --all
 
 fmt-check:
-	cargo fmt --check
+	cargo fmt --all --check
 
 clippy:
-	cargo clippy -- -D warnings
+	cargo clippy --workspace -- -D warnings
 
 check: fmt-check clippy test
 
