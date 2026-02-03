@@ -10,3 +10,11 @@ pub enum KeyspaceError {
     #[error("WRONGTYPE Operation against a key holding the wrong kind of value")]
     WrongType,
 }
+
+/// Errors returned by shard or engine operations.
+#[derive(Debug, Error)]
+pub enum ShardError {
+    /// The target shard is no longer running (channel closed).
+    #[error("shard unavailable")]
+    Unavailable,
+}

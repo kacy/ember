@@ -1,9 +1,8 @@
 //! TCP server that accepts client connections and spawns handler tasks.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 
-use ember_core::Keyspace;
+use ember_core::Engine;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
@@ -11,23 +10,23 @@ use crate::connection;
 
 /// Binds to `addr` and runs the accept loop.
 ///
-/// Each incoming connection is handed off to a spawned tokio task.
-/// All connections share a single keyspace behind an `Arc<Mutex>`.
-/// We use `std::sync::Mutex` (not tokio's) because the lock is only
-/// held during fast, synchronous HashMap operations — never across
-/// an `.await` point.
+/// Spawns a sharded engine with one shard per CPU core, then hands
+/// each incoming connection a cheap clone of the engine handle.
 pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
-    let keyspace = Arc::new(Mutex::new(Keyspace::new()));
+    let engine = Engine::with_available_cores();
     let listener = TcpListener::bind(addr).await?;
 
-    info!("listening on {addr}");
+    info!(
+        "listening on {addr} with {} shards",
+        engine.shard_count()
+    );
 
     loop {
         let (stream, peer) = listener.accept().await?;
-        let ks = Arc::clone(&keyspace);
+        let engine = engine.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = connection::handle(stream, ks).await {
+            if let Err(e) = connection::handle(stream, engine).await {
                 error!("connection error from {peer}: {e}");
             }
         });
