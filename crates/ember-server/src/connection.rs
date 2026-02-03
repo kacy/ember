@@ -16,6 +16,11 @@ use tokio::net::TcpStream;
 /// without over-allocating for simple PING/SET/GET workloads.
 const BUF_CAPACITY: usize = 4096;
 
+/// Maximum read buffer size before we disconnect the client. Prevents
+/// a single slow or malicious client from consuming unbounded memory
+/// with incomplete frames.
+const MAX_BUF_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+
 /// Drives a single client connection to completion.
 ///
 /// Reads data into a buffer, parses complete frames, dispatches commands
@@ -29,6 +34,15 @@ pub async fn handle(
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
 
     loop {
+        // guard against unbounded buffer growth from incomplete frames
+        if buf.len() > MAX_BUF_SIZE {
+            let msg = "ERR max buffer size exceeded, closing connection";
+            let mut err_buf = BytesMut::new();
+            Frame::Error(msg.into()).serialize(&mut err_buf);
+            let _ = stream.write_all(&err_buf).await;
+            return Ok(());
+        }
+
         // read some data — returns 0 on clean disconnect
         let n = stream.read_buf(&mut buf).await?;
         if n == 0 {
