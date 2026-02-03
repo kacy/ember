@@ -93,6 +93,7 @@ fn value_size(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
 
     fn string_val(s: &str) -> Value {
         Value::String(Bytes::from(s.to_string()))
