@@ -2,8 +2,8 @@
 //!
 //! Each shard runs as its own tokio task, owning a `Keyspace` with no
 //! internal locking. Commands arrive over an mpsc channel and responses
-//! go back on a per-request oneshot. This is the shared-nothing core of
-//! Ember's thread-per-core design.
+//! go back on a per-request oneshot. A background tick drives active
+//! expiration of TTL'd keys.
 
 use std::time::Duration;
 
@@ -11,8 +11,13 @@ use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::ShardError;
-use crate::keyspace::{Keyspace, TtlResult};
+use crate::expiry;
+use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult};
 use crate::types::Value;
+
+/// How often the shard runs active expiration. 100ms matches
+/// Redis's hz=10 default and keeps CPU overhead negligible.
+const EXPIRY_TICK: Duration = Duration::from_millis(100);
 
 /// A protocol-agnostic command sent to a shard.
 #[derive(Debug)]
@@ -23,6 +28,10 @@ pub enum ShardRequest {
     Exists { key: String },
     Expire { key: String, seconds: u64 },
     Ttl { key: String },
+    /// Returns the key count for this shard.
+    DbSize,
+    /// Returns keyspace stats for this shard.
+    Stats,
 }
 
 /// The shard's response to a request.
@@ -36,6 +45,12 @@ pub enum ShardResponse {
     Bool(bool),
     /// TTL query result.
     Ttl(TtlResult),
+    /// Memory limit reached and eviction policy is NoEviction.
+    OutOfMemory,
+    /// Key count for a shard (DBSIZE).
+    KeyCount(usize),
+    /// Full stats for a shard (INFO).
+    Stats(KeyspaceStats),
 }
 
 /// A request bundled with its reply channel.
@@ -73,20 +88,35 @@ impl ShardHandle {
 ///
 /// `buffer` controls the mpsc channel capacity — higher values absorb
 /// burst traffic at the cost of memory.
-pub fn spawn_shard(buffer: usize) -> ShardHandle {
+pub fn spawn_shard(buffer: usize, config: ShardConfig) -> ShardHandle {
     let (tx, rx) = mpsc::channel(buffer);
-    tokio::spawn(run_shard(rx));
+    tokio::spawn(run_shard(rx, config));
     ShardHandle { tx }
 }
 
-/// The shard's main loop. Processes messages until the channel closes.
-async fn run_shard(mut rx: mpsc::Receiver<ShardMessage>) {
-    let mut keyspace = Keyspace::new();
+/// The shard's main loop. Processes messages and runs periodic
+/// active expiration until the channel closes.
+async fn run_shard(mut rx: mpsc::Receiver<ShardMessage>, config: ShardConfig) {
+    let mut keyspace = Keyspace::with_config(config);
+    let mut tick = tokio::time::interval(EXPIRY_TICK);
+    // don't pile up ticks if we're busy processing commands
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    while let Some(msg) = rx.recv().await {
-        let response = dispatch(&mut keyspace, msg.request);
-        // if the caller dropped the receiver, that's fine — just discard
-        let _ = msg.reply.send(response);
+    loop {
+        tokio::select! {
+            msg = rx.recv() => {
+                match msg {
+                    Some(msg) => {
+                        let response = dispatch(&mut keyspace, msg.request);
+                        let _ = msg.reply.send(response);
+                    }
+                    None => break, // channel closed, shard shutting down
+                }
+            }
+            _ = tick.tick() => {
+                expiry::run_expiration_cycle(&mut keyspace);
+            }
+        }
     }
 }
 
@@ -94,14 +124,16 @@ async fn run_shard(mut rx: mpsc::Receiver<ShardMessage>) {
 fn dispatch(ks: &mut Keyspace, req: ShardRequest) -> ShardResponse {
     match req {
         ShardRequest::Get { key } => ShardResponse::Value(ks.get(&key)),
-        ShardRequest::Set { key, value, expire } => {
-            ks.set(key, value, expire);
-            ShardResponse::Ok
-        }
+        ShardRequest::Set { key, value, expire } => match ks.set(key, value, expire) {
+            SetResult::Ok => ShardResponse::Ok,
+            SetResult::OutOfMemory => ShardResponse::OutOfMemory,
+        },
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(&key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(&key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(&key, seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(&key)),
+        ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
+        ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
     }
 }
 
@@ -193,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn shard_round_trip() {
-        let handle = spawn_shard(16);
+        let handle = spawn_shard(16, ShardConfig::default());
 
         let resp = handle
             .send(ShardRequest::Set {
@@ -221,7 +253,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_key_through_shard() {
-        let handle = spawn_shard(16);
+        let handle = spawn_shard(16, ShardConfig::default());
 
         handle
             .send(ShardRequest::Set {
@@ -241,5 +273,52 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(resp, ShardResponse::Value(None)));
+    }
+
+    #[tokio::test]
+    async fn active_expiration_cleans_up_without_access() {
+        let handle = spawn_shard(16, ShardConfig::default());
+
+        // set a key with a short TTL
+        handle
+            .send(ShardRequest::Set {
+                key: "ephemeral".into(),
+                value: Bytes::from("temp"),
+                expire: Some(Duration::from_millis(10)),
+            })
+            .await
+            .unwrap();
+
+        // also set a persistent key
+        handle
+            .send(ShardRequest::Set {
+                key: "persistent".into(),
+                value: Bytes::from("stays"),
+                expire: None,
+            })
+            .await
+            .unwrap();
+
+        // wait long enough for the TTL to expire AND for the background
+        // tick to fire (100ms interval + some slack)
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        // the ephemeral key should be gone even though we never accessed it
+        let resp = handle
+            .send(ShardRequest::Exists {
+                key: "ephemeral".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(resp, ShardResponse::Bool(false)));
+
+        // the persistent key should still be there
+        let resp = handle
+            .send(ShardRequest::Exists {
+                key: "persistent".into(),
+            })
+            .await
+            .unwrap();
+        assert!(matches!(resp, ShardResponse::Bool(true)));
     }
 }

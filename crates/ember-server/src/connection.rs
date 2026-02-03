@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use bytes::BytesMut;
-use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
+use bytes::{Bytes, BytesMut};
+use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -105,6 +105,9 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::OutOfMemory) => Frame::Error(
+                    "OOM command not allowed when used memory > 'maxmemory'".into(),
+                ),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -138,6 +141,56 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
 
         Command::Exists { keys } => {
             multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
+        }
+
+        // -- broadcast commands --
+        Command::DbSize => {
+            match engine.broadcast(|| ShardRequest::DbSize).await {
+                Ok(responses) => {
+                    let total: usize = responses
+                        .iter()
+                        .map(|r| match r {
+                            ShardResponse::KeyCount(n) => *n,
+                            _ => 0,
+                        })
+                        .sum();
+                    Frame::Integer(total as i64)
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Info { section } => {
+            let section_upper = section.as_deref().map(|s| s.to_ascii_uppercase());
+            match section_upper.as_deref() {
+                None | Some("KEYSPACE") => {
+                    match engine.broadcast(|| ShardRequest::Stats).await {
+                        Ok(responses) => {
+                            let mut total = KeyspaceStats {
+                                key_count: 0,
+                                used_bytes: 0,
+                                keys_with_expiry: 0,
+                            };
+                            for r in &responses {
+                                if let ShardResponse::Stats(stats) = r {
+                                    total.key_count += stats.key_count;
+                                    total.used_bytes += stats.used_bytes;
+                                    total.keys_with_expiry += stats.keys_with_expiry;
+                                }
+                            }
+                            let info = format!(
+                                "# Keyspace\r\ndb0:keys={},expires={},used_bytes={}\r\n",
+                                total.key_count, total.keys_with_expiry, total.used_bytes
+                            );
+                            Frame::Bulk(Bytes::from(info))
+                        }
+                        Err(e) => Frame::Error(format!("ERR {e}")),
+                    }
+                }
+                Some(other) => {
+                    Frame::Error(format!("ERR unsupported INFO section '{other}'"))
+                }
+            }
         }
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),

@@ -2,26 +2,70 @@
 //!
 //! A `Keyspace` owns a flat `HashMap<String, Entry>` and handles
 //! get, set, delete, existence checks, and TTL management. Expired
-//! keys are removed lazily on access — no background threads needed
-//! at this stage.
+//! keys are removed lazily on access. Memory usage is tracked on
+//! every mutation for eviction and stats reporting.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
+use crate::memory::{self, MemoryTracker};
 use crate::types::Value;
 
-/// A single entry in the keyspace: a value plus optional expiration.
+/// How the keyspace should handle writes when the memory limit is reached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EvictionPolicy {
+    /// Return an error on writes when memory is full.
+    #[default]
+    NoEviction,
+    /// Evict the least-recently-used key (approximated via random sampling).
+    AllKeysLru,
+}
+
+/// Configuration for a single keyspace / shard.
 #[derive(Debug, Clone)]
-struct Entry {
-    value: Value,
-    expires_at: Option<Instant>,
+pub struct ShardConfig {
+    /// Maximum memory in bytes. `None` means unlimited.
+    pub max_memory: Option<usize>,
+    /// What to do when memory is full.
+    pub eviction_policy: EvictionPolicy,
+}
+
+impl Default for ShardConfig {
+    fn default() -> Self {
+        Self {
+            max_memory: None,
+            eviction_policy: EvictionPolicy::NoEviction,
+        }
+    }
+}
+
+/// Result of a set operation that may fail under memory pressure.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SetResult {
+    /// The key was stored successfully.
+    Ok,
+    /// Memory limit reached and eviction policy is NoEviction.
+    OutOfMemory,
+}
+
+/// A single entry in the keyspace: a value plus optional expiration
+/// and last access time for LRU approximation.
+#[derive(Debug, Clone)]
+pub(crate) struct Entry {
+    pub(crate) value: Value,
+    pub(crate) expires_at: Option<Instant>,
+    pub(crate) last_access: Instant,
 }
 
 impl Entry {
     fn new(value: Value, expires_at: Option<Instant>) -> Self {
-        Self { value, expires_at }
+        Self {
+            value,
+            expires_at,
+            last_access: Instant::now(),
+        }
     }
 
     /// Returns `true` if this entry has passed its expiration time.
@@ -30,6 +74,11 @@ impl Entry {
             Some(deadline) => Instant::now() >= deadline,
             None => false,
         }
+    }
+
+    /// Marks this entry as accessed right now.
+    fn touch(&mut self) {
+        self.last_access = Instant::now();
     }
 }
 
@@ -44,41 +93,126 @@ pub enum TtlResult {
     NotFound,
 }
 
+/// Aggregated statistics for a keyspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyspaceStats {
+    /// Number of live keys.
+    pub key_count: usize,
+    /// Estimated memory usage in bytes.
+    pub used_bytes: usize,
+    /// Number of keys with an expiration set.
+    pub keys_with_expiry: usize,
+}
+
 /// The core key-value store.
 ///
 /// All operations are single-threaded per shard — no internal locking.
-/// Callers are responsible for synchronization when sharing across threads.
+/// Memory usage is tracked incrementally on every mutation.
+/// Number of random keys to sample when looking for an eviction candidate.
+const EVICTION_SAMPLE_SIZE: usize = 16;
+
 pub struct Keyspace {
     entries: HashMap<String, Entry>,
+    memory: MemoryTracker,
+    config: ShardConfig,
 }
 
 impl Keyspace {
-    /// Creates a new, empty keyspace.
+    /// Creates a new, empty keyspace with default config (no memory limit).
     pub fn new() -> Self {
+        Self::with_config(ShardConfig::default())
+    }
+
+    /// Creates a new, empty keyspace with the given config.
+    pub fn with_config(config: ShardConfig) -> Self {
         Self {
             entries: HashMap::new(),
+            memory: MemoryTracker::new(),
+            config,
         }
     }
 
     /// Retrieves the value for `key`, or `None` if the key doesn't exist
     /// or has expired.
     ///
-    /// Expired keys are removed lazily on access.
+    /// Expired keys are removed lazily on access. Successful reads update
+    /// the entry's last access time for LRU tracking.
     pub fn get(&mut self, key: &str) -> Option<Value> {
         if self.remove_if_expired(key) {
             return None;
         }
-        self.entries.get(key).map(|e| e.value.clone())
+        self.entries.get_mut(key).map(|e| {
+            e.touch();
+            e.value.clone()
+        })
     }
 
     /// Stores a key-value pair. If the key already existed, the old entry
     /// (including any TTL) is replaced entirely.
     ///
     /// `expire` sets an optional TTL as a duration from now.
-    pub fn set(&mut self, key: String, value: Bytes, expire: Option<Duration>) {
+    ///
+    /// Returns `SetResult::OutOfMemory` if the memory limit is reached
+    /// and the eviction policy is `NoEviction`. With `AllKeysLru`, this
+    /// will evict keys to make room before inserting.
+    pub fn set(&mut self, key: String, value: Bytes, expire: Option<Duration>) -> SetResult {
         let expires_at = expire.map(|d| Instant::now() + d);
-        self.entries
-            .insert(key, Entry::new(Value::String(value), expires_at));
+        let new_value = Value::String(value);
+
+        // check memory limit before inserting (skip if this is an overwrite,
+        // since the new entry replaces the old one's memory)
+        let is_overwrite = self.entries.contains_key(&key);
+        if !is_overwrite {
+            if let Some(max) = self.config.max_memory {
+                let new_size = memory::entry_size(&key, &new_value);
+                while self.memory.used_bytes() + new_size > max {
+                    match self.config.eviction_policy {
+                        EvictionPolicy::NoEviction => return SetResult::OutOfMemory,
+                        EvictionPolicy::AllKeysLru => {
+                            if !self.try_evict() {
+                                return SetResult::OutOfMemory;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(old_entry) = self.entries.get(&key) {
+            self.memory.replace(&key, &old_entry.value, &new_value);
+        } else {
+            self.memory.add(&key, &new_value);
+        }
+
+        self.entries.insert(key, Entry::new(new_value, expires_at));
+        SetResult::Ok
+    }
+
+    /// Tries to evict one key using LRU approximation.
+    ///
+    /// Samples `EVICTION_SAMPLE_SIZE` random keys and removes the one
+    /// with the oldest `last_access` time. Returns `true` if a key was
+    /// evicted, `false` if the keyspace is empty.
+    fn try_evict(&mut self) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+
+        // sample random keys and find the least recently accessed one
+        let victim = self
+            .entries
+            .iter()
+            .take(EVICTION_SAMPLE_SIZE)
+            .min_by_key(|(_, entry)| entry.last_access)
+            .map(|(k, _)| k.clone());
+
+        if let Some(key) = victim {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.memory.remove(&key, &entry.value);
+                return true;
+            }
+        }
+        false
     }
 
     /// Removes a key. Returns `true` if the key existed (and wasn't expired).
@@ -86,7 +220,12 @@ impl Keyspace {
         if self.remove_if_expired(key) {
             return false;
         }
-        self.entries.remove(key).is_some()
+        if let Some(entry) = self.entries.remove(key) {
+            self.memory.remove(key, &entry.value);
+            true
+        } else {
+            false
+        }
     }
 
     /// Returns `true` if the key exists and hasn't expired.
@@ -132,6 +271,58 @@ impl Keyspace {
         }
     }
 
+    /// Returns aggregated stats for this keyspace.
+    pub fn stats(&self) -> KeyspaceStats {
+        let keys_with_expiry = self
+            .entries
+            .values()
+            .filter(|e| e.expires_at.is_some())
+            .count();
+
+        KeyspaceStats {
+            key_count: self.memory.key_count(),
+            used_bytes: self.memory.used_bytes(),
+            keys_with_expiry,
+        }
+    }
+
+    /// Returns the number of live keys.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Returns `true` if the keyspace has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Samples up to `count` random keys and removes any that have expired.
+    ///
+    /// Returns the number of keys actually removed. Used by the active
+    /// expiration cycle to clean up keys that no one is reading.
+    pub fn expire_sample(&mut self, count: usize) -> usize {
+        if self.entries.is_empty() {
+            return 0;
+        }
+
+        // collect keys to check — we sample by iterating (HashMap order
+        // is effectively random due to hashing)
+        let keys_to_check: Vec<String> = self
+            .entries
+            .keys()
+            .take(count)
+            .cloned()
+            .collect();
+
+        let mut removed = 0;
+        for key in &keys_to_check {
+            if self.remove_if_expired(key) {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Checks if a key is expired and removes it if so. Returns `true`
     /// if the key was removed (or didn't exist).
     fn remove_if_expired(&mut self, key: &str) -> bool {
@@ -142,7 +333,9 @@ impl Keyspace {
             .unwrap_or(false);
 
         if expired {
-            self.entries.remove(key);
+            if let Some(entry) = self.entries.remove(key) {
+                self.memory.remove(key, &entry.value);
+            }
         }
         expired
     }
@@ -300,5 +493,150 @@ mod tests {
         thread::sleep(Duration::from_millis(30));
         // key is expired, del should return false (not found)
         assert!(!ks.del("temp"));
+    }
+
+    // -- memory tracking tests --
+
+    #[test]
+    fn memory_increases_on_set() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.stats().used_bytes, 0);
+        ks.set("key".into(), Bytes::from("value"), None);
+        assert!(ks.stats().used_bytes > 0);
+        assert_eq!(ks.stats().key_count, 1);
+    }
+
+    #[test]
+    fn memory_decreases_on_del() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("value"), None);
+        let after_set = ks.stats().used_bytes;
+        ks.del("key");
+        assert_eq!(ks.stats().used_bytes, 0);
+        assert!(after_set > 0);
+    }
+
+    #[test]
+    fn memory_adjusts_on_overwrite() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("short"), None);
+        let small = ks.stats().used_bytes;
+
+        ks.set("key".into(), Bytes::from("a much longer value"), None);
+        let large = ks.stats().used_bytes;
+
+        assert!(large > small);
+        assert_eq!(ks.stats().key_count, 1);
+    }
+
+    #[test]
+    fn memory_decreases_on_expired_removal() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "temp".into(),
+            Bytes::from("data"),
+            Some(Duration::from_millis(10)),
+        );
+        assert!(ks.stats().used_bytes > 0);
+        thread::sleep(Duration::from_millis(30));
+        // trigger lazy expiration
+        ks.get("temp");
+        assert_eq!(ks.stats().used_bytes, 0);
+        assert_eq!(ks.stats().key_count, 0);
+    }
+
+    #[test]
+    fn stats_tracks_expiry_count() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set(
+            "b".into(),
+            Bytes::from("2"),
+            Some(Duration::from_secs(100)),
+        );
+        ks.set(
+            "c".into(),
+            Bytes::from("3"),
+            Some(Duration::from_secs(200)),
+        );
+
+        let stats = ks.stats();
+        assert_eq!(stats.key_count, 3);
+        assert_eq!(stats.keys_with_expiry, 2);
+    }
+
+    // -- eviction tests --
+
+    #[test]
+    fn noeviction_returns_oom_when_full() {
+        // one entry with key "a" + value "val" = 1 + 3 + 96 = 100 bytes
+        // set limit so one entry fits but two don't
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        // first key should fit
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // second key should push us over the limit
+        let result = ks.set("b".into(), Bytes::from("val"), None);
+        assert_eq!(result, SetResult::OutOfMemory);
+
+        // original key should still be there
+        assert!(ks.exists("a"));
+    }
+
+    #[test]
+    fn lru_eviction_makes_room() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // this should trigger eviction of "a" to make room
+        assert_eq!(ks.set("b".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // "a" should have been evicted
+        assert!(!ks.exists("a"));
+        assert!(ks.exists("b"));
+    }
+
+    #[test]
+    fn overwrite_bypasses_memory_check() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // overwriting should succeed even though we're at the limit
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("new"), None),
+            SetResult::Ok
+        );
+        assert_eq!(
+            ks.get("a"),
+            Some(Value::String(Bytes::from("new")))
+        );
+    }
+
+    #[test]
+    fn no_limit_never_rejects() {
+        // default config has no memory limit
+        let mut ks = Keyspace::new();
+        for i in 0..100 {
+            assert_eq!(
+                ks.set(format!("key:{i}"), Bytes::from("value"), None),
+                SetResult::Ok
+            );
+        }
+        assert_eq!(ks.len(), 100);
     }
 }
