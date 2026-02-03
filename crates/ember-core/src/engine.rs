@@ -85,6 +85,25 @@ impl Engine {
         self.shards[idx].send(request).await
     }
 
+    /// Sends a request to every shard and collects all responses.
+    ///
+    /// Used for commands like DBSIZE and INFO that need data from all
+    /// shards. The request factory `make_req` is called once per shard.
+    pub async fn broadcast<F>(
+        &self,
+        make_req: F,
+    ) -> Result<Vec<ShardResponse>, ShardError>
+    where
+        F: Fn() -> ShardRequest,
+    {
+        let mut results = Vec::with_capacity(self.shards.len());
+        for shard in &self.shards {
+            let resp = shard.send(make_req()).await?;
+            results.push(resp);
+        }
+        Ok(results)
+    }
+
     /// Determines which shard owns a given key.
     fn shard_for_key(&self, key: &str) -> usize {
         shard_index(key, self.shards.len())
