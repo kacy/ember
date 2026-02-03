@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use rand::seq::IteratorRandom;
 
 use crate::memory::{self, MemoryTracker};
 use crate::types::Value;
@@ -104,13 +105,13 @@ pub struct KeyspaceStats {
     pub keys_with_expiry: usize,
 }
 
+/// Number of random keys to sample when looking for an eviction candidate.
+const EVICTION_SAMPLE_SIZE: usize = 16;
+
 /// The core key-value store.
 ///
 /// All operations are single-threaded per shard — no internal locking.
 /// Memory usage is tracked incrementally on every mutation.
-/// Number of random keys to sample when looking for an eviction candidate.
-const EVICTION_SAMPLE_SIZE: usize = 16;
-
 pub struct Keyspace {
     entries: HashMap<String, Entry>,
     memory: MemoryTracker,
@@ -159,19 +160,22 @@ impl Keyspace {
         let expires_at = expire.map(|d| Instant::now() + d);
         let new_value = Value::String(value);
 
-        // check memory limit before inserting (skip if this is an overwrite,
-        // since the new entry replaces the old one's memory)
-        let is_overwrite = self.entries.contains_key(&key);
-        if !is_overwrite {
-            if let Some(max) = self.config.max_memory {
-                let new_size = memory::entry_size(&key, &new_value);
-                while self.memory.used_bytes() + new_size > max {
-                    match self.config.eviction_policy {
-                        EvictionPolicy::NoEviction => return SetResult::OutOfMemory,
-                        EvictionPolicy::AllKeysLru => {
-                            if !self.try_evict() {
-                                return SetResult::OutOfMemory;
-                            }
+        // check memory limit — for overwrites, only the net increase matters
+        if let Some(max) = self.config.max_memory {
+            let new_size = memory::entry_size(&key, &new_value);
+            let old_size = self
+                .entries
+                .get(&key)
+                .map(|e| memory::entry_size(&key, &e.value))
+                .unwrap_or(0);
+            let net_increase = new_size.saturating_sub(old_size);
+
+            while self.memory.used_bytes() + net_increase > max {
+                match self.config.eviction_policy {
+                    EvictionPolicy::NoEviction => return SetResult::OutOfMemory,
+                    EvictionPolicy::AllKeysLru => {
+                        if !self.try_evict() {
+                            return SetResult::OutOfMemory;
                         }
                     }
                 }
@@ -190,7 +194,7 @@ impl Keyspace {
 
     /// Tries to evict one key using LRU approximation.
     ///
-    /// Samples `EVICTION_SAMPLE_SIZE` random keys and removes the one
+    /// Randomly samples `EVICTION_SAMPLE_SIZE` keys and removes the one
     /// with the oldest `last_access` time. Returns `true` if a key was
     /// evicted, `false` if the keyspace is empty.
     fn try_evict(&mut self) -> bool {
@@ -198,11 +202,14 @@ impl Keyspace {
             return false;
         }
 
-        // sample random keys and find the least recently accessed one
+        let mut rng = rand::thread_rng();
+
+        // randomly sample keys and find the least recently accessed one
         let victim = self
             .entries
             .iter()
-            .take(EVICTION_SAMPLE_SIZE)
+            .choose_multiple(&mut rng, EVICTION_SAMPLE_SIZE)
+            .into_iter()
             .min_by_key(|(_, entry)| entry.last_access)
             .map(|(k, _)| k.clone());
 
@@ -296,7 +303,7 @@ impl Keyspace {
         self.entries.is_empty()
     }
 
-    /// Samples up to `count` random keys and removes any that have expired.
+    /// Randomly samples up to `count` keys and removes any that have expired.
     ///
     /// Returns the number of keys actually removed. Used by the active
     /// expiration cycle to clean up keys that no one is reading.
@@ -305,12 +312,13 @@ impl Keyspace {
             return 0;
         }
 
-        // collect keys to check — we sample by iterating (HashMap order
-        // is effectively random due to hashing)
+        let mut rng = rand::thread_rng();
+
         let keys_to_check: Vec<String> = self
             .entries
             .keys()
-            .take(count)
+            .choose_multiple(&mut rng, count)
+            .into_iter()
             .cloned()
             .collect();
 
@@ -607,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_bypasses_memory_check() {
+    fn overwrite_same_size_succeeds_at_limit() {
         let config = ShardConfig {
             max_memory: Some(150),
             eviction_policy: EvictionPolicy::NoEviction,
@@ -616,15 +624,31 @@ mod tests {
 
         assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
 
-        // overwriting should succeed even though we're at the limit
+        // overwriting with same-size value should succeed — no net increase
         assert_eq!(
             ks.set("a".into(), Bytes::from("new"), None),
             SetResult::Ok
         );
-        assert_eq!(
-            ks.get("a"),
-            Some(Value::String(Bytes::from("new")))
-        );
+        assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("new"))));
+    }
+
+    #[test]
+    fn overwrite_larger_value_respects_limit() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // overwriting with a much larger value should fail if it exceeds limit
+        let big_value = "x".repeat(200);
+        let result = ks.set("a".into(), Bytes::from(big_value), None);
+        assert_eq!(result, SetResult::OutOfMemory);
+
+        // original value should still be intact
+        assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("val"))));
     }
 
     #[test]

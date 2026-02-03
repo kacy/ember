@@ -17,8 +17,4 @@ pub enum ShardError {
     /// The target shard is no longer running (channel closed).
     #[error("shard unavailable")]
     Unavailable,
-
-    /// Memory limit reached and eviction policy is NoEviction.
-    #[error("OOM command not allowed when used memory > 'maxmemory'")]
-    OutOfMemory,
 }
