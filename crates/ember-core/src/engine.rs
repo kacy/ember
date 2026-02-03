@@ -87,8 +87,9 @@ impl Engine {
 
     /// Sends a request to every shard and collects all responses.
     ///
-    /// Used for commands like DBSIZE and INFO that need data from all
-    /// shards. The request factory `make_req` is called once per shard.
+    /// Dispatches to all shards first (so they start processing in
+    /// parallel), then collects the replies. Used for commands like
+    /// DBSIZE and INFO that need data from all shards.
     pub async fn broadcast<F>(
         &self,
         make_req: F,
@@ -96,10 +97,16 @@ impl Engine {
     where
         F: Fn() -> ShardRequest,
     {
-        let mut results = Vec::with_capacity(self.shards.len());
+        // dispatch to all shards without waiting for responses
+        let mut receivers = Vec::with_capacity(self.shards.len());
         for shard in &self.shards {
-            let resp = shard.send(make_req()).await?;
-            results.push(resp);
+            receivers.push(shard.dispatch(make_req()).await?);
+        }
+
+        // now collect all responses
+        let mut results = Vec::with_capacity(receivers.len());
+        for rx in receivers {
+            results.push(rx.await.map_err(|_| ShardError::Unavailable)?);
         }
         Ok(results)
     }
