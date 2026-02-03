@@ -7,4 +7,5 @@ license.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
+itoa = "1"
 thiserror = { workspace = true }
