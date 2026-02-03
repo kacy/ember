@@ -20,11 +20,13 @@
 //! assert_eq!(&buf[..], b"+OK\r\n");
 //! ```
 
+pub mod command;
 pub mod error;
 pub mod parse;
 mod serialize;
 pub mod types;
 
+pub use command::Command;
 pub use error::ProtocolError;
 pub use parse::parse_frame;
 pub use types::Frame;

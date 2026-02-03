@@ -25,4 +25,12 @@ pub enum ProtocolError {
     /// A bulk string or array declared an invalid length (e.g. negative).
     #[error("invalid frame length: {0}")]
     InvalidFrameLength(i64),
+
+    /// Expected an array frame for a command, but got something else.
+    #[error("invalid command frame: {0}")]
+    InvalidCommandFrame(String),
+
+    /// Command received with the wrong number of arguments.
+    #[error("wrong number of arguments for '{0}' command")]
+    WrongArity(String),
 }
