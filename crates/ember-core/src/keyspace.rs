@@ -10,8 +10,45 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use crate::memory::MemoryTracker;
+use crate::memory::{self, MemoryTracker};
 use crate::types::Value;
+
+/// How the keyspace should handle writes when the memory limit is reached.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EvictionPolicy {
+    /// Return an error on writes when memory is full.
+    #[default]
+    NoEviction,
+    /// Evict the least-recently-used key (approximated via random sampling).
+    AllKeysLru,
+}
+
+/// Configuration for a single keyspace / shard.
+#[derive(Debug, Clone)]
+pub struct ShardConfig {
+    /// Maximum memory in bytes. `None` means unlimited.
+    pub max_memory: Option<usize>,
+    /// What to do when memory is full.
+    pub eviction_policy: EvictionPolicy,
+}
+
+impl Default for ShardConfig {
+    fn default() -> Self {
+        Self {
+            max_memory: None,
+            eviction_policy: EvictionPolicy::NoEviction,
+        }
+    }
+}
+
+/// Result of a set operation that may fail under memory pressure.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SetResult {
+    /// The key was stored successfully.
+    Ok,
+    /// Memory limit reached and eviction policy is NoEviction.
+    OutOfMemory,
+}
 
 /// A single entry in the keyspace: a value plus optional expiration
 /// and last access time for LRU approximation.
@@ -71,17 +108,27 @@ pub struct KeyspaceStats {
 ///
 /// All operations are single-threaded per shard — no internal locking.
 /// Memory usage is tracked incrementally on every mutation.
+/// Number of random keys to sample when looking for an eviction candidate.
+const EVICTION_SAMPLE_SIZE: usize = 16;
+
 pub struct Keyspace {
     entries: HashMap<String, Entry>,
     memory: MemoryTracker,
+    config: ShardConfig,
 }
 
 impl Keyspace {
-    /// Creates a new, empty keyspace.
+    /// Creates a new, empty keyspace with default config (no memory limit).
     pub fn new() -> Self {
+        Self::with_config(ShardConfig::default())
+    }
+
+    /// Creates a new, empty keyspace with the given config.
+    pub fn with_config(config: ShardConfig) -> Self {
         Self {
             entries: HashMap::new(),
             memory: MemoryTracker::new(),
+            config,
         }
     }
 
@@ -104,9 +151,32 @@ impl Keyspace {
     /// (including any TTL) is replaced entirely.
     ///
     /// `expire` sets an optional TTL as a duration from now.
-    pub fn set(&mut self, key: String, value: Bytes, expire: Option<Duration>) {
+    ///
+    /// Returns `SetResult::OutOfMemory` if the memory limit is reached
+    /// and the eviction policy is `NoEviction`. With `AllKeysLru`, this
+    /// will evict keys to make room before inserting.
+    pub fn set(&mut self, key: String, value: Bytes, expire: Option<Duration>) -> SetResult {
         let expires_at = expire.map(|d| Instant::now() + d);
         let new_value = Value::String(value);
+
+        // check memory limit before inserting (skip if this is an overwrite,
+        // since the new entry replaces the old one's memory)
+        let is_overwrite = self.entries.contains_key(&key);
+        if !is_overwrite {
+            if let Some(max) = self.config.max_memory {
+                let new_size = memory::entry_size(&key, &new_value);
+                while self.memory.used_bytes() + new_size > max {
+                    match self.config.eviction_policy {
+                        EvictionPolicy::NoEviction => return SetResult::OutOfMemory,
+                        EvictionPolicy::AllKeysLru => {
+                            if !self.try_evict() {
+                                return SetResult::OutOfMemory;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(old_entry) = self.entries.get(&key) {
             self.memory.replace(&key, &old_entry.value, &new_value);
@@ -115,6 +185,34 @@ impl Keyspace {
         }
 
         self.entries.insert(key, Entry::new(new_value, expires_at));
+        SetResult::Ok
+    }
+
+    /// Tries to evict one key using LRU approximation.
+    ///
+    /// Samples `EVICTION_SAMPLE_SIZE` random keys and removes the one
+    /// with the oldest `last_access` time. Returns `true` if a key was
+    /// evicted, `false` if the keyspace is empty.
+    fn try_evict(&mut self) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+
+        // sample random keys and find the least recently accessed one
+        let victim = self
+            .entries
+            .iter()
+            .take(EVICTION_SAMPLE_SIZE)
+            .min_by_key(|(_, entry)| entry.last_access)
+            .map(|(k, _)| k.clone());
+
+        if let Some(key) = victim {
+            if let Some(entry) = self.entries.remove(&key) {
+                self.memory.remove(&key, &entry.value);
+                return true;
+            }
+        }
+        false
     }
 
     /// Removes a key. Returns `true` if the key existed (and wasn't expired).
@@ -465,5 +563,80 @@ mod tests {
         let stats = ks.stats();
         assert_eq!(stats.key_count, 3);
         assert_eq!(stats.keys_with_expiry, 2);
+    }
+
+    // -- eviction tests --
+
+    #[test]
+    fn noeviction_returns_oom_when_full() {
+        // one entry with key "a" + value "val" = 1 + 3 + 96 = 100 bytes
+        // set limit so one entry fits but two don't
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        // first key should fit
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // second key should push us over the limit
+        let result = ks.set("b".into(), Bytes::from("val"), None);
+        assert_eq!(result, SetResult::OutOfMemory);
+
+        // original key should still be there
+        assert!(ks.exists("a"));
+    }
+
+    #[test]
+    fn lru_eviction_makes_room() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // this should trigger eviction of "a" to make room
+        assert_eq!(ks.set("b".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // "a" should have been evicted
+        assert!(!ks.exists("a"));
+        assert!(ks.exists("b"));
+    }
+
+    #[test]
+    fn overwrite_bypasses_memory_check() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // overwriting should succeed even though we're at the limit
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("new"), None),
+            SetResult::Ok
+        );
+        assert_eq!(
+            ks.get("a"),
+            Some(Value::String(Bytes::from("new")))
+        );
+    }
+
+    #[test]
+    fn no_limit_never_rejects() {
+        // default config has no memory limit
+        let mut ks = Keyspace::new();
+        for i in 0..100 {
+            assert_eq!(
+                ks.set(format!("key:{i}"), Bytes::from("value"), None),
+                SetResult::Ok
+            );
+        }
+        assert_eq!(ks.len(), 100);
     }
 }

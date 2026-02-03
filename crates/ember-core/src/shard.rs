@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::ShardError;
 use crate::expiry;
-use crate::keyspace::{Keyspace, TtlResult};
+use crate::keyspace::{Keyspace, SetResult, ShardConfig, TtlResult};
 use crate::types::Value;
 
 /// How often the shard runs active expiration. 100ms matches
@@ -41,6 +41,8 @@ pub enum ShardResponse {
     Bool(bool),
     /// TTL query result.
     Ttl(TtlResult),
+    /// Memory limit reached and eviction policy is NoEviction.
+    OutOfMemory,
 }
 
 /// A request bundled with its reply channel.
@@ -78,16 +80,16 @@ impl ShardHandle {
 ///
 /// `buffer` controls the mpsc channel capacity — higher values absorb
 /// burst traffic at the cost of memory.
-pub fn spawn_shard(buffer: usize) -> ShardHandle {
+pub fn spawn_shard(buffer: usize, config: ShardConfig) -> ShardHandle {
     let (tx, rx) = mpsc::channel(buffer);
-    tokio::spawn(run_shard(rx));
+    tokio::spawn(run_shard(rx, config));
     ShardHandle { tx }
 }
 
 /// The shard's main loop. Processes messages and runs periodic
 /// active expiration until the channel closes.
-async fn run_shard(mut rx: mpsc::Receiver<ShardMessage>) {
-    let mut keyspace = Keyspace::new();
+async fn run_shard(mut rx: mpsc::Receiver<ShardMessage>, config: ShardConfig) {
+    let mut keyspace = Keyspace::with_config(config);
     let mut tick = tokio::time::interval(EXPIRY_TICK);
     // don't pile up ticks if we're busy processing commands
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -114,10 +116,10 @@ async fn run_shard(mut rx: mpsc::Receiver<ShardMessage>) {
 fn dispatch(ks: &mut Keyspace, req: ShardRequest) -> ShardResponse {
     match req {
         ShardRequest::Get { key } => ShardResponse::Value(ks.get(&key)),
-        ShardRequest::Set { key, value, expire } => {
-            ks.set(key, value, expire);
-            ShardResponse::Ok
-        }
+        ShardRequest::Set { key, value, expire } => match ks.set(key, value, expire) {
+            SetResult::Ok => ShardResponse::Ok,
+            SetResult::OutOfMemory => ShardResponse::OutOfMemory,
+        },
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(&key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(&key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(&key, seconds)),
@@ -213,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn shard_round_trip() {
-        let handle = spawn_shard(16);
+        let handle = spawn_shard(16, ShardConfig::default());
 
         let resp = handle
             .send(ShardRequest::Set {
@@ -241,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_key_through_shard() {
-        let handle = spawn_shard(16);
+        let handle = spawn_shard(16, ShardConfig::default());
 
         handle
             .send(ShardRequest::Set {
@@ -265,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_expiration_cleans_up_without_access() {
-        let handle = spawn_shard(16);
+        let handle = spawn_shard(16, ShardConfig::default());
 
         // set a key with a short TTL
         handle
