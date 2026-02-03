@@ -6,6 +6,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod expiry;
 pub mod keyspace;
 pub mod memory;
 pub mod shard;

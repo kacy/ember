@@ -198,6 +198,33 @@ impl Keyspace {
         self.entries.is_empty()
     }
 
+    /// Samples up to `count` random keys and removes any that have expired.
+    ///
+    /// Returns the number of keys actually removed. Used by the active
+    /// expiration cycle to clean up keys that no one is reading.
+    pub fn expire_sample(&mut self, count: usize) -> usize {
+        if self.entries.is_empty() {
+            return 0;
+        }
+
+        // collect keys to check — we sample by iterating (HashMap order
+        // is effectively random due to hashing)
+        let keys_to_check: Vec<String> = self
+            .entries
+            .keys()
+            .take(count)
+            .cloned()
+            .collect();
+
+        let mut removed = 0;
+        for key in &keys_to_check {
+            if self.remove_if_expired(key) {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
     /// Checks if a key is expired and removes it if so. Returns `true`
     /// if the key was removed (or didn't exist).
     fn remove_if_expired(&mut self, key: &str) -> bool {
