@@ -25,6 +25,11 @@ pub async fn run(
     config: EngineConfig,
     max_connections: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // ensure data directory exists if persistence is configured
+    if let Some(ref pcfg) = config.persistence {
+        std::fs::create_dir_all(&pcfg.data_dir)?;
+    }
+
     let engine = Engine::with_config(shard_count, config);
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);

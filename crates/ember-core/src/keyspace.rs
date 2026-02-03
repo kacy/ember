@@ -31,6 +31,8 @@ pub struct ShardConfig {
     pub max_memory: Option<usize>,
     /// What to do when memory is full.
     pub eviction_policy: EvictionPolicy,
+    /// Numeric identifier for this shard (used for persistence file naming).
+    pub shard_id: u16,
 }
 
 impl Default for ShardConfig {
@@ -38,6 +40,7 @@ impl Default for ShardConfig {
         Self {
             max_memory: None,
             eviction_policy: EvictionPolicy::NoEviction,
+            shard_id: 0,
         }
     }
 }
@@ -322,6 +325,64 @@ impl Keyspace {
         self.entries.is_empty()
     }
 
+    /// Iterates over all live (non-expired) entries, yielding the key, a
+    /// clone of the value, and the remaining TTL in milliseconds (-1 for
+    /// entries with no expiration). Used by snapshot and AOF rewrite.
+    pub fn iter_entries(&self) -> impl Iterator<Item = (&str, &Value, i64)> {
+        let now = Instant::now();
+        self.entries.iter().filter_map(move |(key, entry)| {
+            if entry.is_expired() {
+                return None;
+            }
+            let ttl_ms = match entry.expires_at {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(now);
+                    remaining.as_millis() as i64
+                }
+                None => -1,
+            };
+            Some((key.as_str(), &entry.value, ttl_ms))
+        })
+    }
+
+    /// Restores an entry during recovery, bypassing memory limits.
+    ///
+    /// If `expires_at` is in the past, the entry is silently skipped.
+    /// This is used only during shard startup when loading from
+    /// snapshot/AOF — normal writes should go through `set()`.
+    pub fn restore(
+        &mut self,
+        key: String,
+        value: Value,
+        expires_at: Option<Instant>,
+    ) {
+        // skip entries that already expired
+        if let Some(deadline) = expires_at {
+            if Instant::now() >= deadline {
+                return;
+            }
+        }
+
+        // if replacing an existing entry, adjust memory tracking
+        if let Some(old) = self.entries.get(&key) {
+            self.memory.replace(&key, &old.value, &value);
+            let had_expiry = old.expires_at.is_some();
+            let has_expiry = expires_at.is_some();
+            match (had_expiry, has_expiry) {
+                (false, true) => self.expiry_count += 1,
+                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
+                _ => {}
+            }
+        } else {
+            self.memory.add(&key, &value);
+            if expires_at.is_some() {
+                self.expiry_count += 1;
+            }
+        }
+
+        self.entries.insert(key, Entry::new(value, expires_at));
+    }
+
     /// Randomly samples up to `count` keys and removes any that have expired.
     ///
     /// Returns the number of keys actually removed. Used by the active
@@ -593,6 +654,7 @@ mod tests {
         let config = ShardConfig {
             max_memory: Some(150),
             eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
         };
         let mut ks = Keyspace::with_config(config);
 
@@ -612,6 +674,7 @@ mod tests {
         let config = ShardConfig {
             max_memory: Some(150),
             eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
         };
         let mut ks = Keyspace::with_config(config);
 
@@ -630,6 +693,7 @@ mod tests {
         let config = ShardConfig {
             max_memory: Some(150),
             eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
         };
         let mut ks = Keyspace::with_config(config);
 
@@ -645,6 +709,7 @@ mod tests {
         let config = ShardConfig {
             max_memory: Some(150),
             eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
         };
         let mut ks = Keyspace::with_config(config);
 
@@ -657,6 +722,104 @@ mod tests {
 
         // original value should still be intact
         assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("val"))));
+    }
+
+    // -- iter_entries tests --
+
+    #[test]
+    fn iter_entries_returns_live_entries() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set(
+            "b".into(),
+            Bytes::from("2"),
+            Some(Duration::from_secs(100)),
+        );
+
+        let entries: Vec<_> = ks.iter_entries().collect();
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn iter_entries_skips_expired() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "dead".into(),
+            Bytes::from("gone"),
+            Some(Duration::from_millis(1)),
+        );
+        ks.set("alive".into(), Bytes::from("here"), None);
+        thread::sleep(Duration::from_millis(10));
+
+        let entries: Vec<_> = ks.iter_entries().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "alive");
+    }
+
+    #[test]
+    fn iter_entries_ttl_for_no_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set("permanent".into(), Bytes::from("val"), None);
+
+        let entries: Vec<_> = ks.iter_entries().collect();
+        assert_eq!(entries[0].2, -1);
+    }
+
+    // -- restore tests --
+
+    #[test]
+    fn restore_adds_entry() {
+        let mut ks = Keyspace::new();
+        ks.restore(
+            "restored".into(),
+            Value::String(Bytes::from("data")),
+            None,
+        );
+        assert_eq!(
+            ks.get("restored"),
+            Some(Value::String(Bytes::from("data")))
+        );
+        assert_eq!(ks.stats().key_count, 1);
+    }
+
+    #[test]
+    fn restore_skips_past_deadline() {
+        let mut ks = Keyspace::new();
+        // deadline already passed
+        let past = Instant::now() - Duration::from_secs(1);
+        ks.restore("expired".into(), Value::String(Bytes::from("old")), Some(past));
+        assert!(ks.is_empty());
+    }
+
+    #[test]
+    fn restore_overwrites_existing() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("old"), None);
+        ks.restore(
+            "key".into(),
+            Value::String(Bytes::from("new")),
+            None,
+        );
+        assert_eq!(ks.get("key"), Some(Value::String(Bytes::from("new"))));
+        assert_eq!(ks.stats().key_count, 1);
+    }
+
+    #[test]
+    fn restore_bypasses_memory_limit() {
+        let config = ShardConfig {
+            max_memory: Some(50), // very small
+            eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        // normal set would fail due to memory limit
+        ks.restore(
+            "big".into(),
+            Value::String(Bytes::from("x".repeat(200))),
+            None,
+        );
+        assert_eq!(ks.stats().key_count, 1);
     }
 
     #[test]

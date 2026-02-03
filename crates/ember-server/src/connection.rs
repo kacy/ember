@@ -209,6 +209,16 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             }
         }
 
+        Command::BgSave => match engine.broadcast(|| ShardRequest::Snapshot).await {
+            Ok(_) => Frame::Simple("Background saving started".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        },
+
+        Command::BgRewriteAof => match engine.broadcast(|| ShardRequest::RewriteAof).await {
+            Ok(_) => Frame::Simple("Background append only file rewriting started".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        },
+
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
 }
