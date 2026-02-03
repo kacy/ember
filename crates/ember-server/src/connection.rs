@@ -26,6 +26,7 @@ pub async fn handle(
     engine: Engine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
+    let mut out = BytesMut::with_capacity(BUF_CAPACITY);
 
     loop {
         // read some data — returns 0 on clean disconnect
@@ -34,30 +35,28 @@ pub async fn handle(
             return Ok(());
         }
 
-        // process as many complete frames as the buffer holds (pipelining)
+        // process as many complete frames as the buffer holds (pipelining),
+        // batching all responses into a single write buffer
+        out.clear();
         loop {
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-
                     let response = process(frame, &engine).await;
-
-                    let mut out = BytesMut::new();
                     response.serialize(&mut out);
-                    stream.write_all(&out).await?;
                 }
                 Ok(None) => break, // need more data
                 Err(e) => {
                     let msg = format!("ERR protocol error: {e}");
-                    let err_frame = Frame::Error(msg);
-
-                    let mut out = BytesMut::new();
-                    err_frame.serialize(&mut out);
+                    Frame::Error(msg).serialize(&mut out);
                     stream.write_all(&out).await?;
-
                     return Ok(());
                 }
             }
+        }
+
+        if !out.is_empty() {
+            stream.write_all(&out).await?;
         }
     }
 }
