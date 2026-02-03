@@ -74,13 +74,27 @@ impl ShardHandle {
     ///
     /// Returns `ShardError::Unavailable` if the shard task has stopped.
     pub async fn send(&self, request: ShardRequest) -> Result<ShardResponse, ShardError> {
+        let rx = self.dispatch(request).await?;
+        rx.await.map_err(|_| ShardError::Unavailable)
+    }
+
+    /// Sends a request and returns the reply channel without waiting
+    /// for the response. Used by `Engine::broadcast` to fan out to
+    /// all shards before collecting results.
+    pub(crate) async fn dispatch(
+        &self,
+        request: ShardRequest,
+    ) -> Result<oneshot::Receiver<ShardResponse>, ShardError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let msg = ShardMessage {
             request,
             reply: reply_tx,
         };
-        self.tx.send(msg).await.map_err(|_| ShardError::Unavailable)?;
-        reply_rx.await.map_err(|_| ShardError::Unavailable)
+        self.tx
+            .send(msg)
+            .await
+            .map_err(|_| ShardError::Unavailable)?;
+        Ok(reply_rx)
     }
 }
 
