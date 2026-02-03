@@ -26,7 +26,7 @@ pub mod parse;
 mod serialize;
 pub mod types;
 
-pub use command::Command;
+pub use command::{Command, SetExpire};
 pub use error::ProtocolError;
 pub use parse::parse_frame;
 pub use types::Frame;
