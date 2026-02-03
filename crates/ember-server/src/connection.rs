@@ -105,6 +105,9 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::OutOfMemory) => Frame::Error(
+                    "OOM command not allowed when used memory > 'maxmemory'".into(),
+                ),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }

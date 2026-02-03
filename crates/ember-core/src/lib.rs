@@ -12,8 +12,8 @@ pub mod memory;
 pub mod shard;
 pub mod types;
 
-pub use engine::Engine;
+pub use engine::{Engine, EngineConfig};
 pub use error::{KeyspaceError, ShardError};
-pub use keyspace::{Keyspace, KeyspaceStats, TtlResult};
+pub use keyspace::{EvictionPolicy, Keyspace, KeyspaceStats, ShardConfig, TtlResult};
 pub use shard::{ShardRequest, ShardResponse};
 pub use types::Value;

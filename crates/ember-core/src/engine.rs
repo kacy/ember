@@ -8,11 +8,19 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::error::ShardError;
+use crate::keyspace::ShardConfig;
 use crate::shard::{self, ShardHandle, ShardRequest, ShardResponse};
 
 /// Channel buffer size per shard. 256 is large enough to absorb
 /// bursts without putting meaningful back-pressure on connections.
 const SHARD_BUFFER: usize = 256;
+
+/// Configuration for the engine, passed down to each shard.
+#[derive(Debug, Clone, Default)]
+pub struct EngineConfig {
+    /// Per-shard configuration (memory limits, eviction policy).
+    pub shard: ShardConfig,
+}
 
 /// The sharded engine. Owns handles to all shard tasks and routes
 /// requests by key hash.
@@ -25,15 +33,22 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// Creates an engine with `shard_count` shards.
+    /// Creates an engine with `shard_count` shards using default config.
     ///
     /// Each shard is spawned as a tokio task immediately.
     /// Panics if `shard_count` is zero.
     pub fn new(shard_count: usize) -> Self {
+        Self::with_config(shard_count, EngineConfig::default())
+    }
+
+    /// Creates an engine with `shard_count` shards and the given config.
+    ///
+    /// Panics if `shard_count` is zero.
+    pub fn with_config(shard_count: usize, config: EngineConfig) -> Self {
         assert!(shard_count > 0, "shard count must be at least 1");
 
         let shards = (0..shard_count)
-            .map(|_| shard::spawn_shard(SHARD_BUFFER))
+            .map(|_| shard::spawn_shard(SHARD_BUFFER, config.shard.clone()))
             .collect();
 
         Self { shards }
@@ -43,10 +58,16 @@ impl Engine {
     ///
     /// Falls back to a single shard if the core count can't be determined.
     pub fn with_available_cores() -> Self {
+        Self::with_available_cores_config(EngineConfig::default())
+    }
+
+    /// Creates an engine with one shard per available CPU core and the
+    /// given config.
+    pub fn with_available_cores_config(config: EngineConfig) -> Self {
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        Self::new(cores)
+        Self::with_config(cores, config)
     }
 
     /// Returns the number of shards.
