@@ -10,3 +10,4 @@ ember-protocol = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
 tokio = { workspace = true }
+rand = { workspace = true }

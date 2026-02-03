@@ -25,6 +25,9 @@ bytes = "1"
 # error handling
 thiserror = "2"
 
+# randomness (used for sampling in expiration and eviction)
+rand = "0.8"
+
 # logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
