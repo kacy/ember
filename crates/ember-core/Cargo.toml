@@ -1,0 +1,11 @@
+[package]
+name = "ember-core"
+description = "Core engine for ember: keyspace, data types, sharding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ember-protocol = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }

@@ -1,0 +1,10 @@
+[package]
+name = "ember-protocol"
+description = "RESP3 wire protocol parser and serializer for ember"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }

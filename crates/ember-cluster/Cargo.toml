@@ -1,0 +1,9 @@
+[package]
+name = "ember-cluster"
+description = "Distributed clustering for ember: raft, gossip, slot management"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
