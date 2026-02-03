@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::error::ShardError;
 use crate::keyspace::ShardConfig;
-use crate::shard::{self, ShardHandle, ShardRequest, ShardResponse};
+use crate::shard::{self, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse};
 
 /// Channel buffer size per shard. 256 is large enough to absorb
 /// bursts without putting meaningful back-pressure on connections.
@@ -20,6 +20,9 @@ const SHARD_BUFFER: usize = 256;
 pub struct EngineConfig {
     /// Per-shard configuration (memory limits, eviction policy).
     pub shard: ShardConfig,
+    /// Optional persistence configuration. When set, each shard gets
+    /// its own AOF and snapshot files under this directory.
+    pub persistence: Option<ShardPersistenceConfig>,
 }
 
 /// The sharded engine. Owns handles to all shard tasks and routes
@@ -48,7 +51,15 @@ impl Engine {
         assert!(shard_count > 0, "shard count must be at least 1");
 
         let shards = (0..shard_count)
-            .map(|_| shard::spawn_shard(SHARD_BUFFER, config.shard.clone()))
+            .map(|i| {
+                let mut shard_config = config.shard.clone();
+                shard_config.shard_id = i as u16;
+                shard::spawn_shard(
+                    SHARD_BUFFER,
+                    shard_config,
+                    config.persistence.clone(),
+                )
+            })
             .collect();
 
         Self { shards }

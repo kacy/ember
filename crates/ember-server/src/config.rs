@@ -80,6 +80,7 @@ pub fn build_engine_config(
             eviction_policy,
             ..ShardConfig::default()
         },
+        persistence: None,
     }
 }
 

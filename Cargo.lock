@@ -186,10 +186,13 @@ name = "emberkv-core"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "ember-persistence",
  "ember-protocol",
  "rand",
+ "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
