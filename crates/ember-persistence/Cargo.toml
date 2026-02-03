@@ -1,0 +1,9 @@
+[package]
+name = "ember-persistence"
+description = "AOF and snapshot durability for ember"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
