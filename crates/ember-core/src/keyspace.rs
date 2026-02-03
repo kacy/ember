@@ -350,12 +350,7 @@ impl Keyspace {
     /// If `expires_at` is in the past, the entry is silently skipped.
     /// This is used only during shard startup when loading from
     /// snapshot/AOF — normal writes should go through `set()`.
-    pub fn restore(
-        &mut self,
-        key: String,
-        value: Value,
-        expires_at: Option<Instant>,
-    ) {
+    pub fn restore(&mut self, key: String, value: Value, expires_at: Option<Instant>) {
         // skip entries that already expired
         if let Some(deadline) = expires_at {
             if Instant::now() >= deadline {
@@ -730,11 +725,7 @@ mod tests {
     fn iter_entries_returns_live_entries() {
         let mut ks = Keyspace::new();
         ks.set("a".into(), Bytes::from("1"), None);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(100)),
-        );
+        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(100)));
 
         let entries: Vec<_> = ks.iter_entries().collect();
         assert_eq!(entries.len(), 2);
@@ -770,15 +761,8 @@ mod tests {
     #[test]
     fn restore_adds_entry() {
         let mut ks = Keyspace::new();
-        ks.restore(
-            "restored".into(),
-            Value::String(Bytes::from("data")),
-            None,
-        );
-        assert_eq!(
-            ks.get("restored"),
-            Some(Value::String(Bytes::from("data")))
-        );
+        ks.restore("restored".into(), Value::String(Bytes::from("data")), None);
+        assert_eq!(ks.get("restored"), Some(Value::String(Bytes::from("data"))));
         assert_eq!(ks.stats().key_count, 1);
     }
 
@@ -787,7 +771,11 @@ mod tests {
         let mut ks = Keyspace::new();
         // deadline already passed
         let past = Instant::now() - Duration::from_secs(1);
-        ks.restore("expired".into(), Value::String(Bytes::from("old")), Some(past));
+        ks.restore(
+            "expired".into(),
+            Value::String(Bytes::from("old")),
+            Some(past),
+        );
         assert!(ks.is_empty());
     }
 
@@ -795,11 +783,7 @@ mod tests {
     fn restore_overwrites_existing() {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("old"), None);
-        ks.restore(
-            "key".into(),
-            Value::String(Bytes::from("new")),
-            None,
-        );
+        ks.restore("key".into(), Value::String(Bytes::from("new")), None);
         assert_eq!(ks.get("key"), Some(Value::String(Bytes::from("new"))));
         assert_eq!(ks.stats().key_count, 1);
     }

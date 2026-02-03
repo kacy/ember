@@ -108,9 +108,23 @@ pub fn read_i64(r: &mut impl Read) -> Result<i64, FormatError> {
     Ok(i64::from_le_bytes(buf))
 }
 
+/// Maximum length we'll allocate when reading a length-prefixed field.
+/// 512 MB is generous for any realistic key or value — a corrupt or
+/// malicious length prefix won't cause a multi-gigabyte allocation.
+pub const MAX_FIELD_LEN: usize = 512 * 1024 * 1024;
+
 /// Reads a length-prefixed byte vector: `[len: u32][data]`.
+///
+/// Returns `UnexpectedEof` if the declared length exceeds `MAX_FIELD_LEN`
+/// to prevent unbounded allocations from corrupt data.
 pub fn read_bytes(r: &mut impl Read) -> Result<Vec<u8>, FormatError> {
     let len = read_u32(r)? as usize;
+    if len > MAX_FIELD_LEN {
+        return Err(FormatError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("field length {len} exceeds maximum of {MAX_FIELD_LEN}"),
+        )));
+    }
     let mut buf = vec![0u8; len];
     read_exact(r, &mut buf)?;
     Ok(buf)

@@ -19,7 +19,7 @@
 //! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
 
 use std::fs::{self, File};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
@@ -47,6 +47,8 @@ pub struct SnapshotWriter {
     /// Running CRC over all entry bytes for the footer checksum.
     hasher: crc32fast::Hasher,
     count: u32,
+    /// Set to true after a successful `finish()` to prevent Drop cleanup.
+    finished: bool,
 }
 
 impl SnapshotWriter {
@@ -72,6 +74,7 @@ impl SnapshotWriter {
             writer,
             hasher: crc32fast::Hasher::new(),
             count: 0,
+            finished: false,
         })
     }
 
@@ -88,30 +91,39 @@ impl SnapshotWriter {
         Ok(())
     }
 
-    /// Finalizes the snapshot: writes the footer CRC, flushes, and
-    /// atomically renames the temp file to the final path.
+    /// Finalizes the snapshot: writes the footer CRC, patches the entry
+    /// count in the header, flushes, and atomically renames the temp file
+    /// to the final path.
     pub fn finish(mut self) -> Result<(), FormatError> {
         // write footer CRC
-        let checksum = self.hasher.finalize();
+        let checksum = self.hasher.clone().finalize();
         format::write_u32(&mut self.writer, checksum)?;
         self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
 
-        // now rewrite the header with the correct entry count.
-        // reopen the tmp file for random access write.
-        drop(self.writer);
-        {
-            use std::io::{Seek, SeekFrom};
-            let mut file = fs::OpenOptions::new().write(true).open(&self.tmp_path)?;
-            // header: 4 (magic) + 1 (version) + 2 (shard_id) = 7 bytes
-            file.seek(SeekFrom::Start(7))?;
-            format::write_u32(&mut file, self.count)?;
-            file.sync_all()?;
-        }
+        // seek back to patch the entry count in the header.
+        // header layout: 4 (magic) + 1 (version) + 2 (shard_id) = offset 7
+        let file = self.writer.get_mut();
+        file.seek(SeekFrom::Start(7))?;
+        format::write_u32(file, self.count)?;
+        file.sync_all()?;
+
+        // prevent Drop from trying to clean up the tmp file
+        let tmp = self.tmp_path.clone();
+        let final_path = self.final_path.clone();
+        self.finished = true;
 
         // atomic rename
-        fs::rename(&self.tmp_path, &self.final_path)?;
+        fs::rename(&tmp, &final_path)?;
         Ok(())
+    }
+}
+
+impl Drop for SnapshotWriter {
+    fn drop(&mut self) {
+        if !self.finished {
+            // best-effort cleanup of the incomplete temp file
+            let _ = fs::remove_file(&self.tmp_path);
+        }
     }
 }
 
@@ -184,7 +196,6 @@ impl SnapshotReader {
         format::verify_crc32_values(expected, stored)
     }
 }
-
 
 /// Returns the snapshot file path for a given shard in a data directory.
 pub fn snapshot_path(data_dir: &Path, shard_id: u16) -> PathBuf {

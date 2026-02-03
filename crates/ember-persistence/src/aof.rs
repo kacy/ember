@@ -17,7 +17,7 @@
 //! The CRC32 covers the tag + payload bytes.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
@@ -79,11 +79,12 @@ impl AofRecord {
         match tag {
             TAG_SET => {
                 let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
+                let key = String::from_utf8(key_bytes).map_err(|_| {
+                    FormatError::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "key is not valid utf-8",
-                    )))?;
+                    ))
+                })?;
                 let value = format::read_bytes(&mut cursor)?;
                 let expire_ms = format::read_i64(&mut cursor)?;
                 Ok(AofRecord::Set {
@@ -94,20 +95,22 @@ impl AofRecord {
             }
             TAG_DEL => {
                 let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
+                let key = String::from_utf8(key_bytes).map_err(|_| {
+                    FormatError::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "key is not valid utf-8",
-                    )))?;
+                    ))
+                })?;
                 Ok(AofRecord::Del { key })
             }
             TAG_EXPIRE => {
                 let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
+                let key = String::from_utf8(key_bytes).map_err(|_| {
+                    FormatError::Io(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "key is not valid utf-8",
-                    )))?;
+                    ))
+                })?;
                 let seconds = format::read_i64(&mut cursor)? as u64;
                 Ok(AofRecord::Expire { key, seconds })
             }
@@ -141,10 +144,7 @@ impl AofWriter {
         let path = path.into();
         let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut writer = BufWriter::new(file);
 
         if !exists {
@@ -230,17 +230,14 @@ impl AofReader {
             Err(e) => return Err(e),
         };
 
-        // read the rest of the payload based on tag, building the full
-        // record bytes for CRC verification
-        let record_result = self.read_payload_for_tag(tag);
-        match record_result {
-            Ok((payload, stored_crc)) => {
-                // prepend the tag to the payload for CRC check
-                let mut full = Vec::with_capacity(1 + payload.len());
-                full.push(tag);
-                full.extend_from_slice(&payload);
-                format::verify_crc32(&full, stored_crc)?;
-                AofRecord::from_bytes(&full).map(Some)
+        // compute the payload size from the tag, then read the raw bytes
+        // in one shot so CRC verification operates on the exact bytes
+        // that were written — no re-serialization needed.
+        let result = self.read_raw_record(tag);
+        match result {
+            Ok((raw, stored_crc)) => {
+                format::verify_crc32(&raw, stored_crc)?;
+                AofRecord::from_bytes(&raw).map(Some)
             }
             // truncated record — treat as end of usable data
             Err(FormatError::UnexpectedEof) => Ok(None),
@@ -248,33 +245,91 @@ impl AofReader {
         }
     }
 
-    /// Reads the remaining payload bytes (after the tag) and the trailing CRC.
-    fn read_payload_for_tag(&mut self, tag: u8) -> Result<(Vec<u8>, u32), FormatError> {
-        let mut payload = Vec::new();
+    /// Reads the complete raw record bytes (tag + payload) and trailing CRC.
+    ///
+    /// Reads each length-prefixed field by first reading its u32 length,
+    /// then the field body, accumulating everything into a contiguous buffer.
+    /// This ensures CRC verification works on the exact bytes on disk.
+    fn read_raw_record(&mut self, tag: u8) -> Result<(Vec<u8>, u32), FormatError> {
+        let mut raw = Vec::new();
+        raw.push(tag);
+
+        let field_count = match tag {
+            TAG_SET => 2,    // key + value (length-prefixed), then i64
+            TAG_DEL => 1,    // key (length-prefixed)
+            TAG_EXPIRE => 1, // key (length-prefixed), then i64
+            _ => return Err(FormatError::UnknownTag(tag)),
+        };
+
+        // read length-prefixed fields
+        for _ in 0..field_count {
+            self.read_length_prefixed_into(&mut raw)?;
+        }
+
+        // read trailing fixed-size fields
         match tag {
             TAG_SET => {
-                // key_len + key + value_len + value + expire_ms
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
-                let value = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &value).expect("vec write");
-                let expire_ms = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, expire_ms).expect("vec write");
-            }
-            TAG_DEL => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                // expire_ms: i64
+                let mut buf = [0u8; 8];
+                self.reader.read_exact(&mut buf).map_err(|e| {
+                    if e.kind() == io::ErrorKind::UnexpectedEof {
+                        FormatError::UnexpectedEof
+                    } else {
+                        FormatError::Io(e)
+                    }
+                })?;
+                raw.extend_from_slice(&buf);
             }
             TAG_EXPIRE => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
-                let seconds = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, seconds).expect("vec write");
+                // seconds: i64
+                let mut buf = [0u8; 8];
+                self.reader.read_exact(&mut buf).map_err(|e| {
+                    if e.kind() == io::ErrorKind::UnexpectedEof {
+                        FormatError::UnexpectedEof
+                    } else {
+                        FormatError::Io(e)
+                    }
+                })?;
+                raw.extend_from_slice(&buf);
             }
-            _ => return Err(FormatError::UnknownTag(tag)),
+            _ => {}
         }
+
         let stored_crc = format::read_u32(&mut self.reader)?;
-        Ok((payload, stored_crc))
+        Ok((raw, stored_crc))
+    }
+
+    /// Reads a length-prefixed field (u32 len + body) and appends the raw
+    /// bytes (including the length prefix) to `out`.
+    fn read_length_prefixed_into(&mut self, out: &mut Vec<u8>) -> Result<(), FormatError> {
+        let mut len_buf = [0u8; 4];
+        self.reader.read_exact(&mut len_buf).map_err(|e| {
+            if e.kind() == io::ErrorKind::UnexpectedEof {
+                FormatError::UnexpectedEof
+            } else {
+                FormatError::Io(e)
+            }
+        })?;
+        out.extend_from_slice(&len_buf);
+
+        let len = u32::from_le_bytes(len_buf) as usize;
+        if len > format::MAX_FIELD_LEN {
+            return Err(FormatError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("field length {len} exceeds maximum"),
+            )));
+        }
+
+        let start = out.len();
+        out.resize(start + len, 0);
+        self.reader.read_exact(&mut out[start..]).map_err(|e| {
+            if e.kind() == io::ErrorKind::UnexpectedEof {
+                FormatError::UnexpectedEof
+            } else {
+                FormatError::Io(e)
+            }
+        })?;
+        Ok(())
     }
 }
 
@@ -304,9 +359,7 @@ mod tests {
 
     #[test]
     fn record_round_trip_del() {
-        let rec = AofRecord::Del {
-            key: "gone".into(),
-        };
+        let rec = AofRecord::Del { key: "gone".into() };
         let bytes = rec.to_bytes();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);

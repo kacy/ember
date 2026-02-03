@@ -9,7 +9,9 @@ use clap::Parser;
 use ember_core::ShardPersistenceConfig;
 use tracing::info;
 
-use crate::config::{build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy};
+use crate::config::{
+    build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy,
+};
 
 #[derive(Parser)]
 #[command(name = "ember-server", about = "ember cache server")]
@@ -76,13 +78,14 @@ async fn main() {
 
     // build persistence config if data-dir is set or appendonly is enabled
     let persistence = if args.appendonly || args.data_dir.is_some() {
-        let data_dir = args.data_dir.unwrap_or_else(|| {
-            if args.appendonly {
+        let data_dir = match args.data_dir {
+            Some(dir) => dir,
+            None if args.appendonly => {
                 eprintln!("--data-dir is required when --appendonly is set");
                 std::process::exit(1);
             }
-            PathBuf::from(".")
-        });
+            None => PathBuf::from("."),
+        };
 
         let fsync_policy = parse_fsync_policy(&args.appendfsync).unwrap_or_else(|e| {
             eprintln!("invalid --appendfsync value: {e}");

@@ -54,11 +54,7 @@ impl Engine {
             .map(|i| {
                 let mut shard_config = config.shard.clone();
                 shard_config.shard_id = i as u16;
-                shard::spawn_shard(
-                    SHARD_BUFFER,
-                    shard_config,
-                    config.persistence.clone(),
-                )
+                shard::spawn_shard(SHARD_BUFFER, shard_config, config.persistence.clone())
             })
             .collect();
 

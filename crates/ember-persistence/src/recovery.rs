@@ -60,10 +60,7 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
                 loaded_snapshot = true;
             }
             Err(e) => {
-                warn!(
-                    shard_id,
-                    "failed to load snapshot, starting empty: {e}"
-                );
+                warn!(shard_id, "failed to load snapshot, starting empty: {e}");
             }
         }
     }
@@ -89,11 +86,9 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     // step 3: filter out expired entries and build result
     let entries = map
         .into_iter()
-        .filter(|(_, (_, expires_at))| {
-            match expires_at {
-                Some(deadline) => *deadline > now,
-                None => true,
-            }
+        .filter(|(_, (_, expires_at))| match expires_at {
+            Some(deadline) => *deadline > now,
+            None => true,
         })
         .map(|(key, (value, expires_at))| RecoveredEntry {
             key,
@@ -315,9 +310,7 @@ mod tests {
                 })
                 .unwrap();
             writer
-                .write_record(&AofRecord::Del {
-                    key: "gone".into(),
-                })
+                .write_record(&AofRecord::Del { key: "gone".into() })
                 .unwrap();
             writer.sync().unwrap();
         }

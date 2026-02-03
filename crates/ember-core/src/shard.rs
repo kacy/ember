@@ -213,7 +213,30 @@ async fn run_shard(
             msg = rx.recv() => {
                 match msg {
                     Some(msg) => {
-                        let request_kind = describe_request(&msg.request);
+                        // snapshot and rewrite operate on the full keyspace
+                        // and AOF writer — handle them separately from the
+                        // normal dispatch path.
+                        match msg.request {
+                            ShardRequest::Snapshot => {
+                                let resp = handle_snapshot(
+                                    &keyspace, &persistence, shard_id,
+                                );
+                                let _ = msg.reply.send(resp);
+                                continue;
+                            }
+                            ShardRequest::RewriteAof => {
+                                let resp = handle_rewrite(
+                                    &keyspace,
+                                    &persistence,
+                                    &mut aof_writer,
+                                    shard_id,
+                                );
+                                let _ = msg.reply.send(resp);
+                                continue;
+                            }
+                            _ => {}
+                        }
+
                         let response = dispatch(&mut keyspace, &msg.request);
 
                         // write AOF record for successful mutations
@@ -228,29 +251,6 @@ async fn run_shard(
                                     }
                                 }
                             }
-                        }
-
-                        // handle snapshot/rewrite (these need mutable access
-                        // to both keyspace and aof_writer)
-                        match request_kind {
-                            RequestKind::Snapshot => {
-                                let resp = handle_snapshot(
-                                    &keyspace, &persistence, shard_id,
-                                );
-                                let _ = msg.reply.send(resp);
-                                continue;
-                            }
-                            RequestKind::RewriteAof => {
-                                let resp = handle_rewrite(
-                                    &keyspace,
-                                    &persistence,
-                                    &mut aof_writer,
-                                    shard_id,
-                                );
-                                let _ = msg.reply.send(resp);
-                                continue;
-                            }
-                            RequestKind::Other => {}
                         }
 
                         let _ = msg.reply.send(response);
@@ -277,22 +277,6 @@ async fn run_shard(
     }
 }
 
-/// Lightweight tag so we can identify snapshot/rewrite requests after
-/// dispatch without borrowing the request again.
-enum RequestKind {
-    Snapshot,
-    RewriteAof,
-    Other,
-}
-
-fn describe_request(req: &ShardRequest) -> RequestKind {
-    match req {
-        ShardRequest::Snapshot => RequestKind::Snapshot,
-        ShardRequest::RewriteAof => RequestKind::RewriteAof,
-        _ => RequestKind::Other,
-    }
-}
-
 /// Executes a single request against the keyspace.
 fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
     match req {
@@ -309,8 +293,10 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
-        // snapshot/rewrite are handled in the main loop, not here
-        ShardRequest::Snapshot | ShardRequest::RewriteAof => ShardResponse::Ok,
+        // snapshot/rewrite are handled before dispatch in the main loop
+        ShardRequest::Snapshot | ShardRequest::RewriteAof => {
+            unreachable!("snapshot/rewrite requests handled before dispatch")
+        }
     }
 }
 
@@ -318,13 +304,8 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
 /// Returns None for non-mutation requests or failed mutations.
 fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> {
     match (req, resp) {
-        (
-            ShardRequest::Set { key, value, expire },
-            ShardResponse::Ok,
-        ) => {
-            let expire_ms = expire
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(-1);
+        (ShardRequest::Set { key, value, expire }, ShardResponse::Ok) => {
+            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
             Some(AofRecord::Set {
                 key: key.clone(),
                 value: value.clone(),

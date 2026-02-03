@@ -15,6 +15,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **memory tracking** — per-shard byte-level accounting with configurable memory limits
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **pipelined connections** — multiple commands per read for high throughput
+- **persistence** — append-only file logging and point-in-time snapshots with crash recovery
 
 ## quickstart
 
@@ -35,6 +36,31 @@ redis-cli SET temp data EX 60
 redis-cli TTL temp           # => 59
 redis-cli DBSIZE             # => (integer) 2
 ```
+
+### persistence
+
+ember supports append-only file (AOF) logging and point-in-time snapshots for durability. data survives process restarts and crashes.
+
+```bash
+# run with persistence enabled
+./target/release/ember-server \
+  --appendonly \
+  --data-dir ./data \
+  --appendfsync everysec
+
+# trigger a snapshot
+redis-cli BGSAVE              # => Background saving started
+
+# trigger an AOF rewrite (snapshot + truncate AOF)
+redis-cli BGREWRITEAOF        # => Background append only file rewriting started
+```
+
+**flags:**
+- `--data-dir <path>` — directory for AOF and snapshot files (required with `--appendonly`)
+- `--appendonly` — enable append-only file logging
+- `--appendfsync <policy>` — fsync strategy: `always`, `everysec` (default), or `no`
+
+each shard writes its own files (`shard-{id}.aof`, `shard-{id}.snap`). on restart, ember loads the latest snapshot and replays any AOF records written after it. entries that expired during downtime are skipped.
 
 ## build & development
 
