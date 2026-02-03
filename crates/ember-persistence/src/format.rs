@@ -151,8 +151,16 @@ pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<(), Fo
 /// Verifies that `data` matches the expected CRC32 checksum.
 pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), FormatError> {
     let actual = crc32(data);
-    if actual != expected {
-        return Err(FormatError::ChecksumMismatch { expected, actual });
+    verify_crc32_values(actual, expected)
+}
+
+/// Verifies that two CRC32 values match.
+pub fn verify_crc32_values(computed: u32, stored: u32) -> Result<(), FormatError> {
+    if computed != stored {
+        return Err(FormatError::ChecksumMismatch {
+            expected: stored,
+            actual: computed,
+        });
     }
     Ok(())
 }

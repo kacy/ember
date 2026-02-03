@@ -5,3 +5,4 @@
 
 pub mod aof;
 pub mod format;
+pub mod snapshot;
