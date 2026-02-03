@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::ShardError;
 use crate::expiry;
-use crate::keyspace::{Keyspace, SetResult, ShardConfig, TtlResult};
+use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult};
 use crate::types::Value;
 
 /// How often the shard runs active expiration. 100ms matches
@@ -28,6 +28,10 @@ pub enum ShardRequest {
     Exists { key: String },
     Expire { key: String, seconds: u64 },
     Ttl { key: String },
+    /// Returns the key count for this shard.
+    DbSize,
+    /// Returns keyspace stats for this shard.
+    Stats,
 }
 
 /// The shard's response to a request.
@@ -43,6 +47,10 @@ pub enum ShardResponse {
     Ttl(TtlResult),
     /// Memory limit reached and eviction policy is NoEviction.
     OutOfMemory,
+    /// Key count for a shard (DBSIZE).
+    KeyCount(usize),
+    /// Full stats for a shard (INFO).
+    Stats(KeyspaceStats),
 }
 
 /// A request bundled with its reply channel.
@@ -124,6 +132,8 @@ fn dispatch(ks: &mut Keyspace, req: ShardRequest) -> ShardResponse {
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(&key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(&key, seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(&key)),
+        ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
+        ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
     }
 }
 

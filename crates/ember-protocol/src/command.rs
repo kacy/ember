@@ -49,6 +49,12 @@ pub enum Command {
     /// TTL <key>. Returns remaining time-to-live in seconds.
     Ttl { key: String },
 
+    /// DBSIZE. Returns the number of keys in the database.
+    DbSize,
+
+    /// INFO [section]. Returns server info. Currently only supports "keyspace".
+    Info { section: Option<String> },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -86,6 +92,8 @@ impl Command {
             "EXISTS" => parse_exists(&frames[1..]),
             "EXPIRE" => parse_expire(&frames[1..]),
             "TTL" => parse_ttl(&frames[1..]),
+            "DBSIZE" => parse_dbsize(&frames[1..]),
+            "INFO" => parse_info(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -234,6 +242,26 @@ fn parse_ttl(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Ttl { key })
+}
+
+fn parse_dbsize(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("DBSIZE".into()));
+    }
+    Ok(Command::DbSize)
+}
+
+fn parse_info(args: &[Frame]) -> Result<Command, ProtocolError> {
+    match args.len() {
+        0 => Ok(Command::Info { section: None }),
+        1 => {
+            let section = extract_string(&args[0])?;
+            Ok(Command::Info {
+                section: Some(section),
+            })
+        }
+        _ => Err(ProtocolError::WrongArity("INFO".into())),
+    }
 }
 
 #[cfg(test)]
@@ -517,6 +545,56 @@ mod tests {
     #[test]
     fn ttl_wrong_arity() {
         let err = Command::from_frame(cmd(&["TTL"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- dbsize ---
+
+    #[test]
+    fn dbsize_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["DBSIZE"])).unwrap(),
+            Command::DbSize,
+        );
+    }
+
+    #[test]
+    fn dbsize_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["dbsize"])).unwrap(),
+            Command::DbSize,
+        );
+    }
+
+    #[test]
+    fn dbsize_extra_args() {
+        let err = Command::from_frame(cmd(&["DBSIZE", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- info ---
+
+    #[test]
+    fn info_no_section() {
+        assert_eq!(
+            Command::from_frame(cmd(&["INFO"])).unwrap(),
+            Command::Info { section: None },
+        );
+    }
+
+    #[test]
+    fn info_with_section() {
+        assert_eq!(
+            Command::from_frame(cmd(&["INFO", "keyspace"])).unwrap(),
+            Command::Info {
+                section: Some("keyspace".into())
+            },
+        );
+    }
+
+    #[test]
+    fn info_too_many_args() {
+        let err = Command::from_frame(cmd(&["INFO", "a", "b"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
