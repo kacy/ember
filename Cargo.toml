@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/ember-server",
+    "crates/ember-core",
+    "crates/ember-protocol",
+    "crates/ember-persistence",
+    "crates/ember-cluster",
+    "crates/ember-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yourorg/ember"
+
+[workspace.dependencies]
+# async runtime
+tokio = { version = "1", features = ["full"] }
+
+# zero-copy buffers
+bytes = "1"
+
+# error handling
+thiserror = "2"
+
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# cli
+clap = { version = "4", features = ["derive"] }
+
+# internal crates
+ember-core = { path = "crates/ember-core" }
+ember-protocol = { path = "crates/ember-protocol" }
+ember-persistence = { path = "crates/ember-persistence" }
+ember-cluster = { path = "crates/ember-cluster" }

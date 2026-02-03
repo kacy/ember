@@ -1,0 +1,30 @@
+# build artifacts
+/target
+debug/
+*.d
+*.o
+
+# cargo
+Cargo.lock
+
+# editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# os
+.DS_Store
+Thumbs.db
+
+# environment
+.env
+.env.*
+
+# profiling / benchmarks
+perf.data
+perf.data.old
+flamegraph.svg
+criterion/

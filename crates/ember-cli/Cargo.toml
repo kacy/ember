@@ -1,0 +1,9 @@
+[package]
+name = "ember-cli"
+description = "Interactive CLI tool for ember"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { workspace = true }
