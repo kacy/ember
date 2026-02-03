@@ -9,10 +9,12 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 ## features
 
 - **resp3 protocol** — full compatibility with `redis-cli` and existing Redis clients
-- **core commands** — GET, SET, DEL, EXISTS, EXPIRE, TTL with proper semantics
-- **lazy expiration** — expired keys are cleaned up on access, no background overhead
+- **core commands** — GET, SET, DEL, EXISTS, EXPIRE, TTL, DBSIZE, INFO with proper semantics
+- **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking on the hot path
+- **active expiration** — background sampling cleans up expired keys without client access
+- **memory tracking** — per-shard byte-level accounting with configurable memory limits
+- **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **pipelined connections** — multiple commands per read for high throughput
-- **thread-safe** — shared keyspace behind `Arc<Mutex>` ready for concurrent clients
 
 ## quickstart
 
@@ -20,14 +22,18 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 # build
 cargo build --release
 
-# run the server
+# run the server (defaults to 127.0.0.1:6379, no memory limit)
 ./target/release/ember-server
+
+# or with a memory limit and eviction
+./target/release/ember-server --max-memory 256M --eviction-policy allkeys-lru
 
 # connect with redis-cli
 redis-cli SET hello world    # => OK
 redis-cli GET hello          # => "world"
 redis-cli SET temp data EX 60
 redis-cli TTL temp           # => 59
+redis-cli DBSIZE             # => (integer) 2
 ```
 
 ## build & development
