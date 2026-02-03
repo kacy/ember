@@ -1,0 +1,266 @@
+//! Binary format helpers shared across AOF and snapshot files.
+//!
+//! Provides TLV-style encoding primitives, CRC32 checksums, and magic
+//! byte constants. All multi-byte integers are stored in little-endian.
+
+use std::io::{self, Read, Write};
+
+use crc32fast::Hasher;
+use thiserror::Error;
+
+/// Magic bytes for the AOF file header.
+pub const AOF_MAGIC: &[u8; 4] = b"EAOF";
+
+/// Magic bytes for the snapshot file header.
+pub const SNAP_MAGIC: &[u8; 4] = b"ESNP";
+
+/// Current format version for both AOF and snapshot files.
+pub const FORMAT_VERSION: u8 = 1;
+
+/// Errors that can occur when reading or writing persistence formats.
+#[derive(Debug, Error)]
+pub enum FormatError {
+    #[error("unexpected end of file")]
+    UnexpectedEof,
+
+    #[error("invalid magic bytes")]
+    InvalidMagic,
+
+    #[error("unsupported format version: {0}")]
+    UnsupportedVersion(u8),
+
+    #[error("crc32 mismatch (expected {expected:#010x}, got {actual:#010x})")]
+    ChecksumMismatch { expected: u32, actual: u32 },
+
+    #[error("unknown record tag: {0}")]
+    UnknownTag(u8),
+
+    #[error("io error: {0}")]
+    Io(#[from] io::Error),
+}
+
+/// Computes a CRC32 checksum over a byte slice.
+pub fn crc32(data: &[u8]) -> u32 {
+    let mut h = Hasher::new();
+    h.update(data);
+    h.finalize()
+}
+
+// ---------------------------------------------------------------------------
+// write helpers
+// ---------------------------------------------------------------------------
+
+/// Writes a `u8` to the writer.
+pub fn write_u8(w: &mut impl Write, val: u8) -> io::Result<()> {
+    w.write_all(&[val])
+}
+
+/// Writes a `u16` in little-endian.
+pub fn write_u16(w: &mut impl Write, val: u16) -> io::Result<()> {
+    w.write_all(&val.to_le_bytes())
+}
+
+/// Writes a `u32` in little-endian.
+pub fn write_u32(w: &mut impl Write, val: u32) -> io::Result<()> {
+    w.write_all(&val.to_le_bytes())
+}
+
+/// Writes an `i64` in little-endian.
+pub fn write_i64(w: &mut impl Write, val: i64) -> io::Result<()> {
+    w.write_all(&val.to_le_bytes())
+}
+
+/// Writes a length-prefixed byte slice: `[len: u32][data]`.
+pub fn write_bytes(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
+    write_u32(w, data.len() as u32)?;
+    w.write_all(data)
+}
+
+// ---------------------------------------------------------------------------
+// read helpers
+// ---------------------------------------------------------------------------
+
+/// Reads a `u8` from the reader.
+pub fn read_u8(r: &mut impl Read) -> Result<u8, FormatError> {
+    let mut buf = [0u8; 1];
+    read_exact(r, &mut buf)?;
+    Ok(buf[0])
+}
+
+/// Reads a `u16` in little-endian.
+pub fn read_u16(r: &mut impl Read) -> Result<u16, FormatError> {
+    let mut buf = [0u8; 2];
+    read_exact(r, &mut buf)?;
+    Ok(u16::from_le_bytes(buf))
+}
+
+/// Reads a `u32` in little-endian.
+pub fn read_u32(r: &mut impl Read) -> Result<u32, FormatError> {
+    let mut buf = [0u8; 4];
+    read_exact(r, &mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+/// Reads an `i64` in little-endian.
+pub fn read_i64(r: &mut impl Read) -> Result<i64, FormatError> {
+    let mut buf = [0u8; 8];
+    read_exact(r, &mut buf)?;
+    Ok(i64::from_le_bytes(buf))
+}
+
+/// Reads a length-prefixed byte vector: `[len: u32][data]`.
+pub fn read_bytes(r: &mut impl Read) -> Result<Vec<u8>, FormatError> {
+    let len = read_u32(r)? as usize;
+    let mut buf = vec![0u8; len];
+    read_exact(r, &mut buf)?;
+    Ok(buf)
+}
+
+/// Reads exactly `buf.len()` bytes, returning `UnexpectedEof` on short read.
+fn read_exact(r: &mut impl Read, buf: &mut [u8]) -> Result<(), FormatError> {
+    r.read_exact(buf).map_err(|e| {
+        if e.kind() == io::ErrorKind::UnexpectedEof {
+            FormatError::UnexpectedEof
+        } else {
+            FormatError::Io(e)
+        }
+    })
+}
+
+/// Writes a file header: magic bytes + version byte.
+pub fn write_header(w: &mut impl Write, magic: &[u8; 4]) -> io::Result<()> {
+    w.write_all(magic)?;
+    write_u8(w, FORMAT_VERSION)
+}
+
+/// Reads and validates a file header. Returns an error if magic doesn't
+/// match or version is unsupported.
+pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<(), FormatError> {
+    let mut magic = [0u8; 4];
+    read_exact(r, &mut magic)?;
+    if &magic != expected_magic {
+        return Err(FormatError::InvalidMagic);
+    }
+    let version = read_u8(r)?;
+    if version != FORMAT_VERSION {
+        return Err(FormatError::UnsupportedVersion(version));
+    }
+    Ok(())
+}
+
+/// Verifies that `data` matches the expected CRC32 checksum.
+pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), FormatError> {
+    let actual = crc32(data);
+    if actual != expected {
+        return Err(FormatError::ChecksumMismatch { expected, actual });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn u8_round_trip() {
+        let mut buf = Vec::new();
+        write_u8(&mut buf, 42).unwrap();
+        assert_eq!(read_u8(&mut Cursor::new(&buf)).unwrap(), 42);
+    }
+
+    #[test]
+    fn u16_round_trip() {
+        let mut buf = Vec::new();
+        write_u16(&mut buf, 12345).unwrap();
+        assert_eq!(read_u16(&mut Cursor::new(&buf)).unwrap(), 12345);
+    }
+
+    #[test]
+    fn u32_round_trip() {
+        let mut buf = Vec::new();
+        write_u32(&mut buf, 0xDEAD_BEEF).unwrap();
+        assert_eq!(read_u32(&mut Cursor::new(&buf)).unwrap(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn i64_round_trip() {
+        let mut buf = Vec::new();
+        write_i64(&mut buf, -1).unwrap();
+        assert_eq!(read_i64(&mut Cursor::new(&buf)).unwrap(), -1);
+
+        let mut buf2 = Vec::new();
+        write_i64(&mut buf2, i64::MAX).unwrap();
+        assert_eq!(read_i64(&mut Cursor::new(&buf2)).unwrap(), i64::MAX);
+    }
+
+    #[test]
+    fn bytes_round_trip() {
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, b"hello world").unwrap();
+        assert_eq!(read_bytes(&mut Cursor::new(&buf)).unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn empty_bytes_round_trip() {
+        let mut buf = Vec::new();
+        write_bytes(&mut buf, b"").unwrap();
+        assert_eq!(read_bytes(&mut Cursor::new(&buf)).unwrap(), b"");
+    }
+
+    #[test]
+    fn header_round_trip() {
+        let mut buf = Vec::new();
+        write_header(&mut buf, AOF_MAGIC).unwrap();
+        read_header(&mut Cursor::new(&buf), AOF_MAGIC).unwrap();
+    }
+
+    #[test]
+    fn header_wrong_magic() {
+        let mut buf = Vec::new();
+        write_header(&mut buf, AOF_MAGIC).unwrap();
+        let err = read_header(&mut Cursor::new(&buf), SNAP_MAGIC).unwrap_err();
+        assert!(matches!(err, FormatError::InvalidMagic));
+    }
+
+    #[test]
+    fn header_wrong_version() {
+        let buf = vec![b'E', b'A', b'O', b'F', 99];
+        let err = read_header(&mut Cursor::new(&buf), AOF_MAGIC).unwrap_err();
+        assert!(matches!(err, FormatError::UnsupportedVersion(99)));
+    }
+
+    #[test]
+    fn crc32_deterministic() {
+        let a = crc32(b"test data");
+        let b = crc32(b"test data");
+        assert_eq!(a, b);
+        assert_ne!(a, crc32(b"different data"));
+    }
+
+    #[test]
+    fn verify_crc32_pass() {
+        let data = b"check me";
+        let checksum = crc32(data);
+        verify_crc32(data, checksum).unwrap();
+    }
+
+    #[test]
+    fn verify_crc32_fail() {
+        let err = verify_crc32(b"data", 0xBAD).unwrap_err();
+        assert!(matches!(err, FormatError::ChecksumMismatch { .. }));
+    }
+
+    #[test]
+    fn truncated_input_returns_eof() {
+        let buf = [0u8; 2]; // too short for u32
+        let err = read_u32(&mut Cursor::new(&buf)).unwrap_err();
+        assert!(matches!(err, FormatError::UnexpectedEof));
+    }
+
+    #[test]
+    fn empty_input_returns_eof() {
+        let err = read_u8(&mut Cursor::new(&[])).unwrap_err();
+        assert!(matches!(err, FormatError::UnexpectedEof));
+    }
+}

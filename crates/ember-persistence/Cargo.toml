@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+bytes = { workspace = true }
+crc32fast = { workspace = true }
+tracing = { workspace = true }
