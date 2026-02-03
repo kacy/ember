@@ -198,21 +198,21 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
 
 /// Fans out a boolean-result command across shards for multiple keys
 /// and returns the count of `true` results as an integer frame.
+///
+/// Uses `route_multi` to dispatch all keys concurrently rather than
+/// awaiting each one sequentially.
 async fn multi_key_bool<F>(engine: &Engine, keys: &[String], make_req: F) -> Frame
 where
     F: Fn(String) -> ShardRequest,
 {
-    let mut count: i64 = 0;
-    for key in keys {
-        let req = make_req(key.clone());
-        match engine.route(key, req).await {
-            Ok(ShardResponse::Bool(true)) => count += 1,
-            Ok(ShardResponse::Bool(false)) => {}
-            Ok(other) => {
-                return Frame::Error(format!("ERR unexpected shard response: {other:?}"));
-            }
-            Err(e) => return Frame::Error(format!("ERR {e}")),
+    match engine.route_multi(keys, make_req).await {
+        Ok(responses) => {
+            let count = responses
+                .iter()
+                .filter(|r| matches!(r, ShardResponse::Bool(true)))
+                .count();
+            Frame::Integer(count as i64)
         }
+        Err(e) => Frame::Error(format!("ERR {e}")),
     }
-    Frame::Integer(count)
 }
