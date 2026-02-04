@@ -5,7 +5,7 @@
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -415,6 +415,184 @@ impl Keyspace {
         self.entries.insert(key, Entry::new(value, expires_at));
     }
 
+    // -- list operations --
+
+    /// Pushes one or more values to the head (left) of a list.
+    ///
+    /// Creates the list if the key doesn't exist. Returns `Err(WrongType)`
+    /// if the key exists but holds a non-list value. Returns the new length.
+    pub fn lpush(&mut self, key: &str, values: &[Bytes]) -> Result<usize, WrongType> {
+        self.list_push(key, values, true)
+    }
+
+    /// Pushes one or more values to the tail (right) of a list.
+    ///
+    /// Creates the list if the key doesn't exist. Returns `Err(WrongType)`
+    /// if the key exists but holds a non-list value. Returns the new length.
+    pub fn rpush(&mut self, key: &str, values: &[Bytes]) -> Result<usize, WrongType> {
+        self.list_push(key, values, false)
+    }
+
+    /// Pops a value from the head (left) of a list.
+    ///
+    /// Returns `Ok(None)` if the key doesn't exist. Removes the key if
+    /// the list becomes empty. Returns `Err(WrongType)` on type mismatch.
+    pub fn lpop(&mut self, key: &str) -> Result<Option<Bytes>, WrongType> {
+        self.list_pop(key, true)
+    }
+
+    /// Pops a value from the tail (right) of a list.
+    ///
+    /// Returns `Ok(None)` if the key doesn't exist. Removes the key if
+    /// the list becomes empty. Returns `Err(WrongType)` on type mismatch.
+    pub fn rpop(&mut self, key: &str) -> Result<Option<Bytes>, WrongType> {
+        self.list_pop(key, false)
+    }
+
+    /// Returns a range of elements from a list by index.
+    ///
+    /// Supports negative indices (e.g. -1 = last element). Out-of-bounds
+    /// indices are clamped to the list boundaries. Returns `Err(WrongType)`
+    /// on type mismatch. Missing keys return an empty vec.
+    pub fn lrange(
+        &mut self,
+        key: &str,
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<Bytes>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![]),
+            Some(entry) => {
+                let result = match &entry.value {
+                    Value::List(deque) => {
+                        let len = deque.len() as i64;
+                        let (s, e) = normalize_range(start, stop, len);
+                        if s > e {
+                            return Ok(vec![]);
+                        }
+                        Ok(deque
+                            .iter()
+                            .skip(s as usize)
+                            .take((e - s + 1) as usize)
+                            .cloned()
+                            .collect())
+                    }
+                    _ => Err(WrongType),
+                };
+                if result.is_ok() {
+                    entry.touch();
+                }
+                result
+            }
+        }
+    }
+
+    /// Returns the length of a list, or 0 if the key doesn't exist.
+    ///
+    /// Returns `Err(WrongType)` on type mismatch.
+    pub fn llen(&mut self, key: &str) -> Result<usize, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(0);
+        }
+        match self.entries.get(key) {
+            None => Ok(0),
+            Some(entry) => match &entry.value {
+                Value::List(deque) => Ok(deque.len()),
+                _ => Err(WrongType),
+            },
+        }
+    }
+
+    /// Internal push implementation shared by lpush/rpush.
+    fn list_push(
+        &mut self,
+        key: &str,
+        values: &[Bytes],
+        left: bool,
+    ) -> Result<usize, WrongType> {
+        self.remove_if_expired(key);
+
+        let is_new = !self.entries.contains_key(key);
+
+        if !is_new && !matches!(self.entries[key].value, Value::List(_)) {
+            return Err(WrongType);
+        }
+
+        if is_new {
+            let value = Value::List(VecDeque::new());
+            self.memory.add(key, &value);
+            self.entries
+                .insert(key.to_owned(), Entry::new(value, None));
+        }
+
+        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let old_entry_size = memory::entry_size(key, &entry.value);
+
+        if let Value::List(ref mut deque) = entry.value {
+            for val in values {
+                if left {
+                    deque.push_front(val.clone());
+                } else {
+                    deque.push_back(val.clone());
+                }
+            }
+        }
+        entry.touch();
+
+        let new_entry_size = memory::entry_size(key, &entry.value);
+        self.memory.adjust(old_entry_size, new_entry_size);
+
+        let len = match &entry.value {
+            Value::List(d) => d.len(),
+            _ => unreachable!(),
+        };
+        Ok(len)
+    }
+
+    /// Internal pop implementation shared by lpop/rpop.
+    fn list_pop(&mut self, key: &str, left: bool) -> Result<Option<Bytes>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+
+        match self.entries.get(key) {
+            None => return Ok(None),
+            Some(e) => {
+                if !matches!(e.value, Value::List(_)) {
+                    return Err(WrongType);
+                }
+            }
+        };
+
+        let old_entry_size = memory::entry_size(key, &self.entries[key].value);
+        let entry = self.entries.get_mut(key).expect("verified above");
+        let popped = if let Value::List(ref mut deque) = entry.value {
+            if left { deque.pop_front() } else { deque.pop_back() }
+        } else {
+            unreachable!()
+        };
+        entry.touch();
+
+        // check if list is now empty — if so, delete the key entirely
+        let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
+        if is_empty {
+            let removed = self.entries.remove(key).expect("verified above");
+            // use remove_with_size since the value was already mutated
+            self.memory.remove_with_size(old_entry_size);
+            if removed.expires_at.is_some() {
+                self.expiry_count = self.expiry_count.saturating_sub(1);
+            }
+        } else {
+            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
+            self.memory.adjust(old_entry_size, new_entry_size);
+        }
+
+        Ok(popped)
+    }
+
     /// Randomly samples up to `count` keys and removes any that have expired.
     ///
     /// Returns the number of keys actually removed. Used by the active
@@ -462,6 +640,18 @@ impl Keyspace {
         }
         expired
     }
+}
+
+/// Converts Redis-style indices (supporting negative values) to a
+/// clamped, non-negative (start, stop) pair. Returns (0, -1) for
+/// empty ranges.
+fn normalize_range(start: i64, stop: i64, len: i64) -> (i64, i64) {
+    if len == 0 {
+        return (0, -1);
+    }
+    let s = if start < 0 { (len + start).max(0) } else { start.min(len - 1) };
+    let e = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) };
+    (s, e)
 }
 
 impl Default for Keyspace {
@@ -880,6 +1070,136 @@ mod tests {
             );
         }
         assert_eq!(ks.len(), 100);
+    }
+
+    // -- list tests --
+
+    #[test]
+    fn lpush_creates_list() {
+        let mut ks = Keyspace::new();
+        let len = ks.lpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        assert_eq!(len, 2);
+        // lpush pushes each to front, so order is b, a
+        let items = ks.lrange("list", 0, -1).unwrap();
+        assert_eq!(items, vec![Bytes::from("b"), Bytes::from("a")]);
+    }
+
+    #[test]
+    fn rpush_creates_list() {
+        let mut ks = Keyspace::new();
+        let len = ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        assert_eq!(len, 2);
+        let items = ks.lrange("list", 0, -1).unwrap();
+        assert_eq!(items, vec![Bytes::from("a"), Bytes::from("b")]);
+    }
+
+    #[test]
+    fn push_to_existing_list() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("a")]).unwrap();
+        let len = ks.rpush("list", &[Bytes::from("b")]).unwrap();
+        assert_eq!(len, 2);
+    }
+
+    #[test]
+    fn lpop_returns_front() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        assert_eq!(ks.lpop("list").unwrap(), Some(Bytes::from("a")));
+        assert_eq!(ks.lpop("list").unwrap(), Some(Bytes::from("b")));
+        assert_eq!(ks.lpop("list").unwrap(), None); // empty, key deleted
+    }
+
+    #[test]
+    fn rpop_returns_back() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        assert_eq!(ks.rpop("list").unwrap(), Some(Bytes::from("b")));
+    }
+
+    #[test]
+    fn pop_from_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.lpop("nope").unwrap(), None);
+        assert_eq!(ks.rpop("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn empty_list_auto_deletes_key() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("only")]).unwrap();
+        ks.lpop("list").unwrap();
+        assert!(!ks.exists("list"));
+        assert_eq!(ks.stats().key_count, 0);
+        assert_eq!(ks.stats().used_bytes, 0);
+    }
+
+    #[test]
+    fn lrange_negative_indices() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")]).unwrap();
+        // -2 to -1 => last two elements
+        let items = ks.lrange("list", -2, -1).unwrap();
+        assert_eq!(items, vec![Bytes::from("b"), Bytes::from("c")]);
+    }
+
+    #[test]
+    fn lrange_out_of_bounds_clamps() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        let items = ks.lrange("list", -100, 100).unwrap();
+        assert_eq!(items, vec![Bytes::from("a"), Bytes::from("b")]);
+    }
+
+    #[test]
+    fn lrange_missing_key_returns_empty() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.lrange("nope", 0, -1).unwrap(), Vec::<Bytes>::new());
+    }
+
+    #[test]
+    fn llen_returns_length() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.llen("nope").unwrap(), 0);
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        assert_eq!(ks.llen("list").unwrap(), 2);
+    }
+
+    #[test]
+    fn list_memory_tracked_on_push_pop() {
+        let mut ks = Keyspace::new();
+        ks.rpush("list", &[Bytes::from("hello")]).unwrap();
+        let after_push = ks.stats().used_bytes;
+        assert!(after_push > 0);
+
+        ks.rpush("list", &[Bytes::from("world")]).unwrap();
+        let after_second = ks.stats().used_bytes;
+        assert!(after_second > after_push);
+
+        ks.lpop("list").unwrap();
+        let after_pop = ks.stats().used_bytes;
+        assert!(after_pop < after_second);
+    }
+
+    #[test]
+    fn lpush_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.lpush("s", &[Bytes::from("nope")]).is_err());
+    }
+
+    #[test]
+    fn lrange_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.lrange("s", 0, -1).is_err());
+    }
+
+    #[test]
+    fn llen_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.llen("s").is_err());
     }
 
     // -- wrongtype tests --

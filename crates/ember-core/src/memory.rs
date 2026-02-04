@@ -68,6 +68,25 @@ impl MemoryTracker {
             .saturating_sub(old_size)
             .saturating_add(new_size);
     }
+
+    /// Adjusts used bytes for an in-place mutation (e.g. list push/pop)
+    /// without changing the key count.
+    ///
+    /// `old_entry_size` and `new_entry_size` are the full entry sizes
+    /// (as returned by `entry_size`) before and after the mutation.
+    pub fn adjust(&mut self, old_entry_size: usize, new_entry_size: usize) {
+        self.used_bytes = self
+            .used_bytes
+            .saturating_sub(old_entry_size)
+            .saturating_add(new_entry_size);
+    }
+
+    /// Removes an entry with an explicit size, useful when the value has
+    /// already been mutated and the original size was captured beforehand.
+    pub fn remove_with_size(&mut self, size: usize) {
+        self.used_bytes = self.used_bytes.saturating_sub(size);
+        self.key_count = self.key_count.saturating_sub(1);
+    }
 }
 
 impl Default for MemoryTracker {
