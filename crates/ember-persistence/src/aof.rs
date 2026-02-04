@@ -24,6 +24,17 @@ use bytes::Bytes;
 
 use crate::format::{self, FormatError};
 
+/// Reads a length-prefixed field and decodes it as UTF-8.
+fn read_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError> {
+    let bytes = format::read_bytes(r)?;
+    String::from_utf8(bytes).map_err(|_| {
+        FormatError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{field} is not valid utf-8"),
+        ))
+    })
+}
+
 /// Record tags for the AOF format.
 const TAG_SET: u8 = 1;
 const TAG_DEL: u8 = 2;
@@ -143,12 +154,7 @@ impl AofRecord {
         let tag = format::read_u8(&mut cursor)?;
         match tag {
             TAG_SET => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 let value = format::read_bytes(&mut cursor)?;
                 let expire_ms = format::read_i64(&mut cursor)?;
                 Ok(AofRecord::Set {
@@ -158,31 +164,16 @@ impl AofRecord {
                 })
             }
             TAG_DEL => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 Ok(AofRecord::Del { key })
             }
             TAG_EXPIRE => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 let seconds = format::read_i64(&mut cursor)? as u64;
                 Ok(AofRecord::Expire { key, seconds })
             }
             TAG_LPUSH | TAG_RPUSH => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
                 let mut values = Vec::with_capacity(count as usize);
                 for _ in 0..count {
@@ -195,61 +186,30 @@ impl AofRecord {
                 }
             }
             TAG_LPOP => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 Ok(AofRecord::LPop { key })
             }
             TAG_RPOP => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 Ok(AofRecord::RPop { key })
             }
             TAG_ZADD => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
                 let mut members = Vec::with_capacity(count as usize);
                 for _ in 0..count {
                     let score = format::read_f64(&mut cursor)?;
-                    let member_bytes = format::read_bytes(&mut cursor)?;
-                    let member = String::from_utf8(member_bytes)
-                        .map_err(|_| FormatError::Io(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "member is not valid utf-8",
-                        )))?;
+                    let member = read_string(&mut cursor, "member")?;
                     members.push((score, member));
                 }
                 Ok(AofRecord::ZAdd { key, members })
             }
             TAG_ZREM => {
-                let key_bytes = format::read_bytes(&mut cursor)?;
-                let key = String::from_utf8(key_bytes)
-                    .map_err(|_| FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "key is not valid utf-8",
-                    )))?;
+                let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
                 let mut members = Vec::with_capacity(count as usize);
                 for _ in 0..count {
-                    let member_bytes = format::read_bytes(&mut cursor)?;
-                    let member = String::from_utf8(member_bytes)
-                        .map_err(|_| FormatError::Io(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "member is not valid utf-8",
-                        )))?;
-                    members.push(member);
+                    members.push(read_string(&mut cursor, "member")?);
                 }
                 Ok(AofRecord::ZRem { key, members })
             }
