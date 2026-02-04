@@ -136,6 +136,10 @@ impl SortedSet {
 
     /// Returns the 0-based rank of a member (lowest score = rank 0).
     /// Returns `None` if the member is not present.
+    ///
+    /// O(n) — walks the BTreeMap up to the target entry. Acceptable for
+    /// small-to-medium sets; a skip list with rank counts would give
+    /// O(log n) if this becomes a bottleneck.
     pub fn rank(&self, member: &str) -> Option<usize> {
         let score = self.scores.get(member)?;
         let key = (*score, member.to_owned());
