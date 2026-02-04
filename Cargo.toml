@@ -26,7 +26,7 @@ bytes = "1"
 thiserror = "2"
 
 # randomness (used for sampling in expiration and eviction)
-rand = "0.8"
+rand = "0.9"
 
 # logging
 tracing = "0.1"
@@ -39,7 +39,7 @@ clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 
 # float ordering (used for sorted set scores)
-ordered-float = "4"
+ordered-float = "5"
 
 # internal crates
 emberkv-core = { path = "crates/ember-core" }
