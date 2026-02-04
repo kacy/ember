@@ -9,7 +9,9 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 ## features
 
 - **resp3 protocol** — full compatibility with `redis-cli` and existing Redis clients
-- **core commands** — GET, SET, DEL, EXISTS, EXPIRE, TTL, DBSIZE, INFO with proper semantics
+- **core commands** — GET, SET, DEL, EXISTS, EXPIRE, TTL, TYPE, DBSIZE, INFO with proper semantics
+- **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN with O(1) push/pop and auto-cleanup
+- **sorted sets** — ZADD (with NX/XX/GT/LT/CH flags), ZREM, ZSCORE, ZRANK, ZRANGE with WITHSCORES
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking on the hot path
 - **active expiration** — background sampling cleans up expired keys without client access
 - **memory tracking** — per-shard byte-level accounting with configurable memory limits
@@ -34,6 +36,17 @@ redis-cli GET hello          # => "world"
 redis-cli SET temp data EX 60
 redis-cli TTL temp           # => 59
 redis-cli DBSIZE             # => (integer) 2
+
+# lists
+redis-cli LPUSH mylist a b c # => (integer) 3
+redis-cli LRANGE mylist 0 -1 # => 1) "c" 2) "b" 3) "a"
+redis-cli RPOP mylist        # => "a"
+
+# sorted sets
+redis-cli ZADD board 100 alice 200 bob 150 charlie
+redis-cli ZRANGE board 0 -1 WITHSCORES
+redis-cli ZRANK board alice  # => (integer) 0
+redis-cli ZSCORE board bob   # => "200"
 ```
 
 ## build & development
