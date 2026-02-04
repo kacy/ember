@@ -494,6 +494,8 @@ fn write_snapshot(
         let snap_value = match value {
             Value::String(data) => SnapValue::String(data.clone()),
             Value::List(deque) => SnapValue::List(deque.clone()),
+            // sorted set persistence is added in a later commit
+            Value::SortedSet(_) => continue,
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
