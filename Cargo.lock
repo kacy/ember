@@ -167,6 +167,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "ember-persistence",
  "ember-protocol",
  "emberkv-core",
  "tokio",
