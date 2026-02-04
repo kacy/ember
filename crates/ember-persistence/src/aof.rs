@@ -28,6 +28,10 @@ use crate::format::{self, FormatError};
 const TAG_SET: u8 = 1;
 const TAG_DEL: u8 = 2;
 const TAG_EXPIRE: u8 = 3;
+const TAG_LPUSH: u8 = 4;
+const TAG_RPUSH: u8 = 5;
+const TAG_LPOP: u8 = 6;
+const TAG_RPOP: u8 = 7;
 
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +46,14 @@ pub enum AofRecord {
     Del { key: String },
     /// EXPIRE key seconds.
     Expire { key: String, seconds: u64 },
+    /// LPUSH key value [value ...].
+    LPush { key: String, values: Vec<Bytes> },
+    /// RPUSH key value [value ...].
+    RPush { key: String, values: Vec<Bytes> },
+    /// LPOP key.
+    LPop { key: String },
+    /// RPOP key.
+    RPop { key: String },
 }
 
 impl AofRecord {
@@ -67,6 +79,30 @@ impl AofRecord {
                 format::write_u8(&mut buf, TAG_EXPIRE).expect("vec write");
                 format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
                 format::write_i64(&mut buf, *seconds as i64).expect("vec write");
+            }
+            AofRecord::LPush { key, values } => {
+                format::write_u8(&mut buf, TAG_LPUSH).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, values.len() as u32).expect("vec write");
+                for v in values {
+                    format::write_bytes(&mut buf, v).expect("vec write");
+                }
+            }
+            AofRecord::RPush { key, values } => {
+                format::write_u8(&mut buf, TAG_RPUSH).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, values.len() as u32).expect("vec write");
+                for v in values {
+                    format::write_bytes(&mut buf, v).expect("vec write");
+                }
+            }
+            AofRecord::LPop { key } => {
+                format::write_u8(&mut buf, TAG_LPOP).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+            }
+            AofRecord::RPop { key } => {
+                format::write_u8(&mut buf, TAG_RPOP).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
             }
         }
         buf
@@ -110,6 +146,42 @@ impl AofRecord {
                     )))?;
                 let seconds = format::read_i64(&mut cursor)? as u64;
                 Ok(AofRecord::Expire { key, seconds })
+            }
+            TAG_LPUSH | TAG_RPUSH => {
+                let key_bytes = format::read_bytes(&mut cursor)?;
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|_| FormatError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "key is not valid utf-8",
+                    )))?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut values = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    values.push(Bytes::from(format::read_bytes(&mut cursor)?));
+                }
+                if tag == TAG_LPUSH {
+                    Ok(AofRecord::LPush { key, values })
+                } else {
+                    Ok(AofRecord::RPush { key, values })
+                }
+            }
+            TAG_LPOP => {
+                let key_bytes = format::read_bytes(&mut cursor)?;
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|_| FormatError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "key is not valid utf-8",
+                    )))?;
+                Ok(AofRecord::LPop { key })
+            }
+            TAG_RPOP => {
+                let key_bytes = format::read_bytes(&mut cursor)?;
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|_| FormatError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "key is not valid utf-8",
+                    )))?;
+                Ok(AofRecord::RPop { key })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }
@@ -213,7 +285,7 @@ impl AofReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FormatError> {
         let file = File::open(path.as_ref())?;
         let mut reader = BufReader::new(file);
-        format::read_header(&mut reader, format::AOF_MAGIC)?;
+        let _version = format::read_header(&mut reader, format::AOF_MAGIC)?;
         Ok(Self { reader })
     }
 
@@ -270,6 +342,20 @@ impl AofReader {
                 format::write_bytes(&mut payload, &key).expect("vec write");
                 let seconds = format::read_i64(&mut self.reader)?;
                 format::write_i64(&mut payload, seconds).expect("vec write");
+            }
+            TAG_LPUSH | TAG_RPUSH => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
+                let count = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, count).expect("vec write");
+                for _ in 0..count {
+                    let val = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut payload, &val).expect("vec write");
+                }
+            }
+            TAG_LPOP | TAG_RPOP => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
             }
             _ => return Err(FormatError::UnknownTag(tag)),
         }
@@ -495,6 +581,78 @@ mod tests {
         }
         // only one record after truncation
         assert!(reader.read_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn record_round_trip_lpush() {
+        let rec = AofRecord::LPush {
+            key: "list".into(),
+            values: vec![Bytes::from("a"), Bytes::from("b")],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_rpush() {
+        let rec = AofRecord::RPush {
+            key: "list".into(),
+            values: vec![Bytes::from("x")],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_lpop() {
+        let rec = AofRecord::LPop { key: "list".into() };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_rpop() {
+        let rec = AofRecord::RPop { key: "list".into() };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn writer_reader_round_trip_with_list_records() {
+        let dir = temp_dir();
+        let path = dir.path().join("list.aof");
+
+        let records = vec![
+            AofRecord::LPush {
+                key: "l".into(),
+                values: vec![Bytes::from("a"), Bytes::from("b")],
+            },
+            AofRecord::RPush {
+                key: "l".into(),
+                values: vec![Bytes::from("c")],
+            },
+            AofRecord::LPop { key: "l".into() },
+            AofRecord::RPop { key: "l".into() },
+        ];
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            for rec in &records {
+                writer.write_record(rec).unwrap();
+            }
+            writer.sync().unwrap();
+        }
+
+        let mut reader = AofReader::open(&path).unwrap();
+        let mut got = Vec::new();
+        while let Some(rec) = reader.read_record().unwrap() {
+            got.push(rec);
+        }
+        assert_eq!(records, got);
     }
 
     #[test]

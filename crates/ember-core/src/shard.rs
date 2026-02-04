@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ember_persistence::aof::{AofRecord, AofWriter, FsyncPolicy};
-use ember_persistence::recovery;
-use ember_persistence::snapshot::{self, SnapEntry, SnapshotWriter};
+use ember_persistence::recovery::{self, RecoveredValue};
+use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -200,7 +200,10 @@ async fn run_shard(
         let result = recovery::recover_shard(&pcfg.data_dir, shard_id);
         let count = result.entries.len();
         for entry in result.entries {
-            let value = Value::String(entry.value);
+            let value = match entry.value {
+                RecoveredValue::String(data) => Value::String(data),
+                RecoveredValue::List(deque) => Value::List(deque),
+            };
             keyspace.restore(entry.key, value, entry.expires_at);
         }
         if count > 0 {
@@ -401,6 +404,24 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 seconds: *seconds,
             })
         }
+        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => {
+            Some(AofRecord::LPush {
+                key: key.clone(),
+                values: values.clone(),
+            })
+        }
+        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => {
+            Some(AofRecord::RPush {
+                key: key.clone(),
+                values: values.clone(),
+            })
+        }
+        (ShardRequest::LPop { key }, ShardResponse::Value(Some(_))) => {
+            Some(AofRecord::LPop { key: key.clone() })
+        }
+        (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
+            Some(AofRecord::RPop { key: key.clone() })
+        }
         _ => None,
     }
 }
@@ -470,15 +491,13 @@ fn write_snapshot(
     let mut count = 0u32;
 
     for (key, value, ttl_ms) in keyspace.iter_entries() {
-        // only persist string values for now — list and sorted set
-        // persistence is added in later commits
-        let value_bytes = match value {
-            Value::String(data) => data.clone(),
-            _ => continue,
+        let snap_value = match value {
+            Value::String(data) => SnapValue::String(data.clone()),
+            Value::List(deque) => SnapValue::List(deque.clone()),
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
-            value: value_bytes,
+            value: snap_value,
             expire_ms: ttl_ms,
         })?;
         count += 1;

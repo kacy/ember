@@ -18,6 +18,7 @@
 //! ```
 //! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
 
+use std::collections::VecDeque;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -26,11 +27,24 @@ use bytes::Bytes;
 
 use crate::format::{self, FormatError};
 
+/// Type tags for snapshot entries.
+const TYPE_STRING: u8 = 0;
+const TYPE_LIST: u8 = 1;
+
+/// The value stored in a snapshot entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SnapValue {
+    /// A string value.
+    String(Bytes),
+    /// A list of values.
+    List(VecDeque<Bytes>),
+}
+
 /// A single entry in a snapshot file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapEntry {
     pub key: String,
-    pub value: Bytes,
+    pub value: SnapValue,
     /// Remaining TTL in milliseconds, or -1 for no expiration.
     pub expire_ms: i64,
 }
@@ -79,7 +93,19 @@ impl SnapshotWriter {
     pub fn write_entry(&mut self, entry: &SnapEntry) -> Result<(), FormatError> {
         let mut buf = Vec::new();
         format::write_bytes(&mut buf, entry.key.as_bytes())?;
-        format::write_bytes(&mut buf, &entry.value)?;
+        match &entry.value {
+            SnapValue::String(data) => {
+                format::write_u8(&mut buf, TYPE_STRING)?;
+                format::write_bytes(&mut buf, data)?;
+            }
+            SnapValue::List(deque) => {
+                format::write_u8(&mut buf, TYPE_LIST)?;
+                format::write_u32(&mut buf, deque.len() as u32)?;
+                for item in deque {
+                    format::write_bytes(&mut buf, item)?;
+                }
+            }
+        }
         format::write_i64(&mut buf, entry.expire_ms)?;
 
         self.hasher.update(&buf);
@@ -122,6 +148,8 @@ pub struct SnapshotReader {
     pub entry_count: u32,
     read_so_far: u32,
     hasher: crc32fast::Hasher,
+    /// Format version — v1 has no type tags, v2 has type-tagged entries.
+    version: u8,
 }
 
 impl SnapshotReader {
@@ -130,7 +158,7 @@ impl SnapshotReader {
         let file = File::open(path.as_ref())?;
         let mut reader = BufReader::new(file);
 
-        format::read_header(&mut reader, format::SNAP_MAGIC)?;
+        let version = format::read_header(&mut reader, format::SNAP_MAGIC)?;
         let shard_id = format::read_u16(&mut reader)?;
         let entry_count = format::read_u32(&mut reader)?;
 
@@ -140,6 +168,7 @@ impl SnapshotReader {
             entry_count,
             read_so_far: 0,
             hasher: crc32fast::Hasher::new(),
+            version,
         })
     }
 
@@ -149,14 +178,44 @@ impl SnapshotReader {
             return Ok(None);
         }
 
-        let key_bytes = format::read_bytes(&mut self.reader)?;
-        let value_bytes = format::read_bytes(&mut self.reader)?;
-        let expire_ms = format::read_i64(&mut self.reader)?;
-
-        // rebuild the entry bytes for CRC tracking
         let mut buf = Vec::new();
+
+        let key_bytes = format::read_bytes(&mut self.reader)?;
         format::write_bytes(&mut buf, &key_bytes).expect("vec write");
-        format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+
+        let value = if self.version == 1 {
+            // v1: no type tag, value is always a string
+            let value_bytes = format::read_bytes(&mut self.reader)?;
+            format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+            SnapValue::String(Bytes::from(value_bytes))
+        } else {
+            // v2+: type-tagged values
+            let type_tag = format::read_u8(&mut self.reader)?;
+            format::write_u8(&mut buf, type_tag).expect("vec write");
+            match type_tag {
+                TYPE_STRING => {
+                    let value_bytes = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+                    SnapValue::String(Bytes::from(value_bytes))
+                }
+                TYPE_LIST => {
+                    let count = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, count).expect("vec write");
+                    let mut deque = VecDeque::with_capacity(count as usize);
+                    for _ in 0..count {
+                        let item = format::read_bytes(&mut self.reader)?;
+                        format::write_bytes(&mut buf, &item).expect("vec write");
+                        deque.push_back(Bytes::from(item));
+                    }
+                    SnapValue::List(deque)
+                }
+                _ => {
+                    return Err(FormatError::UnknownTag(type_tag));
+                }
+            }
+        };
+
+        let expire_ms = format::read_i64(&mut self.reader)?;
         format::write_i64(&mut buf, expire_ms).expect("vec write");
         self.hasher.update(&buf);
 
@@ -170,7 +229,7 @@ impl SnapshotReader {
         self.read_so_far += 1;
         Ok(Some(SnapEntry {
             key,
-            value: Bytes::from(value_bytes),
+            value,
             expire_ms,
         }))
     }
@@ -223,17 +282,17 @@ mod tests {
         let entries = vec![
             SnapEntry {
                 key: "hello".into(),
-                value: Bytes::from("world"),
+                value: SnapValue::String(Bytes::from("world")),
                 expire_ms: -1,
             },
             SnapEntry {
                 key: "ttl".into(),
-                value: Bytes::from("expiring"),
+                value: SnapValue::String(Bytes::from("expiring")),
                 expire_ms: 5000,
             },
             SnapEntry {
                 key: "empty".into(),
-                value: Bytes::new(),
+                value: SnapValue::String(Bytes::new()),
                 expire_ms: -1,
             },
         ];
@@ -268,7 +327,7 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "k".into(),
-                    value: Bytes::from("v"),
+                    value: SnapValue::String(Bytes::from("v")),
                     expire_ms: -1,
                 })
                 .unwrap();
@@ -300,7 +359,7 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "original".into(),
-                    value: Bytes::from("data"),
+                    value: SnapValue::String(Bytes::from("data")),
                     expire_ms: -1,
                 })
                 .unwrap();
@@ -313,7 +372,7 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "new".into(),
-                    value: Bytes::from("partial"),
+                    value: SnapValue::String(Bytes::from("partial")),
                     expire_ms: -1,
                 })
                 .unwrap();
@@ -334,7 +393,7 @@ mod tests {
 
         let entry = SnapEntry {
             key: "expires".into(),
-            value: Bytes::from("soon"),
+            value: SnapValue::String(Bytes::from("soon")),
             expire_ms: 42_000,
         };
 
@@ -347,6 +406,46 @@ mod tests {
         let mut reader = SnapshotReader::open(&path).unwrap();
         let got = reader.read_entry().unwrap().unwrap();
         assert_eq!(got.expire_ms, 42_000);
+        reader.verify_footer().unwrap();
+    }
+
+    #[test]
+    fn list_entries_round_trip() {
+        let dir = temp_dir();
+        let path = dir.path().join("list.snap");
+
+        let mut deque = VecDeque::new();
+        deque.push_back(Bytes::from("a"));
+        deque.push_back(Bytes::from("b"));
+        deque.push_back(Bytes::from("c"));
+
+        let entries = vec![
+            SnapEntry {
+                key: "mylist".into(),
+                value: SnapValue::List(deque),
+                expire_ms: -1,
+            },
+            SnapEntry {
+                key: "mystr".into(),
+                value: SnapValue::String(Bytes::from("val")),
+                expire_ms: 1000,
+            },
+        ];
+
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            for entry in &entries {
+                writer.write_entry(entry).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut got = Vec::new();
+        while let Some(entry) = reader.read_entry().unwrap() {
+            got.push(entry);
+        }
+        assert_eq!(entries, got);
         reader.verify_footer().unwrap();
     }
 

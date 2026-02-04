@@ -7,7 +7,7 @@
 //! 4. If no files exist, start with an empty state.
 //! 5. If files are corrupt, log a warning and start empty.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -16,13 +16,29 @@ use tracing::warn;
 
 use crate::aof::{self, AofReader, AofRecord};
 use crate::format::FormatError;
-use crate::snapshot::{self, SnapshotReader};
+use crate::snapshot::{self, SnapValue, SnapshotReader};
+
+/// The value of a recovered entry.
+#[derive(Debug, Clone)]
+pub enum RecoveredValue {
+    String(Bytes),
+    List(VecDeque<Bytes>),
+}
+
+impl From<SnapValue> for RecoveredValue {
+    fn from(sv: SnapValue) -> Self {
+        match sv {
+            SnapValue::String(data) => RecoveredValue::String(data),
+            SnapValue::List(deque) => RecoveredValue::List(deque),
+        }
+    }
+}
 
 /// A single recovered entry ready to be inserted into a keyspace.
 #[derive(Debug, Clone)]
 pub struct RecoveredEntry {
     pub key: String,
-    pub value: Bytes,
+    pub value: RecoveredValue,
     /// Absolute deadline computed from the persisted remaining TTL.
     /// `None` means no expiration.
     pub expires_at: Option<Instant>,
@@ -45,7 +61,7 @@ pub struct RecoveryResult {
 /// Entries whose TTL expired during downtime are silently skipped.
 pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     let now = Instant::now();
-    let mut map: HashMap<String, (Bytes, Option<Instant>)> = HashMap::new();
+    let mut map: HashMap<String, (RecoveredValue, Option<Instant>)> = HashMap::new();
     let mut loaded_snapshot = false;
     let mut replayed_aof = false;
 
@@ -55,7 +71,7 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
         match load_snapshot(&snap_path, now) {
             Ok(entries) => {
                 for (key, value, expires_at) in entries {
-                    map.insert(key, (value, expires_at));
+                    map.insert(key, (RecoveredValue::from(value), expires_at));
                 }
                 loaded_snapshot = true;
             }
@@ -113,7 +129,7 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
 fn load_snapshot(
     path: &Path,
     now: Instant,
-) -> Result<Vec<(String, Bytes, Option<Instant>)>, FormatError> {
+) -> Result<Vec<(String, SnapValue, Option<Instant>)>, FormatError> {
     let mut reader = SnapshotReader::open(path)?;
     let mut entries = Vec::new();
 
@@ -134,7 +150,7 @@ fn load_snapshot(
 /// records replayed.
 fn replay_aof(
     path: &Path,
-    map: &mut HashMap<String, (Bytes, Option<Instant>)>,
+    map: &mut HashMap<String, (RecoveredValue, Option<Instant>)>,
     now: Instant,
 ) -> Result<usize, FormatError> {
     let mut reader = AofReader::open(path)?;
@@ -152,7 +168,7 @@ fn replay_aof(
                 } else {
                     None
                 };
-                map.insert(key, (value, expires_at));
+                map.insert(key, (RecoveredValue::String(value), expires_at));
             }
             AofRecord::Del { key } => {
                 map.remove(&key);
@@ -160,6 +176,50 @@ fn replay_aof(
             AofRecord::Expire { key, seconds } => {
                 if let Some(entry) = map.get_mut(&key) {
                     entry.1 = Some(now + Duration::from_secs(seconds));
+                }
+            }
+            AofRecord::LPush { key, values } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::List(VecDeque::new()), None));
+                if let RecoveredValue::List(ref mut deque) = entry.0 {
+                    for v in values {
+                        deque.push_front(v);
+                    }
+                }
+            }
+            AofRecord::RPush { key, values } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::List(VecDeque::new()), None));
+                if let RecoveredValue::List(ref mut deque) = entry.0 {
+                    for v in values {
+                        deque.push_back(v);
+                    }
+                }
+            }
+            AofRecord::LPop { key } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        deque.pop_front();
+                        if deque.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            AofRecord::RPop { key } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        deque.pop_back();
+                        if deque.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
                 }
             }
         }
@@ -173,7 +233,7 @@ fn replay_aof(
 mod tests {
     use super::*;
     use crate::aof::AofWriter;
-    use crate::snapshot::{SnapEntry, SnapshotWriter};
+    use crate::snapshot::{SnapEntry, SnapValue, SnapshotWriter};
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp dir")
@@ -198,14 +258,14 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "a".into(),
-                    value: Bytes::from("1"),
+                    value: SnapValue::String(Bytes::from("1")),
                     expire_ms: -1,
                 })
                 .unwrap();
             writer
                 .write_entry(&SnapEntry {
                     key: "b".into(),
-                    value: Bytes::from("2"),
+                    value: SnapValue::String(Bytes::from("2")),
                     expire_ms: 60_000,
                 })
                 .unwrap();
@@ -259,7 +319,7 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "a".into(),
-                    value: Bytes::from("old"),
+                    value: SnapValue::String(Bytes::from("old")),
                     expire_ms: -1,
                 })
                 .unwrap();
@@ -296,8 +356,8 @@ mod tests {
             .iter()
             .map(|e| (e.key.as_str(), e.value.clone()))
             .collect();
-        assert_eq!(map["a"], Bytes::from("new"));
-        assert_eq!(map["b"], Bytes::from("added"));
+        assert!(matches!(&map["a"], RecoveredValue::String(b) if b == &Bytes::from("new")));
+        assert!(matches!(&map["b"], RecoveredValue::String(b) if b == &Bytes::from("added")));
     }
 
     #[test]
@@ -337,7 +397,7 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "dead".into(),
-                    value: Bytes::from("gone"),
+                    value: SnapValue::String(Bytes::from("gone")),
                     expire_ms: 0,
                 })
                 .unwrap();
@@ -345,7 +405,7 @@ mod tests {
             writer
                 .write_entry(&SnapEntry {
                     key: "alive".into(),
-                    value: Bytes::from("here"),
+                    value: SnapValue::String(Bytes::from("here")),
                     expire_ms: 60_000,
                 })
                 .unwrap();
