@@ -149,7 +149,10 @@ pub enum ShardResponse {
     /// The type name of a stored value.
     TypeName(&'static str),
     /// ZADD result: count for the client + actually applied members for AOF.
-    ZAddLen { count: usize, applied: Vec<(f64, String)> },
+    ZAddLen {
+        count: usize,
+        applied: Vec<(f64, String)>,
+    },
     /// Float score result (e.g. ZSCORE).
     Score(Option<f64>),
     /// Rank result (e.g. ZRANK).
@@ -414,9 +417,21 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::Type { key } => ShardResponse::TypeName(ks.value_type(key)),
-        ShardRequest::ZAdd { key, members, nx, xx, gt, lt, ch } => {
+        ShardRequest::ZAdd {
+            key,
+            members,
+            nx,
+            xx,
+            gt,
+            lt,
+            ch,
+        } => {
             let flags = ZAddFlags {
-                nx: *nx, xx: *xx, gt: *gt, lt: *lt, ch: *ch,
+                nx: *nx,
+                xx: *xx,
+                gt: *gt,
+                lt: *lt,
+                ch: *ch,
             };
             match ks.zadd(key, members, &flags) {
                 Ok(result) => ShardResponse::ZAddLen {
@@ -438,7 +453,9 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(rank) => ShardResponse::Rank(rank),
             Err(_) => ShardResponse::WrongType,
         },
-        ShardRequest::ZRange { key, start, stop, .. } => match ks.zrange(key, *start, *stop) {
+        ShardRequest::ZRange {
+            key, start, stop, ..
+        } => match ks.zrange(key, *start, *stop) {
             Ok(items) => ShardResponse::ScoredArray(items),
             Err(_) => ShardResponse::WrongType,
         },
@@ -453,13 +470,8 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
 /// Returns None for non-mutation requests or failed mutations.
 fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> {
     match (req, resp) {
-        (
-            ShardRequest::Set { key, value, expire },
-            ShardResponse::Ok,
-        ) => {
-            let expire_ms = expire
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(-1);
+        (ShardRequest::Set { key, value, expire }, ShardResponse::Ok) => {
+            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
             Some(AofRecord::Set {
                 key: key.clone(),
                 value: value.clone(),
@@ -475,18 +487,14 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 seconds: *seconds,
             })
         }
-        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => {
-            Some(AofRecord::LPush {
-                key: key.clone(),
-                values: values.clone(),
-            })
-        }
-        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => {
-            Some(AofRecord::RPush {
-                key: key.clone(),
-                values: values.clone(),
-            })
-        }
+        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => Some(AofRecord::LPush {
+            key: key.clone(),
+            values: values.clone(),
+        }),
+        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => Some(AofRecord::RPush {
+            key: key.clone(),
+            values: values.clone(),
+        }),
         (ShardRequest::LPop { key }, ShardResponse::Value(Some(_))) => {
             Some(AofRecord::LPop { key: key.clone() })
         }

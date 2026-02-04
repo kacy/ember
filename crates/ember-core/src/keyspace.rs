@@ -394,12 +394,7 @@ impl Keyspace {
     /// If `expires_at` is in the past, the entry is silently skipped.
     /// This is used only during shard startup when loading from
     /// snapshot/AOF — normal writes should go through `set()`.
-    pub fn restore(
-        &mut self,
-        key: String,
-        value: Value,
-        expires_at: Option<Instant>,
-    ) {
+    pub fn restore(&mut self, key: String, value: Value, expires_at: Option<Instant>) {
         // skip entries that already expired
         if let Some(deadline) = expires_at {
             if Instant::now() >= deadline {
@@ -466,12 +461,7 @@ impl Keyspace {
     /// Supports negative indices (e.g. -1 = last element). Out-of-bounds
     /// indices are clamped to the list boundaries. Returns `Err(WrongType)`
     /// on type mismatch. Missing keys return an empty vec.
-    pub fn lrange(
-        &mut self,
-        key: &str,
-        start: i64,
-        stop: i64,
-    ) -> Result<Vec<Bytes>, WrongType> {
+    pub fn lrange(&mut self, key: &str, start: i64, stop: i64) -> Result<Vec<Bytes>, WrongType> {
         if self.remove_if_expired(key) {
             return Ok(vec![]);
         }
@@ -519,12 +509,7 @@ impl Keyspace {
     }
 
     /// Internal push implementation shared by lpush/rpush.
-    fn list_push(
-        &mut self,
-        key: &str,
-        values: &[Bytes],
-        left: bool,
-    ) -> Result<usize, WrongType> {
+    fn list_push(&mut self, key: &str, values: &[Bytes], left: bool) -> Result<usize, WrongType> {
         self.remove_if_expired(key);
 
         let is_new = !self.entries.contains_key(key);
@@ -536,11 +521,13 @@ impl Keyspace {
         if is_new {
             let value = Value::List(VecDeque::new());
             self.memory.add(key, &value);
-            self.entries
-                .insert(key.to_owned(), Entry::new(value, None));
+            self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         if let Value::List(ref mut deque) = entry.value {
@@ -582,7 +569,11 @@ impl Keyspace {
         let old_entry_size = memory::entry_size(key, &self.entries[key].value);
         let entry = self.entries.get_mut(key).expect("verified above");
         let popped = if let Value::List(ref mut deque) = entry.value {
-            if left { deque.pop_front() } else { deque.pop_back() }
+            if left {
+                deque.pop_front()
+            } else {
+                deque.pop_back()
+            }
         } else {
             unreachable!()
         };
@@ -629,11 +620,13 @@ impl Keyspace {
         if is_new {
             let value = Value::SortedSet(SortedSet::new());
             self.memory.add(key, &value);
-            self.entries
-                .insert(key.to_owned(), Entry::new(value, None));
+            self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let mut count = 0;
@@ -777,10 +770,7 @@ impl Keyspace {
                 let result = match &entry.value {
                     Value::SortedSet(ss) => {
                         let items = ss.range_by_rank(start, stop);
-                        Ok(items
-                            .into_iter()
-                            .map(|(m, s)| (m.to_owned(), s))
-                            .collect())
+                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
                     }
                     _ => Err(WrongType),
                 };
@@ -848,8 +838,16 @@ fn normalize_range(start: i64, stop: i64, len: i64) -> (i64, i64) {
     if len == 0 {
         return (0, -1);
     }
-    let s = if start < 0 { (len + start).max(0) } else { start.min(len - 1) };
-    let e = if stop < 0 { (len + stop).max(0) } else { stop.min(len - 1) };
+    let s = if start < 0 {
+        (len + start).max(0)
+    } else {
+        start.min(len - 1)
+    };
+    let e = if stop < 0 {
+        (len + stop).max(0)
+    } else {
+        stop.min(len - 1)
+    };
     (s, e)
 }
 
@@ -1163,11 +1161,7 @@ mod tests {
     fn iter_entries_returns_live_entries() {
         let mut ks = Keyspace::new();
         ks.set("a".into(), Bytes::from("1"), None);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(100)),
-        );
+        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(100)));
 
         let entries: Vec<_> = ks.iter_entries().collect();
         assert_eq!(entries.len(), 2);
@@ -1203,11 +1197,7 @@ mod tests {
     #[test]
     fn restore_adds_entry() {
         let mut ks = Keyspace::new();
-        ks.restore(
-            "restored".into(),
-            Value::String(Bytes::from("data")),
-            None,
-        );
+        ks.restore("restored".into(), Value::String(Bytes::from("data")), None);
         assert_eq!(
             ks.get("restored").unwrap(),
             Some(Value::String(Bytes::from("data")))
@@ -1220,7 +1210,11 @@ mod tests {
         let mut ks = Keyspace::new();
         // deadline already passed
         let past = Instant::now() - Duration::from_secs(1);
-        ks.restore("expired".into(), Value::String(Bytes::from("old")), Some(past));
+        ks.restore(
+            "expired".into(),
+            Value::String(Bytes::from("old")),
+            Some(past),
+        );
         assert!(ks.is_empty());
     }
 
@@ -1228,11 +1222,7 @@ mod tests {
     fn restore_overwrites_existing() {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("old"), None);
-        ks.restore(
-            "key".into(),
-            Value::String(Bytes::from("new")),
-            None,
-        );
+        ks.restore("key".into(), Value::String(Bytes::from("new")), None);
         assert_eq!(
             ks.get("key").unwrap(),
             Some(Value::String(Bytes::from("new")))
@@ -1276,7 +1266,9 @@ mod tests {
     #[test]
     fn lpush_creates_list() {
         let mut ks = Keyspace::new();
-        let len = ks.lpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        let len = ks
+            .lpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
         assert_eq!(len, 2);
         // lpush pushes each to front, so order is b, a
         let items = ks.lrange("list", 0, -1).unwrap();
@@ -1286,7 +1278,9 @@ mod tests {
     #[test]
     fn rpush_creates_list() {
         let mut ks = Keyspace::new();
-        let len = ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        let len = ks
+            .rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
         assert_eq!(len, 2);
         let items = ks.lrange("list", 0, -1).unwrap();
         assert_eq!(items, vec![Bytes::from("a"), Bytes::from("b")]);
@@ -1303,7 +1297,8 @@ mod tests {
     #[test]
     fn lpop_returns_front() {
         let mut ks = Keyspace::new();
-        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
         assert_eq!(ks.lpop("list").unwrap(), Some(Bytes::from("a")));
         assert_eq!(ks.lpop("list").unwrap(), Some(Bytes::from("b")));
         assert_eq!(ks.lpop("list").unwrap(), None); // empty, key deleted
@@ -1312,7 +1307,8 @@ mod tests {
     #[test]
     fn rpop_returns_back() {
         let mut ks = Keyspace::new();
-        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
         assert_eq!(ks.rpop("list").unwrap(), Some(Bytes::from("b")));
     }
 
@@ -1336,7 +1332,11 @@ mod tests {
     #[test]
     fn lrange_negative_indices() {
         let mut ks = Keyspace::new();
-        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")]).unwrap();
+        ks.rpush(
+            "list",
+            &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")],
+        )
+        .unwrap();
         // -2 to -1 => last two elements
         let items = ks.lrange("list", -2, -1).unwrap();
         assert_eq!(items, vec![Bytes::from("b"), Bytes::from("c")]);
@@ -1345,7 +1345,8 @@ mod tests {
     #[test]
     fn lrange_out_of_bounds_clamps() {
         let mut ks = Keyspace::new();
-        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
         let items = ks.lrange("list", -100, 100).unwrap();
         assert_eq!(items, vec![Bytes::from("a"), Bytes::from("b")]);
     }
@@ -1360,7 +1361,8 @@ mod tests {
     fn llen_returns_length() {
         let mut ks = Keyspace::new();
         assert_eq!(ks.llen("nope").unwrap(), 0);
-        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")]).unwrap();
+        ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
         assert_eq!(ks.llen("list").unwrap(), 2);
     }
 
@@ -1426,12 +1428,8 @@ mod tests {
         ks.restore("l".into(), Value::List(list), None);
         assert_eq!(ks.value_type("l"), "list");
 
-        ks.zadd(
-            "z",
-            &[(1.0, "a".into())],
-            &ZAddFlags::default(),
-        )
-        .unwrap();
+        ks.zadd("z", &[(1.0, "a".into())], &ZAddFlags::default())
+            .unwrap();
         assert_eq!(ks.value_type("z"), "zset");
     }
 
@@ -1441,7 +1439,11 @@ mod tests {
     fn zadd_creates_sorted_set() {
         let mut ks = Keyspace::new();
         let result = ks
-            .zadd("board", &[(100.0, "alice".into()), (200.0, "bob".into())], &ZAddFlags::default())
+            .zadd(
+                "board",
+                &[(100.0, "alice".into()), (200.0, "bob".into())],
+                &ZAddFlags::default(),
+            )
             .unwrap();
         assert_eq!(result.count, 2);
         assert_eq!(result.applied.len(), 2);
@@ -1451,9 +1453,12 @@ mod tests {
     #[test]
     fn zadd_updates_existing_score() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
         // update score — default flags don't count updates
-        let result = ks.zadd("z", &[(200.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        let result = ks
+            .zadd("z", &[(200.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
         assert_eq!(result.count, 0);
         // score was updated, so applied should have the member
         assert_eq!(result.applied.len(), 1);
@@ -1463,9 +1468,19 @@ mod tests {
     #[test]
     fn zadd_ch_flag_counts_changes() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
-        let flags = ZAddFlags { ch: true, ..Default::default() };
-        let result = ks.zadd("z", &[(200.0, "alice".into()), (50.0, "bob".into())], &flags).unwrap();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
+        let flags = ZAddFlags {
+            ch: true,
+            ..Default::default()
+        };
+        let result = ks
+            .zadd(
+                "z",
+                &[(200.0, "alice".into()), (50.0, "bob".into())],
+                &flags,
+            )
+            .unwrap();
         // 1 updated + 1 added = 2
         assert_eq!(result.count, 2);
         assert_eq!(result.applied.len(), 2);
@@ -1474,8 +1489,12 @@ mod tests {
     #[test]
     fn zadd_nx_skips_existing() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
-        let flags = ZAddFlags { nx: true, ..Default::default() };
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
+        let flags = ZAddFlags {
+            nx: true,
+            ..Default::default()
+        };
         let result = ks.zadd("z", &[(999.0, "alice".into())], &flags).unwrap();
         assert_eq!(result.count, 0);
         assert!(result.applied.is_empty());
@@ -1485,7 +1504,10 @@ mod tests {
     #[test]
     fn zadd_xx_skips_new() {
         let mut ks = Keyspace::new();
-        let flags = ZAddFlags { xx: true, ..Default::default() };
+        let flags = ZAddFlags {
+            xx: true,
+            ..Default::default()
+        };
         let result = ks.zadd("z", &[(100.0, "alice".into())], &flags).unwrap();
         assert_eq!(result.count, 0);
         assert!(result.applied.is_empty());
@@ -1496,8 +1518,12 @@ mod tests {
     #[test]
     fn zadd_gt_only_increases() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
-        let flags = ZAddFlags { gt: true, ..Default::default() };
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
+        let flags = ZAddFlags {
+            gt: true,
+            ..Default::default()
+        };
         ks.zadd("z", &[(50.0, "alice".into())], &flags).unwrap();
         assert_eq!(ks.zscore("z", "alice").unwrap(), Some(100.0));
         ks.zadd("z", &[(200.0, "alice".into())], &flags).unwrap();
@@ -1507,8 +1533,12 @@ mod tests {
     #[test]
     fn zadd_lt_only_decreases() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
-        let flags = ZAddFlags { lt: true, ..Default::default() };
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
+        let flags = ZAddFlags {
+            lt: true,
+            ..Default::default()
+        };
         ks.zadd("z", &[(200.0, "alice".into())], &flags).unwrap();
         assert_eq!(ks.zscore("z", "alice").unwrap(), Some(100.0));
         ks.zadd("z", &[(50.0, "alice".into())], &flags).unwrap();
@@ -1518,8 +1548,15 @@ mod tests {
     #[test]
     fn zrem_removes_members() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())], &ZAddFlags::default()).unwrap();
-        let removed = ks.zrem("z", &["a".into(), "c".into(), "nonexistent".into()]).unwrap();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let removed = ks
+            .zrem("z", &["a".into(), "c".into(), "nonexistent".into()])
+            .unwrap();
         assert_eq!(removed, 2);
         assert_eq!(ks.zscore("z", "a").unwrap(), None);
         assert_eq!(ks.zscore("z", "b").unwrap(), Some(2.0));
@@ -1528,7 +1565,8 @@ mod tests {
     #[test]
     fn zrem_auto_deletes_empty() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(1.0, "only".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("z", &[(1.0, "only".into())], &ZAddFlags::default())
+            .unwrap();
         ks.zrem("z", &["only".into()]).unwrap();
         assert!(!ks.exists("z"));
         assert_eq!(ks.stats().key_count, 0);
@@ -1543,7 +1581,8 @@ mod tests {
     #[test]
     fn zscore_returns_score() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(42.5, "member".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("z", &[(42.5, "member".into())], &ZAddFlags::default())
+            .unwrap();
         assert_eq!(ks.zscore("z", "member").unwrap(), Some(42.5));
         assert_eq!(ks.zscore("z", "missing").unwrap(), None);
     }
@@ -1557,7 +1596,16 @@ mod tests {
     #[test]
     fn zrank_returns_rank() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(300.0, "c".into()), (100.0, "a".into()), (200.0, "b".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd(
+            "z",
+            &[
+                (300.0, "c".into()),
+                (100.0, "a".into()),
+                (200.0, "b".into()),
+            ],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
         assert_eq!(ks.zrank("z", "a").unwrap(), Some(0));
         assert_eq!(ks.zrank("z", "b").unwrap(), Some(1));
         assert_eq!(ks.zrank("z", "c").unwrap(), Some(2));
@@ -1567,7 +1615,12 @@ mod tests {
     #[test]
     fn zrange_returns_range() {
         let mut ks = Keyspace::new();
-        ks.zadd("z", &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
 
         let all = ks.zrange("z", 0, -1).unwrap();
         assert_eq!(
@@ -1583,10 +1636,7 @@ mod tests {
         assert_eq!(middle, vec![("b".to_owned(), 2.0)]);
 
         let last_two = ks.zrange("z", -2, -1).unwrap();
-        assert_eq!(
-            last_two,
-            vec![("b".to_owned(), 2.0), ("c".to_owned(), 3.0)]
-        );
+        assert_eq!(last_two, vec![("b".to_owned(), 2.0), ("c".to_owned(), 3.0)]);
     }
 
     #[test]
@@ -1599,7 +1649,9 @@ mod tests {
     fn zadd_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("val"), None);
-        assert!(ks.zadd("s", &[(1.0, "m".into())], &ZAddFlags::default()).is_err());
+        assert!(ks
+            .zadd("s", &[(1.0, "m".into())], &ZAddFlags::default())
+            .is_err());
     }
 
     #[test]
@@ -1634,11 +1686,13 @@ mod tests {
     fn sorted_set_memory_tracked() {
         let mut ks = Keyspace::new();
         let before = ks.stats().used_bytes;
-        ks.zadd("z", &[(1.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("z", &[(1.0, "alice".into())], &ZAddFlags::default())
+            .unwrap();
         let after_add = ks.stats().used_bytes;
         assert!(after_add > before);
 
-        ks.zadd("z", &[(2.0, "bob".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("z", &[(2.0, "bob".into())], &ZAddFlags::default())
+            .unwrap();
         let after_second = ks.stats().used_bytes;
         assert!(after_second > after_add);
 

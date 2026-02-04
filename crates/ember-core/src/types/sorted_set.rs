@@ -344,7 +344,10 @@ mod tests {
         let mut ss = SortedSet::new();
         ss.add("alice".into(), 100.0);
 
-        let flags = ZAddFlags { nx: true, ..Default::default() };
+        let flags = ZAddFlags {
+            nx: true,
+            ..Default::default()
+        };
         let result = ss.add_with_flags("alice".into(), 999.0, &flags);
         assert!(!result.added);
         assert!(!result.updated);
@@ -358,7 +361,10 @@ mod tests {
     #[test]
     fn xx_flag_skips_new() {
         let mut ss = SortedSet::new();
-        let flags = ZAddFlags { xx: true, ..Default::default() };
+        let flags = ZAddFlags {
+            xx: true,
+            ..Default::default()
+        };
 
         let result = ss.add_with_flags("alice".into(), 100.0, &flags);
         assert!(!result.added);
@@ -376,7 +382,10 @@ mod tests {
         let mut ss = SortedSet::new();
         ss.add("alice".into(), 100.0);
 
-        let flags = ZAddFlags { gt: true, ..Default::default() };
+        let flags = ZAddFlags {
+            gt: true,
+            ..Default::default()
+        };
 
         // lower score — skip
         let result = ss.add_with_flags("alice".into(), 50.0, &flags);
@@ -394,7 +403,10 @@ mod tests {
         let mut ss = SortedSet::new();
         ss.add("alice".into(), 100.0);
 
-        let flags = ZAddFlags { lt: true, ..Default::default() };
+        let flags = ZAddFlags {
+            lt: true,
+            ..Default::default()
+        };
 
         // higher score — skip
         let result = ss.add_with_flags("alice".into(), 200.0, &flags);

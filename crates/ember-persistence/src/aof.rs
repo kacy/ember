@@ -73,10 +73,7 @@ pub enum AofRecord {
         members: Vec<(f64, String)>,
     },
     /// ZREM key member [member ...].
-    ZRem {
-        key: String,
-        members: Vec<String>,
-    },
+    ZRem { key: String, members: Vec<String> },
 }
 
 impl AofRecord {
@@ -243,10 +240,7 @@ impl AofWriter {
         let path = path.into();
         let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
 
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut writer = BufWriter::new(file);
 
         if !exists {
@@ -442,9 +436,7 @@ mod tests {
 
     #[test]
     fn record_round_trip_del() {
-        let rec = AofRecord::Del {
-            key: "gone".into(),
-        };
+        let rec = AofRecord::Del { key: "gone".into() };
         let bytes = rec.to_bytes();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
