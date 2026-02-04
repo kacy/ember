@@ -237,6 +237,13 @@ async fn run_shard(
             let value = match entry.value {
                 RecoveredValue::String(data) => Value::String(data),
                 RecoveredValue::List(deque) => Value::List(deque),
+                RecoveredValue::SortedSet(members) => {
+                    let mut ss = crate::types::sorted_set::SortedSet::new();
+                    for (score, member) in members {
+                        ss.add(member, score);
+                    }
+                    Value::SortedSet(ss)
+                }
             };
             keyspace.restore(entry.key, value, entry.expires_at);
         }
@@ -481,6 +488,18 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
         (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
             Some(AofRecord::RPop { key: key.clone() })
         }
+        (ShardRequest::ZAdd { key, members, .. }, ShardResponse::Len(_)) => {
+            Some(AofRecord::ZAdd {
+                key: key.clone(),
+                members: members.clone(),
+            })
+        }
+        (ShardRequest::ZRem { key, members, .. }, ShardResponse::Len(n)) if *n > 0 => {
+            Some(AofRecord::ZRem {
+                key: key.clone(),
+                members: members.clone(),
+            })
+        }
         _ => None,
     }
 }
@@ -553,8 +572,13 @@ fn write_snapshot(
         let snap_value = match value {
             Value::String(data) => SnapValue::String(data.clone()),
             Value::List(deque) => SnapValue::List(deque.clone()),
-            // sorted set persistence is added in a later commit
-            Value::SortedSet(_) => continue,
+            Value::SortedSet(ss) => {
+                let members: Vec<(f64, String)> = ss
+                    .iter()
+                    .map(|(member, score)| (score, member.to_owned()))
+                    .collect();
+                SnapValue::SortedSet(members)
+            }
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
