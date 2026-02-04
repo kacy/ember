@@ -83,10 +83,26 @@ pub fn entry_size(key: &str, value: &Value) -> usize {
     key.len() + value_size(value) + ENTRY_OVERHEAD
 }
 
+/// Estimated overhead per element in a VecDeque.
+///
+/// Each slot holds a `Bytes` (pointer + len + capacity = 24 bytes on 64-bit)
+/// plus VecDeque's internal bookkeeping per slot.
+const VECDEQUE_ELEMENT_OVERHEAD: usize = 32;
+
+/// Base overhead for an empty VecDeque (internal buffer pointer + head/len).
+const VECDEQUE_BASE_OVERHEAD: usize = 24;
+
 /// Returns the byte size of a value's payload.
-fn value_size(value: &Value) -> usize {
+pub fn value_size(value: &Value) -> usize {
     match value {
         Value::String(data) => data.len(),
+        Value::List(deque) => {
+            let element_bytes: usize = deque
+                .iter()
+                .map(|b| b.len() + VECDEQUE_ELEMENT_OVERHEAD)
+                .sum();
+            VECDEQUE_BASE_OVERHEAD + element_bytes
+        }
     }
 }
 
@@ -157,6 +173,27 @@ mod tests {
         let size = entry_size("mykey", &val);
         // 5 (key) + 4 (value) + 96 (overhead)
         assert_eq!(size, 5 + 4 + ENTRY_OVERHEAD);
+    }
+
+    #[test]
+    fn list_value_size() {
+        let mut deque = std::collections::VecDeque::new();
+        deque.push_back(Bytes::from("hello"));
+        deque.push_back(Bytes::from("world"));
+        let val = Value::List(deque);
+
+        let size = value_size(&val);
+        // base overhead + 2 elements (each: data len + element overhead)
+        let expected = VECDEQUE_BASE_OVERHEAD
+            + (5 + VECDEQUE_ELEMENT_OVERHEAD)
+            + (5 + VECDEQUE_ELEMENT_OVERHEAD);
+        assert_eq!(size, expected);
+    }
+
+    #[test]
+    fn empty_list_value_size() {
+        let val = Value::List(std::collections::VecDeque::new());
+        assert_eq!(value_size(&val), VECDEQUE_BASE_OVERHEAD);
     }
 
     #[test]

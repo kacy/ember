@@ -108,6 +108,9 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+                ),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }

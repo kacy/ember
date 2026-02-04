@@ -12,7 +12,22 @@ use bytes::Bytes;
 use rand::seq::IteratorRandom;
 
 use crate::memory::{self, MemoryTracker};
-use crate::types::Value;
+use crate::types::{self, Value};
+
+/// Error returned when a command is used against a key holding the wrong type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrongType;
+
+impl std::fmt::Display for WrongType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "WRONGTYPE Operation against a key holding the wrong kind of value"
+        )
+    }
+}
+
+impl std::error::Error for WrongType {}
 
 /// How the keyspace should handle writes when the memory limit is reached.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -139,19 +154,36 @@ impl Keyspace {
         }
     }
 
-    /// Retrieves the value for `key`, or `None` if the key doesn't exist
-    /// or has expired.
+    /// Retrieves the string value for `key`, or `None` if missing/expired.
     ///
+    /// Returns `Err(WrongType)` if the key holds a non-string value.
     /// Expired keys are removed lazily on access. Successful reads update
     /// the entry's last access time for LRU tracking.
-    pub fn get(&mut self, key: &str) -> Option<Value> {
+    pub fn get(&mut self, key: &str) -> Result<Option<Value>, WrongType> {
         if self.remove_if_expired(key) {
-            return None;
+            return Ok(None);
         }
-        self.entries.get_mut(key).map(|e| {
-            e.touch();
-            e.value.clone()
-        })
+        match self.entries.get_mut(key) {
+            Some(e) => match &e.value {
+                Value::String(_) => {
+                    e.touch();
+                    Ok(Some(e.value.clone()))
+                }
+                _ => Err(WrongType),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// Returns the type name of the value at `key`, or "none" if missing.
+    pub fn value_type(&mut self, key: &str) -> &'static str {
+        if self.remove_if_expired(key) {
+            return "none";
+        }
+        match self.entries.get(key) {
+            Some(e) => types::type_name(&e.value),
+            None => "none",
+        }
     }
 
     /// Stores a key-value pair. If the key already existed, the old entry
@@ -447,13 +479,16 @@ mod tests {
     fn set_and_get() {
         let mut ks = Keyspace::new();
         ks.set("hello".into(), Bytes::from("world"), None);
-        assert_eq!(ks.get("hello"), Some(Value::String(Bytes::from("world"))));
+        assert_eq!(
+            ks.get("hello").unwrap(),
+            Some(Value::String(Bytes::from("world")))
+        );
     }
 
     #[test]
     fn get_missing_key() {
         let mut ks = Keyspace::new();
-        assert_eq!(ks.get("nope"), None);
+        assert_eq!(ks.get("nope").unwrap(), None);
     }
 
     #[test]
@@ -461,7 +496,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("first"), None);
         ks.set("key".into(), Bytes::from("second"), None);
-        assert_eq!(ks.get("key"), Some(Value::String(Bytes::from("second"))));
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("second")))
+        );
     }
 
     #[test]
@@ -482,7 +520,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("val"), None);
         assert!(ks.del("key"));
-        assert_eq!(ks.get("key"), None);
+        assert_eq!(ks.get("key").unwrap(), None);
     }
 
     #[test]
@@ -509,7 +547,7 @@ mod tests {
         );
         // wait for expiration
         thread::sleep(Duration::from_millis(30));
-        assert_eq!(ks.get("temp"), None);
+        assert_eq!(ks.get("temp").unwrap(), None);
         // should also be gone from exists
         assert!(!ks.exists("temp"));
     }
@@ -628,7 +666,7 @@ mod tests {
         assert!(ks.stats().used_bytes > 0);
         thread::sleep(Duration::from_millis(30));
         // trigger lazy expiration
-        ks.get("temp");
+        let _ = ks.get("temp");
         assert_eq!(ks.stats().used_bytes, 0);
         assert_eq!(ks.stats().key_count, 0);
     }
@@ -701,7 +739,10 @@ mod tests {
 
         // overwriting with same-size value should succeed — no net increase
         assert_eq!(ks.set("a".into(), Bytes::from("new"), None), SetResult::Ok);
-        assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("new"))));
+        assert_eq!(
+            ks.get("a").unwrap(),
+            Some(Value::String(Bytes::from("new")))
+        );
     }
 
     #[test]
@@ -721,7 +762,10 @@ mod tests {
         assert_eq!(result, SetResult::OutOfMemory);
 
         // original value should still be intact
-        assert_eq!(ks.get("a"), Some(Value::String(Bytes::from("val"))));
+        assert_eq!(
+            ks.get("a").unwrap(),
+            Some(Value::String(Bytes::from("val")))
+        );
     }
 
     // -- iter_entries tests --
@@ -776,7 +820,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            ks.get("restored"),
+            ks.get("restored").unwrap(),
             Some(Value::String(Bytes::from("data")))
         );
         assert_eq!(ks.stats().key_count, 1);
@@ -800,7 +844,10 @@ mod tests {
             Value::String(Bytes::from("new")),
             None,
         );
-        assert_eq!(ks.get("key"), Some(Value::String(Bytes::from("new"))));
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("new")))
+        );
         assert_eq!(ks.stats().key_count, 1);
     }
 
@@ -833,5 +880,31 @@ mod tests {
             );
         }
         assert_eq!(ks.len(), 100);
+    }
+
+    // -- wrongtype tests --
+
+    #[test]
+    fn get_on_list_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        let mut list = std::collections::VecDeque::new();
+        list.push_back(Bytes::from("item"));
+        ks.restore("mylist".into(), Value::List(list), None);
+
+        assert!(ks.get("mylist").is_err());
+    }
+
+    #[test]
+    fn value_type_returns_correct_types() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.value_type("missing"), "none");
+
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert_eq!(ks.value_type("s"), "string");
+
+        let mut list = std::collections::VecDeque::new();
+        list.push_back(Bytes::from("item"));
+        ks.restore("l".into(), Value::List(list), None);
+        assert_eq!(ks.value_type("l"), "list");
     }
 }

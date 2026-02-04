@@ -89,6 +89,8 @@ pub enum ShardResponse {
     KeyCount(usize),
     /// Full stats for a shard (INFO).
     Stats(KeyspaceStats),
+    /// Command used against a key holding the wrong kind of value.
+    WrongType,
     /// An error message.
     Err(String),
 }
@@ -296,7 +298,10 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
 /// Executes a single request against the keyspace.
 fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
     match req {
-        ShardRequest::Get { key } => ShardResponse::Value(ks.get(key)),
+        ShardRequest::Get { key } => match ks.get(key) {
+            Ok(val) => ShardResponse::Value(val),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::Set { key, value, expire } => {
             match ks.set(key.clone(), value.clone(), *expire) {
                 SetResult::Ok => ShardResponse::Ok,
@@ -409,8 +414,11 @@ fn write_snapshot(
     let mut count = 0u32;
 
     for (key, value, ttl_ms) in keyspace.iter_entries() {
+        // only persist string values for now — list and sorted set
+        // persistence is added in later commits
         let value_bytes = match value {
             Value::String(data) => data.clone(),
+            _ => continue,
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
