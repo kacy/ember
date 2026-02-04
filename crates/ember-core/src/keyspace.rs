@@ -30,6 +30,17 @@ impl std::fmt::Display for WrongType {
 
 impl std::error::Error for WrongType {}
 
+/// Result of a ZADD operation, containing both the client-facing count
+/// and the list of members that were actually applied (for AOF correctness).
+#[derive(Debug, Clone)]
+pub struct ZAddResult {
+    /// Number of members added (or added+updated if CH flag was set).
+    pub count: usize,
+    /// Members that were actually inserted or had their score updated.
+    /// Only these should be persisted to the AOF.
+    pub applied: Vec<(f64, String)>,
+}
+
 /// How the keyspace should handle writes when the memory limit is reached.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EvictionPolicy {
@@ -598,15 +609,16 @@ impl Keyspace {
 
     /// Adds members with scores to a sorted set, with optional ZADD flags.
     ///
-    /// Creates the sorted set if the key doesn't exist. Returns the number
-    /// of members added (or added + changed if the CH flag is set).
+    /// Creates the sorted set if the key doesn't exist. Returns a
+    /// `ZAddResult` containing the count for the client response and the
+    /// list of members that were actually applied (for AOF correctness).
     /// Returns `Err(WrongType)` if the key holds a non-sorted-set value.
     pub fn zadd(
         &mut self,
         key: &str,
         members: &[(f64, String)],
         flags: &ZAddFlags,
-    ) -> Result<usize, WrongType> {
+    ) -> Result<ZAddResult, WrongType> {
         self.remove_if_expired(key);
 
         let is_new = !self.entries.contains_key(key);
@@ -625,9 +637,13 @@ impl Keyspace {
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let mut count = 0;
+        let mut applied = Vec::new();
         if let Value::SortedSet(ref mut ss) = entry.value {
             for (score, member) in members {
                 let result = ss.add_with_flags(member.clone(), *score, flags);
+                if result.added || result.updated {
+                    applied.push((*score, member.clone()));
+                }
                 if flags.ch {
                     if result.added || result.updated {
                         count += 1;
@@ -642,7 +658,16 @@ impl Keyspace {
         let new_entry_size = memory::entry_size(key, &entry.value);
         self.memory.adjust(old_entry_size, new_entry_size);
 
-        Ok(count)
+        // clean up if the set is still empty (e.g. XX on a new key)
+        if let Value::SortedSet(ref ss) = entry.value {
+            if ss.is_empty() {
+                self.memory
+                    .remove_with_size(memory::entry_size(key, &entry.value));
+                self.entries.remove(key);
+            }
+        }
+
+        Ok(ZAddResult { count, applied })
     }
 
     /// Removes members from a sorted set. Returns the number of members
@@ -1415,10 +1440,11 @@ mod tests {
     #[test]
     fn zadd_creates_sorted_set() {
         let mut ks = Keyspace::new();
-        let added = ks
+        let result = ks
             .zadd("board", &[(100.0, "alice".into()), (200.0, "bob".into())], &ZAddFlags::default())
             .unwrap();
-        assert_eq!(added, 2);
+        assert_eq!(result.count, 2);
+        assert_eq!(result.applied.len(), 2);
         assert_eq!(ks.value_type("board"), "zset");
     }
 
@@ -1427,8 +1453,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
         // update score — default flags don't count updates
-        let added = ks.zadd("z", &[(200.0, "alice".into())], &ZAddFlags::default()).unwrap();
-        assert_eq!(added, 0);
+        let result = ks.zadd("z", &[(200.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        assert_eq!(result.count, 0);
+        // score was updated, so applied should have the member
+        assert_eq!(result.applied.len(), 1);
         assert_eq!(ks.zscore("z", "alice").unwrap(), Some(200.0));
     }
 
@@ -1437,9 +1465,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
         let flags = ZAddFlags { ch: true, ..Default::default() };
-        let changed = ks.zadd("z", &[(200.0, "alice".into()), (50.0, "bob".into())], &flags).unwrap();
+        let result = ks.zadd("z", &[(200.0, "alice".into()), (50.0, "bob".into())], &flags).unwrap();
         // 1 updated + 1 added = 2
-        assert_eq!(changed, 2);
+        assert_eq!(result.count, 2);
+        assert_eq!(result.applied.len(), 2);
     }
 
     #[test]
@@ -1447,8 +1476,9 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
         let flags = ZAddFlags { nx: true, ..Default::default() };
-        let added = ks.zadd("z", &[(999.0, "alice".into())], &flags).unwrap();
-        assert_eq!(added, 0);
+        let result = ks.zadd("z", &[(999.0, "alice".into())], &flags).unwrap();
+        assert_eq!(result.count, 0);
+        assert!(result.applied.is_empty());
         assert_eq!(ks.zscore("z", "alice").unwrap(), Some(100.0));
     }
 
@@ -1456,12 +1486,11 @@ mod tests {
     fn zadd_xx_skips_new() {
         let mut ks = Keyspace::new();
         let flags = ZAddFlags { xx: true, ..Default::default() };
-        let added = ks.zadd("z", &[(100.0, "alice".into())], &flags).unwrap();
-        assert_eq!(added, 0);
-        // key shouldn't exist — nothing was added and the empty set was cleaned up
-        // actually the key was created as empty SortedSet, so let's verify
-        // that zscore returns None since no members exist
-        assert_eq!(ks.zscore("z", "alice").unwrap(), None);
+        let result = ks.zadd("z", &[(100.0, "alice".into())], &flags).unwrap();
+        assert_eq!(result.count, 0);
+        assert!(result.applied.is_empty());
+        // key should be cleaned up since nothing was added
+        assert_eq!(ks.value_type("z"), "none");
     }
 
     #[test]

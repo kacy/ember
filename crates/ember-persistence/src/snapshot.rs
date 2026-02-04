@@ -12,11 +12,14 @@
 //! [footer_crc32: 4B]
 //! ```
 //!
-//! Each entry:
+//! Each entry (v2, type-tagged):
 //! ```text
-//! [key_len: 4B][key][value_len: 4B][value][expire_ms: 8B]
+//! [key_len: 4B][key][type_tag: 1B][type-specific payload][expire_ms: 8B]
 //! ```
+//!
+//! Type tags: 0=string, 1=list, 2=sorted set.
 //! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
+//! v1 entries (no type tag) are still readable for backward compatibility.
 
 use std::collections::VecDeque;
 use std::fs::{self, File};

@@ -148,6 +148,8 @@ pub enum ShardResponse {
     Array(Vec<Bytes>),
     /// The type name of a stored value.
     TypeName(&'static str),
+    /// ZADD result: count for the client + actually applied members for AOF.
+    ZAddLen { count: usize, applied: Vec<(f64, String)> },
     /// Float score result (e.g. ZSCORE).
     Score(Option<f64>),
     /// Rank result (e.g. ZRANK).
@@ -417,7 +419,10 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
                 nx: *nx, xx: *xx, gt: *gt, lt: *lt, ch: *ch,
             };
             match ks.zadd(key, members, &flags) {
-                Ok(count) => ShardResponse::Len(count),
+                Ok(result) => ShardResponse::ZAddLen {
+                    count: result.count,
+                    applied: result.applied,
+                },
                 Err(_) => ShardResponse::WrongType,
             }
         }
@@ -488,10 +493,12 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
         (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
             Some(AofRecord::RPop { key: key.clone() })
         }
-        (ShardRequest::ZAdd { key, members, .. }, ShardResponse::Len(_)) => {
+        (ShardRequest::ZAdd { key, .. }, ShardResponse::ZAddLen { applied, .. })
+            if !applied.is_empty() =>
+        {
             Some(AofRecord::ZAdd {
                 key: key.clone(),
-                members: members.clone(),
+                members: applied.clone(),
             })
         }
         (ShardRequest::ZRem { key, members, .. }, ShardResponse::Len(n)) if *n > 0 => {

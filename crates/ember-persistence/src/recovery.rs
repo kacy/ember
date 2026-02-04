@@ -7,7 +7,7 @@
 //! 4. If no files exist, start with an empty state.
 //! 5. If files are corrupt, log a warning and start empty.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -230,11 +230,18 @@ fn replay_aof(
                     .entry(key)
                     .or_insert_with(|| (RecoveredValue::SortedSet(Vec::new()), None));
                 if let RecoveredValue::SortedSet(ref mut existing) = entry.0 {
+                    // build a position index for O(1) member lookups
+                    let mut index: HashMap<String, usize> = existing
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, m))| (m.clone(), i))
+                        .collect();
                     for (score, member) in members {
-                        // update existing member or add new one
-                        if let Some(pos) = existing.iter().position(|(_, m)| m == &member) {
+                        if let Some(&pos) = index.get(&member) {
                             existing[pos].0 = score;
                         } else {
+                            let pos = existing.len();
+                            index.insert(member.clone(), pos);
                             existing.push((score, member));
                         }
                     }
@@ -243,7 +250,9 @@ fn replay_aof(
             AofRecord::ZRem { key, members } => {
                 if let Some(entry) = map.get_mut(&key) {
                     if let RecoveredValue::SortedSet(ref mut existing) = entry.0 {
-                        existing.retain(|(_, m)| !members.contains(m));
+                        let to_remove: HashSet<&str> =
+                            members.iter().map(|m| m.as_str()).collect();
+                        existing.retain(|(_, m)| !to_remove.contains(m.as_str()));
                         if existing.is_empty() {
                             map.remove(&key);
                             count += 1;

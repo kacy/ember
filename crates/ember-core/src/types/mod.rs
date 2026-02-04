@@ -36,15 +36,16 @@ impl PartialEq for Value {
         match (self, other) {
             (Value::String(a), Value::String(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
-            // sorted sets don't need equality comparison in practice,
-            // but we satisfy the trait by comparing member count
-            (Value::SortedSet(a), Value::SortedSet(b)) => a.len() == b.len(),
+            (Value::SortedSet(a), Value::SortedSet(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|((m1, s1), (m2, s2))| m1 == m2 && s1 == s2)
+            }
             _ => false,
         }
     }
 }
-
-impl Eq for Value {}
 
 /// Returns the type name for a value, matching Redis TYPE command output.
 pub fn type_name(value: &Value) -> &'static str {

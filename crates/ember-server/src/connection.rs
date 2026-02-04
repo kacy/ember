@@ -317,7 +317,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                 ch: flags.ch,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::ZAddLen { count, .. }) => Frame::Integer(count as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
