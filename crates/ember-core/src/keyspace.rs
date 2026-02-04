@@ -263,7 +263,7 @@ impl Keyspace {
             return false;
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // randomly sample keys and find the least recently accessed one
         let victim = self
@@ -791,7 +791,7 @@ impl Keyspace {
             return 0;
         }
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         let keys_to_check: Vec<String> = self
             .entries

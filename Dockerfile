@@ -1,4 +1,4 @@
-FROM rust:1.85-slim AS builder
+FROM rust:1.93-slim AS builder
 
 WORKDIR /usr/src/ember
 COPY . .
@@ -7,7 +7,7 @@ RUN cargo build --release --bin ember-server
 
 # ---
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
