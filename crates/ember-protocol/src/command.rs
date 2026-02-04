@@ -19,7 +19,7 @@ pub enum SetExpire {
 }
 
 /// A parsed client command, ready for execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// PING with an optional message. Returns PONG or echoes the message.
     Ping(Option<Bytes>),
@@ -82,9 +82,50 @@ pub enum Command {
     /// TYPE <key>. Returns the type of the value stored at key.
     Type { key: String },
 
+    /// ZADD <key> [NX|XX] [GT|LT] [CH] <score> <member> [score member ...].
+    ZAdd {
+        key: String,
+        flags: ZAddFlags,
+        members: Vec<(f64, String)>,
+    },
+
+    /// ZREM <key> <member> [member ...]. Removes members from a sorted set.
+    ZRem { key: String, members: Vec<String> },
+
+    /// ZSCORE <key> <member>. Returns the score of a member.
+    ZScore { key: String, member: String },
+
+    /// ZRANK <key> <member>. Returns the rank of a member (0-based).
+    ZRank { key: String, member: String },
+
+    /// ZRANGE <key> <start> <stop> [WITHSCORES]. Returns a range by rank.
+    ZRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
+
+/// Flags for the ZADD command.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ZAddFlags {
+    /// Only add new members, don't update existing scores.
+    pub nx: bool,
+    /// Only update existing members, don't add new ones.
+    pub xx: bool,
+    /// Only update when new score > current score.
+    pub gt: bool,
+    /// Only update when new score < current score.
+    pub lt: bool,
+    /// Return count of changed members (added + updated) instead of just added.
+    pub ch: bool,
+}
+
+impl Eq for ZAddFlags {}
 
 impl Command {
     /// Parses a [`Frame`] into a [`Command`].
@@ -130,6 +171,11 @@ impl Command {
             "LRANGE" => parse_lrange(&frames[1..]),
             "LLEN" => parse_llen(&frames[1..]),
             "TYPE" => parse_type(&frames[1..]),
+            "ZADD" => parse_zadd(&frames[1..]),
+            "ZREM" => parse_zrem(&frames[1..]),
+            "ZSCORE" => parse_zscore(&frames[1..]),
+            "ZRANK" => parse_zrank(&frames[1..]),
+            "ZRANGE" => parse_zrange(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -384,6 +430,130 @@ fn parse_type(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Type { key })
+}
+
+/// Parses a string argument as an f64 score.
+fn parse_f64(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
+    let s = extract_string(frame)?;
+    let v = s.parse::<f64>().map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!("value is not a valid float for '{cmd}'"))
+    })?;
+    if v.is_nan() {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "NaN is not a valid score for '{cmd}'"
+        )));
+    }
+    Ok(v)
+}
+
+fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // ZADD key [NX|XX] [GT|LT] [CH] score member [score member ...]
+    if args.len() < 3 {
+        return Err(ProtocolError::WrongArity("ZADD".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+    let mut flags = ZAddFlags::default();
+    let mut idx = 1;
+
+    // parse optional flags before score/member pairs
+    while idx < args.len() {
+        let s = extract_string(&args[idx])?.to_ascii_uppercase();
+        match s.as_str() {
+            "NX" => { flags.nx = true; idx += 1; }
+            "XX" => { flags.xx = true; idx += 1; }
+            "GT" => { flags.gt = true; idx += 1; }
+            "LT" => { flags.lt = true; idx += 1; }
+            "CH" => { flags.ch = true; idx += 1; }
+            _ => break,
+        }
+    }
+
+    // NX and XX are mutually exclusive
+    if flags.nx && flags.xx {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "XX and NX options at the same time are not compatible".into(),
+        ));
+    }
+    // GT and LT are mutually exclusive
+    if flags.gt && flags.lt {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "GT and LT options at the same time are not compatible".into(),
+        ));
+    }
+
+    // remaining args must be score/member pairs
+    let remaining = &args[idx..];
+    if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
+        return Err(ProtocolError::WrongArity("ZADD".into()));
+    }
+
+    let mut members = Vec::with_capacity(remaining.len() / 2);
+    for pair in remaining.chunks(2) {
+        let score = parse_f64(&pair[0], "ZADD")?;
+        let member = extract_string(&pair[1])?;
+        members.push((score, member));
+    }
+
+    Ok(Command::ZAdd { key, flags, members })
+}
+
+fn parse_zrem(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("ZREM".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let members = args[1..]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::ZRem { key, members })
+}
+
+fn parse_zscore(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("ZSCORE".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let member = extract_string(&args[1])?;
+    Ok(Command::ZScore { key, member })
+}
+
+fn parse_zrank(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("ZRANK".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let member = extract_string(&args[1])?;
+    Ok(Command::ZRank { key, member })
+}
+
+fn parse_zrange(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 || args.len() > 4 {
+        return Err(ProtocolError::WrongArity("ZRANGE".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let start = parse_i64(&args[1], "ZRANGE")?;
+    let stop = parse_i64(&args[2], "ZRANGE")?;
+
+    let with_scores = if args.len() == 4 {
+        let opt = extract_string(&args[3])?.to_ascii_uppercase();
+        if opt != "WITHSCORES" {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "unsupported ZRANGE option '{opt}'"
+            )));
+        }
+        true
+    } else {
+        false
+    };
+
+    Ok(Command::ZRange {
+        key,
+        start,
+        stop,
+        with_scores,
+    })
 }
 
 #[cfg(test)]
@@ -935,5 +1105,239 @@ mod tests {
     fn empty_array() {
         let err = Command::from_frame(Frame::Array(vec![])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- zadd ---
+
+    #[test]
+    fn zadd_basic() {
+        let parsed = Command::from_frame(cmd(&["ZADD", "board", "100", "alice"])).unwrap();
+        match parsed {
+            Command::ZAdd { key, flags, members } => {
+                assert_eq!(key, "board");
+                assert_eq!(flags, ZAddFlags::default());
+                assert_eq!(members, vec![(100.0, "alice".into())]);
+            }
+            other => panic!("expected ZAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zadd_multiple_members() {
+        let parsed = Command::from_frame(
+            cmd(&["ZADD", "board", "100", "alice", "200", "bob"]),
+        )
+        .unwrap();
+        match parsed {
+            Command::ZAdd { members, .. } => {
+                assert_eq!(members.len(), 2);
+                assert_eq!(members[0], (100.0, "alice".into()));
+                assert_eq!(members[1], (200.0, "bob".into()));
+            }
+            other => panic!("expected ZAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zadd_with_flags() {
+        let parsed = Command::from_frame(
+            cmd(&["ZADD", "z", "NX", "CH", "100", "alice"]),
+        )
+        .unwrap();
+        match parsed {
+            Command::ZAdd { flags, .. } => {
+                assert!(flags.nx);
+                assert!(flags.ch);
+                assert!(!flags.xx);
+                assert!(!flags.gt);
+                assert!(!flags.lt);
+            }
+            other => panic!("expected ZAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zadd_gt_flag() {
+        let parsed = Command::from_frame(
+            cmd(&["zadd", "z", "gt", "100", "alice"]),
+        )
+        .unwrap();
+        match parsed {
+            Command::ZAdd { flags, .. } => assert!(flags.gt),
+            other => panic!("expected ZAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zadd_nx_xx_conflict() {
+        let err = Command::from_frame(
+            cmd(&["ZADD", "z", "NX", "XX", "100", "alice"]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn zadd_gt_lt_conflict() {
+        let err = Command::from_frame(
+            cmd(&["ZADD", "z", "GT", "LT", "100", "alice"]),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn zadd_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ZADD", "z"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn zadd_odd_score_member_count() {
+        // one score without a member
+        let err = Command::from_frame(cmd(&["ZADD", "z", "100"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn zadd_invalid_score() {
+        let err = Command::from_frame(cmd(&["ZADD", "z", "notanum", "alice"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn zadd_nan_score() {
+        let err = Command::from_frame(cmd(&["ZADD", "z", "nan", "alice"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn zadd_negative_score() {
+        let parsed = Command::from_frame(cmd(&["ZADD", "z", "-50.5", "alice"])).unwrap();
+        match parsed {
+            Command::ZAdd { members, .. } => {
+                assert_eq!(members[0].0, -50.5);
+            }
+            other => panic!("expected ZAdd, got {other:?}"),
+        }
+    }
+
+    // --- zrem ---
+
+    #[test]
+    fn zrem_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZREM", "z", "alice"])).unwrap(),
+            Command::ZRem {
+                key: "z".into(),
+                members: vec!["alice".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn zrem_multiple() {
+        let parsed = Command::from_frame(cmd(&["ZREM", "z", "a", "b", "c"])).unwrap();
+        match parsed {
+            Command::ZRem { members, .. } => assert_eq!(members.len(), 3),
+            other => panic!("expected ZRem, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zrem_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ZREM", "z"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- zscore ---
+
+    #[test]
+    fn zscore_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZSCORE", "z", "alice"])).unwrap(),
+            Command::ZScore {
+                key: "z".into(),
+                member: "alice".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn zscore_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ZSCORE", "z"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- zrank ---
+
+    #[test]
+    fn zrank_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZRANK", "z", "alice"])).unwrap(),
+            Command::ZRank {
+                key: "z".into(),
+                member: "alice".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn zrank_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ZRANK", "z"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- zrange ---
+
+    #[test]
+    fn zrange_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZRANGE", "z", "0", "-1"])).unwrap(),
+            Command::ZRange {
+                key: "z".into(),
+                start: 0,
+                stop: -1,
+                with_scores: false,
+            },
+        );
+    }
+
+    #[test]
+    fn zrange_with_scores() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZRANGE", "z", "0", "-1", "WITHSCORES"])).unwrap(),
+            Command::ZRange {
+                key: "z".into(),
+                start: 0,
+                stop: -1,
+                with_scores: true,
+            },
+        );
+    }
+
+    #[test]
+    fn zrange_withscores_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["zrange", "z", "0", "-1", "withscores"])).unwrap(),
+            Command::ZRange {
+                key: "z".into(),
+                start: 0,
+                stop: -1,
+                with_scores: true,
+            },
+        );
+    }
+
+    #[test]
+    fn zrange_invalid_option() {
+        let err = Command::from_frame(cmd(&["ZRANGE", "z", "0", "-1", "BADOPT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn zrange_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ZRANGE", "z", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

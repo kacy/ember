@@ -32,9 +32,11 @@ const TAG_LPUSH: u8 = 4;
 const TAG_RPUSH: u8 = 5;
 const TAG_LPOP: u8 = 6;
 const TAG_RPOP: u8 = 7;
+const TAG_ZADD: u8 = 8;
+const TAG_ZREM: u8 = 9;
 
 /// A single mutation record stored in the AOF.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AofRecord {
     /// SET key value [expire_ms]. expire_ms is -1 for no expiration.
     Set {
@@ -54,6 +56,16 @@ pub enum AofRecord {
     LPop { key: String },
     /// RPOP key.
     RPop { key: String },
+    /// ZADD key score member [score member ...].
+    ZAdd {
+        key: String,
+        members: Vec<(f64, String)>,
+    },
+    /// ZREM key member [member ...].
+    ZRem {
+        key: String,
+        members: Vec<String>,
+    },
 }
 
 impl AofRecord {
@@ -103,6 +115,23 @@ impl AofRecord {
             AofRecord::RPop { key } => {
                 format::write_u8(&mut buf, TAG_RPOP).expect("vec write");
                 format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+            }
+            AofRecord::ZAdd { key, members } => {
+                format::write_u8(&mut buf, TAG_ZADD).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                for (score, member) in members {
+                    format::write_f64(&mut buf, *score).expect("vec write");
+                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                }
+            }
+            AofRecord::ZRem { key, members } => {
+                format::write_u8(&mut buf, TAG_ZREM).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                for member in members {
+                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                }
             }
         }
         buf
@@ -182,6 +211,47 @@ impl AofRecord {
                         "key is not valid utf-8",
                     )))?;
                 Ok(AofRecord::RPop { key })
+            }
+            TAG_ZADD => {
+                let key_bytes = format::read_bytes(&mut cursor)?;
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|_| FormatError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "key is not valid utf-8",
+                    )))?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut members = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let score = format::read_f64(&mut cursor)?;
+                    let member_bytes = format::read_bytes(&mut cursor)?;
+                    let member = String::from_utf8(member_bytes)
+                        .map_err(|_| FormatError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "member is not valid utf-8",
+                        )))?;
+                    members.push((score, member));
+                }
+                Ok(AofRecord::ZAdd { key, members })
+            }
+            TAG_ZREM => {
+                let key_bytes = format::read_bytes(&mut cursor)?;
+                let key = String::from_utf8(key_bytes)
+                    .map_err(|_| FormatError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "key is not valid utf-8",
+                    )))?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut members = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let member_bytes = format::read_bytes(&mut cursor)?;
+                    let member = String::from_utf8(member_bytes)
+                        .map_err(|_| FormatError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "member is not valid utf-8",
+                        )))?;
+                    members.push(member);
+                }
+                Ok(AofRecord::ZRem { key, members })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }
@@ -356,6 +426,28 @@ impl AofReader {
             TAG_LPOP | TAG_RPOP => {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key).expect("vec write");
+            }
+            TAG_ZADD => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
+                let count = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, count).expect("vec write");
+                for _ in 0..count {
+                    let score = format::read_f64(&mut self.reader)?;
+                    format::write_f64(&mut payload, score).expect("vec write");
+                    let member = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut payload, &member).expect("vec write");
+                }
+            }
+            TAG_ZREM => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
+                let count = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, count).expect("vec write");
+                for _ in 0..count {
+                    let member = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut payload, &member).expect("vec write");
+                }
             }
             _ => return Err(FormatError::UnknownTag(tag)),
         }
@@ -637,6 +729,60 @@ mod tests {
             },
             AofRecord::LPop { key: "l".into() },
             AofRecord::RPop { key: "l".into() },
+        ];
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            for rec in &records {
+                writer.write_record(rec).unwrap();
+            }
+            writer.sync().unwrap();
+        }
+
+        let mut reader = AofReader::open(&path).unwrap();
+        let mut got = Vec::new();
+        while let Some(rec) = reader.read_record().unwrap() {
+            got.push(rec);
+        }
+        assert_eq!(records, got);
+    }
+
+    #[test]
+    fn record_round_trip_zadd() {
+        let rec = AofRecord::ZAdd {
+            key: "board".into(),
+            members: vec![(100.0, "alice".into()), (200.5, "bob".into())],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_zrem() {
+        let rec = AofRecord::ZRem {
+            key: "board".into(),
+            members: vec!["alice".into(), "bob".into()],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn writer_reader_round_trip_with_sorted_set_records() {
+        let dir = temp_dir();
+        let path = dir.path().join("zset.aof");
+
+        let records = vec![
+            AofRecord::ZAdd {
+                key: "board".into(),
+                members: vec![(100.0, "alice".into()), (200.0, "bob".into())],
+            },
+            AofRecord::ZRem {
+                key: "board".into(),
+                members: vec!["alice".into()],
+            },
         ];
 
         {

@@ -7,7 +7,7 @@
 //! 4. If no files exist, start with an empty state.
 //! 5. If files are corrupt, log a warning and start empty.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,8 @@ use crate::snapshot::{self, SnapValue, SnapshotReader};
 pub enum RecoveredValue {
     String(Bytes),
     List(VecDeque<Bytes>),
+    /// Sorted set stored as (score, member) pairs.
+    SortedSet(Vec<(f64, String)>),
 }
 
 impl From<SnapValue> for RecoveredValue {
@@ -30,6 +32,7 @@ impl From<SnapValue> for RecoveredValue {
         match sv {
             SnapValue::String(data) => RecoveredValue::String(data),
             SnapValue::List(deque) => RecoveredValue::List(deque),
+            SnapValue::SortedSet(members) => RecoveredValue::SortedSet(members),
         }
     }
 }
@@ -215,6 +218,42 @@ fn replay_aof(
                     if let RecoveredValue::List(ref mut deque) = entry.0 {
                         deque.pop_back();
                         if deque.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            AofRecord::ZAdd { key, members } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::SortedSet(Vec::new()), None));
+                if let RecoveredValue::SortedSet(ref mut existing) = entry.0 {
+                    // build a position index for O(1) member lookups
+                    let mut index: HashMap<String, usize> = existing
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, m))| (m.clone(), i))
+                        .collect();
+                    for (score, member) in members {
+                        if let Some(&pos) = index.get(&member) {
+                            existing[pos].0 = score;
+                        } else {
+                            let pos = existing.len();
+                            index.insert(member.clone(), pos);
+                            existing.push((score, member));
+                        }
+                    }
+                }
+            }
+            AofRecord::ZRem { key, members } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::SortedSet(ref mut existing) = entry.0 {
+                        let to_remove: HashSet<&str> =
+                            members.iter().map(|m| m.as_str()).collect();
+                        existing.retain(|(_, m)| !to_remove.contains(m.as_str()));
+                        if existing.is_empty() {
                             map.remove(&key);
                             count += 1;
                             continue;
@@ -426,6 +465,99 @@ mod tests {
 
         let result = recover_shard(dir.path(), 0);
         assert!(!result.loaded_snapshot);
+        assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn sorted_set_snapshot_recovery() {
+        let dir = temp_dir();
+        let path = snapshot::snapshot_path(dir.path(), 0);
+
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            writer
+                .write_entry(&SnapEntry {
+                    key: "board".into(),
+                    value: SnapValue::SortedSet(vec![
+                        (100.0, "alice".into()),
+                        (200.0, "bob".into()),
+                    ]),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer.finish().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.loaded_snapshot);
+        assert_eq!(result.entries.len(), 1);
+        match &result.entries[0].value {
+            RecoveredValue::SortedSet(members) => {
+                assert_eq!(members.len(), 2);
+                assert!(members.contains(&(100.0, "alice".into())));
+                assert!(members.contains(&(200.0, "bob".into())));
+            }
+            other => panic!("expected SortedSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sorted_set_aof_replay() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::ZAdd {
+                    key: "board".into(),
+                    members: vec![(100.0, "alice".into()), (200.0, "bob".into())],
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::ZRem {
+                    key: "board".into(),
+                    members: vec!["alice".into()],
+                })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.replayed_aof);
+        assert_eq!(result.entries.len(), 1);
+        match &result.entries[0].value {
+            RecoveredValue::SortedSet(members) => {
+                assert_eq!(members.len(), 1);
+                assert_eq!(members[0], (200.0, "bob".into()));
+            }
+            other => panic!("expected SortedSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sorted_set_zrem_auto_deletes_empty() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::ZAdd {
+                    key: "board".into(),
+                    members: vec![(100.0, "alice".into())],
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::ZRem {
+                    key: "board".into(),
+                    members: vec!["alice".into()],
+                })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
         assert!(result.entries.is_empty());
     }
 
