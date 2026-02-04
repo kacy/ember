@@ -67,6 +67,9 @@ pub struct SnapshotWriter {
     /// Running CRC over all entry bytes for the footer checksum.
     hasher: crc32fast::Hasher,
     count: u32,
+    /// Set to `true` after a successful `finish()`. Used by the `Drop`
+    /// impl to clean up incomplete temp files.
+    finished: bool,
 }
 
 impl SnapshotWriter {
@@ -92,6 +95,7 @@ impl SnapshotWriter {
             writer,
             hasher: crc32fast::Hasher::new(),
             count: 0,
+            finished: false,
         })
     }
 
@@ -131,15 +135,15 @@ impl SnapshotWriter {
     /// Finalizes the snapshot: writes the footer CRC, flushes, and
     /// atomically renames the temp file to the final path.
     pub fn finish(mut self) -> Result<(), FormatError> {
-        // write footer CRC
-        let checksum = self.hasher.finalize();
+        // write footer CRC — clone the hasher so we don't move out of self
+        let checksum = self.hasher.clone().finalize();
         format::write_u32(&mut self.writer, checksum)?;
         self.writer.flush()?;
         self.writer.get_ref().sync_all()?;
 
-        // now rewrite the header with the correct entry count.
-        // reopen the tmp file for random access write.
-        drop(self.writer);
+        // rewrite the header with the correct entry count.
+        // open a second handle for the seek — the BufWriter is already
+        // flushed and synced above.
         {
             use std::io::{Seek, SeekFrom};
             let mut file = fs::OpenOptions::new().write(true).open(&self.tmp_path)?;
@@ -151,7 +155,17 @@ impl SnapshotWriter {
 
         // atomic rename
         fs::rename(&self.tmp_path, &self.final_path)?;
+        self.finished = true;
         Ok(())
+    }
+}
+
+impl Drop for SnapshotWriter {
+    fn drop(&mut self) {
+        if !self.finished {
+            // best-effort cleanup of incomplete temp file
+            let _ = fs::remove_file(&self.tmp_path);
+        }
     }
 }
 
@@ -417,6 +431,10 @@ mod tests {
         let mut reader = SnapshotReader::open(&path).unwrap();
         let entry = reader.read_entry().unwrap().unwrap();
         assert_eq!(entry.key, "original");
+
+        // the tmp file should have been cleaned up by Drop
+        let tmp = path.with_extension("snap.tmp");
+        assert!(!tmp.exists(), "drop should clean up incomplete tmp file");
     }
 
     #[test]
