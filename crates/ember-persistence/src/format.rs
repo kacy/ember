@@ -15,7 +15,10 @@ pub const AOF_MAGIC: &[u8; 4] = b"EAOF";
 pub const SNAP_MAGIC: &[u8; 4] = b"ESNP";
 
 /// Current format version for both AOF and snapshot files.
-pub const FORMAT_VERSION: u8 = 1;
+///
+/// v1: original format (strings only)
+/// v2: type-tagged entries (string, list, sorted set)
+pub const FORMAT_VERSION: u8 = 2;
 
 /// Errors that can occur when reading or writing persistence formats.
 #[derive(Debug, Error)]
@@ -134,18 +137,18 @@ pub fn write_header(w: &mut impl Write, magic: &[u8; 4]) -> io::Result<()> {
 }
 
 /// Reads and validates a file header. Returns an error if magic doesn't
-/// match or version is unsupported.
-pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<(), FormatError> {
+/// match or version is unsupported. Returns the format version.
+pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<u8, FormatError> {
     let mut magic = [0u8; 4];
     read_exact(r, &mut magic)?;
     if &magic != expected_magic {
         return Err(FormatError::InvalidMagic);
     }
     let version = read_u8(r)?;
-    if version != FORMAT_VERSION {
+    if version == 0 || version > FORMAT_VERSION {
         return Err(FormatError::UnsupportedVersion(version));
     }
-    Ok(())
+    Ok(version)
 }
 
 /// Verifies that `data` matches the expected CRC32 checksum.

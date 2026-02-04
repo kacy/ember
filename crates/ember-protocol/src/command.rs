@@ -61,6 +61,27 @@ pub enum Command {
     /// BGREWRITEAOF. Triggers an AOF rewrite (snapshot + truncate).
     BgRewriteAof,
 
+    /// LPUSH <key> <value> [value ...]. Pushes values to the head of a list.
+    LPush { key: String, values: Vec<Bytes> },
+
+    /// RPUSH <key> <value> [value ...]. Pushes values to the tail of a list.
+    RPush { key: String, values: Vec<Bytes> },
+
+    /// LPOP <key>. Pops a value from the head of a list.
+    LPop { key: String },
+
+    /// RPOP <key>. Pops a value from the tail of a list.
+    RPop { key: String },
+
+    /// LRANGE <key> <start> <stop>. Returns a range of elements by index.
+    LRange { key: String, start: i64, stop: i64 },
+
+    /// LLEN <key>. Returns the length of a list.
+    LLen { key: String },
+
+    /// TYPE <key>. Returns the type of the value stored at key.
+    Type { key: String },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -102,6 +123,13 @@ impl Command {
             "INFO" => parse_info(&frames[1..]),
             "BGSAVE" => parse_bgsave(&frames[1..]),
             "BGREWRITEAOF" => parse_bgrewriteaof(&frames[1..]),
+            "LPUSH" => parse_lpush(&frames[1..]),
+            "RPUSH" => parse_rpush(&frames[1..]),
+            "LPOP" => parse_lpop(&frames[1..]),
+            "RPOP" => parse_rpop(&frames[1..]),
+            "LRANGE" => parse_lrange(&frames[1..]),
+            "LLEN" => parse_llen(&frames[1..]),
+            "TYPE" => parse_type(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -282,6 +310,80 @@ fn parse_bgrewriteaof(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("BGREWRITEAOF".into()));
     }
     Ok(Command::BgRewriteAof)
+}
+
+/// Parses a string argument as an i64. Used by LRANGE for start/stop indices.
+fn parse_i64(frame: &Frame, cmd: &str) -> Result<i64, ProtocolError> {
+    let s = extract_string(frame)?;
+    s.parse::<i64>().map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!("value is not a valid integer for '{cmd}'"))
+    })
+}
+
+fn parse_lpush(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("LPUSH".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let values = args[1..]
+        .iter()
+        .map(extract_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::LPush { key, values })
+}
+
+fn parse_rpush(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("RPUSH".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let values = args[1..]
+        .iter()
+        .map(extract_bytes)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::RPush { key, values })
+}
+
+fn parse_lpop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("LPOP".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::LPop { key })
+}
+
+fn parse_rpop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("RPOP".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::RPop { key })
+}
+
+fn parse_lrange(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(ProtocolError::WrongArity("LRANGE".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let start = parse_i64(&args[1], "LRANGE")?;
+    let stop = parse_i64(&args[2], "LRANGE")?;
+    Ok(Command::LRange { key, start, stop })
+}
+
+fn parse_llen(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("LLEN".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::LLen { key })
+}
+
+fn parse_type(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("TYPE".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Type { key })
 }
 
 #[cfg(test)]
@@ -662,6 +764,155 @@ mod tests {
     fn bgrewriteaof_extra_args() {
         let err = Command::from_frame(cmd(&["BGREWRITEAOF", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- lpush ---
+
+    #[test]
+    fn lpush_single() {
+        assert_eq!(
+            Command::from_frame(cmd(&["LPUSH", "list", "val"])).unwrap(),
+            Command::LPush {
+                key: "list".into(),
+                values: vec![Bytes::from("val")],
+            },
+        );
+    }
+
+    #[test]
+    fn lpush_multiple() {
+        assert_eq!(
+            Command::from_frame(cmd(&["LPUSH", "list", "a", "b", "c"])).unwrap(),
+            Command::LPush {
+                key: "list".into(),
+                values: vec![Bytes::from("a"), Bytes::from("b"), Bytes::from("c")],
+            },
+        );
+    }
+
+    #[test]
+    fn lpush_no_value() {
+        let err = Command::from_frame(cmd(&["LPUSH", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn lpush_case_insensitive() {
+        assert!(matches!(
+            Command::from_frame(cmd(&["lpush", "k", "v"])).unwrap(),
+            Command::LPush { .. }
+        ));
+    }
+
+    // --- rpush ---
+
+    #[test]
+    fn rpush_single() {
+        assert_eq!(
+            Command::from_frame(cmd(&["RPUSH", "list", "val"])).unwrap(),
+            Command::RPush {
+                key: "list".into(),
+                values: vec![Bytes::from("val")],
+            },
+        );
+    }
+
+    #[test]
+    fn rpush_no_value() {
+        let err = Command::from_frame(cmd(&["RPUSH", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- lpop ---
+
+    #[test]
+    fn lpop_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["LPOP", "list"])).unwrap(),
+            Command::LPop { key: "list".into() },
+        );
+    }
+
+    #[test]
+    fn lpop_wrong_arity() {
+        let err = Command::from_frame(cmd(&["LPOP"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- rpop ---
+
+    #[test]
+    fn rpop_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["RPOP", "list"])).unwrap(),
+            Command::RPop { key: "list".into() },
+        );
+    }
+
+    // --- lrange ---
+
+    #[test]
+    fn lrange_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["LRANGE", "list", "0", "-1"])).unwrap(),
+            Command::LRange {
+                key: "list".into(),
+                start: 0,
+                stop: -1,
+            },
+        );
+    }
+
+    #[test]
+    fn lrange_wrong_arity() {
+        let err = Command::from_frame(cmd(&["LRANGE", "list", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn lrange_invalid_index() {
+        let err = Command::from_frame(cmd(&["LRANGE", "list", "abc", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- llen ---
+
+    #[test]
+    fn llen_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["LLEN", "list"])).unwrap(),
+            Command::LLen { key: "list".into() },
+        );
+    }
+
+    #[test]
+    fn llen_wrong_arity() {
+        let err = Command::from_frame(cmd(&["LLEN"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- type ---
+
+    #[test]
+    fn type_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["TYPE", "key"])).unwrap(),
+            Command::Type { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn type_wrong_arity() {
+        let err = Command::from_frame(cmd(&["TYPE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn type_case_insensitive() {
+        assert!(matches!(
+            Command::from_frame(cmd(&["type", "k"])).unwrap(),
+            Command::Type { .. }
+        ));
     }
 
     // --- general ---

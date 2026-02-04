@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ember_persistence::aof::{AofRecord, AofWriter, FsyncPolicy};
-use ember_persistence::recovery;
-use ember_persistence::snapshot::{self, SnapEntry, SnapshotWriter};
+use ember_persistence::recovery::{self, RecoveredValue};
+use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -62,6 +62,31 @@ pub enum ShardRequest {
     Ttl {
         key: String,
     },
+    LPush {
+        key: String,
+        values: Vec<Bytes>,
+    },
+    RPush {
+        key: String,
+        values: Vec<Bytes>,
+    },
+    LPop {
+        key: String,
+    },
+    RPop {
+        key: String,
+    },
+    LRange {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
+    LLen {
+        key: String,
+    },
+    Type {
+        key: String,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -89,6 +114,14 @@ pub enum ShardResponse {
     KeyCount(usize),
     /// Full stats for a shard (INFO).
     Stats(KeyspaceStats),
+    /// Integer length result (e.g. LPUSH, RPUSH, LLEN).
+    Len(usize),
+    /// Array of bulk values (e.g. LRANGE).
+    Array(Vec<Bytes>),
+    /// The type name of a stored value.
+    TypeName(&'static str),
+    /// Command used against a key holding the wrong kind of value.
+    WrongType,
     /// An error message.
     Err(String),
 }
@@ -167,7 +200,10 @@ async fn run_shard(
         let result = recovery::recover_shard(&pcfg.data_dir, shard_id);
         let count = result.entries.len();
         for entry in result.entries {
-            let value = Value::String(entry.value);
+            let value = match entry.value {
+                RecoveredValue::String(data) => Value::String(data),
+                RecoveredValue::List(deque) => Value::List(deque),
+            };
             keyspace.restore(entry.key, value, entry.expires_at);
         }
         if count > 0 {
@@ -296,7 +332,10 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
 /// Executes a single request against the keyspace.
 fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
     match req {
-        ShardRequest::Get { key } => ShardResponse::Value(ks.get(key)),
+        ShardRequest::Get { key } => match ks.get(key) {
+            Ok(val) => ShardResponse::Value(val),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::Set { key, value, expire } => {
             match ks.set(key.clone(), value.clone(), *expire) {
                 SetResult::Ok => ShardResponse::Ok,
@@ -307,6 +346,31 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
+        ShardRequest::LPush { key, values } => match ks.lpush(key, values) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::RPush { key, values } => match ks.rpush(key, values) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LPop { key } => match ks.lpop(key) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::RPop { key } => match ks.rpop(key) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LRange { key, start, stop } => match ks.lrange(key, *start, *stop) {
+            Ok(items) => ShardResponse::Array(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LLen { key } => match ks.llen(key) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::Type { key } => ShardResponse::TypeName(ks.value_type(key)),
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
         // snapshot/rewrite are handled in the main loop, not here
@@ -339,6 +403,24 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 key: key.clone(),
                 seconds: *seconds,
             })
+        }
+        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => {
+            Some(AofRecord::LPush {
+                key: key.clone(),
+                values: values.clone(),
+            })
+        }
+        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => {
+            Some(AofRecord::RPush {
+                key: key.clone(),
+                values: values.clone(),
+            })
+        }
+        (ShardRequest::LPop { key }, ShardResponse::Value(Some(_))) => {
+            Some(AofRecord::LPop { key: key.clone() })
+        }
+        (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
+            Some(AofRecord::RPop { key: key.clone() })
         }
         _ => None,
     }
@@ -409,12 +491,13 @@ fn write_snapshot(
     let mut count = 0u32;
 
     for (key, value, ttl_ms) in keyspace.iter_entries() {
-        let value_bytes = match value {
-            Value::String(data) => data.clone(),
+        let snap_value = match value {
+            Value::String(data) => SnapValue::String(data.clone()),
+            Value::List(deque) => SnapValue::List(deque.clone()),
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
-            value: value_bytes,
+            value: snap_value,
             expire_ms: ttl_ms,
         })?;
         count += 1;
