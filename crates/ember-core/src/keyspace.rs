@@ -13,7 +13,7 @@ use rand::seq::IteratorRandom;
 
 use crate::memory::{self, MemoryTracker};
 use crate::types::sorted_set::{SortedSet, ZAddFlags};
-use crate::types::{self, Value};
+use crate::types::{self, normalize_range, Value};
 
 /// Error returned when a command is used against a key holding the wrong type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -829,26 +829,6 @@ impl Keyspace {
         }
         expired
     }
-}
-
-/// Converts Redis-style indices (supporting negative values) to a
-/// clamped, non-negative (start, stop) pair. Returns (0, -1) for
-/// empty ranges.
-fn normalize_range(start: i64, stop: i64, len: i64) -> (i64, i64) {
-    if len == 0 {
-        return (0, -1);
-    }
-    let s = if start < 0 {
-        (len + start).max(0)
-    } else {
-        start.min(len - 1)
-    };
-    let e = if stop < 0 {
-        (len + stop).max(0)
-    } else {
-        stop.min(len - 1)
-    };
-    (s, e)
 }
 
 impl Default for Keyspace {
