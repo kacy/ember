@@ -62,6 +62,31 @@ pub enum ShardRequest {
     Ttl {
         key: String,
     },
+    LPush {
+        key: String,
+        values: Vec<Bytes>,
+    },
+    RPush {
+        key: String,
+        values: Vec<Bytes>,
+    },
+    LPop {
+        key: String,
+    },
+    RPop {
+        key: String,
+    },
+    LRange {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
+    LLen {
+        key: String,
+    },
+    Type {
+        key: String,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -89,6 +114,12 @@ pub enum ShardResponse {
     KeyCount(usize),
     /// Full stats for a shard (INFO).
     Stats(KeyspaceStats),
+    /// Integer length result (e.g. LPUSH, RPUSH, LLEN).
+    Len(usize),
+    /// Array of bulk values (e.g. LRANGE).
+    Array(Vec<Bytes>),
+    /// The type name of a stored value.
+    TypeName(&'static str),
     /// Command used against a key holding the wrong kind of value.
     WrongType,
     /// An error message.
@@ -312,6 +343,31 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
+        ShardRequest::LPush { key, values } => match ks.lpush(key, values) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::RPush { key, values } => match ks.rpush(key, values) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LPop { key } => match ks.lpop(key) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::RPop { key } => match ks.rpop(key) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LRange { key, start, stop } => match ks.lrange(key, *start, *stop) {
+            Ok(items) => ShardResponse::Array(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LLen { key } => match ks.llen(key) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::Type { key } => ShardResponse::TypeName(ks.value_type(key)),
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
         // snapshot/rewrite are handled in the main loop, not here

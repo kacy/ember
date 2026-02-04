@@ -108,9 +108,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
-                Ok(ShardResponse::WrongType) => Frame::Error(
-                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
-                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -222,6 +220,91 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
 
+        // -- list commands --
+        Command::LPush { key, values } => {
+            let req = ShardRequest::LPush {
+                key: key.clone(),
+                values,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::RPush { key, values } => {
+            let req = ShardRequest::RPush {
+                key: key.clone(),
+                values,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LPop { key } => {
+            let req = ShardRequest::LPop { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::RPop { key } => {
+            let req = ShardRequest::RPop { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LRange { key, start, stop } => {
+            let req = ShardRequest::LRange {
+                key: key.clone(),
+                start,
+                stop,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Array(items)) => {
+                    let frames = items.into_iter().map(Frame::Bulk).collect();
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LLen { key } => {
+            let req = ShardRequest::LLen { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Type { key } => {
+            let req = ShardRequest::Type { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::TypeName(name)) => Frame::Simple(name.into()),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
 }
@@ -245,4 +328,11 @@ where
         }
         Err(e) => Frame::Error(format!("ERR {e}")),
     }
+}
+
+/// Returns the standard WRONGTYPE error frame.
+fn wrongtype_error() -> Frame {
+    Frame::Error(
+        "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+    )
 }
