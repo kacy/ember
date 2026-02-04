@@ -17,4 +17,4 @@ COPY --from=builder /usr/src/ember/target/release/ember-server /usr/local/bin/em
 
 EXPOSE 6379
 
-ENTRYPOINT ["ember-server"]
+ENTRYPOINT ["ember-server", "--host", "0.0.0.0"]
