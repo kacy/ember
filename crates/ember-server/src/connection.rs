@@ -34,6 +34,10 @@ pub async fn handle(
     mut stream: TcpStream,
     engine: Engine,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // disable Nagle's algorithm — cache servers need low-latency writes,
+    // and we already batch responses from pipelining into a single write
+    stream.set_nodelay(true)?;
+
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
 
