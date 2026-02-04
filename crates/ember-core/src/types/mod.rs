@@ -55,3 +55,33 @@ pub fn type_name(value: &Value) -> &'static str {
         Value::SortedSet(_) => "zset",
     }
 }
+
+/// Converts Redis-style indices (supporting negative values) to a
+/// clamped `(start, stop)` pair.
+///
+/// Negative indices count back from `len` (e.g. -1 = last element).
+/// Out-of-bounds stop is clamped to `len - 1`; out-of-bounds negative
+/// stop clamps to -1 so the caller sees `start > stop` (empty range).
+/// Returns `(0, -1)` for empty collections.
+pub fn normalize_range(start: i64, stop: i64, len: i64) -> (i64, i64) {
+    if len == 0 {
+        return (0, -1);
+    }
+
+    // resolve negative indices, clamp floor to 0
+    let s = if start < 0 {
+        (len + start).max(0)
+    } else {
+        start
+    };
+
+    // resolve negative indices, clamp floor to -1 so that a
+    // hugely-negative stop produces an empty range
+    let e = if stop < 0 {
+        (len + stop).max(-1)
+    } else {
+        stop.min(len - 1)
+    };
+
+    (s, e)
+}

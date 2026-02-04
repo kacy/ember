@@ -151,24 +151,18 @@ impl SortedSet {
     /// Supports negative indices: -1 = last, -2 = second to last, etc.
     pub fn range_by_rank(&self, start: i64, stop: i64) -> Vec<(&str, f64)> {
         let len = self.tree.len() as i64;
-        if len == 0 {
+        let (s, e) = super::normalize_range(start, stop, len);
+        if s > e {
             return Vec::new();
         }
 
-        let start = normalize_index(start, len);
-        let stop = normalize_index(stop, len);
-
-        if start > stop || start >= len {
-            return Vec::new();
-        }
-
-        let start = start as usize;
-        let stop = (stop as usize).min(self.tree.len() - 1);
+        let s = s as usize;
+        let e = e as usize;
 
         self.tree
             .keys()
-            .skip(start)
-            .take(stop - start + 1)
+            .skip(s)
+            .take(e - s + 1)
             .map(|(score, member)| (member.as_str(), score.0))
             .collect()
     }
@@ -225,14 +219,6 @@ impl Default for SortedSet {
 
 /// Converts a possibly-negative index to a non-negative index.
 /// Negative indices count back from `len` (-1 = len-1).
-fn normalize_index(idx: i64, len: i64) -> i64 {
-    if idx < 0 {
-        (len + idx).max(0)
-    } else {
-        idx
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
