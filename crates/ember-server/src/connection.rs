@@ -306,7 +306,11 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         }
 
         // -- sorted set commands --
-        Command::ZAdd { key, flags, members } => {
+        Command::ZAdd {
+            key,
+            flags,
+            members,
+        } => {
             let req = ShardRequest::ZAdd {
                 key: key.clone(),
                 members,
@@ -343,9 +347,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                 member,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::Score(Some(s))) => {
-                    Frame::Bulk(Bytes::from(format!("{s}")))
-                }
+                Ok(ShardResponse::Score(Some(s))) => Frame::Bulk(Bytes::from(format!("{s}"))),
                 Ok(ShardResponse::Score(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -367,7 +369,12 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             }
         }
 
-        Command::ZRange { key, start, stop, with_scores } => {
+        Command::ZRange {
+            key,
+            start,
+            stop,
+            with_scores,
+        } => {
             let req = ShardRequest::ZRange {
                 key: key.clone(),
                 start,
@@ -418,7 +425,5 @@ where
 
 /// Returns the standard WRONGTYPE error frame.
 fn wrongtype_error() -> Frame {
-    Frame::Error(
-        "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
-    )
+    Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
 }

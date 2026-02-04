@@ -9,7 +9,9 @@ use clap::Parser;
 use ember_core::ShardPersistenceConfig;
 use tracing::info;
 
-use crate::config::{build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy};
+use crate::config::{
+    build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy,
+};
 
 #[derive(Parser)]
 #[command(name = "ember-server", about = "ember cache server")]

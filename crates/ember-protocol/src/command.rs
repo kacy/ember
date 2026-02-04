@@ -460,11 +460,26 @@ fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     while idx < args.len() {
         let s = extract_string(&args[idx])?.to_ascii_uppercase();
         match s.as_str() {
-            "NX" => { flags.nx = true; idx += 1; }
-            "XX" => { flags.xx = true; idx += 1; }
-            "GT" => { flags.gt = true; idx += 1; }
-            "LT" => { flags.lt = true; idx += 1; }
-            "CH" => { flags.ch = true; idx += 1; }
+            "NX" => {
+                flags.nx = true;
+                idx += 1;
+            }
+            "XX" => {
+                flags.xx = true;
+                idx += 1;
+            }
+            "GT" => {
+                flags.gt = true;
+                idx += 1;
+            }
+            "LT" => {
+                flags.lt = true;
+                idx += 1;
+            }
+            "CH" => {
+                flags.ch = true;
+                idx += 1;
+            }
             _ => break,
         }
     }
@@ -495,7 +510,11 @@ fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
         members.push((score, member));
     }
 
-    Ok(Command::ZAdd { key, flags, members })
+    Ok(Command::ZAdd {
+        key,
+        flags,
+        members,
+    })
 }
 
 fn parse_zrem(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -1113,7 +1132,11 @@ mod tests {
     fn zadd_basic() {
         let parsed = Command::from_frame(cmd(&["ZADD", "board", "100", "alice"])).unwrap();
         match parsed {
-            Command::ZAdd { key, flags, members } => {
+            Command::ZAdd {
+                key,
+                flags,
+                members,
+            } => {
                 assert_eq!(key, "board");
                 assert_eq!(flags, ZAddFlags::default());
                 assert_eq!(members, vec![(100.0, "alice".into())]);
@@ -1124,10 +1147,8 @@ mod tests {
 
     #[test]
     fn zadd_multiple_members() {
-        let parsed = Command::from_frame(
-            cmd(&["ZADD", "board", "100", "alice", "200", "bob"]),
-        )
-        .unwrap();
+        let parsed =
+            Command::from_frame(cmd(&["ZADD", "board", "100", "alice", "200", "bob"])).unwrap();
         match parsed {
             Command::ZAdd { members, .. } => {
                 assert_eq!(members.len(), 2);
@@ -1140,10 +1161,7 @@ mod tests {
 
     #[test]
     fn zadd_with_flags() {
-        let parsed = Command::from_frame(
-            cmd(&["ZADD", "z", "NX", "CH", "100", "alice"]),
-        )
-        .unwrap();
+        let parsed = Command::from_frame(cmd(&["ZADD", "z", "NX", "CH", "100", "alice"])).unwrap();
         match parsed {
             Command::ZAdd { flags, .. } => {
                 assert!(flags.nx);
@@ -1158,10 +1176,7 @@ mod tests {
 
     #[test]
     fn zadd_gt_flag() {
-        let parsed = Command::from_frame(
-            cmd(&["zadd", "z", "gt", "100", "alice"]),
-        )
-        .unwrap();
+        let parsed = Command::from_frame(cmd(&["zadd", "z", "gt", "100", "alice"])).unwrap();
         match parsed {
             Command::ZAdd { flags, .. } => assert!(flags.gt),
             other => panic!("expected ZAdd, got {other:?}"),
@@ -1170,19 +1185,13 @@ mod tests {
 
     #[test]
     fn zadd_nx_xx_conflict() {
-        let err = Command::from_frame(
-            cmd(&["ZADD", "z", "NX", "XX", "100", "alice"]),
-        )
-        .unwrap_err();
+        let err = Command::from_frame(cmd(&["ZADD", "z", "NX", "XX", "100", "alice"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
     #[test]
     fn zadd_gt_lt_conflict() {
-        let err = Command::from_frame(
-            cmd(&["ZADD", "z", "GT", "LT", "100", "alice"]),
-        )
-        .unwrap_err();
+        let err = Command::from_frame(cmd(&["ZADD", "z", "GT", "LT", "100", "alice"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 

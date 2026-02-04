@@ -291,7 +291,6 @@ impl SnapshotReader {
     }
 }
 
-
 /// Returns the snapshot file path for a given shard in a data directory.
 pub fn snapshot_path(data_dir: &Path, shard_id: u16) -> PathBuf {
     data_dir.join(format!("shard-{shard_id}.snap"))

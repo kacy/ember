@@ -161,7 +161,10 @@ mod tests {
     #[test]
     fn parse_fsync_policies() {
         assert_eq!(parse_fsync_policy("always").unwrap(), FsyncPolicy::Always);
-        assert_eq!(parse_fsync_policy("everysec").unwrap(), FsyncPolicy::EverySec);
+        assert_eq!(
+            parse_fsync_policy("everysec").unwrap(),
+            FsyncPolicy::EverySec
+        );
         assert_eq!(parse_fsync_policy("no").unwrap(), FsyncPolicy::No);
         assert_eq!(parse_fsync_policy("ALWAYS").unwrap(), FsyncPolicy::Always);
     }
