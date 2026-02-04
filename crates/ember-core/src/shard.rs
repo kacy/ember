@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult};
+use crate::types::sorted_set::ZAddFlags;
 use crate::types::Value;
 
 /// How often the shard runs active expiration. 100ms matches
@@ -87,6 +88,33 @@ pub enum ShardRequest {
     Type {
         key: String,
     },
+    ZAdd {
+        key: String,
+        members: Vec<(f64, String)>,
+        nx: bool,
+        xx: bool,
+        gt: bool,
+        lt: bool,
+        ch: bool,
+    },
+    ZRem {
+        key: String,
+        members: Vec<String>,
+    },
+    ZScore {
+        key: String,
+        member: String,
+    },
+    ZRank {
+        key: String,
+        member: String,
+    },
+    ZRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -120,6 +148,12 @@ pub enum ShardResponse {
     Array(Vec<Bytes>),
     /// The type name of a stored value.
     TypeName(&'static str),
+    /// Float score result (e.g. ZSCORE).
+    Score(Option<f64>),
+    /// Rank result (e.g. ZRANK).
+    Rank(Option<usize>),
+    /// Scored array of (member, score) pairs (e.g. ZRANGE).
+    ScoredArray(Vec<(String, f64)>),
     /// Command used against a key holding the wrong kind of value.
     WrongType,
     /// An error message.
@@ -371,6 +405,31 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::Type { key } => ShardResponse::TypeName(ks.value_type(key)),
+        ShardRequest::ZAdd { key, members, nx, xx, gt, lt, ch } => {
+            let flags = ZAddFlags {
+                nx: *nx, xx: *xx, gt: *gt, lt: *lt, ch: *ch,
+            };
+            match ks.zadd(key, members, &flags) {
+                Ok(count) => ShardResponse::Len(count),
+                Err(_) => ShardResponse::WrongType,
+            }
+        }
+        ShardRequest::ZRem { key, members } => match ks.zrem(key, members) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZScore { key, member } => match ks.zscore(key, member) {
+            Ok(score) => ShardResponse::Score(score),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRank { key, member } => match ks.zrank(key, member) {
+            Ok(rank) => ShardResponse::Rank(rank),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRange { key, start, stop, .. } => match ks.zrange(key, *start, *stop) {
+            Ok(items) => ShardResponse::ScoredArray(items),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
         // snapshot/rewrite are handled in the main loop, not here

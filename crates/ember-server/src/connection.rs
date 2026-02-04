@@ -305,6 +305,92 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             }
         }
 
+        // -- sorted set commands --
+        Command::ZAdd { key, flags, members } => {
+            let req = ShardRequest::ZAdd {
+                key: key.clone(),
+                members,
+                nx: flags.nx,
+                xx: flags.xx,
+                gt: flags.gt,
+                lt: flags.lt,
+                ch: flags.ch,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRem { key, members } => {
+            let req = ShardRequest::ZRem {
+                key: key.clone(),
+                members,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZScore { key, member } => {
+            let req = ShardRequest::ZScore {
+                key: key.clone(),
+                member,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Score(Some(s))) => {
+                    Frame::Bulk(Bytes::from(format!("{s}")))
+                }
+                Ok(ShardResponse::Score(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRank { key, member } => {
+            let req = ShardRequest::ZRank {
+                key: key.clone(),
+                member,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Rank(Some(r))) => Frame::Integer(r as i64),
+                Ok(ShardResponse::Rank(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRange { key, start, stop, with_scores } => {
+            let req = ShardRequest::ZRange {
+                key: key.clone(),
+                start,
+                stop,
+                with_scores,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
 }
