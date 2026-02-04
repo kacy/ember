@@ -12,11 +12,14 @@
 //! [footer_crc32: 4B]
 //! ```
 //!
-//! Each entry:
+//! Each entry (v2, type-tagged):
 //! ```text
-//! [key_len: 4B][key][value_len: 4B][value][expire_ms: 8B]
+//! [key_len: 4B][key][type_tag: 1B][type-specific payload][expire_ms: 8B]
 //! ```
+//!
+//! Type tags: 0=string, 1=list, 2=sorted set.
 //! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
+//! v1 entries (no type tag) are still readable for backward compatibility.
 
 use std::collections::VecDeque;
 use std::fs::{self, File};
@@ -30,18 +33,21 @@ use crate::format::{self, FormatError};
 /// Type tags for snapshot entries.
 const TYPE_STRING: u8 = 0;
 const TYPE_LIST: u8 = 1;
+const TYPE_SORTED_SET: u8 = 2;
 
 /// The value stored in a snapshot entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SnapValue {
     /// A string value.
     String(Bytes),
     /// A list of values.
     List(VecDeque<Bytes>),
+    /// A sorted set: vec of (score, member) pairs.
+    SortedSet(Vec<(f64, String)>),
 }
 
 /// A single entry in a snapshot file.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SnapEntry {
     pub key: String,
     pub value: SnapValue,
@@ -103,6 +109,14 @@ impl SnapshotWriter {
                 format::write_u32(&mut buf, deque.len() as u32)?;
                 for item in deque {
                     format::write_bytes(&mut buf, item)?;
+                }
+            }
+            SnapValue::SortedSet(members) => {
+                format::write_u8(&mut buf, TYPE_SORTED_SET)?;
+                format::write_u32(&mut buf, members.len() as u32)?;
+                for (score, member) in members {
+                    format::write_f64(&mut buf, *score)?;
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
         }
@@ -208,6 +222,25 @@ impl SnapshotReader {
                         deque.push_back(Bytes::from(item));
                     }
                     SnapValue::List(deque)
+                }
+                TYPE_SORTED_SET => {
+                    let count = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, count).expect("vec write");
+                    let mut members = Vec::with_capacity(count as usize);
+                    for _ in 0..count {
+                        let score = format::read_f64(&mut self.reader)?;
+                        format::write_f64(&mut buf, score).expect("vec write");
+                        let member_bytes = format::read_bytes(&mut self.reader)?;
+                        format::write_bytes(&mut buf, &member_bytes).expect("vec write");
+                        let member = String::from_utf8(member_bytes).map_err(|_| {
+                            FormatError::Io(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "member is not valid utf-8",
+                            ))
+                        })?;
+                        members.push((score, member));
+                    }
+                    SnapValue::SortedSet(members)
                 }
                 _ => {
                     return Err(FormatError::UnknownTag(type_tag));
@@ -423,6 +456,45 @@ mod tests {
             SnapEntry {
                 key: "mylist".into(),
                 value: SnapValue::List(deque),
+                expire_ms: -1,
+            },
+            SnapEntry {
+                key: "mystr".into(),
+                value: SnapValue::String(Bytes::from("val")),
+                expire_ms: 1000,
+            },
+        ];
+
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            for entry in &entries {
+                writer.write_entry(entry).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut got = Vec::new();
+        while let Some(entry) = reader.read_entry().unwrap() {
+            got.push(entry);
+        }
+        assert_eq!(entries, got);
+        reader.verify_footer().unwrap();
+    }
+
+    #[test]
+    fn sorted_set_entries_round_trip() {
+        let dir = temp_dir();
+        let path = dir.path().join("zset.snap");
+
+        let entries = vec![
+            SnapEntry {
+                key: "board".into(),
+                value: SnapValue::SortedSet(vec![
+                    (100.0, "alice".into()),
+                    (200.0, "bob".into()),
+                    (150.0, "charlie".into()),
+                ]),
                 expire_ms: -1,
             },
             SnapEntry {

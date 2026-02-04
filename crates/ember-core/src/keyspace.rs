@@ -12,6 +12,7 @@ use bytes::Bytes;
 use rand::seq::IteratorRandom;
 
 use crate::memory::{self, MemoryTracker};
+use crate::types::sorted_set::{SortedSet, ZAddFlags};
 use crate::types::{self, Value};
 
 /// Error returned when a command is used against a key holding the wrong type.
@@ -28,6 +29,17 @@ impl std::fmt::Display for WrongType {
 }
 
 impl std::error::Error for WrongType {}
+
+/// Result of a ZADD operation, containing both the client-facing count
+/// and the list of members that were actually applied (for AOF correctness).
+#[derive(Debug, Clone)]
+pub struct ZAddResult {
+    /// Number of members added (or added+updated if CH flag was set).
+    pub count: usize,
+    /// Members that were actually inserted or had their score updated.
+    /// Only these should be persisted to the AOF.
+    pub applied: Vec<(f64, String)>,
+}
 
 /// How the keyspace should handle writes when the memory limit is reached.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -591,6 +603,193 @@ impl Keyspace {
         }
 
         Ok(popped)
+    }
+
+    // -- sorted set operations --
+
+    /// Adds members with scores to a sorted set, with optional ZADD flags.
+    ///
+    /// Creates the sorted set if the key doesn't exist. Returns a
+    /// `ZAddResult` containing the count for the client response and the
+    /// list of members that were actually applied (for AOF correctness).
+    /// Returns `Err(WrongType)` if the key holds a non-sorted-set value.
+    pub fn zadd(
+        &mut self,
+        key: &str,
+        members: &[(f64, String)],
+        flags: &ZAddFlags,
+    ) -> Result<ZAddResult, WrongType> {
+        self.remove_if_expired(key);
+
+        let is_new = !self.entries.contains_key(key);
+        if !is_new && !matches!(self.entries[key].value, Value::SortedSet(_)) {
+            return Err(WrongType);
+        }
+
+        if is_new {
+            let value = Value::SortedSet(SortedSet::new());
+            self.memory.add(key, &value);
+            self.entries
+                .insert(key.to_owned(), Entry::new(value, None));
+        }
+
+        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let old_entry_size = memory::entry_size(key, &entry.value);
+
+        let mut count = 0;
+        let mut applied = Vec::new();
+        if let Value::SortedSet(ref mut ss) = entry.value {
+            for (score, member) in members {
+                let result = ss.add_with_flags(member.clone(), *score, flags);
+                if result.added || result.updated {
+                    applied.push((*score, member.clone()));
+                }
+                if flags.ch {
+                    if result.added || result.updated {
+                        count += 1;
+                    }
+                } else if result.added {
+                    count += 1;
+                }
+            }
+        }
+        entry.touch();
+
+        let new_entry_size = memory::entry_size(key, &entry.value);
+        self.memory.adjust(old_entry_size, new_entry_size);
+
+        // clean up if the set is still empty (e.g. XX on a new key)
+        if let Value::SortedSet(ref ss) = entry.value {
+            if ss.is_empty() {
+                self.memory
+                    .remove_with_size(memory::entry_size(key, &entry.value));
+                self.entries.remove(key);
+            }
+        }
+
+        Ok(ZAddResult { count, applied })
+    }
+
+    /// Removes members from a sorted set. Returns the number of members
+    /// actually removed. Deletes the key if the set becomes empty.
+    ///
+    /// Returns `Err(WrongType)` if the key holds a non-sorted-set value.
+    pub fn zrem(&mut self, key: &str, members: &[String]) -> Result<usize, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(0);
+        }
+
+        match self.entries.get(key) {
+            None => return Ok(0),
+            Some(e) => {
+                if !matches!(e.value, Value::SortedSet(_)) {
+                    return Err(WrongType);
+                }
+            }
+        }
+
+        let old_entry_size = memory::entry_size(key, &self.entries[key].value);
+        let entry = self.entries.get_mut(key).expect("verified above");
+        let mut removed = 0;
+        if let Value::SortedSet(ref mut ss) = entry.value {
+            for member in members {
+                if ss.remove(member) {
+                    removed += 1;
+                }
+            }
+        }
+        entry.touch();
+
+        let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
+        if is_empty {
+            let removed_entry = self.entries.remove(key).expect("verified above");
+            self.memory.remove_with_size(old_entry_size);
+            if removed_entry.expires_at.is_some() {
+                self.expiry_count = self.expiry_count.saturating_sub(1);
+            }
+        } else {
+            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
+            self.memory.adjust(old_entry_size, new_entry_size);
+        }
+
+        Ok(removed)
+    }
+
+    /// Returns the score for a member in a sorted set.
+    ///
+    /// Returns `Ok(None)` if the key or member doesn't exist.
+    /// Returns `Err(WrongType)` on type mismatch.
+    pub fn zscore(&mut self, key: &str, member: &str) -> Result<Option<f64>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(None),
+            Some(entry) => match &entry.value {
+                Value::SortedSet(ss) => {
+                    let score = ss.score(member);
+                    entry.touch();
+                    Ok(score)
+                }
+                _ => Err(WrongType),
+            },
+        }
+    }
+
+    /// Returns the 0-based rank of a member in a sorted set (lowest score = 0).
+    ///
+    /// Returns `Ok(None)` if the key or member doesn't exist.
+    /// Returns `Err(WrongType)` on type mismatch.
+    pub fn zrank(&mut self, key: &str, member: &str) -> Result<Option<usize>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(None),
+            Some(entry) => match &entry.value {
+                Value::SortedSet(ss) => {
+                    let rank = ss.rank(member);
+                    entry.touch();
+                    Ok(rank)
+                }
+                _ => Err(WrongType),
+            },
+        }
+    }
+
+    /// Returns a range of members from a sorted set by rank.
+    ///
+    /// Supports negative indices. If `with_scores` is true, the result
+    /// includes `(member, score)` pairs; otherwise just members.
+    /// Returns `Err(WrongType)` on type mismatch.
+    pub fn zrange(
+        &mut self,
+        key: &str,
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![]),
+            Some(entry) => {
+                let result = match &entry.value {
+                    Value::SortedSet(ss) => {
+                        let items = ss.range_by_rank(start, stop);
+                        Ok(items
+                            .into_iter()
+                            .map(|(m, s)| (m.to_owned(), s))
+                            .collect())
+                    }
+                    _ => Err(WrongType),
+                };
+                if result.is_ok() {
+                    entry.touch();
+                }
+                result
+            }
+        }
     }
 
     /// Randomly samples up to `count` keys and removes any that have expired.
@@ -1226,5 +1425,225 @@ mod tests {
         list.push_back(Bytes::from("item"));
         ks.restore("l".into(), Value::List(list), None);
         assert_eq!(ks.value_type("l"), "list");
+
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        assert_eq!(ks.value_type("z"), "zset");
+    }
+
+    // -- sorted set tests --
+
+    #[test]
+    fn zadd_creates_sorted_set() {
+        let mut ks = Keyspace::new();
+        let result = ks
+            .zadd("board", &[(100.0, "alice".into()), (200.0, "bob".into())], &ZAddFlags::default())
+            .unwrap();
+        assert_eq!(result.count, 2);
+        assert_eq!(result.applied.len(), 2);
+        assert_eq!(ks.value_type("board"), "zset");
+    }
+
+    #[test]
+    fn zadd_updates_existing_score() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        // update score — default flags don't count updates
+        let result = ks.zadd("z", &[(200.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        assert_eq!(result.count, 0);
+        // score was updated, so applied should have the member
+        assert_eq!(result.applied.len(), 1);
+        assert_eq!(ks.zscore("z", "alice").unwrap(), Some(200.0));
+    }
+
+    #[test]
+    fn zadd_ch_flag_counts_changes() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        let flags = ZAddFlags { ch: true, ..Default::default() };
+        let result = ks.zadd("z", &[(200.0, "alice".into()), (50.0, "bob".into())], &flags).unwrap();
+        // 1 updated + 1 added = 2
+        assert_eq!(result.count, 2);
+        assert_eq!(result.applied.len(), 2);
+    }
+
+    #[test]
+    fn zadd_nx_skips_existing() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        let flags = ZAddFlags { nx: true, ..Default::default() };
+        let result = ks.zadd("z", &[(999.0, "alice".into())], &flags).unwrap();
+        assert_eq!(result.count, 0);
+        assert!(result.applied.is_empty());
+        assert_eq!(ks.zscore("z", "alice").unwrap(), Some(100.0));
+    }
+
+    #[test]
+    fn zadd_xx_skips_new() {
+        let mut ks = Keyspace::new();
+        let flags = ZAddFlags { xx: true, ..Default::default() };
+        let result = ks.zadd("z", &[(100.0, "alice".into())], &flags).unwrap();
+        assert_eq!(result.count, 0);
+        assert!(result.applied.is_empty());
+        // key should be cleaned up since nothing was added
+        assert_eq!(ks.value_type("z"), "none");
+    }
+
+    #[test]
+    fn zadd_gt_only_increases() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        let flags = ZAddFlags { gt: true, ..Default::default() };
+        ks.zadd("z", &[(50.0, "alice".into())], &flags).unwrap();
+        assert_eq!(ks.zscore("z", "alice").unwrap(), Some(100.0));
+        ks.zadd("z", &[(200.0, "alice".into())], &flags).unwrap();
+        assert_eq!(ks.zscore("z", "alice").unwrap(), Some(200.0));
+    }
+
+    #[test]
+    fn zadd_lt_only_decreases() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(100.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        let flags = ZAddFlags { lt: true, ..Default::default() };
+        ks.zadd("z", &[(200.0, "alice".into())], &flags).unwrap();
+        assert_eq!(ks.zscore("z", "alice").unwrap(), Some(100.0));
+        ks.zadd("z", &[(50.0, "alice".into())], &flags).unwrap();
+        assert_eq!(ks.zscore("z", "alice").unwrap(), Some(50.0));
+    }
+
+    #[test]
+    fn zrem_removes_members() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())], &ZAddFlags::default()).unwrap();
+        let removed = ks.zrem("z", &["a".into(), "c".into(), "nonexistent".into()]).unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(ks.zscore("z", "a").unwrap(), None);
+        assert_eq!(ks.zscore("z", "b").unwrap(), Some(2.0));
+    }
+
+    #[test]
+    fn zrem_auto_deletes_empty() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "only".into())], &ZAddFlags::default()).unwrap();
+        ks.zrem("z", &["only".into()]).unwrap();
+        assert!(!ks.exists("z"));
+        assert_eq!(ks.stats().key_count, 0);
+    }
+
+    #[test]
+    fn zrem_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.zrem("nope", &["a".into()]).unwrap(), 0);
+    }
+
+    #[test]
+    fn zscore_returns_score() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(42.5, "member".into())], &ZAddFlags::default()).unwrap();
+        assert_eq!(ks.zscore("z", "member").unwrap(), Some(42.5));
+        assert_eq!(ks.zscore("z", "missing").unwrap(), None);
+    }
+
+    #[test]
+    fn zscore_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.zscore("nope", "m").unwrap(), None);
+    }
+
+    #[test]
+    fn zrank_returns_rank() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(300.0, "c".into()), (100.0, "a".into()), (200.0, "b".into())], &ZAddFlags::default()).unwrap();
+        assert_eq!(ks.zrank("z", "a").unwrap(), Some(0));
+        assert_eq!(ks.zrank("z", "b").unwrap(), Some(1));
+        assert_eq!(ks.zrank("z", "c").unwrap(), Some(2));
+        assert_eq!(ks.zrank("z", "d").unwrap(), None);
+    }
+
+    #[test]
+    fn zrange_returns_range() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())], &ZAddFlags::default()).unwrap();
+
+        let all = ks.zrange("z", 0, -1).unwrap();
+        assert_eq!(
+            all,
+            vec![
+                ("a".to_owned(), 1.0),
+                ("b".to_owned(), 2.0),
+                ("c".to_owned(), 3.0),
+            ]
+        );
+
+        let middle = ks.zrange("z", 1, 1).unwrap();
+        assert_eq!(middle, vec![("b".to_owned(), 2.0)]);
+
+        let last_two = ks.zrange("z", -2, -1).unwrap();
+        assert_eq!(
+            last_two,
+            vec![("b".to_owned(), 2.0), ("c".to_owned(), 3.0)]
+        );
+    }
+
+    #[test]
+    fn zrange_missing_key() {
+        let mut ks = Keyspace::new();
+        assert!(ks.zrange("nope", 0, -1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn zadd_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.zadd("s", &[(1.0, "m".into())], &ZAddFlags::default()).is_err());
+    }
+
+    #[test]
+    fn zrem_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.zrem("s", &["m".into()]).is_err());
+    }
+
+    #[test]
+    fn zscore_on_list_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.rpush("l", &[Bytes::from("item")]).unwrap();
+        assert!(ks.zscore("l", "m").is_err());
+    }
+
+    #[test]
+    fn zrank_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.zrank("s", "m").is_err());
+    }
+
+    #[test]
+    fn zrange_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.zrange("s", 0, -1).is_err());
+    }
+
+    #[test]
+    fn sorted_set_memory_tracked() {
+        let mut ks = Keyspace::new();
+        let before = ks.stats().used_bytes;
+        ks.zadd("z", &[(1.0, "alice".into())], &ZAddFlags::default()).unwrap();
+        let after_add = ks.stats().used_bytes;
+        assert!(after_add > before);
+
+        ks.zadd("z", &[(2.0, "bob".into())], &ZAddFlags::default()).unwrap();
+        let after_second = ks.stats().used_bytes;
+        assert!(after_second > after_add);
+
+        ks.zrem("z", &["alice".into()]).unwrap();
+        let after_remove = ks.stats().used_bytes;
+        assert!(after_remove < after_second);
     }
 }

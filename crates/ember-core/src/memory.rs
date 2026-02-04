@@ -122,6 +122,7 @@ pub fn value_size(value: &Value) -> usize {
                 .sum();
             VECDEQUE_BASE_OVERHEAD + element_bytes
         }
+        Value::SortedSet(ss) => ss.memory_usage(),
     }
 }
 

@@ -18,6 +18,7 @@ use tracing::{info, warn};
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult};
+use crate::types::sorted_set::ZAddFlags;
 use crate::types::Value;
 
 /// How often the shard runs active expiration. 100ms matches
@@ -87,6 +88,33 @@ pub enum ShardRequest {
     Type {
         key: String,
     },
+    ZAdd {
+        key: String,
+        members: Vec<(f64, String)>,
+        nx: bool,
+        xx: bool,
+        gt: bool,
+        lt: bool,
+        ch: bool,
+    },
+    ZRem {
+        key: String,
+        members: Vec<String>,
+    },
+    ZScore {
+        key: String,
+        member: String,
+    },
+    ZRank {
+        key: String,
+        member: String,
+    },
+    ZRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -120,6 +148,14 @@ pub enum ShardResponse {
     Array(Vec<Bytes>),
     /// The type name of a stored value.
     TypeName(&'static str),
+    /// ZADD result: count for the client + actually applied members for AOF.
+    ZAddLen { count: usize, applied: Vec<(f64, String)> },
+    /// Float score result (e.g. ZSCORE).
+    Score(Option<f64>),
+    /// Rank result (e.g. ZRANK).
+    Rank(Option<usize>),
+    /// Scored array of (member, score) pairs (e.g. ZRANGE).
+    ScoredArray(Vec<(String, f64)>),
     /// Command used against a key holding the wrong kind of value.
     WrongType,
     /// An error message.
@@ -203,6 +239,13 @@ async fn run_shard(
             let value = match entry.value {
                 RecoveredValue::String(data) => Value::String(data),
                 RecoveredValue::List(deque) => Value::List(deque),
+                RecoveredValue::SortedSet(members) => {
+                    let mut ss = crate::types::sorted_set::SortedSet::new();
+                    for (score, member) in members {
+                        ss.add(member, score);
+                    }
+                    Value::SortedSet(ss)
+                }
             };
             keyspace.restore(entry.key, value, entry.expires_at);
         }
@@ -371,6 +414,34 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::Type { key } => ShardResponse::TypeName(ks.value_type(key)),
+        ShardRequest::ZAdd { key, members, nx, xx, gt, lt, ch } => {
+            let flags = ZAddFlags {
+                nx: *nx, xx: *xx, gt: *gt, lt: *lt, ch: *ch,
+            };
+            match ks.zadd(key, members, &flags) {
+                Ok(result) => ShardResponse::ZAddLen {
+                    count: result.count,
+                    applied: result.applied,
+                },
+                Err(_) => ShardResponse::WrongType,
+            }
+        }
+        ShardRequest::ZRem { key, members } => match ks.zrem(key, members) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZScore { key, member } => match ks.zscore(key, member) {
+            Ok(score) => ShardResponse::Score(score),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRank { key, member } => match ks.zrank(key, member) {
+            Ok(rank) => ShardResponse::Rank(rank),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRange { key, start, stop, .. } => match ks.zrange(key, *start, *stop) {
+            Ok(items) => ShardResponse::ScoredArray(items),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
         // snapshot/rewrite are handled in the main loop, not here
@@ -421,6 +492,20 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
         }
         (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
             Some(AofRecord::RPop { key: key.clone() })
+        }
+        (ShardRequest::ZAdd { key, .. }, ShardResponse::ZAddLen { applied, .. })
+            if !applied.is_empty() =>
+        {
+            Some(AofRecord::ZAdd {
+                key: key.clone(),
+                members: applied.clone(),
+            })
+        }
+        (ShardRequest::ZRem { key, members, .. }, ShardResponse::Len(n)) if *n > 0 => {
+            Some(AofRecord::ZRem {
+                key: key.clone(),
+                members: members.clone(),
+            })
         }
         _ => None,
     }
@@ -494,6 +579,13 @@ fn write_snapshot(
         let snap_value = match value {
             Value::String(data) => SnapValue::String(data.clone()),
             Value::List(deque) => SnapValue::List(deque.clone()),
+            Value::SortedSet(ss) => {
+                let members: Vec<(f64, String)> = ss
+                    .iter()
+                    .map(|(member, score)| (score, member.to_owned()))
+                    .collect();
+                SnapValue::SortedSet(members)
+            }
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
