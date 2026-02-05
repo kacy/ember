@@ -17,7 +17,9 @@ use tracing::{info, warn};
 
 use crate::error::ShardError;
 use crate::expiry;
-use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult, WriteError};
+use crate::keyspace::{
+    IncrError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult, WriteError,
+};
 use crate::types::sorted_set::ZAddFlags;
 use crate::types::Value;
 
@@ -49,6 +51,16 @@ pub enum ShardRequest {
         key: String,
         value: Bytes,
         expire: Option<Duration>,
+        /// Only set the key if it does not already exist.
+        nx: bool,
+        /// Only set the key if it already exists.
+        xx: bool,
+    },
+    Incr {
+        key: String,
+    },
+    Decr {
+        key: String,
     },
     Del {
         key: String,
@@ -62,6 +74,16 @@ pub enum ShardRequest {
     },
     Ttl {
         key: String,
+    },
+    Persist {
+        key: String,
+    },
+    Pttl {
+        key: String,
+    },
+    Pexpire {
+        key: String,
+        milliseconds: u64,
     },
     LPush {
         key: String,
@@ -109,6 +131,9 @@ pub enum ShardRequest {
         key: String,
         member: String,
     },
+    ZCard {
+        key: String,
+    },
     ZRange {
         key: String,
         start: i64,
@@ -132,6 +157,8 @@ pub enum ShardResponse {
     Value(Option<Value>),
     /// Simple acknowledgement (e.g. SET).
     Ok,
+    /// Integer result (e.g. INCR, DECR).
+    Integer(i64),
     /// Boolean result (e.g. DEL, EXISTS, EXPIRE).
     Bool(bool),
     /// TTL query result.
@@ -384,16 +411,47 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(val) => ShardResponse::Value(val),
             Err(_) => ShardResponse::WrongType,
         },
-        ShardRequest::Set { key, value, expire } => {
+        ShardRequest::Set {
+            key,
+            value,
+            expire,
+            nx,
+            xx,
+        } => {
+            // NX: only set if key does NOT already exist
+            if *nx && ks.exists(key) {
+                return ShardResponse::Value(None);
+            }
+            // XX: only set if key DOES already exist
+            if *xx && !ks.exists(key) {
+                return ShardResponse::Value(None);
+            }
             match ks.set(key.clone(), value.clone(), *expire) {
                 SetResult::Ok => ShardResponse::Ok,
                 SetResult::OutOfMemory => ShardResponse::OutOfMemory,
             }
         }
+        ShardRequest::Incr { key } => match ks.incr(key) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
+        ShardRequest::Decr { key } => match ks.decr(key) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
+        ShardRequest::Persist { key } => ShardResponse::Bool(ks.persist(key)),
+        ShardRequest::Pttl { key } => ShardResponse::Ttl(ks.pttl(key)),
+        ShardRequest::Pexpire { key, milliseconds } => {
+            ShardResponse::Bool(ks.pexpire(key, *milliseconds))
+        }
         ShardRequest::LPush { key, values } => match ks.lpush(key, values) {
             Ok(len) => ShardResponse::Len(len),
             Err(WriteError::WrongType) => ShardResponse::WrongType,
@@ -461,6 +519,10 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(rank) => ShardResponse::Rank(rank),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::ZCard { key } => match ks.zcard(key) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::ZRange {
             key, start, stop, ..
         } => match ks.zrange(key, *start, *stop) {
@@ -478,7 +540,7 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
 /// Returns None for non-mutation requests or failed mutations.
 fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> {
     match (req, resp) {
-        (ShardRequest::Set { key, value, expire }, ShardResponse::Ok) => {
+        (ShardRequest::Set { key, value, expire, .. }, ShardResponse::Ok) => {
             let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
             Some(AofRecord::Set {
                 key: key.clone(),
@@ -523,6 +585,21 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             Some(AofRecord::ZRem {
                 key: key.clone(),
                 members: removed.clone(),
+            })
+        }
+        (ShardRequest::Incr { key }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::Incr { key: key.clone() })
+        }
+        (ShardRequest::Decr { key }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::Decr { key: key.clone() })
+        }
+        (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
+            Some(AofRecord::Persist { key: key.clone() })
+        }
+        (ShardRequest::Pexpire { key, milliseconds }, ShardResponse::Bool(true)) => {
+            Some(AofRecord::Pexpire {
+                key: key.clone(),
+                milliseconds: *milliseconds,
             })
         }
         _ => None,
@@ -631,6 +708,8 @@ mod tests {
                 key: "k".into(),
                 value: Bytes::from("v"),
                 expire: None,
+                nx: false,
+                xx: false,
             },
         );
         assert!(matches!(resp, ShardResponse::Ok));
@@ -712,6 +791,8 @@ mod tests {
                 key: "hello".into(),
                 value: Bytes::from("world"),
                 expire: None,
+                nx: false,
+                xx: false,
             })
             .await
             .unwrap();
@@ -740,6 +821,8 @@ mod tests {
                 key: "temp".into(),
                 value: Bytes::from("gone"),
                 expire: Some(Duration::from_millis(10)),
+                nx: false,
+                xx: false,
             })
             .await
             .unwrap();
@@ -763,6 +846,8 @@ mod tests {
                 key: "ephemeral".into(),
                 value: Bytes::from("temp"),
                 expire: Some(Duration::from_millis(10)),
+                nx: false,
+                xx: false,
             })
             .await
             .unwrap();
@@ -773,6 +858,8 @@ mod tests {
                 key: "persistent".into(),
                 value: Bytes::from("stays"),
                 expire: None,
+                nx: false,
+                xx: false,
             })
             .await
             .unwrap();
@@ -821,6 +908,8 @@ mod tests {
                     key: "a".into(),
                     value: Bytes::from("1"),
                     expire: None,
+                    nx: false,
+                    xx: false,
                 })
                 .await
                 .unwrap();
@@ -829,6 +918,8 @@ mod tests {
                     key: "b".into(),
                     value: Bytes::from("2"),
                     expire: Some(Duration::from_secs(300)),
+                    nx: false,
+                    xx: false,
                 })
                 .await
                 .unwrap();
@@ -839,6 +930,8 @@ mod tests {
                     key: "c".into(),
                     value: Bytes::from("3"),
                     expire: None,
+                    nx: false,
+                    xx: false,
                 })
                 .await
                 .unwrap();
@@ -890,6 +983,8 @@ mod tests {
             key: "k".into(),
             value: Bytes::from("v"),
             expire: Some(Duration::from_secs(60)),
+            nx: false,
+            xx: false,
         };
         let resp = ShardResponse::Ok;
         let record = to_aof_record(&req, &resp).unwrap();
@@ -908,6 +1003,8 @@ mod tests {
             key: "k".into(),
             value: Bytes::from("v"),
             expire: None,
+            nx: false,
+            xx: false,
         };
         let resp = ShardResponse::OutOfMemory;
         assert!(to_aof_record(&req, &resp).is_none());
@@ -925,6 +1022,253 @@ mod tests {
     fn to_aof_record_skips_failed_del() {
         let req = ShardRequest::Del { key: "k".into() };
         let resp = ShardResponse::Bool(false);
+        assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn dispatch_incr_new_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(&mut ks, &ShardRequest::Incr { key: "c".into() });
+        assert!(matches!(resp, ShardResponse::Integer(1)));
+    }
+
+    #[test]
+    fn dispatch_decr_existing() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let resp = dispatch(&mut ks, &ShardRequest::Decr { key: "n".into() });
+        assert!(matches!(resp, ShardResponse::Integer(9)));
+    }
+
+    #[test]
+    fn dispatch_incr_non_integer() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("hello"), None);
+        let resp = dispatch(&mut ks, &ShardRequest::Incr { key: "s".into() });
+        assert!(matches!(resp, ShardResponse::Err(_)));
+    }
+
+    #[test]
+    fn to_aof_record_for_incr() {
+        let req = ShardRequest::Incr { key: "c".into() };
+        let resp = ShardResponse::Integer(1);
+        let record = to_aof_record(&req, &resp).unwrap();
+        assert!(matches!(record, AofRecord::Incr { .. }));
+    }
+
+    #[test]
+    fn to_aof_record_for_decr() {
+        let req = ShardRequest::Decr { key: "c".into() };
+        let resp = ShardResponse::Integer(-1);
+        let record = to_aof_record(&req, &resp).unwrap();
+        assert!(matches!(record, AofRecord::Decr { .. }));
+    }
+
+    #[test]
+    fn dispatch_persist_removes_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
+
+        let resp = dispatch(&mut ks, &ShardRequest::Persist { key: "key".into() });
+        assert!(matches!(resp, ShardResponse::Bool(true)));
+
+        let resp = dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
+        assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NoExpiry)));
+    }
+
+    #[test]
+    fn dispatch_persist_missing_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(&mut ks, &ShardRequest::Persist { key: "nope".into() });
+        assert!(matches!(resp, ShardResponse::Bool(false)));
+    }
+
+    #[test]
+    fn dispatch_pttl() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
+
+        let resp = dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
+        match resp {
+            ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
+                assert!(ms > 59_000 && ms <= 60_000);
+            }
+            other => panic!("expected Ttl(Milliseconds), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_pttl_missing() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(&mut ks, &ShardRequest::Pttl { key: "nope".into() });
+        assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NotFound)));
+    }
+
+    #[test]
+    fn dispatch_pexpire() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), None);
+
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Pexpire {
+                key: "key".into(),
+                milliseconds: 5000,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Bool(true)));
+
+        let resp = dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
+        match resp {
+            ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
+                assert!(ms > 4000 && ms <= 5000);
+            }
+            other => panic!("expected Ttl(Milliseconds), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_for_persist() {
+        let req = ShardRequest::Persist { key: "k".into() };
+        let resp = ShardResponse::Bool(true);
+        let record = to_aof_record(&req, &resp).unwrap();
+        assert!(matches!(record, AofRecord::Persist { .. }));
+    }
+
+    #[test]
+    fn to_aof_record_skips_failed_persist() {
+        let req = ShardRequest::Persist { key: "k".into() };
+        let resp = ShardResponse::Bool(false);
+        assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn to_aof_record_for_pexpire() {
+        let req = ShardRequest::Pexpire {
+            key: "k".into(),
+            milliseconds: 5000,
+        };
+        let resp = ShardResponse::Bool(true);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::Pexpire { key, milliseconds } => {
+                assert_eq!(key, "k");
+                assert_eq!(milliseconds, 5000);
+            }
+            other => panic!("expected Pexpire, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_skips_failed_pexpire() {
+        let req = ShardRequest::Pexpire {
+            key: "k".into(),
+            milliseconds: 5000,
+        };
+        let resp = ShardResponse::Bool(false);
+        assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn dispatch_set_nx_when_key_missing() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Set {
+                key: "k".into(),
+                value: Bytes::from("v"),
+                expire: None,
+                nx: true,
+                xx: false,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        assert!(ks.exists("k"));
+    }
+
+    #[test]
+    fn dispatch_set_nx_when_key_exists() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("old"), None);
+
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Set {
+                key: "k".into(),
+                value: Bytes::from("new"),
+                expire: None,
+                nx: true,
+                xx: false,
+            },
+        );
+        // NX should block — returns nil
+        assert!(matches!(resp, ShardResponse::Value(None)));
+        // original value should remain
+        match ks.get("k").unwrap() {
+            Some(Value::String(data)) => assert_eq!(data, Bytes::from("old")),
+            other => panic!("expected old value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_set_xx_when_key_exists() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("old"), None);
+
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Set {
+                key: "k".into(),
+                value: Bytes::from("new"),
+                expire: None,
+                nx: false,
+                xx: true,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        match ks.get("k").unwrap() {
+            Some(Value::String(data)) => assert_eq!(data, Bytes::from("new")),
+            other => panic!("expected new value, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_set_xx_when_key_missing() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Set {
+                key: "k".into(),
+                value: Bytes::from("v"),
+                expire: None,
+                nx: false,
+                xx: true,
+            },
+        );
+        // XX should block — returns nil
+        assert!(matches!(resp, ShardResponse::Value(None)));
+        assert!(!ks.exists("k"));
+    }
+
+    #[test]
+    fn to_aof_record_skips_nx_blocked_set() {
+        let req = ShardRequest::Set {
+            key: "k".into(),
+            value: Bytes::from("v"),
+            expire: None,
+            nx: true,
+            xx: false,
+        };
+        // when NX blocks, the shard returns Value(None), not Ok
+        let resp = ShardResponse::Value(None);
         assert!(to_aof_record(&req, &resp).is_none());
     }
 }

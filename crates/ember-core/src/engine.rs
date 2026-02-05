@@ -200,6 +200,8 @@ mod tests {
                     key: "greeting".into(),
                     value: Bytes::from("hello"),
                     expire: None,
+                    nx: false,
+                    xx: false,
                 },
             )
             .await
@@ -236,6 +238,8 @@ mod tests {
                         key: key.to_string(),
                         value: Bytes::from("v"),
                         expire: None,
+                        nx: false,
+                        xx: false,
                     },
                 )
                 .await
