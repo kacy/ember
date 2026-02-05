@@ -130,9 +130,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-                Ok(ShardResponse::OutOfMemory) => {
-                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
-                }
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -233,6 +231,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -246,6 +245,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -327,6 +327,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             match engine.route(&key, req).await {
                 Ok(ShardResponse::ZAddLen { count, .. }) => Frame::Integer(count as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -338,7 +339,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                 members,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::ZRemLen { count, .. }) => Frame::Integer(count as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -430,4 +431,9 @@ where
 /// Returns the standard WRONGTYPE error frame.
 fn wrongtype_error() -> Frame {
     Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
+}
+
+/// Returns the standard OOM error frame.
+fn oom_error() -> Frame {
+    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
 }

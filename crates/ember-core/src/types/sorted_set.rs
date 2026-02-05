@@ -190,24 +190,26 @@ impl SortedSet {
     /// overhead that varies, but we account for the per-entry costs
     /// and the string data.
     pub fn memory_usage(&self) -> usize {
-        // base overhead for both collections
-        const BTREE_BASE: usize = 24;
-        const HASHMAP_BASE: usize = 48;
-        // per-entry overhead estimates
-        const BTREE_ENTRY: usize = 64; // node pointers + key storage
-        const HASHMAP_ENTRY: usize = 56; // bucket + hash + key + value
-
         let per_entry: usize = self
             .scores
             .keys()
-            .map(|k| {
-                let member_len = k.len();
-                // each member string is stored twice (btree + hashmap)
-                BTREE_ENTRY + HASHMAP_ENTRY + member_len * 2 + 8 // 8 for OrderedFloat
-            })
+            .map(|k| Self::estimated_member_cost(k))
             .sum();
 
-        BTREE_BASE + HASHMAP_BASE + per_entry
+        Self::BASE_OVERHEAD + per_entry
+    }
+
+    /// Base overhead of an empty sorted set (BTreeMap + HashMap shells).
+    pub const BASE_OVERHEAD: usize = 24 + 48; // BTREE_BASE + HASHMAP_BASE
+
+    /// Estimates the memory cost of storing a single member.
+    ///
+    /// Includes BTreeMap entry overhead (64), HashMap entry overhead (56),
+    /// the member string stored in both collections, and the OrderedFloat.
+    pub fn estimated_member_cost(member: &str) -> usize {
+        const BTREE_ENTRY: usize = 64;
+        const HASHMAP_ENTRY: usize = 56;
+        BTREE_ENTRY + HASHMAP_ENTRY + member.len() * 2 + 8
     }
 }
 
