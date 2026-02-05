@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::error::ShardError;
 use crate::expiry;
-use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult};
+use crate::keyspace::{Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult, WriteError};
 use crate::types::sorted_set::ZAddFlags;
 use crate::types::Value;
 
@@ -153,6 +153,8 @@ pub enum ShardResponse {
         count: usize,
         applied: Vec<(f64, String)>,
     },
+    /// ZREM result: count for the client + actually removed members for AOF.
+    ZRemLen { count: usize, removed: Vec<String> },
     /// Float score result (e.g. ZSCORE).
     Score(Option<f64>),
     /// Rank result (e.g. ZRANK).
@@ -394,11 +396,13 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
         ShardRequest::LPush { key, values } => match ks.lpush(key, values) {
             Ok(len) => ShardResponse::Len(len),
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::RPush { key, values } => match ks.rpush(key, values) {
             Ok(len) => ShardResponse::Len(len),
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::LPop { key } => match ks.lpop(key) {
             Ok(val) => ShardResponse::Value(val.map(Value::String)),
@@ -438,11 +442,15 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
                     count: result.count,
                     applied: result.applied,
                 },
-                Err(_) => ShardResponse::WrongType,
+                Err(WriteError::WrongType) => ShardResponse::WrongType,
+                Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
             }
         }
         ShardRequest::ZRem { key, members } => match ks.zrem(key, members) {
-            Ok(count) => ShardResponse::Len(count),
+            Ok(removed) => ShardResponse::ZRemLen {
+                count: removed.len(),
+                removed,
+            },
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::ZScore { key, member } => match ks.zscore(key, member) {
@@ -509,10 +517,12 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 members: applied.clone(),
             })
         }
-        (ShardRequest::ZRem { key, members, .. }, ShardResponse::Len(n)) if *n > 0 => {
+        (ShardRequest::ZRem { key, .. }, ShardResponse::ZRemLen { removed, .. })
+            if !removed.is_empty() =>
+        {
             Some(AofRecord::ZRem {
                 key: key.clone(),
-                members: members.clone(),
+                members: removed.clone(),
             })
         }
         _ => None,

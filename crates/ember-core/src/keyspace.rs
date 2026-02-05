@@ -30,6 +30,22 @@ impl std::fmt::Display for WrongType {
 
 impl std::error::Error for WrongType {}
 
+/// Error returned by write operations that may fail due to type mismatch
+/// or memory limits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriteError {
+    /// The key holds a different type than expected.
+    WrongType,
+    /// Memory limit reached and eviction couldn't free enough space.
+    OutOfMemory,
+}
+
+impl From<WrongType> for WriteError {
+    fn from(_: WrongType) -> Self {
+        WriteError::WrongType
+    }
+}
+
 /// Result of a ZADD operation, containing both the client-facing count
 /// and the list of members that were actually applied (for AOF correctness).
 #[derive(Debug, Clone)]
@@ -211,25 +227,16 @@ impl Keyspace {
         let new_value = Value::String(value);
 
         // check memory limit — for overwrites, only the net increase matters
-        if let Some(max) = self.config.max_memory {
-            let new_size = memory::entry_size(&key, &new_value);
-            let old_size = self
-                .entries
-                .get(&key)
-                .map(|e| memory::entry_size(&key, &e.value))
-                .unwrap_or(0);
-            let net_increase = new_size.saturating_sub(old_size);
+        let new_size = memory::entry_size(&key, &new_value);
+        let old_size = self
+            .entries
+            .get(&key)
+            .map(|e| memory::entry_size(&key, &e.value))
+            .unwrap_or(0);
+        let net_increase = new_size.saturating_sub(old_size);
 
-            while self.memory.used_bytes() + net_increase > max {
-                match self.config.eviction_policy {
-                    EvictionPolicy::NoEviction => return SetResult::OutOfMemory,
-                    EvictionPolicy::AllKeysLru => {
-                        if !self.try_evict() {
-                            return SetResult::OutOfMemory;
-                        }
-                    }
-                }
-            }
+        if !self.enforce_memory_limit(net_increase) {
+            return SetResult::OutOfMemory;
         }
 
         if let Some(old_entry) = self.entries.get(&key) {
@@ -284,6 +291,25 @@ impl Keyspace {
             }
         }
         false
+    }
+
+    /// Checks whether the memory limit allows a write that would increase
+    /// usage by `estimated_increase` bytes. Attempts eviction if the
+    /// policy allows it. Returns `true` if the write can proceed.
+    fn enforce_memory_limit(&mut self, estimated_increase: usize) -> bool {
+        if let Some(max) = self.config.max_memory {
+            while self.memory.used_bytes() + estimated_increase > max {
+                match self.config.eviction_policy {
+                    EvictionPolicy::NoEviction => return false,
+                    EvictionPolicy::AllKeysLru => {
+                        if !self.try_evict() {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
     }
 
     /// Removes a key. Returns `true` if the key existed (and wasn't expired).
@@ -426,17 +452,21 @@ impl Keyspace {
 
     /// Pushes one or more values to the head (left) of a list.
     ///
-    /// Creates the list if the key doesn't exist. Returns `Err(WrongType)`
-    /// if the key exists but holds a non-list value. Returns the new length.
-    pub fn lpush(&mut self, key: &str, values: &[Bytes]) -> Result<usize, WrongType> {
+    /// Creates the list if the key doesn't exist. Returns `Err(WriteError::WrongType)`
+    /// if the key exists but holds a non-list value, or
+    /// `Err(WriteError::OutOfMemory)` if the memory limit is reached.
+    /// Returns the new length on success.
+    pub fn lpush(&mut self, key: &str, values: &[Bytes]) -> Result<usize, WriteError> {
         self.list_push(key, values, true)
     }
 
     /// Pushes one or more values to the tail (right) of a list.
     ///
-    /// Creates the list if the key doesn't exist. Returns `Err(WrongType)`
-    /// if the key exists but holds a non-list value. Returns the new length.
-    pub fn rpush(&mut self, key: &str, values: &[Bytes]) -> Result<usize, WrongType> {
+    /// Creates the list if the key doesn't exist. Returns `Err(WriteError::WrongType)`
+    /// if the key exists but holds a non-list value, or
+    /// `Err(WriteError::OutOfMemory)` if the memory limit is reached.
+    /// Returns the new length on success.
+    pub fn rpush(&mut self, key: &str, values: &[Bytes]) -> Result<usize, WriteError> {
         self.list_push(key, values, false)
     }
 
@@ -509,13 +539,27 @@ impl Keyspace {
     }
 
     /// Internal push implementation shared by lpush/rpush.
-    fn list_push(&mut self, key: &str, values: &[Bytes], left: bool) -> Result<usize, WrongType> {
+    fn list_push(&mut self, key: &str, values: &[Bytes], left: bool) -> Result<usize, WriteError> {
         self.remove_if_expired(key);
 
         let is_new = !self.entries.contains_key(key);
 
         if !is_new && !matches!(self.entries[key].value, Value::List(_)) {
-            return Err(WrongType);
+            return Err(WriteError::WrongType);
+        }
+
+        // estimate the memory increase and enforce the limit before mutating
+        let element_increase: usize = values
+            .iter()
+            .map(|v| memory::VECDEQUE_ELEMENT_OVERHEAD + v.len())
+            .sum();
+        let estimated_increase = if is_new {
+            memory::ENTRY_OVERHEAD + key.len() + memory::VECDEQUE_BASE_OVERHEAD + element_increase
+        } else {
+            element_increase
+        };
+        if !self.enforce_memory_limit(estimated_increase) {
+            return Err(WriteError::OutOfMemory);
         }
 
         if is_new {
@@ -603,18 +647,33 @@ impl Keyspace {
     /// Creates the sorted set if the key doesn't exist. Returns a
     /// `ZAddResult` containing the count for the client response and the
     /// list of members that were actually applied (for AOF correctness).
-    /// Returns `Err(WrongType)` if the key holds a non-sorted-set value.
+    /// Returns `Err(WriteError::WrongType)` on type mismatch, or
+    /// `Err(WriteError::OutOfMemory)` if the memory limit is reached.
     pub fn zadd(
         &mut self,
         key: &str,
         members: &[(f64, String)],
         flags: &ZAddFlags,
-    ) -> Result<ZAddResult, WrongType> {
+    ) -> Result<ZAddResult, WriteError> {
         self.remove_if_expired(key);
 
         let is_new = !self.entries.contains_key(key);
         if !is_new && !matches!(self.entries[key].value, Value::SortedSet(_)) {
-            return Err(WrongType);
+            return Err(WriteError::WrongType);
+        }
+
+        // worst-case estimate: assume all members are new
+        let member_increase: usize = members
+            .iter()
+            .map(|(_, m)| SortedSet::estimated_member_cost(m))
+            .sum();
+        let estimated_increase = if is_new {
+            memory::ENTRY_OVERHEAD + key.len() + SortedSet::BASE_OVERHEAD + member_increase
+        } else {
+            member_increase
+        };
+        if !self.enforce_memory_limit(estimated_increase) {
+            return Err(WriteError::OutOfMemory);
         }
 
         if is_new {
@@ -663,17 +722,18 @@ impl Keyspace {
         Ok(ZAddResult { count, applied })
     }
 
-    /// Removes members from a sorted set. Returns the number of members
-    /// actually removed. Deletes the key if the set becomes empty.
+    /// Removes members from a sorted set. Returns the names of members
+    /// that were actually removed (for AOF correctness). Deletes the key
+    /// if the set becomes empty.
     ///
     /// Returns `Err(WrongType)` if the key holds a non-sorted-set value.
-    pub fn zrem(&mut self, key: &str, members: &[String]) -> Result<usize, WrongType> {
+    pub fn zrem(&mut self, key: &str, members: &[String]) -> Result<Vec<String>, WrongType> {
         if self.remove_if_expired(key) {
-            return Ok(0);
+            return Ok(vec![]);
         }
 
         match self.entries.get(key) {
-            None => return Ok(0),
+            None => return Ok(vec![]),
             Some(e) => {
                 if !matches!(e.value, Value::SortedSet(_)) {
                     return Err(WrongType);
@@ -683,11 +743,11 @@ impl Keyspace {
 
         let old_entry_size = memory::entry_size(key, &self.entries[key].value);
         let entry = self.entries.get_mut(key).expect("verified above");
-        let mut removed = 0;
+        let mut removed = Vec::new();
         if let Value::SortedSet(ref mut ss) = entry.value {
             for member in members {
                 if ss.remove(member) {
-                    removed += 1;
+                    removed.push(member.clone());
                 }
             }
         }
@@ -1537,7 +1597,9 @@ mod tests {
         let removed = ks
             .zrem("z", &["a".into(), "c".into(), "nonexistent".into()])
             .unwrap();
-        assert_eq!(removed, 2);
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&"a".to_owned()));
+        assert!(removed.contains(&"c".to_owned()));
         assert_eq!(ks.zscore("z", "a").unwrap(), None);
         assert_eq!(ks.zscore("z", "b").unwrap(), Some(2.0));
     }
@@ -1555,7 +1617,7 @@ mod tests {
     #[test]
     fn zrem_missing_key() {
         let mut ks = Keyspace::new();
-        assert_eq!(ks.zrem("nope", &["a".into()]).unwrap(), 0);
+        assert!(ks.zrem("nope", &["a".into()]).unwrap().is_empty());
     }
 
     #[test]
@@ -1679,5 +1741,90 @@ mod tests {
         ks.zrem("z", &["alice".into()]).unwrap();
         let after_remove = ks.stats().used_bytes;
         assert!(after_remove < after_second);
+    }
+
+    #[test]
+    fn zrem_returns_actually_removed_members() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        // "a" exists, "ghost" doesn't — only "a" should be in the result
+        let removed = ks.zrem("z", &["a".into(), "ghost".into()]).unwrap();
+        assert_eq!(removed, vec!["a".to_owned()]);
+    }
+
+    // -- memory limit enforcement for list/zset --
+
+    #[test]
+    fn lpush_rejects_when_memory_full() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        // first key eats up most of the budget
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // lpush should be rejected — not enough room
+        let result = ks.lpush("list", &[Bytes::from("big-value-here")]);
+        assert_eq!(result, Err(WriteError::OutOfMemory));
+
+        // original key should be untouched
+        assert!(ks.exists("a"));
+    }
+
+    #[test]
+    fn rpush_rejects_when_memory_full() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        let result = ks.rpush("list", &[Bytes::from("big-value-here")]);
+        assert_eq!(result, Err(WriteError::OutOfMemory));
+    }
+
+    #[test]
+    fn zadd_rejects_when_memory_full() {
+        let config = ShardConfig {
+            max_memory: Some(150),
+            eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        let result = ks.zadd("z", &[(1.0, "member".into())], &ZAddFlags::default());
+        assert!(matches!(result, Err(WriteError::OutOfMemory)));
+
+        // original key should be untouched
+        assert!(ks.exists("a"));
+    }
+
+    #[test]
+    fn lpush_evicts_under_lru_policy() {
+        let config = ShardConfig {
+            max_memory: Some(200),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        // should evict "a" to make room for the list
+        assert!(ks.lpush("list", &[Bytes::from("item")]).is_ok());
+        assert!(!ks.exists("a"));
     }
 }
