@@ -45,6 +45,10 @@ const TAG_LPOP: u8 = 6;
 const TAG_RPOP: u8 = 7;
 const TAG_ZADD: u8 = 8;
 const TAG_ZREM: u8 = 9;
+const TAG_PERSIST: u8 = 10;
+const TAG_PEXPIRE: u8 = 11;
+const TAG_INCR: u8 = 12;
+const TAG_DECR: u8 = 13;
 
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +78,14 @@ pub enum AofRecord {
     },
     /// ZREM key member [member ...].
     ZRem { key: String, members: Vec<String> },
+    /// PERSIST key — remove expiration.
+    Persist { key: String },
+    /// PEXPIRE key milliseconds.
+    Pexpire { key: String, milliseconds: u64 },
+    /// INCR key.
+    Incr { key: String },
+    /// DECR key.
+    Decr { key: String },
 }
 
 impl AofRecord {
@@ -140,6 +152,23 @@ impl AofRecord {
                 for member in members {
                     format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
                 }
+            }
+            AofRecord::Persist { key } => {
+                format::write_u8(&mut buf, TAG_PERSIST).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+            }
+            AofRecord::Pexpire { key, milliseconds } => {
+                format::write_u8(&mut buf, TAG_PEXPIRE).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_i64(&mut buf, *milliseconds as i64).expect("vec write");
+            }
+            AofRecord::Incr { key } => {
+                format::write_u8(&mut buf, TAG_INCR).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+            }
+            AofRecord::Decr { key } => {
+                format::write_u8(&mut buf, TAG_DECR).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
             }
         }
         buf
@@ -209,6 +238,23 @@ impl AofRecord {
                     members.push(read_string(&mut cursor, "member")?);
                 }
                 Ok(AofRecord::ZRem { key, members })
+            }
+            TAG_PERSIST => {
+                let key = read_string(&mut cursor, "key")?;
+                Ok(AofRecord::Persist { key })
+            }
+            TAG_PEXPIRE => {
+                let key = read_string(&mut cursor, "key")?;
+                let milliseconds = format::read_i64(&mut cursor)? as u64;
+                Ok(AofRecord::Pexpire { key, milliseconds })
+            }
+            TAG_INCR => {
+                let key = read_string(&mut cursor, "key")?;
+                Ok(AofRecord::Incr { key })
+            }
+            TAG_DECR => {
+                let key = read_string(&mut cursor, "key")?;
+                Ok(AofRecord::Decr { key })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }
@@ -402,6 +448,20 @@ impl AofReader {
                     let member = format::read_bytes(&mut self.reader)?;
                     format::write_bytes(&mut payload, &member).expect("vec write");
                 }
+            }
+            TAG_PERSIST => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
+            }
+            TAG_PEXPIRE => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
+                let millis = format::read_i64(&mut self.reader)?;
+                format::write_i64(&mut payload, millis).expect("vec write");
+            }
+            TAG_INCR | TAG_DECR => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key).expect("vec write");
             }
             _ => return Err(FormatError::UnknownTag(tag)),
         }
@@ -734,6 +794,81 @@ mod tests {
             AofRecord::ZRem {
                 key: "board".into(),
                 members: vec!["alice".into()],
+            },
+        ];
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            for rec in &records {
+                writer.write_record(rec).unwrap();
+            }
+            writer.sync().unwrap();
+        }
+
+        let mut reader = AofReader::open(&path).unwrap();
+        let mut got = Vec::new();
+        while let Some(rec) = reader.read_record().unwrap() {
+            got.push(rec);
+        }
+        assert_eq!(records, got);
+    }
+
+    #[test]
+    fn record_round_trip_persist() {
+        let rec = AofRecord::Persist {
+            key: "mykey".into(),
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_pexpire() {
+        let rec = AofRecord::Pexpire {
+            key: "mykey".into(),
+            milliseconds: 5000,
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_incr() {
+        let rec = AofRecord::Incr {
+            key: "counter".into(),
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_decr() {
+        let rec = AofRecord::Decr {
+            key: "counter".into(),
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn writer_reader_round_trip_with_persist_pexpire() {
+        let dir = temp_dir();
+        let path = dir.path().join("persist_pexpire.aof");
+
+        let records = vec![
+            AofRecord::Set {
+                key: "k".into(),
+                value: Bytes::from("v"),
+                expire_ms: 5000,
+            },
+            AofRecord::Persist { key: "k".into() },
+            AofRecord::Pexpire {
+                key: "k".into(),
+                milliseconds: 3000,
             },
         ];
 
