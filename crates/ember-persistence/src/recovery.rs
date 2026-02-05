@@ -144,6 +144,28 @@ fn load_snapshot(
     Ok(entries)
 }
 
+/// Applies an increment/decrement to a recovered entry. If the key doesn't
+/// exist, initializes it to "0" first. Non-integer values are silently skipped.
+fn apply_incr(
+    map: &mut HashMap<String, (RecoveredValue, Option<Instant>)>,
+    key: String,
+    delta: i64,
+) {
+    let entry = map
+        .entry(key)
+        .or_insert_with(|| (RecoveredValue::String(Bytes::from("0")), None));
+    if let RecoveredValue::String(ref mut data) = entry.0 {
+        let current = std::str::from_utf8(data)
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok());
+        if let Some(n) = current {
+            if let Some(new_val) = n.checked_add(delta) {
+                *data = Bytes::from(new_val.to_string());
+            }
+        }
+    }
+}
+
 /// Replays AOF records into the in-memory map. Returns the number of
 /// records replayed.
 fn replay_aof(
@@ -254,6 +276,22 @@ fn replay_aof(
                         }
                     }
                 }
+            }
+            AofRecord::Persist { key } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    entry.1 = None;
+                }
+            }
+            AofRecord::Pexpire { key, milliseconds } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    entry.1 = Some(now + Duration::from_millis(milliseconds));
+                }
+            }
+            AofRecord::Incr { key } => {
+                apply_incr(map, key, 1);
+            }
+            AofRecord::Decr { key } => {
+                apply_incr(map, key, -1);
             }
         }
         count += 1;
@@ -571,6 +609,108 @@ mod tests {
                 .write_record(&AofRecord::Expire {
                     key: "k".into(),
                     seconds: 300,
+                })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.entries[0].expires_at.is_some());
+    }
+
+    #[test]
+    fn persist_record_removes_ttl() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::Set {
+                    key: "k".into(),
+                    value: Bytes::from("v"),
+                    expire_ms: 60_000,
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::Persist { key: "k".into() })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.entries[0].expires_at.is_none());
+    }
+
+    #[test]
+    fn incr_decr_replay() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::Set {
+                    key: "n".into(),
+                    value: Bytes::from("10"),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::Incr { key: "n".into() })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::Incr { key: "n".into() })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::Decr { key: "n".into() })
+                .unwrap();
+            // also test INCR on a new key
+            writer
+                .write_record(&AofRecord::Incr { key: "fresh".into() })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        let map: HashMap<_, _> = result
+            .entries
+            .iter()
+            .map(|e| (e.key.as_str(), e.value.clone()))
+            .collect();
+
+        // 10 + 1 + 1 - 1 = 11
+        match &map["n"] {
+            RecoveredValue::String(data) => assert_eq!(data, &Bytes::from("11")),
+            other => panic!("expected String(\"11\"), got {other:?}"),
+        }
+        // 0 + 1 = 1
+        match &map["fresh"] {
+            RecoveredValue::String(data) => assert_eq!(data, &Bytes::from("1")),
+            other => panic!("expected String(\"1\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pexpire_record_sets_ttl() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::Set {
+                    key: "k".into(),
+                    value: Bytes::from("v"),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::Pexpire {
+                    key: "k".into(),
+                    milliseconds: 5000,
                 })
                 .unwrap();
             writer.sync().unwrap();

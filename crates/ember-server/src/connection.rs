@@ -118,7 +118,13 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             }
         }
 
-        Command::Set { key, value, expire } => {
+        Command::Set {
+            key,
+            value,
+            expire,
+            nx,
+            xx,
+        } => {
             let duration = expire.map(|e| match e {
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
@@ -127,9 +133,12 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                 key: key.clone(),
                 value,
                 expire: duration,
+                nx,
+                xx,
             };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -154,6 +163,66 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                 Ok(ShardResponse::Ttl(TtlResult::Seconds(s))) => Frame::Integer(s as i64),
                 Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
                 Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Incr { key } => {
+            let req = ShardRequest::Incr { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => {
+                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
+                }
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Decr { key } => {
+            let req = ShardRequest::Decr { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => {
+                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
+                }
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Persist { key } => {
+            let req = ShardRequest::Persist { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Pttl { key } => {
+            let req = ShardRequest::Pttl { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ttl(TtlResult::Milliseconds(ms))) => Frame::Integer(ms as i64),
+                Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
+                Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Pexpire { key, milliseconds } => {
+            let req = ShardRequest::Pexpire {
+                key: key.clone(),
+                milliseconds,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -397,6 +466,16 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                     }
                     Frame::Array(frames)
                 }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZCard { key } => {
+            let req = ShardRequest::ZCard { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
