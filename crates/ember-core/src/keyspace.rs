@@ -46,6 +46,31 @@ impl From<WrongType> for WriteError {
     }
 }
 
+/// Errors that can occur during INCR/DECR operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IncrError {
+    /// Key holds a non-string type.
+    WrongType,
+    /// Value is not a valid integer.
+    NotAnInteger,
+    /// Increment or decrement would overflow i64.
+    Overflow,
+    /// Memory limit reached.
+    OutOfMemory,
+}
+
+impl std::fmt::Display for IncrError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IncrError::WrongType => write!(f, "WRONGTYPE Operation against a key holding the wrong kind of value"),
+            IncrError::NotAnInteger => write!(f, "ERR value is not an integer or out of range"),
+            IncrError::Overflow => write!(f, "ERR increment or decrement would overflow"),
+            IncrError::OutOfMemory => write!(f, "OOM command not allowed when used memory > 'maxmemory'"),
+        }
+    }
+}
+
+impl std::error::Error for IncrError {}
 /// Result of a ZADD operation, containing both the client-facing count
 /// and the list of members that were actually applied (for AOF correctness).
 #[derive(Debug, Clone)]
@@ -134,6 +159,8 @@ impl Entry {
 pub enum TtlResult {
     /// Key exists and has a TTL. Returns remaining seconds.
     Seconds(u64),
+    /// Key exists and has a TTL. Returns remaining milliseconds.
+    Milliseconds(u64),
     /// Key exists but has no expiration set.
     NoExpiry,
     /// Key does not exist.
@@ -371,6 +398,118 @@ impl Keyspace {
                 None => TtlResult::NoExpiry,
             },
             None => TtlResult::NotFound,
+        }
+    }
+
+    /// Removes the expiration from a key.
+    ///
+    /// Returns `true` if the key existed and had a timeout that was removed.
+    /// Returns `false` if the key doesn't exist or has no expiration.
+    pub fn persist(&mut self, key: &str) -> bool {
+        if self.remove_if_expired(key) {
+            return false;
+        }
+        match self.entries.get_mut(key) {
+            Some(entry) => {
+                if entry.expires_at.is_some() {
+                    entry.expires_at = None;
+                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
+
+    /// Returns the TTL status for a key in milliseconds, following Redis semantics:
+    /// - `Milliseconds(n)` if the key has a TTL
+    /// - `NoExpiry` if the key exists without a TTL
+    /// - `NotFound` if the key doesn't exist
+    pub fn pttl(&mut self, key: &str) -> TtlResult {
+        if self.remove_if_expired(key) {
+            return TtlResult::NotFound;
+        }
+        match self.entries.get(key) {
+            Some(entry) => match entry.expires_at {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    TtlResult::Milliseconds(remaining.as_millis() as u64)
+                }
+                None => TtlResult::NoExpiry,
+            },
+            None => TtlResult::NotFound,
+        }
+    }
+
+    /// Sets an expiration on an existing key in milliseconds.
+    ///
+    /// Returns `true` if the key exists (and the TTL was set),
+    /// `false` if the key doesn't exist.
+    pub fn pexpire(&mut self, key: &str, millis: u64) -> bool {
+        if self.remove_if_expired(key) {
+            return false;
+        }
+        match self.entries.get_mut(key) {
+            Some(entry) => {
+                if entry.expires_at.is_none() {
+                    self.expiry_count += 1;
+                }
+                entry.expires_at = Some(Instant::now() + Duration::from_millis(millis));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Increments the integer value of a key by 1.
+    ///
+    /// If the key doesn't exist, it's initialized to 0 before incrementing.
+    /// Returns the new value after the operation.
+    pub fn incr(&mut self, key: &str) -> Result<i64, IncrError> {
+        self.incr_by(key, 1)
+    }
+
+    /// Decrements the integer value of a key by 1.
+    ///
+    /// If the key doesn't exist, it's initialized to 0 before decrementing.
+    /// Returns the new value after the operation.
+    pub fn decr(&mut self, key: &str) -> Result<i64, IncrError> {
+        self.incr_by(key, -1)
+    }
+
+    /// Shared implementation for INCR/DECR. Adds `delta` to the current
+    /// integer value of the key, creating it if necessary.
+    ///
+    /// Preserves the existing TTL when updating an existing key.
+    fn incr_by(&mut self, key: &str, delta: i64) -> Result<i64, IncrError> {
+        self.remove_if_expired(key);
+
+        // read current value and TTL
+        let (current, existing_expire) = match self.entries.get(key) {
+            Some(entry) => {
+                let val = match &entry.value {
+                    Value::String(data) => {
+                        let s = std::str::from_utf8(data).map_err(|_| IncrError::NotAnInteger)?;
+                        s.parse::<i64>().map_err(|_| IncrError::NotAnInteger)?
+                    }
+                    _ => return Err(IncrError::WrongType),
+                };
+                let expire = entry
+                    .expires_at
+                    .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+                (val, expire)
+            }
+            None => (0, None),
+        };
+
+        let new_val = current.checked_add(delta).ok_or(IncrError::Overflow)?;
+        let new_bytes = Bytes::from(new_val.to_string());
+
+        match self.set(key.to_owned(), new_bytes, existing_expire) {
+            SetResult::Ok => Ok(new_val),
+            SetResult::OutOfMemory => Err(IncrError::OutOfMemory),
         }
     }
 
@@ -839,6 +978,22 @@ impl Keyspace {
                 }
                 result
             }
+        }
+    }
+
+    /// Returns the number of members in a sorted set, or 0 if the key doesn't exist.
+    ///
+    /// Returns `Err(WrongType)` on type mismatch.
+    pub fn zcard(&mut self, key: &str) -> Result<usize, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(0);
+        }
+        match self.entries.get(key) {
+            None => Ok(0),
+            Some(entry) => match &entry.value {
+                Value::SortedSet(ss) => Ok(ss.len()),
+                _ => Err(WrongType),
+            },
         }
     }
 
@@ -1744,6 +1899,76 @@ mod tests {
     }
 
     #[test]
+    fn incr_new_key_defaults_to_zero() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.incr("counter").unwrap(), 1);
+        // verify the stored value
+        match ks.get("counter").unwrap() {
+            Some(Value::String(data)) => assert_eq!(data, Bytes::from("1")),
+            other => panic!("expected String(\"1\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incr_existing_value() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        assert_eq!(ks.incr("n").unwrap(), 11);
+    }
+
+    #[test]
+    fn decr_new_key_defaults_to_zero() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.decr("counter").unwrap(), -1);
+    }
+
+    #[test]
+    fn decr_existing_value() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        assert_eq!(ks.decr("n").unwrap(), 9);
+    }
+
+    #[test]
+    fn incr_non_integer_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("notanum"), None);
+        assert_eq!(ks.incr("s").unwrap_err(), IncrError::NotAnInteger);
+    }
+
+    #[test]
+    fn incr_on_list_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.lpush("list", &[Bytes::from("a")]).unwrap();
+        assert_eq!(ks.incr("list").unwrap_err(), IncrError::WrongType);
+    }
+
+    #[test]
+    fn incr_overflow_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("max".into(), Bytes::from(i64::MAX.to_string()), None);
+        assert_eq!(ks.incr("max").unwrap_err(), IncrError::Overflow);
+    }
+
+    #[test]
+    fn decr_overflow_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("min".into(), Bytes::from(i64::MIN.to_string()), None);
+        assert_eq!(ks.decr("min").unwrap_err(), IncrError::Overflow);
+    }
+
+    #[test]
+    fn incr_preserves_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("5"), Some(Duration::from_secs(60)));
+        ks.incr("n").unwrap();
+        match ks.ttl("n") {
+            TtlResult::Seconds(s) => assert!(s >= 58 && s <= 60),
+            other => panic!("expected TTL preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn zrem_returns_actually_removed_members() {
         let mut ks = Keyspace::new();
         ks.zadd(
@@ -1755,6 +1980,109 @@ mod tests {
         // "a" exists, "ghost" doesn't — only "a" should be in the result
         let removed = ks.zrem("z", &["a".into(), "ghost".into()]).unwrap();
         assert_eq!(removed, vec!["a".to_owned()]);
+    }
+
+    #[test]
+    fn zcard_returns_count() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        assert_eq!(ks.zcard("z").unwrap(), 2);
+    }
+
+    #[test]
+    fn zcard_missing_key_returns_zero() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.zcard("missing").unwrap(), 0);
+    }
+
+    #[test]
+    fn zcard_on_string_key_returns_wrongtype() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None);
+        assert!(ks.zcard("s").is_err());
+    }
+
+    #[test]
+    fn persist_removes_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        assert!(matches!(ks.ttl("key"), TtlResult::Seconds(_)));
+
+        assert!(ks.persist("key"));
+        assert_eq!(ks.ttl("key"), TtlResult::NoExpiry);
+        assert_eq!(ks.stats().keys_with_expiry, 0);
+    }
+
+    #[test]
+    fn persist_returns_false_without_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), None);
+        assert!(!ks.persist("key"));
+    }
+
+    #[test]
+    fn persist_returns_false_for_missing_key() {
+        let mut ks = Keyspace::new();
+        assert!(!ks.persist("missing"));
+    }
+
+    #[test]
+    fn pttl_returns_milliseconds() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        match ks.pttl("key") {
+            TtlResult::Milliseconds(ms) => assert!(ms > 59_000 && ms <= 60_000),
+            other => panic!("expected Milliseconds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pttl_no_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), None);
+        assert_eq!(ks.pttl("key"), TtlResult::NoExpiry);
+    }
+
+    #[test]
+    fn pttl_not_found() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.pttl("missing"), TtlResult::NotFound);
+    }
+
+    #[test]
+    fn pexpire_sets_ttl_in_millis() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), None);
+        assert!(ks.pexpire("key", 5000));
+        match ks.pttl("key") {
+            TtlResult::Milliseconds(ms) => assert!(ms > 4000 && ms <= 5000),
+            other => panic!("expected Milliseconds, got {other:?}"),
+        }
+        assert_eq!(ks.stats().keys_with_expiry, 1);
+    }
+
+    #[test]
+    fn pexpire_missing_key_returns_false() {
+        let mut ks = Keyspace::new();
+        assert!(!ks.pexpire("missing", 5000));
+    }
+
+    #[test]
+    fn pexpire_overwrites_existing_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        assert!(ks.pexpire("key", 500));
+        match ks.pttl("key") {
+            TtlResult::Milliseconds(ms) => assert!(ms <= 500),
+            other => panic!("expected Milliseconds, got {other:?}"),
+        }
+        // expiry count shouldn't double-count
+        assert_eq!(ks.stats().keys_with_expiry, 1);
     }
 
     // -- memory limit enforcement for list/zset --

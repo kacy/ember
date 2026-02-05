@@ -30,12 +30,22 @@ pub enum Command {
     /// GET <key>. Returns the value or nil.
     Get { key: String },
 
-    /// SET <key> <value> [EX seconds | PX milliseconds].
+    /// SET <key> <value> [EX seconds | PX milliseconds] [NX | XX].
     Set {
         key: String,
         value: Bytes,
         expire: Option<SetExpire>,
+        /// Only set the key if it does not already exist.
+        nx: bool,
+        /// Only set the key if it already exists.
+        xx: bool,
     },
+
+    /// INCR <key>. Increments the integer value of a key by 1.
+    Incr { key: String },
+
+    /// DECR <key>. Decrements the integer value of a key by 1.
+    Decr { key: String },
 
     /// DEL <key> [key ...]. Returns the number of keys removed.
     Del { keys: Vec<String> },
@@ -48,6 +58,15 @@ pub enum Command {
 
     /// TTL <key>. Returns remaining time-to-live in seconds.
     Ttl { key: String },
+
+    /// PERSIST <key>. Removes the expiration from a key.
+    Persist { key: String },
+
+    /// PTTL <key>. Returns remaining time-to-live in milliseconds.
+    Pttl { key: String },
+
+    /// PEXPIRE <key> <milliseconds>. Sets a TTL in milliseconds on an existing key.
+    Pexpire { key: String, milliseconds: u64 },
 
     /// DBSIZE. Returns the number of keys in the database.
     DbSize,
@@ -97,6 +116,9 @@ pub enum Command {
 
     /// ZRANK <key> <member>. Returns the rank of a member (0-based).
     ZRank { key: String, member: String },
+
+    /// ZCARD <key>. Returns the cardinality (number of members) of a sorted set.
+    ZCard { key: String },
 
     /// ZRANGE <key> <start> <stop> [WITHSCORES]. Returns a range by rank.
     ZRange {
@@ -156,10 +178,15 @@ impl Command {
             "ECHO" => parse_echo(&frames[1..]),
             "GET" => parse_get(&frames[1..]),
             "SET" => parse_set(&frames[1..]),
+            "INCR" => parse_incr(&frames[1..]),
+            "DECR" => parse_decr(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
             "EXPIRE" => parse_expire(&frames[1..]),
             "TTL" => parse_ttl(&frames[1..]),
+            "PERSIST" => parse_persist(&frames[1..]),
+            "PTTL" => parse_pttl(&frames[1..]),
+            "PEXPIRE" => parse_pexpire(&frames[1..]),
             "DBSIZE" => parse_dbsize(&frames[1..]),
             "INFO" => parse_info(&frames[1..]),
             "BGSAVE" => parse_bgsave(&frames[1..]),
@@ -175,6 +202,7 @@ impl Command {
             "ZREM" => parse_zrem(&frames[1..]),
             "ZSCORE" => parse_zscore(&frames[1..]),
             "ZRANK" => parse_zrank(&frames[1..]),
+            "ZCARD" => parse_zcard(&frames[1..]),
             "ZRANGE" => parse_zrange(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
@@ -248,34 +276,87 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
     let value = extract_bytes(&args[1])?;
 
-    let expire = if args.len() > 2 {
-        // parse optional EX/PX
-        if args.len() != 4 {
-            return Err(ProtocolError::WrongArity("SET".into()));
-        }
-        let flag = extract_string(&args[2])?.to_ascii_uppercase();
-        let amount = parse_u64(&args[3], "SET")?;
+    let mut expire = None;
+    let mut nx = false;
+    let mut xx = false;
+    let mut idx = 2;
 
-        if amount == 0 {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "invalid expire time in 'SET' command".into(),
-            ));
-        }
-
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
         match flag.as_str() {
-            "EX" => Some(SetExpire::Ex(amount)),
-            "PX" => Some(SetExpire::Px(amount)),
+            "NX" => {
+                nx = true;
+                idx += 1;
+            }
+            "XX" => {
+                xx = true;
+                idx += 1;
+            }
+            "EX" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::WrongArity("SET".into()));
+                }
+                let amount = parse_u64(&args[idx], "SET")?;
+                if amount == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid expire time in 'SET' command".into(),
+                    ));
+                }
+                expire = Some(SetExpire::Ex(amount));
+                idx += 1;
+            }
+            "PX" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::WrongArity("SET".into()));
+                }
+                let amount = parse_u64(&args[idx], "SET")?;
+                if amount == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid expire time in 'SET' command".into(),
+                    ));
+                }
+                expire = Some(SetExpire::Px(amount));
+                idx += 1;
+            }
             _ => {
                 return Err(ProtocolError::InvalidCommandFrame(format!(
                     "unsupported SET option '{flag}'"
                 )));
             }
         }
-    } else {
-        None
-    };
+    }
 
-    Ok(Command::Set { key, value, expire })
+    if nx && xx {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "XX and NX options at the same time are not compatible".into(),
+        ));
+    }
+
+    Ok(Command::Set {
+        key,
+        value,
+        expire,
+        nx,
+        xx,
+    })
+}
+
+fn parse_incr(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("INCR".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Incr { key })
+}
+
+fn parse_decr(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("DECR".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Decr { key })
 }
 
 fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -322,6 +403,38 @@ fn parse_ttl(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Ttl { key })
+}
+
+fn parse_persist(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("PERSIST".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Persist { key })
+}
+
+fn parse_pttl(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("PTTL".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Pttl { key })
+}
+
+fn parse_pexpire(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("PEXPIRE".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let milliseconds = parse_u64(&args[1], "PEXPIRE")?;
+
+    if milliseconds == 0 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "invalid expire time in 'PEXPIRE' command".into(),
+        ));
+    }
+
+    Ok(Command::Pexpire { key, milliseconds })
 }
 
 fn parse_dbsize(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -517,6 +630,14 @@ fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     })
 }
 
+fn parse_zcard(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("ZCARD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::ZCard { key })
+}
+
 fn parse_zrem(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
         return Err(ProtocolError::WrongArity("ZREM".into()));
@@ -683,6 +804,8 @@ mod tests {
                 key: "key".into(),
                 value: Bytes::from("value"),
                 expire: None,
+                nx: false,
+                xx: false,
             },
         );
     }
@@ -695,6 +818,8 @@ mod tests {
                 key: "key".into(),
                 value: Bytes::from("val"),
                 expire: Some(SetExpire::Ex(10)),
+                nx: false,
+                xx: false,
             },
         );
     }
@@ -707,6 +832,8 @@ mod tests {
                 key: "key".into(),
                 value: Bytes::from("val"),
                 expire: Some(SetExpire::Px(5000)),
+                nx: false,
+                xx: false,
             },
         );
     }
@@ -719,6 +846,84 @@ mod tests {
                 key: "k".into(),
                 value: Bytes::from("v"),
                 expire: Some(SetExpire::Ex(5)),
+                nx: false,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn set_nx_flag() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SET", "key", "val", "NX"])).unwrap(),
+            Command::Set {
+                key: "key".into(),
+                value: Bytes::from("val"),
+                expire: None,
+                nx: true,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn set_xx_flag() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SET", "key", "val", "XX"])).unwrap(),
+            Command::Set {
+                key: "key".into(),
+                value: Bytes::from("val"),
+                expire: None,
+                nx: false,
+                xx: true,
+            },
+        );
+    }
+
+    #[test]
+    fn set_nx_with_ex() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SET", "key", "val", "EX", "10", "NX"])).unwrap(),
+            Command::Set {
+                key: "key".into(),
+                value: Bytes::from("val"),
+                expire: Some(SetExpire::Ex(10)),
+                nx: true,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn set_nx_before_ex() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SET", "key", "val", "NX", "PX", "5000"])).unwrap(),
+            Command::Set {
+                key: "key".into(),
+                value: Bytes::from("val"),
+                expire: Some(SetExpire::Px(5000)),
+                nx: true,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn set_nx_xx_conflict() {
+        let err = Command::from_frame(cmd(&["SET", "k", "v", "NX", "XX"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn set_nx_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["set", "k", "v", "nx"])).unwrap(),
+            Command::Set {
+                key: "k".into(),
+                value: Bytes::from("v"),
+                expire: None,
+                nx: true,
+                xx: false,
             },
         );
     }
@@ -1297,6 +1502,22 @@ mod tests {
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
+    // --- zcard ---
+
+    #[test]
+    fn zcard_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZCARD", "z"])).unwrap(),
+            Command::ZCard { key: "z".into() },
+        );
+    }
+
+    #[test]
+    fn zcard_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ZCARD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
     // --- zrange ---
 
     #[test]
@@ -1348,5 +1569,112 @@ mod tests {
     fn zrange_wrong_arity() {
         let err = Command::from_frame(cmd(&["ZRANGE", "z", "0"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- incr ---
+
+    #[test]
+    fn incr_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["INCR", "counter"])).unwrap(),
+            Command::Incr {
+                key: "counter".into()
+            },
+        );
+    }
+
+    #[test]
+    fn incr_wrong_arity() {
+        let err = Command::from_frame(cmd(&["INCR"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- decr ---
+
+    #[test]
+    fn decr_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["DECR", "counter"])).unwrap(),
+            Command::Decr {
+                key: "counter".into()
+            },
+        );
+    }
+
+    #[test]
+    fn decr_wrong_arity() {
+        let err = Command::from_frame(cmd(&["DECR"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- persist ---
+
+    #[test]
+    fn persist_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PERSIST", "key"])).unwrap(),
+            Command::Persist { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn persist_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["persist", "key"])).unwrap(),
+            Command::Persist { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn persist_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PERSIST"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- pttl ---
+
+    #[test]
+    fn pttl_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PTTL", "key"])).unwrap(),
+            Command::Pttl { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn pttl_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PTTL"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- pexpire ---
+
+    #[test]
+    fn pexpire_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PEXPIRE", "key", "5000"])).unwrap(),
+            Command::Pexpire {
+                key: "key".into(),
+                milliseconds: 5000,
+            },
+        );
+    }
+
+    #[test]
+    fn pexpire_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PEXPIRE", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn pexpire_zero_millis() {
+        let err = Command::from_frame(cmd(&["PEXPIRE", "key", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn pexpire_invalid_millis() {
+        let err = Command::from_frame(cmd(&["PEXPIRE", "key", "notanum"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 }
