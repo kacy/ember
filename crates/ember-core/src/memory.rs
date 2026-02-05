@@ -12,7 +12,7 @@ use crate::types::Value;
 /// (Option<Instant> = 16, last_access Instant = 8, Value enum tag + padding),
 /// plus HashMap per-entry bookkeeping. This doesn't need to be exact —
 /// it's close enough for eviction triggers and stats reporting.
-const ENTRY_OVERHEAD: usize = 96;
+pub(crate) const ENTRY_OVERHEAD: usize = 96;
 
 /// Tracks memory usage for a single keyspace.
 ///
@@ -106,10 +106,10 @@ pub fn entry_size(key: &str, value: &Value) -> usize {
 ///
 /// Each slot holds a `Bytes` (pointer + len + capacity = 24 bytes on 64-bit)
 /// plus VecDeque's internal bookkeeping per slot.
-const VECDEQUE_ELEMENT_OVERHEAD: usize = 32;
+pub(crate) const VECDEQUE_ELEMENT_OVERHEAD: usize = 32;
 
 /// Base overhead for an empty VecDeque (internal buffer pointer + head/len).
-const VECDEQUE_BASE_OVERHEAD: usize = 24;
+pub(crate) const VECDEQUE_BASE_OVERHEAD: usize = 24;
 
 /// Returns the byte size of a value's payload.
 pub fn value_size(value: &Value) -> usize {
