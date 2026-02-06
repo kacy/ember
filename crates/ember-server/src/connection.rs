@@ -260,12 +260,16 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         }
 
         Command::MSet { pairs } => {
-            // fan out individual SET requests — MSET always succeeds (or OOMs)
+            // Fan out individual SET requests — MSET always succeeds (or OOMs).
+            // We build a HashMap for O(1) value lookups during routing. If there
+            // are duplicate keys in pairs, the HashMap keeps the last value, which
+            // matches Redis semantics (last write wins).
             let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
             let values: std::collections::HashMap<String, Bytes> = pairs.into_iter().collect();
 
             match engine
                 .route_multi(&keys, |k| {
+                    // Safe: k comes from keys, which came from pairs, so it exists in values.
                     let value = values.get(&k).cloned().unwrap_or_default();
                     ShardRequest::Set {
                         key: k,
