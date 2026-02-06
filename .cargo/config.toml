@@ -1,0 +1,31 @@
+# cargo configuration for ember
+# https://doc.rust-lang.org/cargo/reference/config.html
+
+[build]
+# use all available cores for parallel compilation
+jobs = -1
+
+[profile.release]
+# link-time optimization for smaller, faster binaries
+lto = true
+# single codegen unit for better optimization (slower compile)
+codegen-units = 1
+# strip symbols from release binaries
+strip = true
+# abort on panic for smaller binary and cleaner crash behavior
+panic = "abort"
+
+[profile.dev]
+# faster incremental builds in dev mode
+incremental = true
+
+[profile.test]
+# keep debug info in test builds for better backtraces
+debug = true
+
+# alias for common operations
+[alias]
+b = "build"
+c = "check"
+t = "test"
+r = "run"

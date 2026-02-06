@@ -565,7 +565,12 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
 /// Returns None for non-mutation requests or failed mutations.
 fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> {
     match (req, resp) {
-        (ShardRequest::Set { key, value, expire, .. }, ShardResponse::Ok) => {
+        (
+            ShardRequest::Set {
+                key, value, expire, ..
+            },
+            ShardResponse::Ok,
+        ) => {
             let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
             Some(AofRecord::Set {
                 key: key.clone(),

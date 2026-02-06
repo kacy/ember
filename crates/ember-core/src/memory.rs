@@ -10,8 +10,13 @@ use crate::types::Value;
 ///
 /// Accounts for: HashMap bucket pointer (8), Entry struct fields
 /// (Option<Instant> = 16, last_access Instant = 8, Value enum tag + padding),
-/// plus HashMap per-entry bookkeeping. This doesn't need to be exact —
-/// it's close enough for eviction triggers and stats reporting.
+/// plus HashMap per-entry bookkeeping.
+///
+/// This is an approximation measured empirically on x86-64 linux. The exact
+/// value varies by platform and compiler version, but precision isn't critical —
+/// we use this for eviction triggers and memory reporting, not for correctness.
+/// Overestimating is fine (triggers eviction earlier); underestimating could
+/// theoretically let memory grow slightly beyond the configured limit.
 pub(crate) const ENTRY_OVERHEAD: usize = 96;
 
 /// Tracks memory usage for a single keyspace.

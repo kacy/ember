@@ -669,7 +669,9 @@ mod tests {
                 .unwrap();
             // also test INCR on a new key
             writer
-                .write_record(&AofRecord::Incr { key: "fresh".into() })
+                .write_record(&AofRecord::Incr {
+                    key: "fresh".into(),
+                })
                 .unwrap();
             writer.sync().unwrap();
         }
