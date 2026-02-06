@@ -131,6 +131,18 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 | p99 latency | ~1ms | <200µs |
 | memory/key | ~90 bytes overhead | <40 bytes |
 
+## status
+
+| phase | description | status |
+|-------|-------------|--------|
+| 1 | foundation (protocol, engine, expiration) | ✅ complete |
+| 2 | persistence (AOF, snapshots, recovery) | ✅ complete |
+| 3 | data types (sorted sets, lists, hashes, sets) | ✅ complete |
+| 4 | clustering (raft, gossip, slots) | 🚧 not started |
+| 5 | developer experience (observability, CLI, clients) | 🚧 not started |
+
+**current**: 49 commands, 487 tests, ~6k lines of code
+
 ## security
 
 see [SECURITY.md](SECURITY.md) for:
