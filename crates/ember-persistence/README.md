@@ -15,7 +15,9 @@ each shard gets its own persistence files (`shard-{id}.aof` and `shard-{id}.snap
 
 **AOF** — `[EAOF magic][version][record...]` where each record is `[tag][payload][crc32]`
 
-**snapshot (v2)** — `[ESNP magic][version][shard_id][entry_count][entries...][footer_crc32]` where entries are type-tagged (string=0, list=1, sorted set=2). v1 snapshots (no type tags) are still readable.
+supported record types: SET, DEL, EXPIRE, LPUSH, RPUSH, LPOP, RPOP, ZADD, ZREM, HSET, HDEL, HINCRBY, SADD, SREM
+
+**snapshot (v2)** — `[ESNP magic][version][shard_id][entry_count][entries...][footer_crc32]` where entries are type-tagged (string=0, list=1, sorted set=2, hash=3, set=4). v1 snapshots (no type tags) are still readable.
 
 ## usage
 
@@ -38,5 +40,5 @@ for entry in result.entries {
 | [emberkv-core](../ember-core) | storage engine, keyspace, sharding |
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-server](../ember-server) | TCP server and connection handling |
-| [ember-cluster](../ember-cluster) | distributed coordination (WIP) |
-| [ember-cli](../ember-cli) | interactive command-line client (WIP) |
+| [ember-cluster](../ember-cluster) | distributed coordination |
+| [ember-cli](../ember-cli) | interactive command-line client (planned) |

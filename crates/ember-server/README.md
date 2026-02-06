@@ -1,11 +1,11 @@
 # ember-server
 
-the main server binary for [ember](https://github.com/kacy/ember). accepts TCP connections, parses RESP3 commands, routes them through the sharded engine, and writes responses back. supports pipelining.
+the main server binary for [ember](https://github.com/kacy/ember). accepts TCP connections, parses RESP3 commands, routes them through the sharded engine, and writes responses back. supports pipelining and graceful shutdown.
 
 ## what's in here
 
 - **main** — CLI arg parsing (host, port, max-memory, eviction policy, persistence config)
-- **server** — TCP accept loop with configurable connection limits, spawns a handler task per client
+- **server** — TCP accept loop with configurable connection limits, graceful shutdown on SIGINT/SIGTERM, spawns a handler task per client
 - **connection** — per-connection event loop: read → parse frames → dispatch commands → write responses. handles idle timeouts, buffer limits, and protocol errors
 - **config** — configuration helpers for byte sizes, eviction policies, fsync policies
 
@@ -31,5 +31,5 @@ compatible with `redis-cli` and any RESP3 client.
 | [emberkv-core](../ember-core) | storage engine, keyspace, sharding |
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-persistence](../ember-persistence) | AOF, snapshots, and crash recovery |
-| [ember-cluster](../ember-cluster) | distributed coordination (WIP) |
-| [ember-cli](../ember-cli) | interactive command-line client (WIP) |
+| [ember-cluster](../ember-cluster) | distributed coordination |
+| [ember-cli](../ember-cli) | interactive command-line client (planned) |

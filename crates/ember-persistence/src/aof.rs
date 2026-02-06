@@ -58,7 +58,7 @@ const TAG_SREM: u8 = 18;
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AofRecord {
-    /// SET key value [expire_ms]. expire_ms is -1 for no expiration.
+    /// SET key value \[expire_ms\]. expire_ms is -1 for no expiration.
     Set {
         key: String,
         value: Bytes,
@@ -444,6 +444,8 @@ impl AofWriter {
         let mut writer = BufWriter::new(file);
         format::write_header(&mut writer, format::AOF_MAGIC)?;
         writer.flush()?;
+        // ensure the fresh header is durable before we start appending
+        writer.get_ref().sync_all()?;
         self.writer = writer;
         Ok(())
     }
