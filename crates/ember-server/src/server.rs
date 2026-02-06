@@ -4,7 +4,9 @@
 //! connections and waits for in-flight requests to drain before exiting.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use ember_core::{Engine, EngineConfig};
 use tokio::net::TcpListener;
@@ -12,9 +14,26 @@ use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 use crate::connection;
+use crate::slowlog::{SlowLog, SlowLogConfig};
 
 /// Default maximum number of concurrent client connections.
 const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
+
+/// Shared server state for INFO and observability.
+///
+/// Created once at startup and shared (via `Arc`) across all connection
+/// handlers. Atomic counters avoid any locking on the hot path.
+#[derive(Debug)]
+pub struct ServerContext {
+    pub start_time: Instant,
+    pub version: &'static str,
+    pub shard_count: usize,
+    pub max_connections: usize,
+    pub max_memory: Option<usize>,
+    pub aof_enabled: bool,
+    pub connections_accepted: AtomicU64,
+    pub commands_processed: AtomicU64,
+}
 
 /// Binds to `addr` and runs the accept loop.
 ///
@@ -31,11 +50,19 @@ pub async fn run(
     config: EngineConfig,
     max_connections: Option<usize>,
     metrics_enabled: bool,
+    slowlog_config: SlowLogConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
         std::fs::create_dir_all(&pcfg.data_dir)?;
     }
+
+    let aof_enabled = config
+        .persistence
+        .as_ref()
+        .map(|p| p.append_only)
+        .unwrap_or(false);
+    let max_memory = config.shard.max_memory.map(|per_shard| per_shard * shard_count);
 
     let engine = Engine::with_config(shard_count, config);
 
@@ -46,6 +73,19 @@ pub async fn run(
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
+
+    let ctx = Arc::new(ServerContext {
+        start_time: Instant::now(),
+        version: env!("CARGO_PKG_VERSION"),
+        shard_count,
+        max_connections: max_conn,
+        max_memory,
+        aof_enabled,
+        connections_accepted: AtomicU64::new(0),
+        commands_processed: AtomicU64::new(0),
+    });
+
+    let slow_log = Arc::new(SlowLog::new(slowlog_config));
 
     info!(
         "listening on {addr} with {} shards (max {max_conn} connections)",
@@ -82,12 +122,15 @@ pub async fn run(
                 if metrics_enabled {
                     crate::metrics::on_connection_accepted();
                 }
+                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
 
                 let engine = engine.clone();
+                let ctx = Arc::clone(&ctx);
+                let slow_log = Arc::clone(&slow_log);
                 let metrics = metrics_enabled;
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, engine, metrics).await {
+                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log, metrics).await {
                         error!("connection error from {peer}: {e}");
                     }
                     if metrics {

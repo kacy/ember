@@ -263,6 +263,15 @@ pub enum Command {
     /// ASKING. Signals that the next command is for a migrating slot.
     Asking,
 
+    /// SLOWLOG GET [count]. Returns recent slow log entries.
+    SlowLogGet { count: Option<usize> },
+
+    /// SLOWLOG LEN. Returns the number of entries in the slow log.
+    SlowLogLen,
+
+    /// SLOWLOG RESET. Clears the slow log.
+    SlowLogReset,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -359,6 +368,9 @@ impl Command {
             Command::ClusterGetKeysInSlot { .. } => "cluster_getkeysinslot",
             Command::Migrate { .. } => "migrate",
             Command::Asking => "asking",
+            Command::SlowLogGet { .. } => "slowlog",
+            Command::SlowLogLen => "slowlog",
+            Command::SlowLogReset => "slowlog",
             Command::Unknown(_) => "unknown",
         }
     }
@@ -439,6 +451,7 @@ impl Command {
             "CLUSTER" => parse_cluster(&frames[1..]),
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
+            "SLOWLOG" => parse_slowlog(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1296,6 +1309,34 @@ fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("ASKING".into()));
     }
     Ok(Command::Asking)
+}
+
+fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("SLOWLOG".into()));
+    }
+
+    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
+    match subcmd.as_str() {
+        "GET" => {
+            let count = if args.len() > 1 {
+                let n: usize = extract_string(&args[1])?
+                    .parse()
+                    .map_err(|_| {
+                        ProtocolError::InvalidCommandFrame("invalid count for SLOWLOG GET".into())
+                    })?;
+                Some(n)
+            } else {
+                None
+            };
+            Ok(Command::SlowLogGet { count })
+        }
+        "LEN" => Ok(Command::SlowLogLen),
+        "RESET" => Ok(Command::SlowLogReset),
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown SLOWLOG subcommand '{other}'"
+        ))),
+    }
 }
 
 fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
