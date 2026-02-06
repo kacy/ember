@@ -625,7 +625,6 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         }
 
         // --- hash commands ---
-
         Command::HSet { key, fields } => {
             let req = ShardRequest::HSet {
                 key: key.clone(),
@@ -726,9 +725,11 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         Command::HKeys { key } => {
             let req = ShardRequest::HKeys { key: key.clone() };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::StringArray(keys)) => {
-                    Frame::Array(keys.into_iter().map(|k| Frame::Bulk(Bytes::from(k))).collect())
-                }
+                Ok(ShardResponse::StringArray(keys)) => Frame::Array(
+                    keys.into_iter()
+                        .map(|k| Frame::Bulk(Bytes::from(k)))
+                        .collect(),
+                ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -753,16 +754,14 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                 fields,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::OptionalArray(vals)) => {
-                    Frame::Array(
-                        vals.into_iter()
-                            .map(|v| match v {
-                                Some(data) => Frame::Bulk(data),
-                                None => Frame::Null,
-                            })
-                            .collect(),
-                    )
-                }
+                Ok(ShardResponse::OptionalArray(vals)) => Frame::Array(
+                    vals.into_iter()
+                        .map(|v| match v {
+                            Some(data) => Frame::Bulk(data),
+                            None => Frame::Null,
+                        })
+                        .collect(),
+                ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
