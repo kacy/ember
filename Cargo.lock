@@ -314,7 +314,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ember-cluster"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "openraft",
@@ -329,7 +329,7 @@ dependencies = [
 
 [[package]]
 name = "ember-persistence"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "ember-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "itoa",
@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "ember-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "clap",
@@ -364,14 +364,14 @@ dependencies = [
 
 [[package]]
 name = "emberkv-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "emberkv-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "ember-persistence",
