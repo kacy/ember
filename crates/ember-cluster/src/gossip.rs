@@ -227,7 +227,8 @@ impl GossipEngine {
 
                 // Clear pending probe
                 if let Some(probe) = self.pending_probes.remove(&seq) {
-                    if self.members.get(&probe.target).map(|m| m.state) == Some(MemberStatus::Suspect)
+                    if self.members.get(&probe.target).map(|m| m.state)
+                        == Some(MemberStatus::Suspect)
                     {
                         // Node recovered from suspicion
                         self.mark_alive(probe.target).await;
@@ -271,20 +272,26 @@ impl GossipEngine {
             }
 
             GossipMessage::Welcome { sender, members } => {
-                info!("received welcome from {} with {} members", sender, members.len());
+                info!(
+                    "received welcome from {} with {} members",
+                    sender,
+                    members.len()
+                );
                 self.ensure_member(sender, from);
 
                 for member in members {
                     if member.id != self.local_id {
-                        self.members.entry(member.id).or_insert_with(|| MemberState {
-                            id: member.id,
-                            addr: member.addr,
-                            incarnation: member.incarnation,
-                            state: MemberStatus::Alive,
-                            state_change: Instant::now(),
-                            is_primary: member.is_primary,
-                            slots: member.slots,
-                        });
+                        self.members
+                            .entry(member.id)
+                            .or_insert_with(|| MemberState {
+                                id: member.id,
+                                addr: member.addr,
+                                incarnation: member.incarnation,
+                                state: MemberStatus::Alive,
+                                state_change: Instant::now(),
+                                is_primary: member.is_primary,
+                                slots: member.slots,
+                            });
                     }
                 }
                 None
@@ -418,8 +425,7 @@ impl GossipEngine {
                         continue;
                     }
                     if let Some(member) = self.members.get_mut(node) {
-                        if *incarnation >= member.incarnation
-                            && member.state == MemberStatus::Alive
+                        if *incarnation >= member.incarnation && member.state == MemberStatus::Alive
                         {
                             member.state = MemberStatus::Suspect;
                             member.state_change = Instant::now();
@@ -516,8 +522,7 @@ impl GossipEngine {
     }
 
     fn check_suspicion_timeouts(&mut self) {
-        let suspicion_timeout =
-            self.config.protocol_period * self.config.suspicion_mult;
+        let suspicion_timeout = self.config.protocol_period * self.config.suspicion_mult;
         let now = Instant::now();
         let mut to_mark_dead = Vec::new();
 
@@ -568,24 +573,15 @@ mod tests {
     #[tokio::test]
     async fn engine_creation() {
         let (tx, _rx) = mpsc::channel(16);
-        let engine = GossipEngine::new(
-            NodeId::new(),
-            test_addr(6379),
-            GossipConfig::default(),
-            tx,
-        );
+        let engine = GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
         assert_eq!(engine.alive_count(), 0);
     }
 
     #[tokio::test]
     async fn add_seed() {
         let (tx, _rx) = mpsc::channel(16);
-        let mut engine = GossipEngine::new(
-            NodeId::new(),
-            test_addr(6379),
-            GossipConfig::default(),
-            tx,
-        );
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
         let seed_id = NodeId::new();
         engine.add_seed(seed_id, test_addr(6380));
@@ -595,12 +591,8 @@ mod tests {
     #[tokio::test]
     async fn handle_ping() {
         let (tx, _rx) = mpsc::channel(16);
-        let mut engine = GossipEngine::new(
-            NodeId::new(),
-            test_addr(6379),
-            GossipConfig::default(),
-            tx,
-        );
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
         let sender = NodeId::new();
         let msg = GossipMessage::Ping {
@@ -617,12 +609,8 @@ mod tests {
     #[tokio::test]
     async fn handle_join() {
         let (tx, _rx) = mpsc::channel(16);
-        let mut engine = GossipEngine::new(
-            NodeId::new(),
-            test_addr(6379),
-            GossipConfig::default(),
-            tx,
-        );
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
         let joiner = NodeId::new();
         let msg = GossipMessage::Join {
@@ -638,12 +626,8 @@ mod tests {
     #[tokio::test]
     async fn tick_with_no_members() {
         let (tx, _rx) = mpsc::channel(16);
-        let mut engine = GossipEngine::new(
-            NodeId::new(),
-            test_addr(6379),
-            GossipConfig::default(),
-            tx,
-        );
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
         let probe = engine.tick();
         assert!(probe.is_none());
@@ -652,12 +636,8 @@ mod tests {
     #[tokio::test]
     async fn tick_with_members() {
         let (tx, _rx) = mpsc::channel(16);
-        let mut engine = GossipEngine::new(
-            NodeId::new(),
-            test_addr(6379),
-            GossipConfig::default(),
-            tx,
-        );
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
         engine.add_seed(NodeId::new(), test_addr(6380));
         let probe = engine.tick();
