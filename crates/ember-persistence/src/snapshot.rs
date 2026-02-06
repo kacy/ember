@@ -21,7 +21,7 @@
 //! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
 //! v1 entries (no type tag) are still readable for backward compatibility.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -35,6 +35,7 @@ const TYPE_STRING: u8 = 0;
 const TYPE_LIST: u8 = 1;
 const TYPE_SORTED_SET: u8 = 2;
 const TYPE_HASH: u8 = 3;
+const TYPE_SET: u8 = 4;
 
 /// The value stored in a snapshot entry.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +48,8 @@ pub enum SnapValue {
     SortedSet(Vec<(f64, String)>),
     /// A hash: map of field names to values.
     Hash(HashMap<String, Bytes>),
+    /// An unordered set of unique string members.
+    Set(HashSet<String>),
 }
 
 /// A single entry in a snapshot file.
@@ -132,6 +135,13 @@ impl SnapshotWriter {
                 for (field, value) in map {
                     format::write_bytes(&mut buf, field.as_bytes())?;
                     format::write_bytes(&mut buf, value)?;
+                }
+            }
+            SnapValue::Set(set) => {
+                format::write_u8(&mut buf, TYPE_SET)?;
+                format::write_u32(&mut buf, set.len() as u32)?;
+                for member in set {
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
         }
@@ -285,6 +295,23 @@ impl SnapshotReader {
                         map.insert(field, Bytes::from(value_bytes));
                     }
                     SnapValue::Hash(map)
+                }
+                TYPE_SET => {
+                    let count = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, count).expect("vec write");
+                    let mut set = HashSet::with_capacity(count as usize);
+                    for _ in 0..count {
+                        let member_bytes = format::read_bytes(&mut self.reader)?;
+                        format::write_bytes(&mut buf, &member_bytes).expect("vec write");
+                        let member = String::from_utf8(member_bytes).map_err(|_| {
+                            FormatError::Io(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "set member is not valid utf-8",
+                            ))
+                        })?;
+                        set.insert(member);
+                    }
+                    SnapValue::Set(set)
                 }
                 _ => {
                     return Err(FormatError::UnknownTag(type_tag));

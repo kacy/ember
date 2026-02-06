@@ -27,6 +27,8 @@ pub enum RecoveredValue {
     SortedSet(Vec<(f64, String)>),
     /// Hash map of field names to values.
     Hash(HashMap<String, Bytes>),
+    /// Unordered set of unique string members.
+    Set(HashSet<String>),
 }
 
 impl From<SnapValue> for RecoveredValue {
@@ -36,6 +38,7 @@ impl From<SnapValue> for RecoveredValue {
             SnapValue::List(deque) => RecoveredValue::List(deque),
             SnapValue::SortedSet(members) => RecoveredValue::SortedSet(members),
             SnapValue::Hash(map) => RecoveredValue::Hash(map),
+            SnapValue::Set(set) => RecoveredValue::Set(set),
         }
     }
 }

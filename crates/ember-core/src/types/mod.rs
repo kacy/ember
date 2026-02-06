@@ -1,11 +1,11 @@
 //! Data type representations for stored values.
 //!
 //! Each variant maps to a Redis-like data type. Strings, lists, sorted
-//! sets, and hashes are supported; plain sets will come later.
+//! sets, hashes, and sets are supported.
 
 pub mod sorted_set;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use bytes::Bytes;
 
@@ -33,6 +33,9 @@ pub enum Value {
     /// Hash map of field names to values. Fields are unique strings,
     /// values are binary-safe byte sequences.
     Hash(HashMap<String, Bytes>),
+
+    /// Unordered set of unique string members.
+    Set(HashSet<String>),
 }
 
 impl PartialEq for Value {
@@ -47,6 +50,7 @@ impl PartialEq for Value {
                         .all(|((m1, s1), (m2, s2))| m1 == m2 && s1 == s2)
             }
             (Value::Hash(a), Value::Hash(b)) => a == b,
+            (Value::Set(a), Value::Set(b)) => a == b,
             _ => false,
         }
     }
@@ -59,6 +63,7 @@ pub fn type_name(value: &Value) -> &'static str {
         Value::List(_) => "list",
         Value::SortedSet(_) => "zset",
         Value::Hash(_) => "hash",
+        Value::Set(_) => "set",
     }
 }
 
