@@ -140,6 +140,43 @@ pub enum ShardRequest {
         stop: i64,
         with_scores: bool,
     },
+    HSet {
+        key: String,
+        fields: Vec<(String, Bytes)>,
+    },
+    HGet {
+        key: String,
+        field: String,
+    },
+    HGetAll {
+        key: String,
+    },
+    HDel {
+        key: String,
+        fields: Vec<String>,
+    },
+    HExists {
+        key: String,
+        field: String,
+    },
+    HLen {
+        key: String,
+    },
+    HIncrBy {
+        key: String,
+        field: String,
+        delta: i64,
+    },
+    HKeys {
+        key: String,
+    },
+    HVals {
+        key: String,
+    },
+    HMGet {
+        key: String,
+        fields: Vec<String>,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -202,6 +239,17 @@ pub enum ShardResponse {
     Err(String),
     /// Scan result: next cursor and list of keys.
     Scan { cursor: u64, keys: Vec<String> },
+    /// HGETALL result: all field-value pairs.
+    HashFields(Vec<(String, Bytes)>),
+    /// HDEL result: removed count + field names for AOF.
+    HDelLen {
+        count: usize,
+        removed: Vec<String>,
+    },
+    /// Array of strings (e.g. HKEYS).
+    StringArray(Vec<String>),
+    /// HMGET result: array of optional values.
+    OptionalArray(Vec<Option<Bytes>>),
 }
 
 /// A request bundled with its reply channel.
@@ -288,6 +336,7 @@ async fn run_shard(
                     }
                     Value::SortedSet(ss)
                 }
+                RecoveredValue::Hash(map) => Value::Hash(map),
             };
             keyspace.restore(entry.key, value, entry.expires_at);
         }
@@ -556,6 +605,52 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
                 keys,
             }
         }
+        ShardRequest::HSet { key, fields } => match ks.hset(key, fields) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::HGet { key, field } => match ks.hget(key, field) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HGetAll { key } => match ks.hgetall(key) {
+            Ok(fields) => ShardResponse::HashFields(fields),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HDel { key, fields } => match ks.hdel(key, fields) {
+            Ok(removed) => ShardResponse::HDelLen {
+                count: removed.len(),
+                removed,
+            },
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HExists { key, field } => match ks.hexists(key, field) {
+            Ok(exists) => ShardResponse::Bool(exists),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HLen { key } => match ks.hlen(key) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HIncrBy { key, field, delta } => match ks.hincrby(key, field, *delta) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
+        ShardRequest::HKeys { key } => match ks.hkeys(key) {
+            Ok(keys) => ShardResponse::StringArray(keys),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HVals { key } => match ks.hvals(key) {
+            Ok(vals) => ShardResponse::Array(vals),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HMGet { key, fields } => match ks.hmget(key, fields) {
+            Ok(vals) => ShardResponse::OptionalArray(vals),
+            Err(_) => ShardResponse::WrongType,
+        },
         // snapshot/rewrite are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof => ShardResponse::Ok,
     }
@@ -711,6 +806,7 @@ fn write_snapshot(
                     .collect();
                 SnapValue::SortedSet(members)
             }
+            Value::Hash(map) => SnapValue::Hash(map.clone()),
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),

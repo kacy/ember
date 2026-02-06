@@ -21,7 +21,7 @@
 //! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
 //! v1 entries (no type tag) are still readable for backward compatibility.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -34,6 +34,7 @@ use crate::format::{self, FormatError};
 const TYPE_STRING: u8 = 0;
 const TYPE_LIST: u8 = 1;
 const TYPE_SORTED_SET: u8 = 2;
+const TYPE_HASH: u8 = 3;
 
 /// The value stored in a snapshot entry.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +45,8 @@ pub enum SnapValue {
     List(VecDeque<Bytes>),
     /// A sorted set: vec of (score, member) pairs.
     SortedSet(Vec<(f64, String)>),
+    /// A hash: map of field names to values.
+    Hash(HashMap<String, Bytes>),
 }
 
 /// A single entry in a snapshot file.
@@ -121,6 +124,14 @@ impl SnapshotWriter {
                 for (score, member) in members {
                     format::write_f64(&mut buf, *score)?;
                     format::write_bytes(&mut buf, member.as_bytes())?;
+                }
+            }
+            SnapValue::Hash(map) => {
+                format::write_u8(&mut buf, TYPE_HASH)?;
+                format::write_u32(&mut buf, map.len() as u32)?;
+                for (field, value) in map {
+                    format::write_bytes(&mut buf, field.as_bytes())?;
+                    format::write_bytes(&mut buf, value)?;
                 }
             }
         }
@@ -255,6 +266,25 @@ impl SnapshotReader {
                         members.push((score, member));
                     }
                     SnapValue::SortedSet(members)
+                }
+                TYPE_HASH => {
+                    let count = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, count).expect("vec write");
+                    let mut map = HashMap::with_capacity(count as usize);
+                    for _ in 0..count {
+                        let field_bytes = format::read_bytes(&mut self.reader)?;
+                        format::write_bytes(&mut buf, &field_bytes).expect("vec write");
+                        let field = String::from_utf8(field_bytes).map_err(|_| {
+                            FormatError::Io(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "hash field is not valid utf-8",
+                            ))
+                        })?;
+                        let value_bytes = format::read_bytes(&mut self.reader)?;
+                        format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+                        map.insert(field, Bytes::from(value_bytes));
+                    }
+                    SnapValue::Hash(map)
                 }
                 _ => {
                     return Err(FormatError::UnknownTag(type_tag));
