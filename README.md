@@ -117,7 +117,7 @@ crates/
   ember-core/         core engine (keyspace, types, sharding)
   ember-protocol/     RESP3 wire protocol
   ember-persistence/  AOF and snapshot durability
-  ember-cluster/      raft, gossip, slot management (wip)
+  ember-cluster/      raft consensus, gossip, slot management, migration
   ember-cli/          interactive CLI tool
 ```
 
@@ -138,10 +138,10 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 | 1 | foundation (protocol, engine, expiration) | ✅ complete |
 | 2 | persistence (AOF, snapshots, recovery) | ✅ complete |
 | 3 | data types (sorted sets, lists, hashes, sets) | ✅ complete |
-| 4 | clustering (raft, gossip, slots) | 🚧 not started |
+| 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 not started |
 
-**current**: 49 commands, 487 tests, ~6k lines of code
+**current**: 62 commands, 574 tests, ~18k lines of code
 
 ## security
 
