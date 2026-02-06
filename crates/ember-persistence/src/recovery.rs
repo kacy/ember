@@ -25,6 +25,8 @@ pub enum RecoveredValue {
     List(VecDeque<Bytes>),
     /// Sorted set stored as (score, member) pairs.
     SortedSet(Vec<(f64, String)>),
+    /// Hash map of field names to values.
+    Hash(HashMap<String, Bytes>),
 }
 
 impl From<SnapValue> for RecoveredValue {
@@ -33,6 +35,7 @@ impl From<SnapValue> for RecoveredValue {
             SnapValue::String(data) => RecoveredValue::String(data),
             SnapValue::List(deque) => RecoveredValue::List(deque),
             SnapValue::SortedSet(members) => RecoveredValue::SortedSet(members),
+            SnapValue::Hash(map) => RecoveredValue::Hash(map),
         }
     }
 }

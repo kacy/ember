@@ -122,6 +122,15 @@ pub(crate) const VECDEQUE_ELEMENT_OVERHEAD: usize = 32;
 /// Base overhead for an empty VecDeque (internal buffer pointer + head/len).
 pub(crate) const VECDEQUE_BASE_OVERHEAD: usize = 24;
 
+/// Estimated overhead per entry in a HashMap (for hash type).
+///
+/// Each entry has: key String (24 bytes ptr+len+cap), value Bytes (24 bytes),
+/// plus HashMap bucket overhead (~16 bytes for hash + next pointer).
+pub(crate) const HASHMAP_ENTRY_OVERHEAD: usize = 64;
+
+/// Base overhead for an empty HashMap (bucket array pointer + len + capacity).
+pub(crate) const HASHMAP_BASE_OVERHEAD: usize = 48;
+
 /// Returns the byte size of a value's payload.
 pub fn value_size(value: &Value) -> usize {
     match value {
@@ -134,6 +143,13 @@ pub fn value_size(value: &Value) -> usize {
             VECDEQUE_BASE_OVERHEAD + element_bytes
         }
         Value::SortedSet(ss) => ss.memory_usage(),
+        Value::Hash(map) => {
+            let entry_bytes: usize = map
+                .iter()
+                .map(|(k, v)| k.len() + v.len() + HASHMAP_ENTRY_OVERHEAD)
+                .sum();
+            HASHMAP_BASE_OVERHEAD + entry_bytes
+        }
     }
 }
 
