@@ -144,6 +144,43 @@ pub enum Command {
         with_scores: bool,
     },
 
+    /// HSET <key> <field> <value> [field value ...]. Sets field-value pairs in a hash.
+    HSet {
+        key: String,
+        fields: Vec<(String, Bytes)>,
+    },
+
+    /// HGET <key> <field>. Gets a field's value from a hash.
+    HGet { key: String, field: String },
+
+    /// HGETALL <key>. Gets all field-value pairs from a hash.
+    HGetAll { key: String },
+
+    /// HDEL <key> <field> [field ...]. Deletes fields from a hash.
+    HDel { key: String, fields: Vec<String> },
+
+    /// HEXISTS <key> <field>. Checks if a field exists in a hash.
+    HExists { key: String, field: String },
+
+    /// HLEN <key>. Returns the number of fields in a hash.
+    HLen { key: String },
+
+    /// HINCRBY <key> <field> <increment>. Increments a hash field's integer value.
+    HIncrBy {
+        key: String,
+        field: String,
+        delta: i64,
+    },
+
+    /// HKEYS <key>. Returns all field names in a hash.
+    HKeys { key: String },
+
+    /// HVALS <key>. Returns all values in a hash.
+    HVals { key: String },
+
+    /// HMGET <key> <field> [field ...]. Gets multiple field values from a hash.
+    HMGet { key: String, fields: Vec<String> },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -224,6 +261,16 @@ impl Command {
             "ZRANK" => parse_zrank(&frames[1..]),
             "ZCARD" => parse_zcard(&frames[1..]),
             "ZRANGE" => parse_zrange(&frames[1..]),
+            "HSET" => parse_hset(&frames[1..]),
+            "HGET" => parse_hget(&frames[1..]),
+            "HGETALL" => parse_hgetall(&frames[1..]),
+            "HDEL" => parse_hdel(&frames[1..]),
+            "HEXISTS" => parse_hexists(&frames[1..]),
+            "HLEN" => parse_hlen(&frames[1..]),
+            "HINCRBY" => parse_hincrby(&frames[1..]),
+            "HKEYS" => parse_hkeys(&frames[1..]),
+            "HVALS" => parse_hvals(&frames[1..]),
+            "HMGET" => parse_hmget(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -790,6 +837,112 @@ fn parse_zrange(args: &[Frame]) -> Result<Command, ProtocolError> {
         stop,
         with_scores,
     })
+}
+
+// --- hash commands ---
+
+fn parse_hset(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // HSET key field value [field value ...]
+    // args = [key, field, value, ...]
+    // Need at least 3 args, and after key we need pairs (so remaining count must be even)
+    if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
+        return Err(ProtocolError::WrongArity("HSET".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+    let mut fields = Vec::with_capacity((args.len() - 1) / 2);
+
+    for chunk in args[1..].chunks(2) {
+        let field = extract_string(&chunk[0])?;
+        let value = extract_bytes(&chunk[1])?;
+        fields.push((field, value));
+    }
+
+    Ok(Command::HSet { key, fields })
+}
+
+fn parse_hget(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("HGET".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let field = extract_string(&args[1])?;
+    Ok(Command::HGet { key, field })
+}
+
+fn parse_hgetall(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("HGETALL".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::HGetAll { key })
+}
+
+fn parse_hdel(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("HDEL".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let fields = args[1..]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::HDel { key, fields })
+}
+
+fn parse_hexists(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("HEXISTS".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let field = extract_string(&args[1])?;
+    Ok(Command::HExists { key, field })
+}
+
+fn parse_hlen(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("HLEN".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::HLen { key })
+}
+
+fn parse_hincrby(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(ProtocolError::WrongArity("HINCRBY".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let field = extract_string(&args[1])?;
+    let delta = parse_i64(&args[2], "HINCRBY")?;
+    Ok(Command::HIncrBy { key, field, delta })
+}
+
+fn parse_hkeys(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("HKEYS".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::HKeys { key })
+}
+
+fn parse_hvals(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("HVALS".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::HVals { key })
+}
+
+fn parse_hmget(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("HMGET".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let fields = args[1..]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::HMGet { key, fields })
 }
 
 #[cfg(test)]
@@ -1972,5 +2125,193 @@ mod tests {
     fn scan_count_missing_value() {
         let err = Command::from_frame(cmd(&["SCAN", "0", "COUNT"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- hash commands ---
+
+    #[test]
+    fn hset_single_field() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HSET", "h", "field", "value"])).unwrap(),
+            Command::HSet {
+                key: "h".into(),
+                fields: vec![("field".into(), Bytes::from("value"))],
+            },
+        );
+    }
+
+    #[test]
+    fn hset_multiple_fields() {
+        let parsed = Command::from_frame(cmd(&["HSET", "h", "f1", "v1", "f2", "v2"])).unwrap();
+        match parsed {
+            Command::HSet { key, fields } => {
+                assert_eq!(key, "h");
+                assert_eq!(fields.len(), 2);
+            }
+            other => panic!("expected HSet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hset_wrong_arity() {
+        let err = Command::from_frame(cmd(&["HSET", "h"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+        let err = Command::from_frame(cmd(&["HSET", "h", "f"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hget_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HGET", "h", "field"])).unwrap(),
+            Command::HGet {
+                key: "h".into(),
+                field: "field".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn hget_wrong_arity() {
+        let err = Command::from_frame(cmd(&["HGET", "h"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hgetall_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HGETALL", "h"])).unwrap(),
+            Command::HGetAll { key: "h".into() },
+        );
+    }
+
+    #[test]
+    fn hgetall_wrong_arity() {
+        let err = Command::from_frame(cmd(&["HGETALL"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hdel_single() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HDEL", "h", "f"])).unwrap(),
+            Command::HDel {
+                key: "h".into(),
+                fields: vec!["f".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn hdel_multiple() {
+        let parsed = Command::from_frame(cmd(&["HDEL", "h", "f1", "f2", "f3"])).unwrap();
+        match parsed {
+            Command::HDel { fields, .. } => assert_eq!(fields.len(), 3),
+            other => panic!("expected HDel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hdel_wrong_arity() {
+        let err = Command::from_frame(cmd(&["HDEL", "h"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hexists_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HEXISTS", "h", "f"])).unwrap(),
+            Command::HExists {
+                key: "h".into(),
+                field: "f".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn hlen_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HLEN", "h"])).unwrap(),
+            Command::HLen { key: "h".into() },
+        );
+    }
+
+    #[test]
+    fn hincrby_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HINCRBY", "h", "f", "5"])).unwrap(),
+            Command::HIncrBy {
+                key: "h".into(),
+                field: "f".into(),
+                delta: 5,
+            },
+        );
+    }
+
+    #[test]
+    fn hincrby_negative() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HINCRBY", "h", "f", "-3"])).unwrap(),
+            Command::HIncrBy {
+                key: "h".into(),
+                field: "f".into(),
+                delta: -3,
+            },
+        );
+    }
+
+    #[test]
+    fn hincrby_wrong_arity() {
+        let err = Command::from_frame(cmd(&["HINCRBY", "h", "f"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hkeys_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HKEYS", "h"])).unwrap(),
+            Command::HKeys { key: "h".into() },
+        );
+    }
+
+    #[test]
+    fn hvals_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HVALS", "h"])).unwrap(),
+            Command::HVals { key: "h".into() },
+        );
+    }
+
+    #[test]
+    fn hmget_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HMGET", "h", "f1", "f2"])).unwrap(),
+            Command::HMGet {
+                key: "h".into(),
+                fields: vec!["f1".into(), "f2".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn hmget_wrong_arity() {
+        let err = Command::from_frame(cmd(&["HMGET", "h"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hash_commands_case_insensitive() {
+        assert!(matches!(
+            Command::from_frame(cmd(&["hset", "h", "f", "v"])).unwrap(),
+            Command::HSet { .. }
+        ));
+        assert!(matches!(
+            Command::from_frame(cmd(&["hget", "h", "f"])).unwrap(),
+            Command::HGet { .. }
+        ));
+        assert!(matches!(
+            Command::from_frame(cmd(&["hgetall", "h"])).unwrap(),
+            Command::HGetAll { .. }
+        ));
     }
 }

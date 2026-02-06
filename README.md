@@ -12,6 +12,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, INCR, DECR
 - **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
 - **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZRANGE, ZCARD
+- **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
@@ -63,6 +64,12 @@ redis-cli LRANGE mylist 0 -1    # => 1) "c" 2) "b" 3) "a"
 redis-cli ZADD board 100 alice 200 bob
 redis-cli ZRANGE board 0 -1 WITHSCORES
 redis-cli ZCARD board           # => (integer) 2
+
+# hashes
+redis-cli HSET user:1 name alice age 30
+redis-cli HGET user:1 name      # => "alice"
+redis-cli HGETALL user:1        # => 1) "name" 2) "alice" 3) "age" 4) "30"
+redis-cli HINCRBY user:1 age 1  # => (integer) 31
 
 # iteration
 redis-cli SCAN 0 MATCH "user:*" COUNT 100
