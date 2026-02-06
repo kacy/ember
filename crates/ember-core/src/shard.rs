@@ -177,6 +177,24 @@ pub enum ShardRequest {
         key: String,
         fields: Vec<String>,
     },
+    SAdd {
+        key: String,
+        members: Vec<String>,
+    },
+    SRem {
+        key: String,
+        members: Vec<String>,
+    },
+    SMembers {
+        key: String,
+    },
+    SIsMember {
+        key: String,
+        member: String,
+    },
+    SCard {
+        key: String,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -334,6 +352,7 @@ async fn run_shard(
                     Value::SortedSet(ss)
                 }
                 RecoveredValue::Hash(map) => Value::Hash(map),
+                RecoveredValue::Set(set) => Value::Set(set),
             };
             keyspace.restore(entry.key, value, entry.expires_at);
         }
@@ -648,6 +667,27 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(vals) => ShardResponse::OptionalArray(vals),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::SAdd { key, members } => match ks.sadd(key, members) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::SRem { key, members } => match ks.srem(key, members) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SMembers { key } => match ks.smembers(key) {
+            Ok(members) => ShardResponse::StringArray(members),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SIsMember { key, member } => match ks.sismember(key, member) {
+            Ok(exists) => ShardResponse::Bool(exists),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SCard { key } => match ks.scard(key) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(_) => ShardResponse::WrongType,
+        },
         // snapshot/rewrite are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof => ShardResponse::Ok,
     }
@@ -804,6 +844,7 @@ fn write_snapshot(
                 SnapValue::SortedSet(members)
             }
             Value::Hash(map) => SnapValue::Hash(map.clone()),
+            Value::Set(set) => SnapValue::Set(set.clone()),
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),

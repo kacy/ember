@@ -181,6 +181,21 @@ pub enum Command {
     /// HMGET <key> <field> [field ...]. Gets multiple field values from a hash.
     HMGet { key: String, fields: Vec<String> },
 
+    /// SADD <key> <member> [member ...]. Adds members to a set.
+    SAdd { key: String, members: Vec<String> },
+
+    /// SREM <key> <member> [member ...]. Removes members from a set.
+    SRem { key: String, members: Vec<String> },
+
+    /// SMEMBERS <key>. Returns all members of a set.
+    SMembers { key: String },
+
+    /// SISMEMBER <key> <member>. Checks if a member exists in a set.
+    SIsMember { key: String, member: String },
+
+    /// SCARD <key>. Returns the cardinality (number of members) of a set.
+    SCard { key: String },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -271,6 +286,11 @@ impl Command {
             "HKEYS" => parse_hkeys(&frames[1..]),
             "HVALS" => parse_hvals(&frames[1..]),
             "HMGET" => parse_hmget(&frames[1..]),
+            "SADD" => parse_sadd(&frames[1..]),
+            "SREM" => parse_srem(&frames[1..]),
+            "SMEMBERS" => parse_smembers(&frames[1..]),
+            "SISMEMBER" => parse_sismember(&frames[1..]),
+            "SCARD" => parse_scard(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -943,6 +963,57 @@ fn parse_hmget(args: &[Frame]) -> Result<Command, ProtocolError> {
         .map(extract_string)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Command::HMGet { key, fields })
+}
+
+// --- set commands ---
+
+fn parse_sadd(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("SADD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let members = args[1..]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::SAdd { key, members })
+}
+
+fn parse_srem(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("SREM".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let members = args[1..]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::SRem { key, members })
+}
+
+fn parse_smembers(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("SMEMBERS".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::SMembers { key })
+}
+
+fn parse_sismember(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("SISMEMBER".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let member = extract_string(&args[1])?;
+    Ok(Command::SIsMember { key, member })
+}
+
+fn parse_scard(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("SCARD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::SCard { key })
 }
 
 #[cfg(test)]
@@ -2312,6 +2383,127 @@ mod tests {
         assert!(matches!(
             Command::from_frame(cmd(&["hgetall", "h"])).unwrap(),
             Command::HGetAll { .. }
+        ));
+    }
+
+    // --- set commands ---
+
+    #[test]
+    fn sadd_single_member() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SADD", "s", "member"])).unwrap(),
+            Command::SAdd {
+                key: "s".into(),
+                members: vec!["member".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn sadd_multiple_members() {
+        let parsed = Command::from_frame(cmd(&["SADD", "s", "a", "b", "c"])).unwrap();
+        match parsed {
+            Command::SAdd { key, members } => {
+                assert_eq!(key, "s");
+                assert_eq!(members.len(), 3);
+            }
+            other => panic!("expected SAdd, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sadd_wrong_arity() {
+        let err = Command::from_frame(cmd(&["SADD", "s"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn srem_single_member() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SREM", "s", "member"])).unwrap(),
+            Command::SRem {
+                key: "s".into(),
+                members: vec!["member".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn srem_multiple_members() {
+        let parsed = Command::from_frame(cmd(&["SREM", "s", "a", "b"])).unwrap();
+        match parsed {
+            Command::SRem { key, members } => {
+                assert_eq!(key, "s");
+                assert_eq!(members.len(), 2);
+            }
+            other => panic!("expected SRem, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn srem_wrong_arity() {
+        let err = Command::from_frame(cmd(&["SREM", "s"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn smembers_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SMEMBERS", "s"])).unwrap(),
+            Command::SMembers { key: "s".into() },
+        );
+    }
+
+    #[test]
+    fn smembers_wrong_arity() {
+        let err = Command::from_frame(cmd(&["SMEMBERS"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn sismember_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SISMEMBER", "s", "member"])).unwrap(),
+            Command::SIsMember {
+                key: "s".into(),
+                member: "member".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn sismember_wrong_arity() {
+        let err = Command::from_frame(cmd(&["SISMEMBER", "s"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn scard_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SCARD", "s"])).unwrap(),
+            Command::SCard { key: "s".into() },
+        );
+    }
+
+    #[test]
+    fn scard_wrong_arity() {
+        let err = Command::from_frame(cmd(&["SCARD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn set_commands_case_insensitive() {
+        assert!(matches!(
+            Command::from_frame(cmd(&["sadd", "s", "m"])).unwrap(),
+            Command::SAdd { .. }
+        ));
+        assert!(matches!(
+            Command::from_frame(cmd(&["srem", "s", "m"])).unwrap(),
+            Command::SRem { .. }
+        ));
+        assert!(matches!(
+            Command::from_frame(cmd(&["smembers", "s"])).unwrap(),
+            Command::SMembers { .. }
         ));
     }
 }
