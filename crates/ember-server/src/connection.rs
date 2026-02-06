@@ -40,7 +40,6 @@ pub async fn handle(
     engine: Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
-    metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // disable Nagle's algorithm — cache servers need low-latency writes,
     // and we already batch responses from pipelining into a single write
@@ -76,7 +75,7 @@ pub async fn handle(
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     let response =
-                        process(frame, &engine, ctx, slow_log, metrics_enabled).await;
+                        process(frame, &engine, ctx, slow_log).await;
                     response.serialize(&mut out);
                 }
                 Ok(None) => break, // need more data
@@ -97,29 +96,35 @@ pub async fn handle(
 
 /// Converts a raw frame into a command and executes it.
 ///
-/// When `metrics_enabled` is true, records per-command latency and
-/// error counters in prometheus.
+/// When metrics or slowlog are enabled, brackets the command with
+/// `Instant::now()` to measure latency. Skips timing entirely when
+/// neither feature needs it.
 async fn process(
     frame: Frame,
     engine: &Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
-    metrics_enabled: bool,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
             let cmd_name = cmd.command_name();
-            let start = Instant::now();
+            let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
+            let start = if needs_timing {
+                Some(Instant::now())
+            } else {
+                None
+            };
 
             let response = execute(cmd, engine, ctx, slow_log).await;
-            let elapsed = start.elapsed();
-
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
-            slow_log.maybe_record(elapsed, cmd_name);
 
-            if metrics_enabled {
-                let is_error = matches!(&response, Frame::Error(_));
-                crate::metrics::record_command(cmd_name, elapsed, is_error);
+            if let Some(start) = start {
+                let elapsed = start.elapsed();
+                slow_log.maybe_record(elapsed, cmd_name);
+                if ctx.metrics_enabled {
+                    let is_error = matches!(&response, Frame::Error(_));
+                    crate::metrics::record_command(cmd_name, elapsed, is_error);
+                }
             }
 
             response
@@ -1014,7 +1019,7 @@ async fn render_info(
     }
 
     if want("CLIENTS") {
-        let connected = ctx.connections_accepted.load(Ordering::Relaxed);
+        let connected = ctx.connections_active.load(Ordering::Relaxed);
         out.push_str("# Clients\r\n");
         out.push_str(&format!("connected_clients:{connected}\r\n"));
         out.push_str(&format!("max_clients:{}\r\n", ctx.max_connections));
