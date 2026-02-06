@@ -148,6 +148,14 @@ pub enum ShardRequest {
     Snapshot,
     /// Triggers an AOF rewrite (snapshot + truncate AOF).
     RewriteAof,
+    /// Clears all keys from the keyspace.
+    FlushDb,
+    /// Scans keys in the keyspace.
+    Scan {
+        cursor: u64,
+        count: usize,
+        pattern: Option<String>,
+    },
 }
 
 /// The shard's response to a request.
@@ -192,6 +200,8 @@ pub enum ShardResponse {
     WrongType,
     /// An error message.
     Err(String),
+    /// Scan result: next cursor and list of keys.
+    Scan { cursor: u64, keys: Vec<String> },
 }
 
 /// A request bundled with its reply channel.
@@ -531,6 +541,21 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         },
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
+        ShardRequest::FlushDb => {
+            ks.clear();
+            ShardResponse::Ok
+        }
+        ShardRequest::Scan {
+            cursor,
+            count,
+            pattern,
+        } => {
+            let (next_cursor, keys) = ks.scan_keys(*cursor, *count, pattern.as_deref());
+            ShardResponse::Scan {
+                cursor: next_cursor,
+                keys,
+            }
+        }
         // snapshot/rewrite are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof => ShardResponse::Ok,
     }
@@ -1270,5 +1295,71 @@ mod tests {
         // when NX blocks, the shard returns Value(None), not Ok
         let resp = ShardResponse::Value(None);
         assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn dispatch_flushdb_clears_all_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), None);
+
+        assert_eq!(ks.len(), 2);
+
+        let resp = dispatch(&mut ks, &ShardRequest::FlushDb);
+        assert!(matches!(resp, ShardResponse::Ok));
+        assert_eq!(ks.len(), 0);
+    }
+
+    #[test]
+    fn dispatch_scan_returns_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Scan {
+                cursor: 0,
+                count: 10,
+                pattern: None,
+            },
+        );
+
+        match resp {
+            ShardResponse::Scan { cursor, keys } => {
+                assert_eq!(cursor, 0); // complete in one pass
+                assert_eq!(keys.len(), 3);
+            }
+            _ => panic!("expected Scan response"),
+        }
+    }
+
+    #[test]
+    fn dispatch_scan_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Scan {
+                cursor: 0,
+                count: 10,
+                pattern: Some("user:*".into()),
+            },
+        );
+
+        match resp {
+            ShardResponse::Scan { cursor, keys } => {
+                assert_eq!(cursor, 0);
+                assert_eq!(keys.len(), 2);
+                for k in &keys {
+                    assert!(k.starts_with("user:"));
+                }
+            }
+            _ => panic!("expected Scan response"),
+        }
     }
 }

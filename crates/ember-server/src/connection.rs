@@ -237,6 +237,60 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
         }
 
+        Command::MGet { keys } => {
+            match engine
+                .route_multi(&keys, |k| ShardRequest::Get { key: k })
+                .await
+            {
+                Ok(responses) => {
+                    let frames: Vec<Frame> = responses
+                        .into_iter()
+                        .map(|r| match r {
+                            ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
+                            ShardResponse::Value(None) => Frame::Null,
+                            // MGET on wrong type returns null per Redis behavior
+                            ShardResponse::WrongType => Frame::Null,
+                            _ => Frame::Null,
+                        })
+                        .collect();
+                    Frame::Array(frames)
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::MSet { pairs } => {
+            // fan out individual SET requests — MSET always succeeds (or OOMs)
+            let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+            let values: std::collections::HashMap<String, Bytes> =
+                pairs.into_iter().collect();
+
+            match engine
+                .route_multi(&keys, |k| {
+                    let value = values.get(&k).cloned().unwrap_or_default();
+                    ShardRequest::Set {
+                        key: k,
+                        value,
+                        expire: None,
+                        nx: false,
+                        xx: false,
+                    }
+                })
+                .await
+            {
+                Ok(responses) => {
+                    // check if any SET failed due to OOM
+                    for r in &responses {
+                        if matches!(r, ShardResponse::OutOfMemory) {
+                            return oom_error();
+                        }
+                    }
+                    Frame::Simple("OK".into())
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         // -- broadcast commands --
         Command::DbSize => match engine.broadcast(|| ShardRequest::DbSize).await {
             Ok(responses) => {
@@ -290,6 +344,80 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             Ok(_) => Frame::Simple("Background append only file rewriting started".into()),
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
+
+        Command::FlushDb => match engine.broadcast(|| ShardRequest::FlushDb).await {
+            Ok(_) => Frame::Simple("OK".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        },
+
+        Command::Scan {
+            cursor,
+            pattern,
+            count,
+        } => {
+            // cursor format: (shard_id << 48) | position_within_shard
+            // cursor 0 means start from shard 0, position 0
+            let shard_count = engine.shard_count();
+            let count = count.unwrap_or(10);
+
+            let (shard_id, position) = if cursor == 0 {
+                (0usize, 0u64)
+            } else {
+                let shard_id = (cursor >> 48) as usize;
+                let position = cursor & 0xFFFF_FFFF_FFFF;
+                (shard_id, position)
+            };
+
+            // collect keys from current shard and possibly subsequent shards
+            let mut all_keys = Vec::new();
+            let mut current_shard = shard_id;
+            let mut current_pos = position;
+
+            while all_keys.len() < count && current_shard < shard_count {
+                let req = ShardRequest::Scan {
+                    cursor: current_pos,
+                    count: count.saturating_sub(all_keys.len()),
+                    pattern: pattern.clone(),
+                };
+                match engine.send_to_shard(current_shard, req).await {
+                    Ok(ShardResponse::Scan { cursor: next_pos, keys }) => {
+                        all_keys.extend(keys);
+                        if next_pos == 0 {
+                            // shard exhausted, move to next
+                            current_shard += 1;
+                            current_pos = 0;
+                        } else {
+                            current_pos = next_pos;
+                            break; // have more in this shard, stop here
+                        }
+                    }
+                    Ok(other) => {
+                        return Frame::Error(format!("ERR unexpected shard response: {other:?}"));
+                    }
+                    Err(e) => {
+                        return Frame::Error(format!("ERR {e}"));
+                    }
+                }
+            }
+
+            // compute next cursor
+            let next_cursor = if current_shard >= shard_count {
+                0 // scan complete
+            } else {
+                ((current_shard as u64) << 48) | current_pos
+            };
+
+            // return [cursor, [keys...]]
+            let cursor_str = next_cursor.to_string();
+            let keys_frames: Vec<Frame> = all_keys
+                .into_iter()
+                .map(|k| Frame::Bulk(Bytes::from(k)))
+                .collect();
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from(cursor_str)),
+                Frame::Array(keys_frames),
+            ])
+        }
 
         // -- list commands --
         Command::LPush { key, values } => {

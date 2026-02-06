@@ -529,9 +529,63 @@ impl Keyspace {
         self.entries.len()
     }
 
+    /// Removes all keys from the keyspace.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.memory.reset();
+        self.expiry_count = 0;
+    }
+
     /// Returns `true` if the keyspace has no entries.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Scans keys starting from a cursor position.
+    ///
+    /// Returns the next cursor (0 if scan complete) and a batch of keys.
+    /// The `pattern` argument supports glob-style matching (*, ?, [abc]).
+    pub fn scan_keys(
+        &self,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+    ) -> (u64, Vec<String>) {
+        let mut keys = Vec::with_capacity(count);
+        let mut position = 0u64;
+        let target_count = if count == 0 { 10 } else { count };
+
+        for (key, entry) in self.entries.iter() {
+            // skip expired entries
+            if entry.is_expired() {
+                continue;
+            }
+
+            // skip entries before cursor
+            if position < cursor {
+                position += 1;
+                continue;
+            }
+
+            // pattern matching
+            if let Some(pat) = pattern {
+                if !glob_match(pat, key) {
+                    position += 1;
+                    continue;
+                }
+            }
+
+            keys.push(key.clone());
+            position += 1;
+
+            if keys.len() >= target_count {
+                // return position as next cursor
+                return (position, keys);
+            }
+        }
+
+        // scan complete
+        (0, keys)
     }
 
     /// Iterates over all live (non-expired) entries, yielding the key, a
@@ -1050,6 +1104,84 @@ impl Default for Keyspace {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Simple glob-style pattern matching for SCAN's MATCH option.
+/// Supports: * (any sequence), ? (any single char), [abc] (char class).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let mut pat = pattern.chars().peekable();
+    let mut txt = text.chars().peekable();
+
+    fn match_rec(
+        pat: &mut std::iter::Peekable<std::str::Chars>,
+        txt: &mut std::iter::Peekable<std::str::Chars>,
+    ) -> bool {
+        loop {
+            match (pat.peek().copied(), txt.peek().copied()) {
+                (None, None) => return true,
+                (None, Some(_)) => return false,
+                (Some('*'), _) => {
+                    pat.next();
+                    // try matching * with zero chars, one char, two chars, etc.
+                    let pat_remaining: String = pat.clone().collect();
+                    let txt_remaining: String = txt.clone().collect();
+                    for i in 0..=txt_remaining.len() {
+                        let mut p = pat_remaining.chars().peekable();
+                        let mut t = txt_remaining[i..].chars().peekable();
+                        if match_rec(&mut p, &mut t) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                (Some('?'), Some(_)) => {
+                    pat.next();
+                    txt.next();
+                }
+                (Some('['), Some(tc)) => {
+                    pat.next(); // consume '['
+                    let mut matched = false;
+                    let mut negated = false;
+                    if pat.peek() == Some(&'^') || pat.peek() == Some(&'!') {
+                        negated = true;
+                        pat.next();
+                    }
+                    while let Some(&c) = pat.peek() {
+                        if c == ']' {
+                            pat.next();
+                            break;
+                        }
+                        pat.next();
+                        if c == tc {
+                            matched = true;
+                        }
+                    }
+                    if negated {
+                        matched = !matched;
+                    }
+                    if !matched {
+                        return false;
+                    }
+                    txt.next();
+                }
+                (Some(pc), Some(tc)) if pc == tc => {
+                    pat.next();
+                    txt.next();
+                }
+                (Some(_), Some(_)) => return false,
+                (Some(_), None) => {
+                    // pattern has more chars but text is done
+                    // only ok if remaining pattern is all *
+                    while pat.peek() == Some(&'*') {
+                        pat.next();
+                    }
+                    return pat.peek().is_none();
+                }
+            }
+        }
+    }
+
+    match_rec(&mut pat, &mut txt)
 }
 
 #[cfg(test)]
@@ -2154,5 +2286,129 @@ mod tests {
         // should evict "a" to make room for the list
         assert!(ks.lpush("list", &[Bytes::from("item")]).is_ok());
         assert!(!ks.exists("a"));
+    }
+
+    #[test]
+    fn clear_removes_all_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(60)));
+        ks.lpush("list", &[Bytes::from("x")]).unwrap();
+
+        assert_eq!(ks.len(), 3);
+        assert!(ks.stats().used_bytes > 0);
+        assert_eq!(ks.stats().keys_with_expiry, 1);
+
+        ks.clear();
+
+        assert_eq!(ks.len(), 0);
+        assert!(ks.is_empty());
+        assert_eq!(ks.stats().used_bytes, 0);
+        assert_eq!(ks.stats().keys_with_expiry, 0);
+    }
+
+    // --- scan ---
+
+    #[test]
+    fn scan_returns_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("key1".into(), Bytes::from("a"), None);
+        ks.set("key2".into(), Bytes::from("b"), None);
+        ks.set("key3".into(), Bytes::from("c"), None);
+
+        let (cursor, keys) = ks.scan_keys(0, 10, None);
+        assert_eq!(cursor, 0); // complete in one pass
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn scan_empty_keyspace() {
+        let ks = Keyspace::new();
+        let (cursor, keys) = ks.scan_keys(0, 10, None);
+        assert_eq!(cursor, 0);
+        assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn scan_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+
+        let (cursor, keys) = ks.scan_keys(0, 10, Some("user:*"));
+        assert_eq!(cursor, 0);
+        assert_eq!(keys.len(), 2);
+        for k in &keys {
+            assert!(k.starts_with("user:"));
+        }
+    }
+
+    #[test]
+    fn scan_with_count_limit() {
+        let mut ks = Keyspace::new();
+        for i in 0..10 {
+            ks.set(format!("k{i}"), Bytes::from("v"), None);
+        }
+
+        // first batch
+        let (cursor, keys) = ks.scan_keys(0, 3, None);
+        assert!(!keys.is_empty());
+        assert!(keys.len() <= 3);
+
+        // if there are more keys, cursor should be non-zero
+        if cursor != 0 {
+            let (cursor2, keys2) = ks.scan_keys(cursor, 3, None);
+            assert!(!keys2.is_empty());
+            // continue until complete
+            let _ = (cursor2, keys2);
+        }
+    }
+
+    #[test]
+    fn scan_skips_expired_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("live".into(), Bytes::from("a"), None);
+        ks.set(
+            "expired".into(),
+            Bytes::from("b"),
+            Some(Duration::from_millis(1)),
+        );
+
+        std::thread::sleep(Duration::from_millis(5));
+
+        let (_, keys) = ks.scan_keys(0, 10, None);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], "live");
+    }
+
+    #[test]
+    fn glob_match_star() {
+        assert!(super::glob_match("user:*", "user:123"));
+        assert!(super::glob_match("user:*", "user:"));
+        assert!(super::glob_match("*:data", "foo:data"));
+        assert!(!super::glob_match("user:*", "item:123"));
+    }
+
+    #[test]
+    fn glob_match_question() {
+        assert!(super::glob_match("key?", "key1"));
+        assert!(super::glob_match("key?", "keya"));
+        assert!(!super::glob_match("key?", "key"));
+        assert!(!super::glob_match("key?", "key12"));
+    }
+
+    #[test]
+    fn glob_match_brackets() {
+        assert!(super::glob_match("key[abc]", "keya"));
+        assert!(super::glob_match("key[abc]", "keyb"));
+        assert!(!super::glob_match("key[abc]", "keyd"));
+    }
+
+    #[test]
+    fn glob_match_literal() {
+        assert!(super::glob_match("exact", "exact"));
+        assert!(!super::glob_match("exact", "exactnot"));
+        assert!(!super::glob_match("exact", "notexact"));
     }
 }

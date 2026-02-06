@@ -53,6 +53,12 @@ pub enum Command {
     /// EXISTS <key> [key ...]. Returns the number of keys that exist.
     Exists { keys: Vec<String> },
 
+    /// MGET <key> [key ...]. Returns the values for all specified keys.
+    MGet { keys: Vec<String> },
+
+    /// MSET <key> <value> [key value ...]. Sets multiple key-value pairs.
+    MSet { pairs: Vec<(String, Bytes)> },
+
     /// EXPIRE <key> <seconds>. Sets a TTL on an existing key.
     Expire { key: String, seconds: u64 },
 
@@ -79,6 +85,16 @@ pub enum Command {
 
     /// BGREWRITEAOF. Triggers an AOF rewrite (snapshot + truncate).
     BgRewriteAof,
+
+    /// FLUSHDB. Removes all keys from the database.
+    FlushDb,
+
+    /// SCAN <cursor> [MATCH pattern] [COUNT count]. Iterates keys.
+    Scan {
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
 
     /// LPUSH <key> <value> [value ...]. Pushes values to the head of a list.
     LPush { key: String, values: Vec<Bytes> },
@@ -182,6 +198,8 @@ impl Command {
             "DECR" => parse_decr(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
+            "MGET" => parse_mget(&frames[1..]),
+            "MSET" => parse_mset(&frames[1..]),
             "EXPIRE" => parse_expire(&frames[1..]),
             "TTL" => parse_ttl(&frames[1..]),
             "PERSIST" => parse_persist(&frames[1..]),
@@ -191,6 +209,8 @@ impl Command {
             "INFO" => parse_info(&frames[1..]),
             "BGSAVE" => parse_bgsave(&frames[1..]),
             "BGREWRITEAOF" => parse_bgrewriteaof(&frames[1..]),
+            "FLUSHDB" => parse_flushdb(&frames[1..]),
+            "SCAN" => parse_scan(&frames[1..]),
             "LPUSH" => parse_lpush(&frames[1..]),
             "RPUSH" => parse_rpush(&frames[1..]),
             "LPOP" => parse_lpop(&frames[1..]),
@@ -381,6 +401,30 @@ fn parse_exists(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::Exists { keys })
 }
 
+fn parse_mget(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("MGET".into()));
+    }
+    let keys = args
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::MGet { keys })
+}
+
+fn parse_mset(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() || args.len() % 2 != 0 {
+        return Err(ProtocolError::WrongArity("MSET".into()));
+    }
+    let mut pairs = Vec::with_capacity(args.len() / 2);
+    for chunk in args.chunks(2) {
+        let key = extract_string(&chunk[0])?;
+        let value = extract_bytes(&chunk[1])?;
+        pairs.push((key, value));
+    }
+    Ok(Command::MSet { pairs })
+}
+
 fn parse_expire(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
         return Err(ProtocolError::WrongArity("EXPIRE".into()));
@@ -469,6 +513,58 @@ fn parse_bgrewriteaof(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("BGREWRITEAOF".into()));
     }
     Ok(Command::BgRewriteAof)
+}
+
+fn parse_flushdb(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("FLUSHDB".into()));
+    }
+    Ok(Command::FlushDb)
+}
+
+fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("SCAN".into()));
+    }
+
+    let cursor = parse_u64(&args[0], "SCAN")?;
+    let mut pattern = None;
+    let mut count = None;
+    let mut idx = 1;
+
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
+        match flag.as_str() {
+            "MATCH" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::WrongArity("SCAN".into()));
+                }
+                pattern = Some(extract_string(&args[idx])?);
+                idx += 1;
+            }
+            "COUNT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::WrongArity("SCAN".into()));
+                }
+                let n = parse_u64(&args[idx], "SCAN")?;
+                count = Some(n as usize);
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported SCAN option '{flag}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::Scan {
+        cursor,
+        pattern,
+        count,
+    })
 }
 
 /// Parses a string argument as an i64. Used by LRANGE for start/stop indices.
@@ -1015,6 +1111,72 @@ mod tests {
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
+    // --- mget ---
+
+    #[test]
+    fn mget_single() {
+        assert_eq!(
+            Command::from_frame(cmd(&["MGET", "key"])).unwrap(),
+            Command::MGet {
+                keys: vec!["key".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn mget_multiple() {
+        assert_eq!(
+            Command::from_frame(cmd(&["MGET", "a", "b", "c"])).unwrap(),
+            Command::MGet {
+                keys: vec!["a".into(), "b".into(), "c".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn mget_no_args() {
+        let err = Command::from_frame(cmd(&["MGET"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- mset ---
+
+    #[test]
+    fn mset_single_pair() {
+        assert_eq!(
+            Command::from_frame(cmd(&["MSET", "key", "val"])).unwrap(),
+            Command::MSet {
+                pairs: vec![("key".into(), Bytes::from("val"))]
+            },
+        );
+    }
+
+    #[test]
+    fn mset_multiple_pairs() {
+        assert_eq!(
+            Command::from_frame(cmd(&["MSET", "a", "1", "b", "2"])).unwrap(),
+            Command::MSet {
+                pairs: vec![
+                    ("a".into(), Bytes::from("1")),
+                    ("b".into(), Bytes::from("2")),
+                ]
+            },
+        );
+    }
+
+    #[test]
+    fn mset_no_args() {
+        let err = Command::from_frame(cmd(&["MSET"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn mset_odd_args() {
+        // missing value for second key
+        let err = Command::from_frame(cmd(&["MSET", "a", "1", "b"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
     // --- expire ---
 
     #[test]
@@ -1157,6 +1319,30 @@ mod tests {
     #[test]
     fn bgrewriteaof_extra_args() {
         let err = Command::from_frame(cmd(&["BGREWRITEAOF", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- flushdb ---
+
+    #[test]
+    fn flushdb_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["FLUSHDB"])).unwrap(),
+            Command::FlushDb,
+        );
+    }
+
+    #[test]
+    fn flushdb_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["flushdb"])).unwrap(),
+            Command::FlushDb,
+        );
+    }
+
+    #[test]
+    fn flushdb_extra_args() {
+        let err = Command::from_frame(cmd(&["FLUSHDB", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
@@ -1676,5 +1862,115 @@ mod tests {
     fn pexpire_invalid_millis() {
         let err = Command::from_frame(cmd(&["PEXPIRE", "key", "notanum"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- scan ---
+
+    #[test]
+    fn scan_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SCAN", "0"])).unwrap(),
+            Command::Scan {
+                cursor: 0,
+                pattern: None,
+                count: None,
+            },
+        );
+    }
+
+    #[test]
+    fn scan_with_match() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SCAN", "0", "MATCH", "user:*"])).unwrap(),
+            Command::Scan {
+                cursor: 0,
+                pattern: Some("user:*".into()),
+                count: None,
+            },
+        );
+    }
+
+    #[test]
+    fn scan_with_count() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SCAN", "42", "COUNT", "100"])).unwrap(),
+            Command::Scan {
+                cursor: 42,
+                pattern: None,
+                count: Some(100),
+            },
+        );
+    }
+
+    #[test]
+    fn scan_with_match_and_count() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SCAN", "0", "MATCH", "*:data", "COUNT", "50"])).unwrap(),
+            Command::Scan {
+                cursor: 0,
+                pattern: Some("*:data".into()),
+                count: Some(50),
+            },
+        );
+    }
+
+    #[test]
+    fn scan_count_before_match() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SCAN", "0", "COUNT", "10", "MATCH", "foo*"])).unwrap(),
+            Command::Scan {
+                cursor: 0,
+                pattern: Some("foo*".into()),
+                count: Some(10),
+            },
+        );
+    }
+
+    #[test]
+    fn scan_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["scan", "0", "match", "x*", "count", "5"])).unwrap(),
+            Command::Scan {
+                cursor: 0,
+                pattern: Some("x*".into()),
+                count: Some(5),
+            },
+        );
+    }
+
+    #[test]
+    fn scan_wrong_arity() {
+        let err = Command::from_frame(cmd(&["SCAN"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn scan_invalid_cursor() {
+        let err = Command::from_frame(cmd(&["SCAN", "notanum"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn scan_invalid_count() {
+        let err = Command::from_frame(cmd(&["SCAN", "0", "COUNT", "bad"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn scan_unknown_flag() {
+        let err = Command::from_frame(cmd(&["SCAN", "0", "BADOPT", "val"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn scan_match_missing_pattern() {
+        let err = Command::from_frame(cmd(&["SCAN", "0", "MATCH"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn scan_count_missing_value() {
+        let err = Command::from_frame(cmd(&["SCAN", "0", "COUNT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }
