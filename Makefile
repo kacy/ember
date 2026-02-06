@@ -1,5 +1,6 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build \
-       release-patch release-minor release-major github-release
+       release-patch release-minor release-major github-release \
+       publish publish-dry-run
 
 # extract the workspace version from the root Cargo.toml
 VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -64,3 +65,38 @@ release-major:
 
 github-release:
 	gh release create "v$(VERSION)" --title "v$(VERSION)" --generate-notes
+
+# --- crates.io publishing ---
+#
+# usage:
+#   make publish-dry-run  # verify all crates can be packaged
+#   make publish          # publish all crates to crates.io (requires login)
+#
+# crates are published in dependency order:
+#   1. ember-persistence, ember-protocol, ember-cluster (no internal deps)
+#   2. emberkv-core (depends on persistence, protocol)
+#   3. ember-server (depends on core, protocol, persistence)
+#   4. emberkv-cli (standalone)
+
+CRATES_ORDER = ember-persistence ember-protocol ember-cluster emberkv-core ember-server emberkv-cli
+
+publish-dry-run:
+	@echo "dry run: checking all crates can be packaged..."
+	@for crate in $(CRATES_ORDER); do \
+		echo "  checking $$crate..."; \
+		cargo publish --dry-run -p $$crate || exit 1; \
+	done
+	@echo "all crates passed dry run"
+
+publish:
+	@echo "publishing crates to crates.io..."
+	@echo "note: each crate needs time to index before dependents can be published"
+	@for crate in $(CRATES_ORDER); do \
+		echo ""; \
+		echo "publishing $$crate..."; \
+		cargo publish -p $$crate || exit 1; \
+		echo "waiting for crates.io to index $$crate..."; \
+		sleep 30; \
+	done
+	@echo ""
+	@echo "all crates published successfully"
