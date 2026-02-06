@@ -82,6 +82,20 @@ impl Engine {
         self.shards.len()
     }
 
+    /// Sends a request to a specific shard by index.
+    ///
+    /// Used by SCAN to iterate through shards sequentially.
+    pub async fn send_to_shard(
+        &self,
+        shard_idx: usize,
+        request: ShardRequest,
+    ) -> Result<ShardResponse, ShardError> {
+        if shard_idx >= self.shards.len() {
+            return Err(ShardError::Unavailable);
+        }
+        self.shards[shard_idx].send(request).await
+    }
+
     /// Routes a request to the shard that owns `key`.
     pub async fn route(
         &self,
