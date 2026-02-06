@@ -98,6 +98,11 @@ pub fn key_slot(key: &[u8]) -> u16 {
 }
 
 /// A contiguous range of slots assigned to a node.
+///
+/// # Invariants
+///
+/// A valid `SlotRange` always satisfies `start <= end`, meaning it contains
+/// at least one slot. This is enforced by debug assertions in the constructor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlotRange {
     pub start: u16,
@@ -106,9 +111,13 @@ pub struct SlotRange {
 
 impl SlotRange {
     /// Creates a new slot range (end is inclusive).
+    ///
+    /// # Panics
+    ///
+    /// Debug-panics if `start > end` or if `end >= SLOT_COUNT`.
     pub fn new(start: u16, end: u16) -> Self {
-        debug_assert!(start <= end);
-        debug_assert!(end < SLOT_COUNT);
+        debug_assert!(start <= end, "SlotRange requires start <= end");
+        debug_assert!(end < SLOT_COUNT, "slot must be < {SLOT_COUNT}");
         Self { start, end }
     }
 
@@ -117,14 +126,10 @@ impl SlotRange {
         Self::new(slot, slot)
     }
 
-    /// Returns the number of slots in this range.
+    /// Returns the number of slots in this range (always >= 1 for valid ranges).
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u16 {
         self.end - self.start + 1
-    }
-
-    /// Returns true if this range contains no slots (never true for valid ranges).
-    pub fn is_empty(&self) -> bool {
-        false // a valid range always has at least one slot
     }
 
     /// Returns true if this range contains the given slot.
