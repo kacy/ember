@@ -11,3 +11,12 @@ readme = "README.md"
 
 [dependencies]
 thiserror = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
