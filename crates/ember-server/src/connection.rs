@@ -262,8 +262,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         Command::MSet { pairs } => {
             // fan out individual SET requests — MSET always succeeds (or OOMs)
             let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
-            let values: std::collections::HashMap<String, Bytes> =
-                pairs.into_iter().collect();
+            let values: std::collections::HashMap<String, Bytes> = pairs.into_iter().collect();
 
             match engine
                 .route_multi(&keys, |k| {
@@ -355,8 +354,14 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             pattern,
             count,
         } => {
-            // cursor format: (shard_id << 48) | position_within_shard
-            // cursor 0 means start from shard 0, position 0
+            // cursor encoding: (shard_id << 48) | position_within_shard
+            //
+            // this gives us 16 bits for shard_id (up to 65536 shards) and 48 bits
+            // for position within each shard. cursor 0 always means "start fresh".
+            //
+            // the cursor is opaque to clients — they just pass back whatever we
+            // returned last time. this lets us iterate across the sharded keyspace
+            // without clients needing to know the topology.
             let shard_count = engine.shard_count();
             let count = count.unwrap_or(10);
 
@@ -365,6 +370,12 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             } else {
                 let shard_id = (cursor >> 48) as usize;
                 let position = cursor & 0xFFFF_FFFF_FFFF;
+
+                // guard against invalid cursor (shard_id out of range)
+                if shard_id >= shard_count {
+                    return Frame::Array(vec![Frame::Bulk(Bytes::from("0")), Frame::Array(vec![])]);
+                }
+
                 (shard_id, position)
             };
 
@@ -380,7 +391,10 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                     pattern: pattern.clone(),
                 };
                 match engine.send_to_shard(current_shard, req).await {
-                    Ok(ShardResponse::Scan { cursor: next_pos, keys }) => {
+                    Ok(ShardResponse::Scan {
+                        cursor: next_pos,
+                        keys,
+                    }) => {
                         all_keys.extend(keys);
                         if next_pos == 0 {
                             // shard exhausted, move to next
