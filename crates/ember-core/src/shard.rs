@@ -764,6 +764,39 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 milliseconds: *milliseconds,
             })
         }
+        // Hash commands
+        (ShardRequest::HSet { key, fields }, ShardResponse::Len(_)) => Some(AofRecord::HSet {
+            key: key.clone(),
+            fields: fields.clone(),
+        }),
+        (ShardRequest::HDel { key, .. }, ShardResponse::HDelLen { removed, .. })
+            if !removed.is_empty() =>
+        {
+            Some(AofRecord::HDel {
+                key: key.clone(),
+                fields: removed.clone(),
+            })
+        }
+        (ShardRequest::HIncrBy { key, field, delta }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::HIncrBy {
+                key: key.clone(),
+                field: field.clone(),
+                delta: *delta,
+            })
+        }
+        // Set commands
+        (ShardRequest::SAdd { key, members }, ShardResponse::Len(count)) if *count > 0 => {
+            Some(AofRecord::SAdd {
+                key: key.clone(),
+                members: members.clone(),
+            })
+        }
+        (ShardRequest::SRem { key, members }, ShardResponse::Len(count)) if *count > 0 => {
+            Some(AofRecord::SRem {
+                key: key.clone(),
+                members: members.clone(),
+            })
+        }
         _ => None,
     }
 }
@@ -1500,5 +1533,128 @@ mod tests {
             }
             _ => panic!("expected Scan response"),
         }
+    }
+
+    #[test]
+    fn to_aof_record_for_hset() {
+        let req = ShardRequest::HSet {
+            key: "h".into(),
+            fields: vec![("f1".into(), Bytes::from("v1"))],
+        };
+        let resp = ShardResponse::Len(1);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::HSet { key, fields } => {
+                assert_eq!(key, "h");
+                assert_eq!(fields.len(), 1);
+            }
+            _ => panic!("expected HSet record"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_for_hdel() {
+        let req = ShardRequest::HDel {
+            key: "h".into(),
+            fields: vec!["f1".into(), "f2".into()],
+        };
+        let resp = ShardResponse::HDelLen {
+            count: 2,
+            removed: vec!["f1".into(), "f2".into()],
+        };
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::HDel { key, fields } => {
+                assert_eq!(key, "h");
+                assert_eq!(fields.len(), 2);
+            }
+            _ => panic!("expected HDel record"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_skips_hdel_when_none_removed() {
+        let req = ShardRequest::HDel {
+            key: "h".into(),
+            fields: vec!["f1".into()],
+        };
+        let resp = ShardResponse::HDelLen {
+            count: 0,
+            removed: vec![],
+        };
+        assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn to_aof_record_for_hincrby() {
+        let req = ShardRequest::HIncrBy {
+            key: "h".into(),
+            field: "counter".into(),
+            delta: 5,
+        };
+        let resp = ShardResponse::Integer(10);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::HIncrBy { key, field, delta } => {
+                assert_eq!(key, "h");
+                assert_eq!(field, "counter");
+                assert_eq!(delta, 5);
+            }
+            _ => panic!("expected HIncrBy record"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_for_sadd() {
+        let req = ShardRequest::SAdd {
+            key: "s".into(),
+            members: vec!["m1".into(), "m2".into()],
+        };
+        let resp = ShardResponse::Len(2);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::SAdd { key, members } => {
+                assert_eq!(key, "s");
+                assert_eq!(members.len(), 2);
+            }
+            _ => panic!("expected SAdd record"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_skips_sadd_when_none_added() {
+        let req = ShardRequest::SAdd {
+            key: "s".into(),
+            members: vec!["m1".into()],
+        };
+        let resp = ShardResponse::Len(0);
+        assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn to_aof_record_for_srem() {
+        let req = ShardRequest::SRem {
+            key: "s".into(),
+            members: vec!["m1".into()],
+        };
+        let resp = ShardResponse::Len(1);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::SRem { key, members } => {
+                assert_eq!(key, "s");
+                assert_eq!(members.len(), 1);
+            }
+            _ => panic!("expected SRem record"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_skips_srem_when_none_removed() {
+        let req = ShardRequest::SRem {
+            key: "s".into(),
+            members: vec!["m1".into()],
+        };
+        let resp = ShardResponse::Len(0);
+        assert!(to_aof_record(&req, &resp).is_none());
     }
 }

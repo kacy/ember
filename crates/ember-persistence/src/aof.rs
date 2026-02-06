@@ -49,6 +49,11 @@ const TAG_PERSIST: u8 = 10;
 const TAG_PEXPIRE: u8 = 11;
 const TAG_INCR: u8 = 12;
 const TAG_DECR: u8 = 13;
+const TAG_HSET: u8 = 14;
+const TAG_HDEL: u8 = 15;
+const TAG_HINCRBY: u8 = 16;
+const TAG_SADD: u8 = 17;
+const TAG_SREM: u8 = 18;
 
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +91,23 @@ pub enum AofRecord {
     Incr { key: String },
     /// DECR key.
     Decr { key: String },
+    /// HSET key field value [field value ...].
+    HSet {
+        key: String,
+        fields: Vec<(String, Bytes)>,
+    },
+    /// HDEL key field [field ...].
+    HDel { key: String, fields: Vec<String> },
+    /// HINCRBY key field delta.
+    HIncrBy {
+        key: String,
+        field: String,
+        delta: i64,
+    },
+    /// SADD key member [member ...].
+    SAdd { key: String, members: Vec<String> },
+    /// SREM key member [member ...].
+    SRem { key: String, members: Vec<String> },
 }
 
 impl AofRecord {
@@ -169,6 +191,45 @@ impl AofRecord {
             AofRecord::Decr { key } => {
                 format::write_u8(&mut buf, TAG_DECR).expect("vec write");
                 format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+            }
+            AofRecord::HSet { key, fields } => {
+                format::write_u8(&mut buf, TAG_HSET).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, fields.len() as u32).expect("vec write");
+                for (field, value) in fields {
+                    format::write_bytes(&mut buf, field.as_bytes()).expect("vec write");
+                    format::write_bytes(&mut buf, value).expect("vec write");
+                }
+            }
+            AofRecord::HDel { key, fields } => {
+                format::write_u8(&mut buf, TAG_HDEL).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, fields.len() as u32).expect("vec write");
+                for field in fields {
+                    format::write_bytes(&mut buf, field.as_bytes()).expect("vec write");
+                }
+            }
+            AofRecord::HIncrBy { key, field, delta } => {
+                format::write_u8(&mut buf, TAG_HINCRBY).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_bytes(&mut buf, field.as_bytes()).expect("vec write");
+                format::write_i64(&mut buf, *delta).expect("vec write");
+            }
+            AofRecord::SAdd { key, members } => {
+                format::write_u8(&mut buf, TAG_SADD).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                for member in members {
+                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                }
+            }
+            AofRecord::SRem { key, members } => {
+                format::write_u8(&mut buf, TAG_SREM).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                for member in members {
+                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                }
             }
         }
         buf
@@ -255,6 +316,50 @@ impl AofRecord {
             TAG_DECR => {
                 let key = read_string(&mut cursor, "key")?;
                 Ok(AofRecord::Decr { key })
+            }
+            TAG_HSET => {
+                let key = read_string(&mut cursor, "key")?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut fields = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let field = read_string(&mut cursor, "field")?;
+                    let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                    fields.push((field, value));
+                }
+                Ok(AofRecord::HSet { key, fields })
+            }
+            TAG_HDEL => {
+                let key = read_string(&mut cursor, "key")?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut fields = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    fields.push(read_string(&mut cursor, "field")?);
+                }
+                Ok(AofRecord::HDel { key, fields })
+            }
+            TAG_HINCRBY => {
+                let key = read_string(&mut cursor, "key")?;
+                let field = read_string(&mut cursor, "field")?;
+                let delta = format::read_i64(&mut cursor)?;
+                Ok(AofRecord::HIncrBy { key, field, delta })
+            }
+            TAG_SADD => {
+                let key = read_string(&mut cursor, "key")?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut members = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    members.push(read_string(&mut cursor, "member")?);
+                }
+                Ok(AofRecord::SAdd { key, members })
+            }
+            TAG_SREM => {
+                let key = read_string(&mut cursor, "key")?;
+                let count = format::read_u32(&mut cursor)?;
+                let mut members = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    members.push(read_string(&mut cursor, "member")?);
+                }
+                Ok(AofRecord::SRem { key, members })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }
@@ -892,5 +997,64 @@ mod tests {
     fn aof_path_format() {
         let p = aof_path(Path::new("/data"), 3);
         assert_eq!(p, PathBuf::from("/data/shard-3.aof"));
+    }
+
+    #[test]
+    fn record_round_trip_hset() {
+        let rec = AofRecord::HSet {
+            key: "hash".into(),
+            fields: vec![
+                ("f1".into(), Bytes::from("v1")),
+                ("f2".into(), Bytes::from("v2")),
+            ],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_hdel() {
+        let rec = AofRecord::HDel {
+            key: "hash".into(),
+            fields: vec!["f1".into(), "f2".into()],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_hincrby() {
+        let rec = AofRecord::HIncrBy {
+            key: "hash".into(),
+            field: "counter".into(),
+            delta: -42,
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_sadd() {
+        let rec = AofRecord::SAdd {
+            key: "set".into(),
+            members: vec!["m1".into(), "m2".into(), "m3".into()],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[test]
+    fn record_round_trip_srem() {
+        let rec = AofRecord::SRem {
+            key: "set".into(),
+            members: vec!["m1".into()],
+        };
+        let bytes = rec.to_bytes();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
     }
 }
