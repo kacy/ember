@@ -388,7 +388,14 @@ impl GossipEngine {
                             if member.state != MemberStatus::Alive {
                                 member.state = MemberStatus::Alive;
                                 member.state_change = Instant::now();
-                                let _ = self.event_tx.send(GossipEvent::MemberAlive(*node)).await;
+                                if self
+                                    .event_tx
+                                    .send(GossipEvent::MemberAlive(*node))
+                                    .await
+                                    .is_err()
+                                {
+                                    warn!("event channel closed, cannot send MemberAlive event");
+                                }
                             }
                         }
                     } else {
@@ -453,7 +460,14 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Dead;
                             member.state_change = Instant::now();
-                            let _ = self.event_tx.send(GossipEvent::MemberFailed(*node)).await;
+                            if self
+                                .event_tx
+                                .send(GossipEvent::MemberFailed(*node))
+                                .await
+                                .is_err()
+                            {
+                                warn!("event channel closed, cannot send MemberFailed event");
+                            }
                         }
                     }
                 }
@@ -466,7 +480,14 @@ impl GossipEngine {
                         if member.state != MemberStatus::Left {
                             member.state = MemberStatus::Left;
                             member.state_change = Instant::now();
-                            let _ = self.event_tx.send(GossipEvent::MemberLeft(*node)).await;
+                            if self
+                                .event_tx
+                                .send(GossipEvent::MemberLeft(*node))
+                                .await
+                                .is_err()
+                            {
+                                warn!("event channel closed, cannot send MemberLeft event");
+                            }
                         }
                     }
                 }
@@ -479,7 +500,14 @@ impl GossipEngine {
             if member.state == MemberStatus::Suspect {
                 member.state = MemberStatus::Alive;
                 member.state_change = Instant::now();
-                let _ = self.event_tx.send(GossipEvent::MemberAlive(node)).await;
+                if self
+                    .event_tx
+                    .send(GossipEvent::MemberAlive(node))
+                    .await
+                    .is_err()
+                {
+                    warn!("event channel closed, cannot send MemberAlive event");
+                }
             }
         }
     }
