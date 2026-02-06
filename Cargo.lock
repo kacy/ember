@@ -142,14 +142,14 @@ dependencies = [
 
 [[package]]
 name = "ember-cluster"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "ember-persistence"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "ember-protocol"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "itoa",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "ember-server"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "clap",
@@ -183,14 +183,14 @@ dependencies = [
 
 [[package]]
 name = "emberkv-cli"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "emberkv-core"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "ember-persistence",
