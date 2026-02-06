@@ -872,6 +872,25 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             Frame::Simple("OK".into())
         }
 
+        Command::ClusterSetSlotImporting { .. }
+        | Command::ClusterSetSlotMigrating { .. }
+        | Command::ClusterSetSlotNode { .. }
+        | Command::ClusterSetSlotStable { .. }
+        | Command::ClusterMeet { .. }
+        | Command::ClusterAddSlots { .. }
+        | Command::ClusterDelSlots { .. }
+        | Command::ClusterForget { .. }
+        | Command::ClusterReplicate { .. }
+        | Command::ClusterFailover { .. }
+        | Command::ClusterCountKeysInSlot { .. }
+        | Command::ClusterGetKeysInSlot { .. } => {
+            Frame::Error("ERR This instance has cluster support disabled".into())
+        }
+
+        Command::Migrate { .. } => {
+            Frame::Error("ERR This instance has cluster support disabled".into())
+        }
+
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
 }

@@ -32,6 +32,7 @@
 mod error;
 mod gossip;
 mod message;
+mod migration;
 mod raft;
 mod slots;
 mod topology;
@@ -39,6 +40,10 @@ mod topology;
 pub use error::ClusterError;
 pub use gossip::{GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus};
 pub use message::{GossipMessage, MemberInfo, NodeUpdate};
+pub use migration::{
+    Migration, MigrationBatch, MigrationConfig, MigrationEntry, MigrationError, MigrationId,
+    MigrationManager, MigrationRedirect, MigrationState,
+};
 pub use raft::{
     ClusterCommand, ClusterResponse, ClusterSnapshot, ClusterStateData, Storage as RaftStorage,
     TypeConfig,
