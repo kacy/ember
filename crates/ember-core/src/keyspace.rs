@@ -558,7 +558,7 @@ impl Keyspace {
     /// Scans keys starting from a cursor position.
     ///
     /// Returns the next cursor (0 if scan complete) and a batch of keys.
-    /// The `pattern` argument supports glob-style matching (*, ?, [abc]).
+    /// The `pattern` argument supports glob-style matching (`*`, `?`, `[abc]`).
     pub fn scan_keys(
         &self,
         cursor: u64,
@@ -1777,7 +1777,7 @@ mod tests {
             Some(Duration::from_secs(100)),
         );
         match ks.ttl("key") {
-            TtlResult::Seconds(s) => assert!(s >= 98 && s <= 100),
+            TtlResult::Seconds(s) => assert!((98..=100).contains(&s)),
             other => panic!("expected Seconds, got {other:?}"),
         }
     }
@@ -1800,7 +1800,7 @@ mod tests {
         ks.set("key".into(), Bytes::from("val"), None);
         assert!(ks.expire("key", 60));
         match ks.ttl("key") {
-            TtlResult::Seconds(s) => assert!(s >= 58 && s <= 60),
+            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
             other => panic!("expected Seconds, got {other:?}"),
         }
     }
@@ -2584,7 +2584,7 @@ mod tests {
         ks.set("n".into(), Bytes::from("5"), Some(Duration::from_secs(60)));
         ks.incr("n").unwrap();
         match ks.ttl("n") {
-            TtlResult::Seconds(s) => assert!(s >= 58 && s <= 60),
+            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
             other => panic!("expected TTL preserved, got {other:?}"),
         }
     }

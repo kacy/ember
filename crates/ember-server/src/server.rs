@@ -1,4 +1,7 @@
 //! TCP server that accepts client connections and spawns handler tasks.
+//!
+//! Handles graceful shutdown on SIGINT/SIGTERM: stops accepting new
+//! connections and waits for in-flight requests to drain before exiting.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,6 +22,9 @@ const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
 /// hands each incoming connection a cheap clone of the engine handle.
 /// Limits concurrent connections to `max_connections` — excess clients
 /// are dropped immediately.
+///
+/// On SIGINT or SIGTERM the server stops accepting new connections,
+/// waits for existing handlers to finish, then exits cleanly.
 pub async fn run(
     addr: SocketAddr,
     shard_count: usize,
@@ -40,26 +46,47 @@ pub async fn run(
         engine.shard_count()
     );
 
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+
     loop {
-        let (stream, peer) = listener.accept().await?;
+        tokio::select! {
+            biased;
 
-        let permit = match semaphore.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                warn!("connection limit reached, dropping connection from {peer}");
-                drop(stream);
-                continue;
+            _ = &mut shutdown => {
+                info!("shutdown signal received, draining connections...");
+                break;
             }
-        };
 
-        let engine = engine.clone();
+            result = listener.accept() => {
+                let (stream, peer) = result?;
 
-        tokio::spawn(async move {
-            if let Err(e) = connection::handle(stream, engine).await {
-                error!("connection error from {peer}: {e}");
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("connection limit reached, dropping connection from {peer}");
+                        drop(stream);
+                        continue;
+                    }
+                };
+
+                let engine = engine.clone();
+
+                tokio::spawn(async move {
+                    if let Err(e) = connection::handle(stream, engine).await {
+                        error!("connection error from {peer}: {e}");
+                    }
+                    // permit is dropped here, releasing the slot
+                    drop(permit);
+                });
             }
-            // permit is dropped here, releasing the slot
-            drop(permit);
-        });
+        }
     }
+
+    // wait for all connection handlers to finish by acquiring all permits
+    info!("waiting for active connections to close...");
+    let _ = semaphore.acquire_many(max_conn as u32).await;
+    info!("all connections drained, shutting down");
+
+    Ok(())
 }
