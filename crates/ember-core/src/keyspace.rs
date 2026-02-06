@@ -62,10 +62,15 @@ pub enum IncrError {
 impl std::fmt::Display for IncrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncrError::WrongType => write!(f, "WRONGTYPE Operation against a key holding the wrong kind of value"),
+            IncrError::WrongType => write!(
+                f,
+                "WRONGTYPE Operation against a key holding the wrong kind of value"
+            ),
             IncrError::NotAnInteger => write!(f, "ERR value is not an integer or out of range"),
             IncrError::Overflow => write!(f, "ERR increment or decrement would overflow"),
-            IncrError::OutOfMemory => write!(f, "OOM command not allowed when used memory > 'maxmemory'"),
+            IncrError::OutOfMemory => {
+                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
+            }
         }
     }
 }
@@ -179,6 +184,15 @@ pub struct KeyspaceStats {
 }
 
 /// Number of random keys to sample when looking for an eviction candidate.
+///
+/// Eviction uses sampling-based approximate LRU — we randomly select this many
+/// keys and evict the least-recently-accessed among them. This trades perfect
+/// LRU accuracy for O(1) eviction (no sorted structure to maintain).
+///
+/// Larger sample sizes give better LRU approximation but cost more per eviction.
+/// 16 is a reasonable balance — similar to Redis's default sample size. With
+/// 16 samples, we statistically find a good eviction candidate while keeping
+/// eviction overhead low even at millions of keys.
 const EVICTION_SAMPLE_SIZE: usize = 16;
 
 /// The core key-value store.
@@ -1106,82 +1120,100 @@ impl Default for Keyspace {
     }
 }
 
-/// Simple glob-style pattern matching for SCAN's MATCH option.
-/// Supports: * (any sequence), ? (any single char), [abc] (char class).
+/// Glob-style pattern matching for SCAN's MATCH option.
+///
+/// Supports:
+/// - `*` matches any sequence of characters (including empty)
+/// - `?` matches exactly one character
+/// - `[abc]` matches one character from the set
+/// - `[^abc]` or `[!abc]` matches one character NOT in the set
+///
+/// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
+/// worst-case performance, where n is pattern length and m is text length.
 fn glob_match(pattern: &str, text: &str) -> bool {
-    let mut pat = pattern.chars().peekable();
-    let mut txt = text.chars().peekable();
+    let pat: Vec<char> = pattern.chars().collect();
+    let txt: Vec<char> = text.chars().collect();
 
-    fn match_rec(
-        pat: &mut std::iter::Peekable<std::str::Chars>,
-        txt: &mut std::iter::Peekable<std::str::Chars>,
-    ) -> bool {
-        loop {
-            match (pat.peek().copied(), txt.peek().copied()) {
-                (None, None) => return true,
-                (None, Some(_)) => return false,
-                (Some('*'), _) => {
-                    pat.next();
-                    // try matching * with zero chars, one char, two chars, etc.
-                    let pat_remaining: String = pat.clone().collect();
-                    let txt_remaining: String = txt.clone().collect();
-                    for i in 0..=txt_remaining.len() {
-                        let mut p = pat_remaining.chars().peekable();
-                        let mut t = txt_remaining[i..].chars().peekable();
-                        if match_rec(&mut p, &mut t) {
-                            return true;
-                        }
-                    }
-                    return false;
+    let mut pi = 0; // pattern index
+    let mut ti = 0; // text index
+
+    // backtracking state for the most recent '*'
+    let mut star_pi: Option<usize> = None;
+    let mut star_ti: usize = 0;
+
+    while ti < txt.len() || pi < pat.len() {
+        if pi < pat.len() {
+            match pat[pi] {
+                '*' => {
+                    // record star position and try matching zero chars first
+                    star_pi = Some(pi);
+                    star_ti = ti;
+                    pi += 1;
+                    continue;
                 }
-                (Some('?'), Some(_)) => {
-                    pat.next();
-                    txt.next();
+                '?' if ti < txt.len() => {
+                    pi += 1;
+                    ti += 1;
+                    continue;
                 }
-                (Some('['), Some(tc)) => {
-                    pat.next(); // consume '['
-                    let mut matched = false;
+                '[' if ti < txt.len() => {
+                    // parse character class
+                    let tc = txt[ti];
+                    let mut j = pi + 1;
                     let mut negated = false;
-                    if pat.peek() == Some(&'^') || pat.peek() == Some(&'!') {
+                    let mut matched = false;
+
+                    if j < pat.len() && (pat[j] == '^' || pat[j] == '!') {
                         negated = true;
-                        pat.next();
+                        j += 1;
                     }
-                    while let Some(&c) = pat.peek() {
-                        if c == ']' {
-                            pat.next();
-                            break;
-                        }
-                        pat.next();
-                        if c == tc {
+
+                    while j < pat.len() && pat[j] != ']' {
+                        if pat[j] == tc {
                             matched = true;
                         }
+                        j += 1;
                     }
+
                     if negated {
                         matched = !matched;
                     }
-                    if !matched {
-                        return false;
+
+                    if matched && j < pat.len() {
+                        pi = j + 1; // skip past ']'
+                        ti += 1;
+                        continue;
                     }
-                    txt.next();
+                    // fall through to backtrack
                 }
-                (Some(pc), Some(tc)) if pc == tc => {
-                    pat.next();
-                    txt.next();
+                c if ti < txt.len() && c == txt[ti] => {
+                    pi += 1;
+                    ti += 1;
+                    continue;
                 }
-                (Some(_), Some(_)) => return false,
-                (Some(_), None) => {
-                    // pattern has more chars but text is done
-                    // only ok if remaining pattern is all *
-                    while pat.peek() == Some(&'*') {
-                        pat.next();
-                    }
-                    return pat.peek().is_none();
-                }
+                _ => {}
             }
+        }
+
+        // mismatch or end of pattern — try backtracking to last '*'
+        if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+            if ti > txt.len() {
+                return false;
+            }
+        } else {
+            return false;
         }
     }
 
-    match_rec(&mut pat, &mut txt)
+    // skip trailing '*' in pattern
+    while pi < pat.len() && pat[pi] == '*' {
+        pi += 1;
+    }
+
+    pi == pat.len()
 }
 
 #[cfg(test)]
@@ -2142,7 +2174,11 @@ mod tests {
     #[test]
     fn persist_removes_expiry() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
         assert!(matches!(ks.ttl("key"), TtlResult::Seconds(_)));
 
         assert!(ks.persist("key"));
@@ -2166,7 +2202,11 @@ mod tests {
     #[test]
     fn pttl_returns_milliseconds() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
         match ks.pttl("key") {
             TtlResult::Milliseconds(ms) => assert!(ms > 59_000 && ms <= 60_000),
             other => panic!("expected Milliseconds, got {other:?}"),
@@ -2207,7 +2247,11 @@ mod tests {
     #[test]
     fn pexpire_overwrites_existing_ttl() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
         assert!(ks.pexpire("key", 500));
         match ks.pttl("key") {
             TtlResult::Milliseconds(ms) => assert!(ms <= 500),

@@ -413,7 +413,7 @@ fn parse_mget(args: &[Frame]) -> Result<Command, ProtocolError> {
 }
 
 fn parse_mset(args: &[Frame]) -> Result<Command, ProtocolError> {
-    if args.is_empty() || args.len() % 2 != 0 {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
         return Err(ProtocolError::WrongArity("MSET".into()));
     }
     let mut pairs = Vec::with_capacity(args.len() / 2);
