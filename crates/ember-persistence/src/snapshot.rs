@@ -80,7 +80,7 @@ pub struct SnapshotWriter {
 
 impl SnapshotWriter {
     /// Creates a new snapshot writer. The file won't appear at `path`
-    /// until [`finish`] is called successfully.
+    /// until [`Self::finish`] is called successfully.
     pub fn create(path: impl Into<PathBuf>, shard_id: u16) -> Result<Self, FormatError> {
         let final_path = path.into();
         let tmp_path = final_path.with_extension("snap.tmp");

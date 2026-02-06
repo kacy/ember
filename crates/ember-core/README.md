@@ -8,8 +8,8 @@ this is the heart of ember — it implements the shared-nothing, shard-per-core 
 
 - **engine** — routes requests to shards by key hash, supports single-key, multi-key, and broadcast operations
 - **shard** — the single-threaded event loop per partition: dispatch, AOF recording, expiration ticks, fsync ticks
-- **keyspace** — the key-value store itself: strings, lists, sorted sets, TTL, LRU eviction
-- **types** — `Value` enum with `String(Bytes)`, `List(VecDeque<Bytes>)`, `SortedSet` (BTreeMap + HashMap dual-index)
+- **keyspace** — the key-value store itself: strings, lists, sorted sets, hashes, sets, TTL, LRU eviction
+- **types** — `Value` enum with `String(Bytes)`, `List(VecDeque<Bytes>)`, `SortedSet` (BTreeMap + HashMap dual-index), `Hash(HashMap)`, `Set(HashSet)`
 - **memory** — per-shard memory tracking and entry size estimation
 - **expiry** — lazy (on access) and active (background sampling) TTL expiration
 
@@ -34,5 +34,5 @@ let response = engine.route("mykey", ShardRequest::Get {
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-persistence](../ember-persistence) | AOF, snapshots, and crash recovery |
 | [ember-server](../ember-server) | TCP server and connection handling |
-| [ember-cluster](../ember-cluster) | distributed coordination (WIP) |
-| [ember-cli](../ember-cli) | interactive command-line client (WIP) |
+| [ember-cluster](../ember-cluster) | distributed coordination |
+| [ember-cli](../ember-cli) | interactive command-line client (planned) |

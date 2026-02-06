@@ -74,4 +74,4 @@ the following CLUSTER commands are supported at the protocol layer:
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-persistence](../ember-persistence) | AOF, snapshots, and crash recovery |
 | [ember-server](../ember-server) | TCP server and connection handling |
-| [ember-cli](../ember-cli) | interactive command-line client |
+| [ember-cli](../ember-cli) | interactive command-line client (planned) |

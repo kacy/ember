@@ -22,6 +22,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **persistence** — append-only file (AOF) and point-in-time snapshots
 - **pipelining** — multiple commands per read for high throughput
+- **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
 
 ## quickstart
 
