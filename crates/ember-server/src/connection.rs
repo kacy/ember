@@ -4,6 +4,8 @@
 //! sharded engine, and writes responses back. Supports pipelining
 //! by processing multiple frames from a single read.
 
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
@@ -11,6 +13,8 @@ use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, 
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+use crate::server::ServerContext;
 
 /// Initial read buffer capacity. 4KB covers most commands comfortably
 /// without over-allocating for simple PING/SET/GET workloads.
@@ -33,6 +37,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 pub async fn handle(
     mut stream: TcpStream,
     engine: Engine,
+    ctx: &Arc<ServerContext>,
     metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // disable Nagle's algorithm — cache servers need low-latency writes,
@@ -68,7 +73,7 @@ pub async fn handle(
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response = process(frame, &engine, metrics_enabled).await;
+                    let response = process(frame, &engine, ctx, metrics_enabled).await;
                     response.serialize(&mut out);
                 }
                 Ok(None) => break, // need more data
@@ -91,7 +96,12 @@ pub async fn handle(
 ///
 /// When `metrics_enabled` is true, records per-command latency and
 /// error counters in prometheus.
-async fn process(frame: Frame, engine: &Engine, metrics_enabled: bool) -> Frame {
+async fn process(
+    frame: Frame,
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    metrics_enabled: bool,
+) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
             let cmd_name = cmd.command_name();
@@ -101,7 +111,8 @@ async fn process(frame: Frame, engine: &Engine, metrics_enabled: bool) -> Frame 
                 None
             };
 
-            let response = execute(cmd, engine).await;
+            let response = execute(cmd, engine, ctx).await;
+            ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
                 let is_error = matches!(&response, Frame::Error(_));
@@ -119,7 +130,7 @@ async fn process(frame: Frame, engine: &Engine, metrics_enabled: bool) -> Frame 
 /// Ping and Echo are handled inline (no shard routing needed).
 /// Single-key commands route to the owning shard. Multi-key commands
 /// (DEL, EXISTS) fan out across shards and aggregate results.
-async fn execute(cmd: Command, engine: &Engine) -> Frame {
+async fn execute(cmd: Command, engine: &Engine, ctx: &Arc<ServerContext>) -> Frame {
     match cmd {
         // -- no shard needed --
         Command::Ping(None) => Frame::Simple("PONG".into()),
@@ -330,36 +341,7 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
         },
 
         Command::Info { section } => {
-            let section_upper = section.as_deref().map(|s| s.to_ascii_uppercase());
-            match section_upper.as_deref() {
-                None | Some("KEYSPACE") => match engine.broadcast(|| ShardRequest::Stats).await {
-                    Ok(responses) => {
-                        let mut total = KeyspaceStats {
-                            key_count: 0,
-                            used_bytes: 0,
-                            keys_with_expiry: 0,
-                            keys_expired: 0,
-                            keys_evicted: 0,
-                        };
-                        for r in &responses {
-                            if let ShardResponse::Stats(stats) = r {
-                                total.key_count += stats.key_count;
-                                total.used_bytes += stats.used_bytes;
-                                total.keys_with_expiry += stats.keys_with_expiry;
-                                total.keys_expired += stats.keys_expired;
-                                total.keys_evicted += stats.keys_evicted;
-                            }
-                        }
-                        let info = format!(
-                            "# Keyspace\r\ndb0:keys={},expires={},used_bytes={}\r\n",
-                            total.key_count, total.keys_with_expiry, total.used_bytes
-                        );
-                        Frame::Bulk(Bytes::from(info))
-                    }
-                    Err(e) => Frame::Error(format!("ERR {e}")),
-                },
-                Some(other) => Frame::Error(format!("ERR unsupported INFO section '{other}'")),
-            }
+            render_info(engine, ctx, section.as_deref()).await
         }
 
         Command::BgSave => match engine.broadcast(|| ShardRequest::Snapshot).await {
@@ -937,6 +919,148 @@ where
             Frame::Integer(count as i64)
         }
         Err(e) => Frame::Error(format!("ERR {e}")),
+    }
+}
+
+/// Renders the INFO response with multiple sections.
+///
+/// With no argument, returns all sections. With a section name,
+/// returns only that section. Matches Redis convention of `#` headers
+/// followed by `key:value` pairs separated by `\r\n`.
+async fn render_info(
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    section: Option<&str>,
+) -> Frame {
+    let section_upper = section.map(|s| s.to_ascii_uppercase());
+    let want_all = section_upper.is_none();
+    let want = |name: &str| want_all || section_upper.as_deref() == Some(name);
+
+    // only broadcast to shards if we need keyspace/memory/persistence sections
+    let stats = if want("KEYSPACE") || want("MEMORY") || want("PERSISTENCE") || want("STATS") {
+        match engine.broadcast(|| ShardRequest::Stats).await {
+            Ok(responses) => {
+                let mut total = KeyspaceStats {
+                    key_count: 0,
+                    used_bytes: 0,
+                    keys_with_expiry: 0,
+                    keys_expired: 0,
+                    keys_evicted: 0,
+                };
+                for r in &responses {
+                    if let ShardResponse::Stats(s) = r {
+                        total.key_count += s.key_count;
+                        total.used_bytes += s.used_bytes;
+                        total.keys_with_expiry += s.keys_with_expiry;
+                        total.keys_expired += s.keys_expired;
+                        total.keys_evicted += s.keys_evicted;
+                    }
+                }
+                Some(total)
+            }
+            Err(e) => return Frame::Error(format!("ERR {e}")),
+        }
+    } else {
+        None
+    };
+
+    let mut out = String::with_capacity(512);
+
+    if want("SERVER") {
+        let uptime = ctx.start_time.elapsed().as_secs();
+        out.push_str("# Server\r\n");
+        out.push_str(&format!("ember_version:{}\r\n", ctx.version));
+        out.push_str(&format!("process_id:{}\r\n", std::process::id()));
+        out.push_str(&format!("uptime_in_seconds:{uptime}\r\n"));
+        out.push_str(&format!("shard_count:{}\r\n", ctx.shard_count));
+        out.push_str("\r\n");
+    }
+
+    if want("CLIENTS") {
+        let connected = ctx.connections_accepted.load(Ordering::Relaxed);
+        out.push_str("# Clients\r\n");
+        out.push_str(&format!("connected_clients:{connected}\r\n"));
+        out.push_str(&format!("max_clients:{}\r\n", ctx.max_connections));
+        out.push_str("\r\n");
+    }
+
+    if want("MEMORY") {
+        if let Some(ref stats) = stats {
+            out.push_str("# Memory\r\n");
+            out.push_str(&format!("used_memory:{}\r\n", stats.used_bytes));
+            out.push_str(&format!(
+                "used_memory_human:{}\r\n",
+                human_bytes(stats.used_bytes)
+            ));
+            if let Some(max) = ctx.max_memory {
+                out.push_str(&format!("max_memory:{max}\r\n"));
+                out.push_str(&format!("max_memory_human:{}\r\n", human_bytes(max)));
+            } else {
+                out.push_str("max_memory:0\r\n");
+                out.push_str("max_memory_human:unlimited\r\n");
+            }
+            out.push_str("\r\n");
+        }
+    }
+
+    if want("PERSISTENCE") {
+        out.push_str("# Persistence\r\n");
+        out.push_str(&format!(
+            "aof_enabled:{}\r\n",
+            if ctx.aof_enabled { 1 } else { 0 }
+        ));
+        out.push_str("\r\n");
+    }
+
+    if want("STATS") {
+        let total_conns = ctx.connections_accepted.load(Ordering::Relaxed);
+        let total_cmds = ctx.commands_processed.load(Ordering::Relaxed);
+        out.push_str("# Stats\r\n");
+        out.push_str(&format!("total_connections_received:{total_conns}\r\n"));
+        out.push_str(&format!("total_commands_processed:{total_cmds}\r\n"));
+        if let Some(ref stats) = stats {
+            out.push_str(&format!("expired_keys:{}\r\n", stats.keys_expired));
+            out.push_str(&format!("evicted_keys:{}\r\n", stats.keys_evicted));
+        }
+        out.push_str("\r\n");
+    }
+
+    if want("KEYSPACE") {
+        if let Some(ref stats) = stats {
+            out.push_str("# Keyspace\r\n");
+            if stats.key_count > 0 {
+                out.push_str(&format!(
+                    "db0:keys={},expires={},used_bytes={}\r\n",
+                    stats.key_count, stats.keys_with_expiry, stats.used_bytes
+                ));
+            }
+            out.push_str("\r\n");
+        }
+    }
+
+    // trim trailing blank line
+    if out.ends_with("\r\n\r\n") {
+        out.truncate(out.len() - 2);
+    }
+
+    Frame::Bulk(Bytes::from(out))
+}
+
+/// Formats a byte count as a human-readable string (e.g. "1.23M").
+fn human_bytes(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2}G", b / GB)
+    } else if b >= MB {
+        format!("{:.2}M", b / MB)
+    } else if b >= KB {
+        format!("{:.2}K", b / KB)
+    } else {
+        format!("{bytes}B")
     }
 }
 
