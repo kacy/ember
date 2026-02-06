@@ -838,6 +838,40 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             }
         }
 
+        // --- cluster commands ---
+        // Note: Full cluster support requires integration with ember-cluster crate.
+        // For now, CLUSTER KEYSLOT works, and other commands return stub responses.
+        Command::ClusterKeySlot { key } => {
+            let slot = ember_cluster::key_slot(key.as_bytes());
+            Frame::Integer(slot as i64)
+        }
+
+        Command::ClusterInfo => {
+            // Return minimal info indicating cluster mode is disabled
+            let info = "cluster_enabled:0\r\n";
+            Frame::Bulk(Bytes::from(info))
+        }
+
+        Command::ClusterNodes => {
+            // In non-cluster mode, return empty string
+            Frame::Bulk(Bytes::from(""))
+        }
+
+        Command::ClusterSlots => {
+            // In non-cluster mode, return empty array
+            Frame::Array(vec![])
+        }
+
+        Command::ClusterMyId => {
+            // In non-cluster mode, return an error
+            Frame::Error("ERR This instance has cluster support disabled".into())
+        }
+
+        Command::Asking => {
+            // ASKING is a no-op in non-cluster mode, just return OK
+            Frame::Simple("OK".into())
+        }
+
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
 }
