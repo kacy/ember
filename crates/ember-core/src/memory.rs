@@ -3,6 +3,16 @@
 //! Provides byte-level accounting of memory used by entries. Updated
 //! on every mutation so the engine can enforce memory limits and
 //! report stats without scanning the entire keyspace.
+//!
+//! # Platform notes
+//!
+//! Overhead constants are empirical estimates for 64-bit platforms (x86-64,
+//! aarch64). On 32-bit systems these would be smaller; the effect is that
+//! we'd overestimate memory usage, which triggers eviction earlier than
+//! necessary but doesn't cause correctness issues.
+//!
+//! The constants assume Rust's standard library allocator. Custom allocators
+//! (jemalloc, mimalloc) may have different per-allocation overhead.
 
 use crate::types::Value;
 
