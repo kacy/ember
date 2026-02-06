@@ -196,6 +196,25 @@ pub enum Command {
     /// SCARD <key>. Returns the cardinality (number of members) of a set.
     SCard { key: String },
 
+    // --- cluster commands ---
+    /// CLUSTER INFO. Returns cluster state and configuration information.
+    ClusterInfo,
+
+    /// CLUSTER NODES. Returns the list of cluster nodes.
+    ClusterNodes,
+
+    /// CLUSTER SLOTS. Returns the slot distribution across nodes.
+    ClusterSlots,
+
+    /// CLUSTER KEYSLOT <key>. Returns the hash slot for a key.
+    ClusterKeySlot { key: String },
+
+    /// CLUSTER MYID. Returns the node's ID.
+    ClusterMyId,
+
+    /// ASKING. Signals that the next command is for a migrating slot.
+    Asking,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -291,6 +310,8 @@ impl Command {
             "SMEMBERS" => parse_smembers(&frames[1..]),
             "SISMEMBER" => parse_sismember(&frames[1..]),
             "SCARD" => parse_scard(&frames[1..]),
+            "CLUSTER" => parse_cluster(&frames[1..]),
+            "ASKING" => parse_asking(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1014,6 +1035,59 @@ fn parse_scard(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::SCard { key })
+}
+
+// --- cluster commands ---
+
+fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("CLUSTER".into()));
+    }
+
+    let subcommand = extract_string(&args[0])?.to_ascii_uppercase();
+    match subcommand.as_str() {
+        "INFO" => {
+            if args.len() != 1 {
+                return Err(ProtocolError::WrongArity("CLUSTER INFO".into()));
+            }
+            Ok(Command::ClusterInfo)
+        }
+        "NODES" => {
+            if args.len() != 1 {
+                return Err(ProtocolError::WrongArity("CLUSTER NODES".into()));
+            }
+            Ok(Command::ClusterNodes)
+        }
+        "SLOTS" => {
+            if args.len() != 1 {
+                return Err(ProtocolError::WrongArity("CLUSTER SLOTS".into()));
+            }
+            Ok(Command::ClusterSlots)
+        }
+        "KEYSLOT" => {
+            if args.len() != 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER KEYSLOT".into()));
+            }
+            let key = extract_string(&args[1])?;
+            Ok(Command::ClusterKeySlot { key })
+        }
+        "MYID" => {
+            if args.len() != 1 {
+                return Err(ProtocolError::WrongArity("CLUSTER MYID".into()));
+            }
+            Ok(Command::ClusterMyId)
+        }
+        _ => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown CLUSTER subcommand '{subcommand}'"
+        ))),
+    }
+}
+
+fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("ASKING".into()));
+    }
+    Ok(Command::Asking)
 }
 
 #[cfg(test)]
@@ -2505,5 +2579,93 @@ mod tests {
             Command::from_frame(cmd(&["smembers", "s"])).unwrap(),
             Command::SMembers { .. }
         ));
+    }
+
+    // --- cluster commands ---
+
+    #[test]
+    fn cluster_info_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "INFO"])).unwrap(),
+            Command::ClusterInfo,
+        );
+    }
+
+    #[test]
+    fn cluster_nodes_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "NODES"])).unwrap(),
+            Command::ClusterNodes,
+        );
+    }
+
+    #[test]
+    fn cluster_slots_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "SLOTS"])).unwrap(),
+            Command::ClusterSlots,
+        );
+    }
+
+    #[test]
+    fn cluster_keyslot_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "KEYSLOT", "mykey"])).unwrap(),
+            Command::ClusterKeySlot {
+                key: "mykey".into()
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_keyslot_wrong_arity() {
+        let err = Command::from_frame(cmd(&["CLUSTER", "KEYSLOT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn cluster_myid_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "MYID"])).unwrap(),
+            Command::ClusterMyId,
+        );
+    }
+
+    #[test]
+    fn cluster_unknown_subcommand() {
+        let err = Command::from_frame(cmd(&["CLUSTER", "BADCMD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn cluster_no_subcommand() {
+        let err = Command::from_frame(cmd(&["CLUSTER"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn cluster_case_insensitive() {
+        assert!(matches!(
+            Command::from_frame(cmd(&["cluster", "info"])).unwrap(),
+            Command::ClusterInfo
+        ));
+        assert!(matches!(
+            Command::from_frame(cmd(&["cluster", "keyslot", "k"])).unwrap(),
+            Command::ClusterKeySlot { .. }
+        ));
+    }
+
+    #[test]
+    fn asking_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ASKING"])).unwrap(),
+            Command::Asking,
+        );
+    }
+
+    #[test]
+    fn asking_wrong_arity() {
+        let err = Command::from_frame(cmd(&["ASKING", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

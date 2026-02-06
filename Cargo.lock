@@ -185,6 +185,7 @@ version = "0.2.0"
 dependencies = [
  "bytes",
  "clap",
+ "ember-cluster",
  "ember-persistence",
  "ember-protocol",
  "emberkv-core",
