@@ -299,6 +299,68 @@ fn replay_aof(
             AofRecord::Decr { key } => {
                 apply_incr(map, key, -1);
             }
+            AofRecord::HSet { key, fields } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::Hash(HashMap::new()), None));
+                if let RecoveredValue::Hash(ref mut hash) = entry.0 {
+                    for (field, value) in fields {
+                        hash.insert(field, value);
+                    }
+                }
+            }
+            AofRecord::HDel { key, fields } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::Hash(ref mut hash) = entry.0 {
+                        for field in fields {
+                            hash.remove(&field);
+                        }
+                        if hash.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            AofRecord::HIncrBy { key, field, delta } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::Hash(HashMap::new()), None));
+                if let RecoveredValue::Hash(ref mut hash) = entry.0 {
+                    let current: i64 = hash
+                        .get(&field)
+                        .and_then(|v| std::str::from_utf8(v).ok())
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0);
+                    let new_val = current.saturating_add(delta);
+                    hash.insert(field, Bytes::from(new_val.to_string()));
+                }
+            }
+            AofRecord::SAdd { key, members } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::Set(HashSet::new()), None));
+                if let RecoveredValue::Set(ref mut set) = entry.0 {
+                    for member in members {
+                        set.insert(member);
+                    }
+                }
+            }
+            AofRecord::SRem { key, members } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::Set(ref mut set) = entry.0 {
+                        for member in members {
+                            set.remove(&member);
+                        }
+                        if set.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
         }
         count += 1;
     }
