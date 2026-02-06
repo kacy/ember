@@ -16,6 +16,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
+- **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
 - **active expiration** — background sampling cleans up expired keys without client access
 - **memory limits** — per-shard byte-level accounting with configurable limits
@@ -97,6 +98,9 @@ redis-cli FLUSHDB               # => OK
 | `--data-dir` | — | directory for persistence files |
 | `--appendonly` | false | enable append-only file logging |
 | `--appendfsync` | everysec | fsync policy: `always`, `everysec`, `no` |
+| `--metrics-port` | — | prometheus metrics HTTP port (disabled when not set) |
+| `--slowlog-log-slower-than` | 10000 | log commands slower than N microseconds (-1 disables) |
+| `--slowlog-max-len` | 128 | max entries in slow log ring buffer |
 
 ## build & development
 
@@ -140,9 +144,9 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 | 2 | persistence (AOF, snapshots, recovery) | ✅ complete |
 | 3 | data types (sorted sets, lists, hashes, sets) | ✅ complete |
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
-| 5 | developer experience (observability, CLI, clients) | 🚧 not started |
+| 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 62 commands, 574 tests, ~18k lines of code
+**current**: 65 commands, 579 tests, ~18k lines of code
 
 ## security
 

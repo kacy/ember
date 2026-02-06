@@ -16,5 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/src/ember/target/release/ember-server /usr/local/bin/ember-server
 
 EXPOSE 6379
+# metrics port (set via --metrics-port at runtime)
+EXPOSE 9100
 
 ENTRYPOINT ["ember-server", "--host", "0.0.0.0"]
