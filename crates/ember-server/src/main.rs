@@ -1,5 +1,6 @@
 mod config;
 mod connection;
+mod metrics;
 mod server;
 
 use std::net::SocketAddr;
@@ -43,6 +44,10 @@ struct Args {
     /// fsync policy for the AOF: always, everysec, or no
     #[arg(long, default_value = "everysec")]
     appendfsync: String,
+
+    /// port for prometheus metrics HTTP endpoint. disabled when not set
+    #[arg(long)]
+    metrics_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -119,9 +124,20 @@ async fn main() {
         );
     }
 
+    // install prometheus metrics exporter if --metrics-port is set
+    if let Some(metrics_port) = args.metrics_port {
+        let metrics_addr: std::net::SocketAddr = format!("{}:{}", args.host, metrics_port)
+            .parse()
+            .expect("invalid metrics bind address");
+        if let Err(e) = metrics::install_exporter(metrics_addr) {
+            eprintln!("failed to start metrics exporter: {e}");
+            std::process::exit(1);
+        }
+    }
+
     info!("ember server starting...");
 
-    if let Err(e) = server::run(addr, shard_count, engine_config, None).await {
+    if let Err(e) = server::run(addr, shard_count, engine_config, None, args.metrics_port.is_some()).await {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }

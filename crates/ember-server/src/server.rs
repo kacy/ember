@@ -30,6 +30,7 @@ pub async fn run(
     shard_count: usize,
     config: EngineConfig,
     max_connections: Option<usize>,
+    metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
@@ -37,6 +38,11 @@ pub async fn run(
     }
 
     let engine = Engine::with_config(shard_count, config);
+
+    if metrics_enabled {
+        crate::metrics::spawn_stats_poller(engine.clone());
+    }
+
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
@@ -65,16 +71,27 @@ pub async fn run(
                     Ok(permit) => permit,
                     Err(_) => {
                         warn!("connection limit reached, dropping connection from {peer}");
+                        if metrics_enabled {
+                            crate::metrics::on_connection_rejected();
+                        }
                         drop(stream);
                         continue;
                     }
                 };
 
+                if metrics_enabled {
+                    crate::metrics::on_connection_accepted();
+                }
+
                 let engine = engine.clone();
+                let metrics = metrics_enabled;
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, engine).await {
+                    if let Err(e) = connection::handle(stream, engine, metrics).await {
                         error!("connection error from {peer}: {e}");
+                    }
+                    if metrics {
+                        crate::metrics::on_connection_closed();
                     }
                     // permit is dropped here, releasing the slot
                     drop(permit);
