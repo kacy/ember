@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 use crate::connection;
+use crate::slowlog::{SlowLog, SlowLogConfig};
 
 /// Default maximum number of concurrent client connections.
 const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
@@ -49,6 +50,7 @@ pub async fn run(
     config: EngineConfig,
     max_connections: Option<usize>,
     metrics_enabled: bool,
+    slowlog_config: SlowLogConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
@@ -82,6 +84,8 @@ pub async fn run(
         connections_accepted: AtomicU64::new(0),
         commands_processed: AtomicU64::new(0),
     });
+
+    let slow_log = Arc::new(SlowLog::new(slowlog_config));
 
     info!(
         "listening on {addr} with {} shards (max {max_conn} connections)",
@@ -122,10 +126,11 @@ pub async fn run(
 
                 let engine = engine.clone();
                 let ctx = Arc::clone(&ctx);
+                let slow_log = Arc::clone(&slow_log);
                 let metrics = metrics_enabled;
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, engine, &ctx, metrics).await {
+                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log, metrics).await {
                         error!("connection error from {peer}: {e}");
                     }
                     if metrics {
