@@ -13,6 +13,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
 - **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZRANGE, ZCARD
 - **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET
+- **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
@@ -70,6 +71,13 @@ redis-cli HSET user:1 name alice age 30
 redis-cli HGET user:1 name      # => "alice"
 redis-cli HGETALL user:1        # => 1) "name" 2) "alice" 3) "age" 4) "30"
 redis-cli HINCRBY user:1 age 1  # => (integer) 31
+
+# sets
+redis-cli SADD tags rust cache fast   # => (integer) 3
+redis-cli SMEMBERS tags               # => 1) "cache" 2) "fast" 3) "rust"
+redis-cli SISMEMBER tags rust         # => (integer) 1
+redis-cli SCARD tags                  # => (integer) 3
+redis-cli SREM tags fast              # => (integer) 1
 
 # iteration
 redis-cli SCAN 0 MATCH "user:*" COUNT 100

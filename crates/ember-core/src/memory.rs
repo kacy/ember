@@ -131,6 +131,14 @@ pub(crate) const HASHMAP_ENTRY_OVERHEAD: usize = 64;
 /// Base overhead for an empty HashMap (bucket array pointer + len + capacity).
 pub(crate) const HASHMAP_BASE_OVERHEAD: usize = 48;
 
+/// Estimated overhead per member in a HashSet.
+///
+/// Each member is a String (24 bytes ptr+len+cap) plus bucket overhead.
+pub(crate) const HASHSET_MEMBER_OVERHEAD: usize = 40;
+
+/// Base overhead for an empty HashSet (bucket array pointer + len + capacity).
+pub(crate) const HASHSET_BASE_OVERHEAD: usize = 48;
+
 /// Returns the byte size of a value's payload.
 pub fn value_size(value: &Value) -> usize {
     match value {
@@ -149,6 +157,10 @@ pub fn value_size(value: &Value) -> usize {
                 .map(|(k, v)| k.len() + v.len() + HASHMAP_ENTRY_OVERHEAD)
                 .sum();
             HASHMAP_BASE_OVERHEAD + entry_bytes
+        }
+        Value::Set(set) => {
+            let member_bytes: usize = set.iter().map(|m| m.len() + HASHSET_MEMBER_OVERHEAD).sum();
+            HASHSET_BASE_OVERHEAD + member_bytes
         }
     }
 }

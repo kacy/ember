@@ -768,6 +768,72 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
             }
         }
 
+        // --- set commands ---
+        Command::SAdd { key, members } => {
+            let req = ShardRequest::SAdd {
+                key: key.clone(),
+                members,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SRem { key, members } => {
+            let req = ShardRequest::SRem {
+                key: key.clone(),
+                members,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SMembers { key } => {
+            let req = ShardRequest::SMembers { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::StringArray(members)) => Frame::Array(
+                    members
+                        .into_iter()
+                        .map(|m| Frame::Bulk(Bytes::from(m)))
+                        .collect(),
+                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SIsMember { key, member } => {
+            let req = ShardRequest::SIsMember {
+                key: key.clone(),
+                member,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Bool(b)) => Frame::Integer(if b { 1 } else { 0 }),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SCard { key } => {
+            let req = ShardRequest::SCard { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
 }
