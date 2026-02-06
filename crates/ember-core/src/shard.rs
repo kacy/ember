@@ -242,10 +242,7 @@ pub enum ShardResponse {
     /// HGETALL result: all field-value pairs.
     HashFields(Vec<(String, Bytes)>),
     /// HDEL result: removed count + field names for AOF.
-    HDelLen {
-        count: usize,
-        removed: Vec<String>,
-    },
+    HDelLen { count: usize, removed: Vec<String> },
     /// Array of strings (e.g. HKEYS).
     StringArray(Vec<String>),
     /// HMGET result: array of optional values.

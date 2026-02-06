@@ -1073,11 +1073,7 @@ impl Keyspace {
     ///
     /// Creates the hash if the key doesn't exist. Returns the number of
     /// new fields added (fields that were updated don't count).
-    pub fn hset(
-        &mut self,
-        key: &str,
-        fields: &[(String, Bytes)],
-    ) -> Result<usize, WriteError> {
+    pub fn hset(&mut self, key: &str, fields: &[(String, Bytes)]) -> Result<usize, WriteError> {
         if fields.is_empty() {
             return Ok(0);
         }
@@ -1110,7 +1106,10 @@ impl Keyspace {
             self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let mut added = 0;
@@ -1282,7 +1281,10 @@ impl Keyspace {
             self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let new_val = if let Value::Hash(ref mut map) = entry.value {
@@ -2928,7 +2930,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.hset("h", &[("s".into(), Bytes::from("notanumber"))])
             .unwrap();
-        assert_eq!(ks.hincrby("h", "s", 1).unwrap_err(), IncrError::NotAnInteger);
+        assert_eq!(
+            ks.hincrby("h", "s", 1).unwrap_err(),
+            IncrError::NotAnInteger
+        );
     }
 
     #[test]
