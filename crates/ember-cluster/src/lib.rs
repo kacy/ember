@@ -30,11 +30,13 @@
 //! ```
 
 mod error;
+mod gossip;
 mod message;
 mod slots;
 mod topology;
 
 pub use error::ClusterError;
+pub use gossip::{GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus};
 pub use message::{GossipMessage, MemberInfo, NodeUpdate};
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
 pub use topology::{ClusterHealth, ClusterNode, ClusterState, NodeFlags, NodeId, NodeRole};
