@@ -967,7 +967,7 @@ mod tests {
 
         let resp = dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
         match resp {
-            ShardResponse::Ttl(TtlResult::Seconds(s)) => assert!(s >= 58 && s <= 60),
+            ShardResponse::Ttl(TtlResult::Seconds(s)) => assert!((58..=60).contains(&s)),
             other => panic!("expected Ttl(Seconds), got {other:?}"),
         }
     }

@@ -2,7 +2,7 @@
 
 interactive command-line client for [ember](https://github.com/kacy/ember).
 
-> this crate is a stub — the CLI is planned for a future phase.
+> this crate is a stub — the CLI is planned for phase 5.
 
 ## planned features
 
@@ -20,4 +20,4 @@ interactive command-line client for [ember](https://github.com/kacy/ember).
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-persistence](../ember-persistence) | AOF, snapshots, and crash recovery |
 | [ember-server](../ember-server) | TCP server and connection handling |
-| [ember-cluster](../ember-cluster) | distributed coordination (WIP) |
+| [ember-cluster](../ember-cluster) | distributed coordination |

@@ -24,13 +24,13 @@ pub enum Command {
     /// PING with an optional message. Returns PONG or echoes the message.
     Ping(Option<Bytes>),
 
-    /// ECHO <message>. Returns the message back to the client.
+    /// ECHO `message`. Returns the message back to the client.
     Echo(Bytes),
 
-    /// GET <key>. Returns the value or nil.
+    /// GET `key`. Returns the value or nil.
     Get { key: String },
 
-    /// SET <key> <value> [EX seconds | PX milliseconds] [NX | XX].
+    /// SET `key` `value` \[EX seconds | PX milliseconds\] \[NX | XX\].
     Set {
         key: String,
         value: Bytes,
@@ -41,43 +41,43 @@ pub enum Command {
         xx: bool,
     },
 
-    /// INCR <key>. Increments the integer value of a key by 1.
+    /// INCR `key`. Increments the integer value of a key by 1.
     Incr { key: String },
 
-    /// DECR <key>. Decrements the integer value of a key by 1.
+    /// DECR `key`. Decrements the integer value of a key by 1.
     Decr { key: String },
 
-    /// DEL <key> [key ...]. Returns the number of keys removed.
+    /// DEL `key` \[key ...\]. Returns the number of keys removed.
     Del { keys: Vec<String> },
 
-    /// EXISTS <key> [key ...]. Returns the number of keys that exist.
+    /// EXISTS `key` \[key ...\]. Returns the number of keys that exist.
     Exists { keys: Vec<String> },
 
-    /// MGET <key> [key ...]. Returns the values for all specified keys.
+    /// MGET `key` \[key ...\]. Returns the values for all specified keys.
     MGet { keys: Vec<String> },
 
-    /// MSET <key> <value> [key value ...]. Sets multiple key-value pairs.
+    /// MSET `key` `value` \[key value ...\]. Sets multiple key-value pairs.
     MSet { pairs: Vec<(String, Bytes)> },
 
-    /// EXPIRE <key> <seconds>. Sets a TTL on an existing key.
+    /// EXPIRE `key` `seconds`. Sets a TTL on an existing key.
     Expire { key: String, seconds: u64 },
 
-    /// TTL <key>. Returns remaining time-to-live in seconds.
+    /// TTL `key`. Returns remaining time-to-live in seconds.
     Ttl { key: String },
 
-    /// PERSIST <key>. Removes the expiration from a key.
+    /// PERSIST `key`. Removes the expiration from a key.
     Persist { key: String },
 
-    /// PTTL <key>. Returns remaining time-to-live in milliseconds.
+    /// PTTL `key`. Returns remaining time-to-live in milliseconds.
     Pttl { key: String },
 
-    /// PEXPIRE <key> <milliseconds>. Sets a TTL in milliseconds on an existing key.
+    /// PEXPIRE `key` `milliseconds`. Sets a TTL in milliseconds on an existing key.
     Pexpire { key: String, milliseconds: u64 },
 
     /// DBSIZE. Returns the number of keys in the database.
     DbSize,
 
-    /// INFO [section]. Returns server info. Currently only supports "keyspace".
+    /// INFO \[section\]. Returns server info. Currently only supports "keyspace".
     Info { section: Option<String> },
 
     /// BGSAVE. Triggers a background snapshot.
@@ -89,54 +89,54 @@ pub enum Command {
     /// FLUSHDB. Removes all keys from the database.
     FlushDb,
 
-    /// SCAN <cursor> [MATCH pattern] [COUNT count]. Iterates keys.
+    /// SCAN `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates keys.
     Scan {
         cursor: u64,
         pattern: Option<String>,
         count: Option<usize>,
     },
 
-    /// LPUSH <key> <value> [value ...]. Pushes values to the head of a list.
+    /// LPUSH `key` `value` \[value ...\]. Pushes values to the head of a list.
     LPush { key: String, values: Vec<Bytes> },
 
-    /// RPUSH <key> <value> [value ...]. Pushes values to the tail of a list.
+    /// RPUSH `key` `value` \[value ...\]. Pushes values to the tail of a list.
     RPush { key: String, values: Vec<Bytes> },
 
-    /// LPOP <key>. Pops a value from the head of a list.
+    /// LPOP `key`. Pops a value from the head of a list.
     LPop { key: String },
 
-    /// RPOP <key>. Pops a value from the tail of a list.
+    /// RPOP `key`. Pops a value from the tail of a list.
     RPop { key: String },
 
-    /// LRANGE <key> <start> <stop>. Returns a range of elements by index.
+    /// LRANGE `key` `start` `stop`. Returns a range of elements by index.
     LRange { key: String, start: i64, stop: i64 },
 
-    /// LLEN <key>. Returns the length of a list.
+    /// LLEN `key`. Returns the length of a list.
     LLen { key: String },
 
-    /// TYPE <key>. Returns the type of the value stored at key.
+    /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },
 
-    /// ZADD <key> [NX|XX] [GT|LT] [CH] <score> <member> [score member ...].
+    /// ZADD `key` \[NX|XX\] \[GT|LT\] \[CH\] `score` `member` \[score member ...\].
     ZAdd {
         key: String,
         flags: ZAddFlags,
         members: Vec<(f64, String)>,
     },
 
-    /// ZREM <key> <member> [member ...]. Removes members from a sorted set.
+    /// ZREM `key` `member` \[member ...\]. Removes members from a sorted set.
     ZRem { key: String, members: Vec<String> },
 
-    /// ZSCORE <key> <member>. Returns the score of a member.
+    /// ZSCORE `key` `member`. Returns the score of a member.
     ZScore { key: String, member: String },
 
-    /// ZRANK <key> <member>. Returns the rank of a member (0-based).
+    /// ZRANK `key` `member`. Returns the rank of a member (0-based).
     ZRank { key: String, member: String },
 
-    /// ZCARD <key>. Returns the cardinality (number of members) of a sorted set.
+    /// ZCARD `key`. Returns the cardinality (number of members) of a sorted set.
     ZCard { key: String },
 
-    /// ZRANGE <key> <start> <stop> [WITHSCORES]. Returns a range by rank.
+    /// ZRANGE `key` `start` `stop` \[WITHSCORES\]. Returns a range by rank.
     ZRange {
         key: String,
         start: i64,
@@ -144,56 +144,56 @@ pub enum Command {
         with_scores: bool,
     },
 
-    /// HSET <key> <field> <value> [field value ...]. Sets field-value pairs in a hash.
+    /// HSET `key` `field` `value` \[field value ...\]. Sets field-value pairs in a hash.
     HSet {
         key: String,
         fields: Vec<(String, Bytes)>,
     },
 
-    /// HGET <key> <field>. Gets a field's value from a hash.
+    /// HGET `key` `field`. Gets a field's value from a hash.
     HGet { key: String, field: String },
 
-    /// HGETALL <key>. Gets all field-value pairs from a hash.
+    /// HGETALL `key`. Gets all field-value pairs from a hash.
     HGetAll { key: String },
 
-    /// HDEL <key> <field> [field ...]. Deletes fields from a hash.
+    /// HDEL `key` `field` \[field ...\]. Deletes fields from a hash.
     HDel { key: String, fields: Vec<String> },
 
-    /// HEXISTS <key> <field>. Checks if a field exists in a hash.
+    /// HEXISTS `key` `field`. Checks if a field exists in a hash.
     HExists { key: String, field: String },
 
-    /// HLEN <key>. Returns the number of fields in a hash.
+    /// HLEN `key`. Returns the number of fields in a hash.
     HLen { key: String },
 
-    /// HINCRBY <key> <field> <increment>. Increments a hash field's integer value.
+    /// HINCRBY `key` `field` `increment`. Increments a hash field's integer value.
     HIncrBy {
         key: String,
         field: String,
         delta: i64,
     },
 
-    /// HKEYS <key>. Returns all field names in a hash.
+    /// HKEYS `key`. Returns all field names in a hash.
     HKeys { key: String },
 
-    /// HVALS <key>. Returns all values in a hash.
+    /// HVALS `key`. Returns all values in a hash.
     HVals { key: String },
 
-    /// HMGET <key> <field> [field ...]. Gets multiple field values from a hash.
+    /// HMGET `key` `field` \[field ...\]. Gets multiple field values from a hash.
     HMGet { key: String, fields: Vec<String> },
 
-    /// SADD <key> <member> [member ...]. Adds members to a set.
+    /// SADD `key` `member` \[member ...\]. Adds members to a set.
     SAdd { key: String, members: Vec<String> },
 
-    /// SREM <key> <member> [member ...]. Removes members from a set.
+    /// SREM `key` `member` \[member ...\]. Removes members from a set.
     SRem { key: String, members: Vec<String> },
 
-    /// SMEMBERS <key>. Returns all members of a set.
+    /// SMEMBERS `key`. Returns all members of a set.
     SMembers { key: String },
 
-    /// SISMEMBER <key> <member>. Checks if a member exists in a set.
+    /// SISMEMBER `key` `member`. Checks if a member exists in a set.
     SIsMember { key: String, member: String },
 
-    /// SCARD <key>. Returns the cardinality (number of members) of a set.
+    /// SCARD `key`. Returns the cardinality (number of members) of a set.
     SCard { key: String },
 
     // --- cluster commands ---
@@ -206,49 +206,49 @@ pub enum Command {
     /// CLUSTER SLOTS. Returns the slot distribution across nodes.
     ClusterSlots,
 
-    /// CLUSTER KEYSLOT <key>. Returns the hash slot for a key.
+    /// CLUSTER KEYSLOT `key`. Returns the hash slot for a key.
     ClusterKeySlot { key: String },
 
     /// CLUSTER MYID. Returns the node's ID.
     ClusterMyId,
 
-    /// CLUSTER SETSLOT <slot> IMPORTING <node-id>. Mark slot as importing from node.
+    /// CLUSTER SETSLOT `slot` IMPORTING `node-id`. Mark slot as importing from node.
     ClusterSetSlotImporting { slot: u16, node_id: String },
 
-    /// CLUSTER SETSLOT <slot> MIGRATING <node-id>. Mark slot as migrating to node.
+    /// CLUSTER SETSLOT `slot` MIGRATING `node-id`. Mark slot as migrating to node.
     ClusterSetSlotMigrating { slot: u16, node_id: String },
 
-    /// CLUSTER SETSLOT <slot> NODE <node-id>. Assign slot to node.
+    /// CLUSTER SETSLOT `slot` NODE `node-id`. Assign slot to node.
     ClusterSetSlotNode { slot: u16, node_id: String },
 
-    /// CLUSTER SETSLOT <slot> STABLE. Clear importing/migrating state.
+    /// CLUSTER SETSLOT `slot` STABLE. Clear importing/migrating state.
     ClusterSetSlotStable { slot: u16 },
 
-    /// CLUSTER MEET <ip> <port>. Add a node to the cluster.
+    /// CLUSTER MEET `ip` `port`. Add a node to the cluster.
     ClusterMeet { ip: String, port: u16 },
 
-    /// CLUSTER ADDSLOTS <slot> [slot...]. Assign slots to the local node.
+    /// CLUSTER ADDSLOTS `slot` \[slot...\]. Assign slots to the local node.
     ClusterAddSlots { slots: Vec<u16> },
 
-    /// CLUSTER DELSLOTS <slot> [slot...]. Remove slots from the local node.
+    /// CLUSTER DELSLOTS `slot` \[slot...\]. Remove slots from the local node.
     ClusterDelSlots { slots: Vec<u16> },
 
-    /// CLUSTER FORGET <node-id>. Remove a node from the cluster.
+    /// CLUSTER FORGET `node-id`. Remove a node from the cluster.
     ClusterForget { node_id: String },
 
-    /// CLUSTER REPLICATE <node-id>. Make this node a replica of another.
+    /// CLUSTER REPLICATE `node-id`. Make this node a replica of another.
     ClusterReplicate { node_id: String },
 
     /// CLUSTER FAILOVER [FORCE|TAKEOVER]. Trigger a manual failover.
     ClusterFailover { force: bool, takeover: bool },
 
-    /// CLUSTER COUNTKEYSINSLOT <slot>. Return the number of keys in a slot.
+    /// CLUSTER COUNTKEYSINSLOT `slot`. Return the number of keys in a slot.
     ClusterCountKeysInSlot { slot: u16 },
 
-    /// CLUSTER GETKEYSINSLOT <slot> <count>. Return keys in a slot.
+    /// CLUSTER GETKEYSINSLOT `slot` `count`. Return keys in a slot.
     ClusterGetKeysInSlot { slot: u16, count: u32 },
 
-    /// MIGRATE <host> <port> <key> <db> <timeout> [COPY] [REPLACE] [KEYS key...].
+    /// MIGRATE `host` `port` `key` `db` `timeout` \[COPY\] \[REPLACE\] \[KEYS key...\].
     /// Migrate a key to another node.
     Migrate {
         host: String,
