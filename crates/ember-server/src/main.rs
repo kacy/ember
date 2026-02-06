@@ -2,6 +2,7 @@ mod config;
 mod connection;
 mod metrics;
 mod server;
+mod slowlog;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -48,6 +49,15 @@ struct Args {
     /// port for prometheus metrics HTTP endpoint. disabled when not set
     #[arg(long)]
     metrics_port: Option<u16>,
+
+    /// log commands slower than this many microseconds. default: 10000 (10ms).
+    /// set to -1 to disable, 0 to log every command
+    #[arg(long, default_value_t = 10_000)]
+    slowlog_log_slower_than: i64,
+
+    /// maximum number of entries in the slow log ring buffer
+    #[arg(long, default_value_t = 128)]
+    slowlog_max_len: usize,
 }
 
 #[tokio::main]
@@ -135,9 +145,24 @@ async fn main() {
         }
     }
 
+    let slowlog_config = slowlog::SlowLogConfig {
+        slower_than: std::time::Duration::from_micros(
+            args.slowlog_log_slower_than.max(0) as u64,
+        ),
+        max_len: args.slowlog_max_len,
+        enabled: args.slowlog_log_slower_than >= 0,
+    };
+
     info!("ember server starting...");
 
-    if let Err(e) = server::run(addr, shard_count, engine_config, None, args.metrics_port.is_some()).await {
+    if let Err(e) = server::run(
+        addr,
+        shard_count,
+        engine_config,
+        None,
+        args.metrics_port.is_some(),
+        slowlog_config,
+    ).await {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }

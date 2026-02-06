@@ -15,6 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::server::ServerContext;
+use crate::slowlog::SlowLog;
 
 /// Initial read buffer capacity. 4KB covers most commands comfortably
 /// without over-allocating for simple PING/SET/GET workloads.
@@ -38,6 +39,7 @@ pub async fn handle(
     mut stream: TcpStream,
     engine: Engine,
     ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
     metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // disable Nagle's algorithm — cache servers need low-latency writes,
@@ -73,7 +75,8 @@ pub async fn handle(
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response = process(frame, &engine, ctx, metrics_enabled).await;
+                    let response =
+                        process(frame, &engine, ctx, slow_log, metrics_enabled).await;
                     response.serialize(&mut out);
                 }
                 Ok(None) => break, // need more data
@@ -100,23 +103,23 @@ async fn process(
     frame: Frame,
     engine: &Engine,
     ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
     metrics_enabled: bool,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
             let cmd_name = cmd.command_name();
-            let start = if metrics_enabled {
-                Some(Instant::now())
-            } else {
-                None
-            };
+            let start = Instant::now();
 
-            let response = execute(cmd, engine, ctx).await;
+            let response = execute(cmd, engine, ctx, slow_log).await;
+            let elapsed = start.elapsed();
+
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+            slow_log.maybe_record(elapsed, cmd_name);
 
-            if let Some(start) = start {
+            if metrics_enabled {
                 let is_error = matches!(&response, Frame::Error(_));
-                crate::metrics::record_command(cmd_name, start.elapsed(), is_error);
+                crate::metrics::record_command(cmd_name, elapsed, is_error);
             }
 
             response
@@ -130,7 +133,12 @@ async fn process(
 /// Ping and Echo are handled inline (no shard routing needed).
 /// Single-key commands route to the owning shard. Multi-key commands
 /// (DEL, EXISTS) fan out across shards and aggregate results.
-async fn execute(cmd: Command, engine: &Engine, ctx: &Arc<ServerContext>) -> Frame {
+async fn execute(
+    cmd: Command,
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
+) -> Frame {
     match cmd {
         // -- no shard needed --
         Command::Ping(None) => Frame::Simple("PONG".into()),
@@ -895,6 +903,35 @@ async fn execute(cmd: Command, engine: &Engine, ctx: &Arc<ServerContext>) -> Fra
 
         Command::Migrate { .. } => {
             Frame::Error("ERR This instance has cluster support disabled".into())
+        }
+
+        // -- slow log commands --
+        Command::SlowLogGet { count } => {
+            let entries = slow_log.get(count);
+            let frames: Vec<Frame> = entries
+                .into_iter()
+                .map(|e| {
+                    let ts = e
+                        .timestamp
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    Frame::Array(vec![
+                        Frame::Integer(e.id as i64),
+                        Frame::Integer(ts as i64),
+                        Frame::Integer(e.duration.as_micros() as i64),
+                        Frame::Array(vec![Frame::Bulk(Bytes::from(e.command))]),
+                    ])
+                })
+                .collect();
+            Frame::Array(frames)
+        }
+
+        Command::SlowLogLen => Frame::Integer(slow_log.len() as i64),
+
+        Command::SlowLogReset => {
+            slow_log.reset();
+            Frame::Simple("OK".into())
         }
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
