@@ -212,6 +212,54 @@ pub enum Command {
     /// CLUSTER MYID. Returns the node's ID.
     ClusterMyId,
 
+    /// CLUSTER SETSLOT <slot> IMPORTING <node-id>. Mark slot as importing from node.
+    ClusterSetSlotImporting { slot: u16, node_id: String },
+
+    /// CLUSTER SETSLOT <slot> MIGRATING <node-id>. Mark slot as migrating to node.
+    ClusterSetSlotMigrating { slot: u16, node_id: String },
+
+    /// CLUSTER SETSLOT <slot> NODE <node-id>. Assign slot to node.
+    ClusterSetSlotNode { slot: u16, node_id: String },
+
+    /// CLUSTER SETSLOT <slot> STABLE. Clear importing/migrating state.
+    ClusterSetSlotStable { slot: u16 },
+
+    /// CLUSTER MEET <ip> <port>. Add a node to the cluster.
+    ClusterMeet { ip: String, port: u16 },
+
+    /// CLUSTER ADDSLOTS <slot> [slot...]. Assign slots to the local node.
+    ClusterAddSlots { slots: Vec<u16> },
+
+    /// CLUSTER DELSLOTS <slot> [slot...]. Remove slots from the local node.
+    ClusterDelSlots { slots: Vec<u16> },
+
+    /// CLUSTER FORGET <node-id>. Remove a node from the cluster.
+    ClusterForget { node_id: String },
+
+    /// CLUSTER REPLICATE <node-id>. Make this node a replica of another.
+    ClusterReplicate { node_id: String },
+
+    /// CLUSTER FAILOVER [FORCE|TAKEOVER]. Trigger a manual failover.
+    ClusterFailover { force: bool, takeover: bool },
+
+    /// CLUSTER COUNTKEYSINSLOT <slot>. Return the number of keys in a slot.
+    ClusterCountKeysInSlot { slot: u16 },
+
+    /// CLUSTER GETKEYSINSLOT <slot> <count>. Return keys in a slot.
+    ClusterGetKeysInSlot { slot: u16, count: u32 },
+
+    /// MIGRATE <host> <port> <key> <db> <timeout> [COPY] [REPLACE] [KEYS key...].
+    /// Migrate a key to another node.
+    Migrate {
+        host: String,
+        port: u16,
+        key: String,
+        db: u32,
+        timeout_ms: u64,
+        copy: bool,
+        replace: bool,
+    },
+
     /// ASKING. Signals that the next command is for a migrating slot.
     Asking,
 
@@ -312,6 +360,7 @@ impl Command {
             "SCARD" => parse_scard(&frames[1..]),
             "CLUSTER" => parse_cluster(&frames[1..]),
             "ASKING" => parse_asking(&frames[1..]),
+            "MIGRATE" => parse_migrate(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1077,6 +1126,87 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
             }
             Ok(Command::ClusterMyId)
         }
+        "SETSLOT" => parse_cluster_setslot(&args[1..]),
+        "MEET" => {
+            if args.len() != 3 {
+                return Err(ProtocolError::WrongArity("CLUSTER MEET".into()));
+            }
+            let ip = extract_string(&args[1])?;
+            let port_str = extract_string(&args[2])?;
+            let port: u16 = port_str
+                .parse()
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid port number".into()))?;
+            Ok(Command::ClusterMeet { ip, port })
+        }
+        "ADDSLOTS" => {
+            if args.len() < 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER ADDSLOTS".into()));
+            }
+            let slots = parse_slot_list(&args[1..])?;
+            Ok(Command::ClusterAddSlots { slots })
+        }
+        "DELSLOTS" => {
+            if args.len() < 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER DELSLOTS".into()));
+            }
+            let slots = parse_slot_list(&args[1..])?;
+            Ok(Command::ClusterDelSlots { slots })
+        }
+        "FORGET" => {
+            if args.len() != 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER FORGET".into()));
+            }
+            let node_id = extract_string(&args[1])?;
+            Ok(Command::ClusterForget { node_id })
+        }
+        "REPLICATE" => {
+            if args.len() != 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER REPLICATE".into()));
+            }
+            let node_id = extract_string(&args[1])?;
+            Ok(Command::ClusterReplicate { node_id })
+        }
+        "FAILOVER" => {
+            let mut force = false;
+            let mut takeover = false;
+            for arg in &args[1..] {
+                let opt = extract_string(arg)?.to_ascii_uppercase();
+                match opt.as_str() {
+                    "FORCE" => force = true,
+                    "TAKEOVER" => takeover = true,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "unknown CLUSTER FAILOVER option '{opt}'"
+                        )))
+                    }
+                }
+            }
+            Ok(Command::ClusterFailover { force, takeover })
+        }
+        "COUNTKEYSINSLOT" => {
+            if args.len() != 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER COUNTKEYSINSLOT".into()));
+            }
+            let slot_str = extract_string(&args[1])?;
+            let slot: u16 = slot_str
+                .parse()
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+            Ok(Command::ClusterCountKeysInSlot { slot })
+        }
+        "GETKEYSINSLOT" => {
+            if args.len() != 3 {
+                return Err(ProtocolError::WrongArity("CLUSTER GETKEYSINSLOT".into()));
+            }
+            let slot_str = extract_string(&args[1])?;
+            let slot: u16 = slot_str
+                .parse()
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+            let count_str = extract_string(&args[2])?;
+            let count: u32 = count_str
+                .parse()
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid count".into()))?;
+            Ok(Command::ClusterGetKeysInSlot { slot, count })
+        }
         _ => Err(ProtocolError::InvalidCommandFrame(format!(
             "unknown CLUSTER subcommand '{subcommand}'"
         ))),
@@ -1088,6 +1218,119 @@ fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("ASKING".into()));
     }
     Ok(Command::Asking)
+}
+
+fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
+    let mut slots = Vec::with_capacity(args.len());
+    for arg in args {
+        let slot_str = extract_string(arg)?;
+        let slot: u16 = slot_str
+            .parse()
+            .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+        slots.push(slot);
+    }
+    Ok(slots)
+}
+
+fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("CLUSTER SETSLOT".into()));
+    }
+
+    let slot_str = extract_string(&args[0])?;
+    let slot: u16 = slot_str
+        .parse()
+        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+
+    if args.len() < 2 {
+        return Err(ProtocolError::WrongArity("CLUSTER SETSLOT".into()));
+    }
+
+    let action = extract_string(&args[1])?.to_ascii_uppercase();
+    match action.as_str() {
+        "IMPORTING" => {
+            if args.len() != 3 {
+                return Err(ProtocolError::WrongArity(
+                    "CLUSTER SETSLOT IMPORTING".into(),
+                ));
+            }
+            let node_id = extract_string(&args[2])?;
+            Ok(Command::ClusterSetSlotImporting { slot, node_id })
+        }
+        "MIGRATING" => {
+            if args.len() != 3 {
+                return Err(ProtocolError::WrongArity(
+                    "CLUSTER SETSLOT MIGRATING".into(),
+                ));
+            }
+            let node_id = extract_string(&args[2])?;
+            Ok(Command::ClusterSetSlotMigrating { slot, node_id })
+        }
+        "NODE" => {
+            if args.len() != 3 {
+                return Err(ProtocolError::WrongArity("CLUSTER SETSLOT NODE".into()));
+            }
+            let node_id = extract_string(&args[2])?;
+            Ok(Command::ClusterSetSlotNode { slot, node_id })
+        }
+        "STABLE" => {
+            if args.len() != 2 {
+                return Err(ProtocolError::WrongArity("CLUSTER SETSLOT STABLE".into()));
+            }
+            Ok(Command::ClusterSetSlotStable { slot })
+        }
+        _ => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown CLUSTER SETSLOT action '{action}'"
+        ))),
+    }
+}
+
+fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // MIGRATE host port key db timeout [COPY] [REPLACE]
+    if args.len() < 5 {
+        return Err(ProtocolError::WrongArity("MIGRATE".into()));
+    }
+
+    let host = extract_string(&args[0])?;
+    let port_str = extract_string(&args[1])?;
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid port number".into()))?;
+    let key = extract_string(&args[2])?;
+    let db_str = extract_string(&args[3])?;
+    let db: u32 = db_str
+        .parse()
+        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid db number".into()))?;
+    let timeout_str = extract_string(&args[4])?;
+    let timeout_ms: u64 = timeout_str
+        .parse()
+        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid timeout".into()))?;
+
+    let mut copy = false;
+    let mut replace = false;
+
+    for arg in &args[5..] {
+        let opt = extract_string(arg)?.to_ascii_uppercase();
+        match opt.as_str() {
+            "COPY" => copy = true,
+            "REPLACE" => replace = true,
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unknown MIGRATE option '{opt}'"
+                )))
+            }
+        }
+    }
+
+    Ok(Command::Migrate {
+        host,
+        port,
+        key,
+        db,
+        timeout_ms,
+        copy,
+        replace,
+    })
 }
 
 #[cfg(test)]
@@ -2667,5 +2910,220 @@ mod tests {
     fn asking_wrong_arity() {
         let err = Command::from_frame(cmd(&["ASKING", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn cluster_setslot_importing() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "100", "IMPORTING", "node123"]))
+                .unwrap(),
+            Command::ClusterSetSlotImporting {
+                slot: 100,
+                node_id: "node123".into()
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_setslot_migrating() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "200", "MIGRATING", "node456"]))
+                .unwrap(),
+            Command::ClusterSetSlotMigrating {
+                slot: 200,
+                node_id: "node456".into()
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_setslot_node() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "300", "NODE", "node789"])).unwrap(),
+            Command::ClusterSetSlotNode {
+                slot: 300,
+                node_id: "node789".into()
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_setslot_stable() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "400", "STABLE"])).unwrap(),
+            Command::ClusterSetSlotStable { slot: 400 },
+        );
+    }
+
+    #[test]
+    fn cluster_setslot_invalid_slot() {
+        let err =
+            Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "notanumber", "STABLE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn cluster_setslot_wrong_arity() {
+        let err = Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "100"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn migrate_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["MIGRATE", "127.0.0.1", "6379", "mykey", "0", "5000"]))
+                .unwrap(),
+            Command::Migrate {
+                host: "127.0.0.1".into(),
+                port: 6379,
+                key: "mykey".into(),
+                db: 0,
+                timeout_ms: 5000,
+                copy: false,
+                replace: false,
+            },
+        );
+    }
+
+    #[test]
+    fn migrate_with_options() {
+        assert_eq!(
+            Command::from_frame(cmd(&[
+                "MIGRATE",
+                "192.168.1.1",
+                "6380",
+                "testkey",
+                "1",
+                "10000",
+                "COPY",
+                "REPLACE"
+            ]))
+            .unwrap(),
+            Command::Migrate {
+                host: "192.168.1.1".into(),
+                port: 6380,
+                key: "testkey".into(),
+                db: 1,
+                timeout_ms: 10000,
+                copy: true,
+                replace: true,
+            },
+        );
+    }
+
+    #[test]
+    fn migrate_wrong_arity() {
+        let err = Command::from_frame(cmd(&["MIGRATE", "host", "port", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn migrate_invalid_port() {
+        let err = Command::from_frame(cmd(&["MIGRATE", "host", "notaport", "key", "0", "1000"]))
+            .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn cluster_meet_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "MEET", "192.168.1.1", "6379"])).unwrap(),
+            Command::ClusterMeet {
+                ip: "192.168.1.1".into(),
+                port: 6379
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_addslots_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTS", "0", "1", "2"])).unwrap(),
+            Command::ClusterAddSlots {
+                slots: vec![0, 1, 2]
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_delslots_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "DELSLOTS", "100", "101"])).unwrap(),
+            Command::ClusterDelSlots {
+                slots: vec![100, 101]
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_forget_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "FORGET", "abc123"])).unwrap(),
+            Command::ClusterForget {
+                node_id: "abc123".into()
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_replicate_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "REPLICATE", "master-id"])).unwrap(),
+            Command::ClusterReplicate {
+                node_id: "master-id".into()
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_failover_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "FAILOVER"])).unwrap(),
+            Command::ClusterFailover {
+                force: false,
+                takeover: false
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_failover_force() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "FAILOVER", "FORCE"])).unwrap(),
+            Command::ClusterFailover {
+                force: true,
+                takeover: false
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_failover_takeover() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "FAILOVER", "TAKEOVER"])).unwrap(),
+            Command::ClusterFailover {
+                force: false,
+                takeover: true
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_countkeysinslot_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "COUNTKEYSINSLOT", "100"])).unwrap(),
+            Command::ClusterCountKeysInSlot { slot: 100 },
+        );
+    }
+
+    #[test]
+    fn cluster_getkeysinslot_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "GETKEYSINSLOT", "200", "10"])).unwrap(),
+            Command::ClusterGetKeysInSlot {
+                slot: 200,
+                count: 10
+            },
+        );
     }
 }
