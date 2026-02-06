@@ -181,6 +181,10 @@ pub struct KeyspaceStats {
     pub used_bytes: usize,
     /// Number of keys with an expiration set.
     pub keys_with_expiry: usize,
+    /// Cumulative count of keys removed by expiration (lazy + active).
+    pub keys_expired: u64,
+    /// Cumulative count of keys removed by eviction.
+    pub keys_evicted: u64,
 }
 
 /// Number of random keys to sample when looking for an eviction candidate.
@@ -205,6 +209,10 @@ pub struct Keyspace {
     config: ShardConfig,
     /// Number of entries that currently have an expiration set.
     expiry_count: usize,
+    /// Cumulative count of keys removed by expiration (lazy + active).
+    expired_total: u64,
+    /// Cumulative count of keys removed by eviction.
+    evicted_total: u64,
 }
 
 impl Keyspace {
@@ -220,6 +228,8 @@ impl Keyspace {
             memory: MemoryTracker::new(),
             config,
             expiry_count: 0,
+            expired_total: 0,
+            evicted_total: 0,
         }
     }
 
@@ -328,6 +338,7 @@ impl Keyspace {
                 if entry.expires_at.is_some() {
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                 }
+                self.evicted_total += 1;
                 return true;
             }
         }
@@ -535,6 +546,8 @@ impl Keyspace {
             key_count: self.memory.key_count(),
             used_bytes: self.memory.used_bytes(),
             keys_with_expiry: self.expiry_count,
+            keys_expired: self.expired_total,
+            keys_evicted: self.evicted_total,
         }
     }
 
@@ -1565,6 +1578,7 @@ impl Keyspace {
                 if entry.expires_at.is_some() {
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                 }
+                self.expired_total += 1;
             }
         }
         expired
