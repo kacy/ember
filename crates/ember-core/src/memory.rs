@@ -33,6 +33,12 @@ impl MemoryTracker {
         }
     }
 
+    /// Resets tracking to zero. Used by FLUSHDB.
+    pub fn reset(&mut self) {
+        self.used_bytes = 0;
+        self.key_count = 0;
+    }
+
     /// Returns the current estimated memory usage in bytes.
     pub fn used_bytes(&self) -> usize {
         self.used_bytes
