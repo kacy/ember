@@ -4,7 +4,7 @@
 //! sharded engine, and writes responses back. Supports pipelining
 //! by processing multiple frames from a single read.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
@@ -33,6 +33,7 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 pub async fn handle(
     mut stream: TcpStream,
     engine: Engine,
+    metrics_enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // disable Nagle's algorithm — cache servers need low-latency writes,
     // and we already batch responses from pipelining into a single write
@@ -67,7 +68,7 @@ pub async fn handle(
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response = process(frame, &engine).await;
+                    let response = process(frame, &engine, metrics_enabled).await;
                     response.serialize(&mut out);
                 }
                 Ok(None) => break, // need more data
@@ -87,9 +88,28 @@ pub async fn handle(
 }
 
 /// Converts a raw frame into a command and executes it.
-async fn process(frame: Frame, engine: &Engine) -> Frame {
+///
+/// When `metrics_enabled` is true, records per-command latency and
+/// error counters in prometheus.
+async fn process(frame: Frame, engine: &Engine, metrics_enabled: bool) -> Frame {
     match Command::from_frame(frame) {
-        Ok(cmd) => execute(cmd, engine).await,
+        Ok(cmd) => {
+            let cmd_name = cmd.command_name();
+            let start = if metrics_enabled {
+                Some(Instant::now())
+            } else {
+                None
+            };
+
+            let response = execute(cmd, engine).await;
+
+            if let Some(start) = start {
+                let is_error = matches!(&response, Frame::Error(_));
+                crate::metrics::record_command(cmd_name, start.elapsed(), is_error);
+            }
+
+            response
+        }
         Err(e) => Frame::Error(format!("ERR {e}")),
     }
 }
@@ -318,12 +338,16 @@ async fn execute(cmd: Command, engine: &Engine) -> Frame {
                             key_count: 0,
                             used_bytes: 0,
                             keys_with_expiry: 0,
+                            keys_expired: 0,
+                            keys_evicted: 0,
                         };
                         for r in &responses {
                             if let ShardResponse::Stats(stats) = r {
                                 total.key_count += stats.key_count;
                                 total.used_bytes += stats.used_bytes;
                                 total.keys_with_expiry += stats.keys_with_expiry;
+                                total.keys_expired += stats.keys_expired;
+                                total.keys_evicted += stats.keys_evicted;
                             }
                         }
                         let info = format!(

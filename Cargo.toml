@@ -43,6 +43,10 @@ crc32fast = "1"
 # float ordering (used for sorted set scores)
 ordered-float = "5"
 
+# metrics
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", features = ["http-listener"] }
+
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.2.1", path = "crates/ember-core" }
 ember-protocol = { version = "0.2.1", path = "crates/ember-protocol" }
