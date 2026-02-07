@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use tracing::warn;
@@ -48,9 +48,8 @@ impl From<SnapValue> for RecoveredValue {
 pub struct RecoveredEntry {
     pub key: String,
     pub value: RecoveredValue,
-    /// Absolute deadline computed from the persisted remaining TTL.
-    /// `None` means no expiration.
-    pub expires_at: Option<Instant>,
+    /// Remaining TTL. `None` means no expiration.
+    pub ttl: Option<Duration>,
 }
 
 /// The result of recovering a shard's persisted state.
@@ -69,18 +68,18 @@ pub struct RecoveryResult {
 /// Returns a list of live entries to restore into the keyspace.
 /// Entries whose TTL expired during downtime are silently skipped.
 pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
-    let now = Instant::now();
-    let mut map: HashMap<String, (RecoveredValue, Option<Instant>)> = HashMap::new();
+    // Track remaining TTL in ms (-1 = no expiry, 0+ = remaining ms)
+    let mut map: HashMap<String, (RecoveredValue, i64)> = HashMap::new();
     let mut loaded_snapshot = false;
     let mut replayed_aof = false;
 
     // step 1: load snapshot
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
     if snap_path.exists() {
-        match load_snapshot(&snap_path, now) {
+        match load_snapshot(&snap_path) {
             Ok(entries) => {
-                for (key, value, expires_at) in entries {
-                    map.insert(key, (RecoveredValue::from(value), expires_at));
+                for (key, value, ttl_ms) in entries {
+                    map.insert(key, (RecoveredValue::from(value), ttl_ms));
                 }
                 loaded_snapshot = true;
             }
@@ -93,7 +92,7 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     // step 2: replay AOF
     let aof_path = aof::aof_path(data_dir, shard_id);
     if aof_path.exists() {
-        match replay_aof(&aof_path, &mut map, now) {
+        match replay_aof(&aof_path, &mut map) {
             Ok(count) => {
                 if count > 0 {
                     replayed_aof = true;
@@ -108,17 +107,18 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
         }
     }
 
-    // step 3: filter out expired entries and build result
+    // step 3: filter out expired entries (ttl_ms == 0) and build result
     let entries = map
         .into_iter()
-        .filter(|(_, (_, expires_at))| match expires_at {
-            Some(deadline) => *deadline > now,
-            None => true,
-        })
-        .map(|(key, (value, expires_at))| RecoveredEntry {
+        .filter(|(_, (_, ttl_ms))| *ttl_ms != 0) // 0 means expired, -1 means no expiry
+        .map(|(key, (value, ttl_ms))| RecoveredEntry {
             key,
             value,
-            expires_at,
+            ttl: if ttl_ms < 0 {
+                None
+            } else {
+                Some(Duration::from_millis(ttl_ms as u64))
+            },
         })
         .collect();
 
@@ -130,20 +130,14 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
 }
 
 /// Loads entries from a snapshot file.
-fn load_snapshot(
-    path: &Path,
-    now: Instant,
-) -> Result<Vec<(String, SnapValue, Option<Instant>)>, FormatError> {
+/// Returns (key, value, ttl_ms) where ttl_ms is -1 for no expiry.
+fn load_snapshot(path: &Path) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
     let mut reader = SnapshotReader::open(path)?;
     let mut entries = Vec::new();
 
     while let Some(entry) = reader.read_entry()? {
-        let expires_at = if entry.expire_ms >= 0 {
-            Some(now + Duration::from_millis(entry.expire_ms as u64))
-        } else {
-            None
-        };
-        entries.push((entry.key, entry.value, expires_at));
+        // entry.expire_ms is -1 for no expiry, or remaining ms
+        entries.push((entry.key, entry.value, entry.expire_ms));
     }
 
     reader.verify_footer()?;
@@ -152,14 +146,11 @@ fn load_snapshot(
 
 /// Applies an increment/decrement to a recovered entry. If the key doesn't
 /// exist, initializes it to "0" first. Non-integer values are silently skipped.
-fn apply_incr(
-    map: &mut HashMap<String, (RecoveredValue, Option<Instant>)>,
-    key: String,
-    delta: i64,
-) {
+fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, delta: i64) {
+    // -1 means no expiry
     let entry = map
         .entry(key)
-        .or_insert_with(|| (RecoveredValue::String(Bytes::from("0")), None));
+        .or_insert_with(|| (RecoveredValue::String(Bytes::from("0")), -1));
     if let RecoveredValue::String(ref mut data) = entry.0 {
         let current = std::str::from_utf8(data)
             .ok()
@@ -173,11 +164,10 @@ fn apply_incr(
 }
 
 /// Replays AOF records into the in-memory map. Returns the number of
-/// records replayed.
+/// records replayed. TTL is stored as remaining ms (-1 = no expiry).
 fn replay_aof(
     path: &Path,
-    map: &mut HashMap<String, (RecoveredValue, Option<Instant>)>,
-    now: Instant,
+    map: &mut HashMap<String, (RecoveredValue, i64)>,
 ) -> Result<usize, FormatError> {
     let mut reader = AofReader::open(path)?;
     let mut count = 0;
@@ -189,25 +179,21 @@ fn replay_aof(
                 value,
                 expire_ms,
             } => {
-                let expires_at = if expire_ms >= 0 {
-                    Some(now + Duration::from_millis(expire_ms as u64))
-                } else {
-                    None
-                };
-                map.insert(key, (RecoveredValue::String(value), expires_at));
+                // expire_ms is -1 for no expiry, or remaining ms
+                map.insert(key, (RecoveredValue::String(value), expire_ms));
             }
             AofRecord::Del { key } => {
                 map.remove(&key);
             }
             AofRecord::Expire { key, seconds } => {
                 if let Some(entry) = map.get_mut(&key) {
-                    entry.1 = Some(now + Duration::from_secs(seconds));
+                    entry.1 = (seconds * 1000) as i64;
                 }
             }
             AofRecord::LPush { key, values } => {
                 let entry = map
                     .entry(key)
-                    .or_insert_with(|| (RecoveredValue::List(VecDeque::new()), None));
+                    .or_insert_with(|| (RecoveredValue::List(VecDeque::new()), -1));
                 if let RecoveredValue::List(ref mut deque) = entry.0 {
                     for v in values {
                         deque.push_front(v);
@@ -217,7 +203,7 @@ fn replay_aof(
             AofRecord::RPush { key, values } => {
                 let entry = map
                     .entry(key)
-                    .or_insert_with(|| (RecoveredValue::List(VecDeque::new()), None));
+                    .or_insert_with(|| (RecoveredValue::List(VecDeque::new()), -1));
                 if let RecoveredValue::List(ref mut deque) = entry.0 {
                     for v in values {
                         deque.push_back(v);
@@ -251,7 +237,7 @@ fn replay_aof(
             AofRecord::ZAdd { key, members } => {
                 let entry = map
                     .entry(key)
-                    .or_insert_with(|| (RecoveredValue::SortedSet(Vec::new()), None));
+                    .or_insert_with(|| (RecoveredValue::SortedSet(Vec::new()), -1));
                 if let RecoveredValue::SortedSet(ref mut existing) = entry.0 {
                     // build a position index for O(1) member lookups
                     let mut index: HashMap<String, usize> = existing
@@ -285,12 +271,12 @@ fn replay_aof(
             }
             AofRecord::Persist { key } => {
                 if let Some(entry) = map.get_mut(&key) {
-                    entry.1 = None;
+                    entry.1 = -1; // -1 means no expiry
                 }
             }
             AofRecord::Pexpire { key, milliseconds } => {
                 if let Some(entry) = map.get_mut(&key) {
-                    entry.1 = Some(now + Duration::from_millis(milliseconds));
+                    entry.1 = milliseconds as i64;
                 }
             }
             AofRecord::Incr { key } => {
@@ -302,7 +288,7 @@ fn replay_aof(
             AofRecord::HSet { key, fields } => {
                 let entry = map
                     .entry(key)
-                    .or_insert_with(|| (RecoveredValue::Hash(HashMap::new()), None));
+                    .or_insert_with(|| (RecoveredValue::Hash(HashMap::new()), -1));
                 if let RecoveredValue::Hash(ref mut hash) = entry.0 {
                     for (field, value) in fields {
                         hash.insert(field, value);
@@ -326,7 +312,7 @@ fn replay_aof(
             AofRecord::HIncrBy { key, field, delta } => {
                 let entry = map
                     .entry(key)
-                    .or_insert_with(|| (RecoveredValue::Hash(HashMap::new()), None));
+                    .or_insert_with(|| (RecoveredValue::Hash(HashMap::new()), -1));
                 if let RecoveredValue::Hash(ref mut hash) = entry.0 {
                     let current: i64 = hash
                         .get(&field)
@@ -340,7 +326,7 @@ fn replay_aof(
             AofRecord::SAdd { key, members } => {
                 let entry = map
                     .entry(key)
-                    .or_insert_with(|| (RecoveredValue::Set(HashSet::new()), None));
+                    .or_insert_with(|| (RecoveredValue::Set(HashSet::new()), -1));
                 if let RecoveredValue::Set(ref mut set) = entry.0 {
                     for member in members {
                         set.insert(member);
@@ -684,7 +670,7 @@ mod tests {
 
         let result = recover_shard(dir.path(), 0);
         assert_eq!(result.entries.len(), 1);
-        assert!(result.entries[0].expires_at.is_some());
+        assert!(result.entries[0].ttl.is_some());
     }
 
     #[test]
@@ -709,7 +695,7 @@ mod tests {
 
         let result = recover_shard(dir.path(), 0);
         assert_eq!(result.entries.len(), 1);
-        assert!(result.entries[0].expires_at.is_none());
+        assert!(result.entries[0].ttl.is_none());
     }
 
     #[test]
@@ -788,6 +774,6 @@ mod tests {
 
         let result = recover_shard(dir.path(), 0);
         assert_eq!(result.entries.len(), 1);
-        assert!(result.entries[0].expires_at.is_some());
+        assert!(result.entries[0].ttl.is_some());
     }
 }

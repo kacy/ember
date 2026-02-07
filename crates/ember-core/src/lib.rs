@@ -11,6 +11,7 @@ pub mod expiry;
 pub mod keyspace;
 pub mod memory;
 pub mod shard;
+pub mod time;
 pub mod types;
 
 pub use concurrent::ConcurrentKeyspace;

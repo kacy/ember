@@ -354,7 +354,7 @@ async fn run_shard(
                 RecoveredValue::Hash(map) => Value::Hash(map),
                 RecoveredValue::Set(set) => Value::Set(set),
             };
-            keyspace.restore(entry.key, value, entry.expires_at);
+            keyspace.restore(entry.key, value, entry.ttl);
         }
         if count > 0 {
             info!(
