@@ -16,6 +16,7 @@
 #   BENCH_REQUESTS          requests per test             (default: 100000)
 #   BENCH_CLIENTS           concurrent clients            (default: 50)
 #   BENCH_PIPELINE          pipeline depth for P>1 tests  (default: 16)
+#   BENCH_THREADS           redis-benchmark threads       (default: CPU cores)
 #   EMBER_BIN               path to ember-server binary   (default: ./target/release/ember-server)
 #   DRAGONFLY_BIN           path to dragonfly binary      (default: dragonfly)
 
@@ -31,12 +32,13 @@ REQUESTS="${BENCH_REQUESTS:-100000}"
 CLIENTS="${BENCH_CLIENTS:-50}"
 PIPELINE="${BENCH_PIPELINE:-16}"
 EMBER_BIN="${EMBER_BIN:-./target/release/ember-server}"
+
+# detect CPU cores early for THREADS default
+CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+THREADS="${BENCH_THREADS:-$CPU_CORES}"
 DRAGONFLY_BIN="${DRAGONFLY_BIN:-dragonfly}"
 RESULTS_DIR="bench/results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-
-# detect CPU cores
-CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
 
 EMBER_ONLY=false
 QUICK_MODE=false
@@ -91,13 +93,13 @@ run_benchmark() {
     local port=$1
     local data_size=$2
     local pipeline=$3
-    redis-benchmark -p "$port" -t set,get -n "$REQUESTS" -c "$CLIENTS" -P "$pipeline" -d "$data_size" --csv -q 2>/dev/null
+    redis-benchmark -p "$port" -t set,get -n "$REQUESTS" -c "$CLIENTS" -P "$pipeline" -d "$data_size" --threads "$THREADS" --csv -q 2>/dev/null
 }
 
 # pre-populate keys so GET benchmarks have data to read
 populate_keys() {
     local port=$1
-    redis-benchmark -p "$port" -t set -n "$REQUESTS" -c "$CLIENTS" -P "$PIPELINE" -d 3 -q > /dev/null 2>&1
+    redis-benchmark -p "$port" -t set -n "$REQUESTS" -c "$CLIENTS" -P "$PIPELINE" -d 3 --threads "$THREADS" -q > /dev/null 2>&1
 }
 
 format_number() {
@@ -159,6 +161,7 @@ echo "cpu cores:    $CPU_CORES"
 echo "requests:     $REQUESTS"
 echo "clients:      $CLIENTS"
 echo "pipeline:     $PIPELINE"
+echo "threads:      $THREADS"
 echo ""
 
 # ember concurrent mode (DashMap-backed, fastest for GET/SET)
