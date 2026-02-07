@@ -4,6 +4,7 @@
 //! Designed around a thread-per-core, shared-nothing architecture
 //! where each shard independently manages a partition of keys.
 
+pub mod concurrent;
 pub mod engine;
 pub mod error;
 pub mod expiry;
@@ -18,5 +19,6 @@ pub use keyspace::{
     EvictionPolicy, IncrError, Keyspace, KeyspaceStats, ShardConfig, TtlResult, WriteError,
     WrongType, ZAddResult,
 };
+pub use concurrent::ConcurrentKeyspace;
 pub use shard::{ShardPersistenceConfig, ShardRequest, ShardResponse};
 pub use types::Value;

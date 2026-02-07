@@ -4,6 +4,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod concurrent_handler;
 mod config;
 mod connection;
 mod metrics;
@@ -68,6 +69,11 @@ struct Args {
     /// number of shards (worker threads). defaults to available CPU cores
     #[arg(long)]
     shards: Option<usize>,
+
+    /// use concurrent keyspace (DashMap) instead of sharded channels.
+    /// experimental: bypasses channel overhead for GET/SET commands.
+    #[arg(long)]
+    concurrent: bool,
 }
 
 #[tokio::main]
@@ -168,18 +174,33 @@ async fn main() {
         enabled: args.slowlog_log_slower_than >= 0,
     };
 
-    info!(shards = shard_count, "ember server starting...");
+    info!(shards = shard_count, concurrent = args.concurrent, "ember server starting...");
 
-    if let Err(e) = server::run(
-        addr,
-        shard_count,
-        engine_config,
-        None,
-        args.metrics_port.is_some(),
-        slowlog_config,
-    )
-    .await
-    {
+    let result = if args.concurrent {
+        server::run_concurrent(
+            addr,
+            shard_count,
+            engine_config,
+            max_memory,
+            eviction_policy,
+            None,
+            args.metrics_port.is_some(),
+            slowlog_config,
+        )
+        .await
+    } else {
+        server::run(
+            addr,
+            shard_count,
+            engine_config,
+            None,
+            args.metrics_port.is_some(),
+            slowlog_config,
+        )
+        .await
+    };
+
+    if let Err(e) = result {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }

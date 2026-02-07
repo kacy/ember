@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use ember_core::{Engine, EngineConfig};
+use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
@@ -152,6 +152,122 @@ pub async fn run(
     }
 
     // wait for all connection handlers to finish by acquiring all permits
+    info!("waiting for active connections to close...");
+    let _ = semaphore.acquire_many(max_conn as u32).await;
+    info!("all connections drained, shutting down");
+
+    Ok(())
+}
+
+/// Runs the server with a concurrent keyspace (DashMap-backed).
+///
+/// This mode bypasses shard channels for GET/SET operations, accessing
+/// the keyspace directly from connection handlers. Falls back to the
+/// sharded engine for complex commands.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_concurrent(
+    addr: SocketAddr,
+    shard_count: usize,
+    config: EngineConfig,
+    max_memory: Option<usize>,
+    eviction_policy: EvictionPolicy,
+    max_connections: Option<usize>,
+    metrics_enabled: bool,
+    slowlog_config: SlowLogConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let aof_enabled = config
+        .persistence
+        .as_ref()
+        .map(|p| p.append_only)
+        .unwrap_or(false);
+
+    // Create the concurrent keyspace
+    let keyspace = Arc::new(ConcurrentKeyspace::new(max_memory, eviction_policy));
+
+    // Also create the sharded engine for fallback on complex commands
+    let engine = Engine::with_config(shard_count, config);
+
+    if metrics_enabled {
+        crate::metrics::spawn_stats_poller(engine.clone());
+    }
+
+    let listener = TcpListener::bind(addr).await?;
+    let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
+    let semaphore = Arc::new(Semaphore::new(max_conn));
+
+    let ctx = Arc::new(ServerContext {
+        start_time: Instant::now(),
+        version: env!("CARGO_PKG_VERSION"),
+        shard_count,
+        max_connections: max_conn,
+        max_memory,
+        aof_enabled,
+        metrics_enabled,
+        connections_accepted: AtomicU64::new(0),
+        connections_active: AtomicU64::new(0),
+        commands_processed: AtomicU64::new(0),
+    });
+
+    let slow_log = Arc::new(SlowLog::new(slowlog_config));
+
+    info!(
+        "listening on {addr} with concurrent keyspace (max {max_conn} connections)"
+    );
+
+    let shutdown = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = &mut shutdown => {
+                info!("shutdown signal received, draining connections...");
+                break;
+            }
+
+            result = listener.accept() => {
+                let (stream, peer) = result?;
+
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("connection limit reached, dropping connection from {peer}");
+                        if metrics_enabled {
+                            crate::metrics::on_connection_rejected();
+                        }
+                        drop(stream);
+                        continue;
+                    }
+                };
+
+                if metrics_enabled {
+                    crate::metrics::on_connection_accepted();
+                }
+                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
+                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
+
+                let keyspace = Arc::clone(&keyspace);
+                let engine = engine.clone();
+                let ctx = Arc::clone(&ctx);
+                let slow_log = Arc::clone(&slow_log);
+
+                tokio::spawn(async move {
+                    if let Err(e) = crate::concurrent_handler::handle(
+                        stream, keyspace, engine, &ctx, &slow_log
+                    ).await {
+                        error!("connection error from {peer}: {e}");
+                    }
+                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
+                    if ctx.metrics_enabled {
+                        crate::metrics::on_connection_closed();
+                    }
+                    drop(permit);
+                });
+            }
+        }
+    }
+
     info!("waiting for active connections to close...");
     let _ = semaphore.acquire_many(max_conn as u32).await;
     info!("all connections drained, shutting down");
