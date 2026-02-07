@@ -1320,11 +1320,9 @@ fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {
     match subcmd.as_str() {
         "GET" => {
             let count = if args.len() > 1 {
-                let n: usize = extract_string(&args[1])?
-                    .parse()
-                    .map_err(|_| {
-                        ProtocolError::InvalidCommandFrame("invalid count for SLOWLOG GET".into())
-                    })?;
+                let n: usize = extract_string(&args[1])?.parse().map_err(|_| {
+                    ProtocolError::InvalidCommandFrame("invalid count for SLOWLOG GET".into())
+                })?;
                 Some(n)
             } else {
                 None

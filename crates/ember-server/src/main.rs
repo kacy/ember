@@ -58,6 +58,10 @@ struct Args {
     /// maximum number of entries in the slow log ring buffer
     #[arg(long, default_value_t = 128)]
     slowlog_max_len: usize,
+
+    /// number of shards (worker threads). defaults to available CPU cores
+    #[arg(long)]
+    shards: Option<usize>,
 }
 
 #[tokio::main]
@@ -87,9 +91,16 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let shard_count = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let shard_count = args.shards.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    });
+
+    if shard_count == 0 {
+        eprintln!("--shards must be at least 1");
+        std::process::exit(1);
+    }
 
     // build persistence config if data-dir is set or appendonly is enabled
     let persistence = if args.appendonly || args.data_dir.is_some() {
@@ -146,14 +157,12 @@ async fn main() {
     }
 
     let slowlog_config = slowlog::SlowLogConfig {
-        slower_than: std::time::Duration::from_micros(
-            args.slowlog_log_slower_than.max(0) as u64,
-        ),
+        slower_than: std::time::Duration::from_micros(args.slowlog_log_slower_than.max(0) as u64),
         max_len: args.slowlog_max_len,
         enabled: args.slowlog_log_slower_than >= 0,
     };
 
-    info!("ember server starting...");
+    info!(shards = shard_count, "ember server starting...");
 
     if let Err(e) = server::run(
         addr,
@@ -162,7 +171,9 @@ async fn main() {
         None,
         args.metrics_port.is_some(),
         slowlog_config,
-    ).await {
+    )
+    .await
+    {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }
