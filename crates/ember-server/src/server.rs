@@ -31,7 +31,9 @@ pub struct ServerContext {
     pub max_connections: usize,
     pub max_memory: Option<usize>,
     pub aof_enabled: bool,
+    pub metrics_enabled: bool,
     pub connections_accepted: AtomicU64,
+    pub connections_active: AtomicU64,
     pub commands_processed: AtomicU64,
 }
 
@@ -81,7 +83,9 @@ pub async fn run(
         max_connections: max_conn,
         max_memory,
         aof_enabled,
+        metrics_enabled,
         connections_accepted: AtomicU64::new(0),
+        connections_active: AtomicU64::new(0),
         commands_processed: AtomicU64::new(0),
     });
 
@@ -123,17 +127,18 @@ pub async fn run(
                     crate::metrics::on_connection_accepted();
                 }
                 ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
+                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
 
                 let engine = engine.clone();
                 let ctx = Arc::clone(&ctx);
                 let slow_log = Arc::clone(&slow_log);
-                let metrics = metrics_enabled;
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log, metrics).await {
+                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    if metrics {
+                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
+                    if ctx.metrics_enabled {
                         crate::metrics::on_connection_closed();
                     }
                     // permit is dropped here, releasing the slot
