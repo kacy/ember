@@ -545,6 +545,7 @@ dependencies = [
  "ember-persistence",
  "ember-protocol",
  "emberkv-core",
+ "futures",
  "metrics",
  "metrics-exporter-prometheus",
  "tikv-jemallocator",
