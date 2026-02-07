@@ -2,7 +2,7 @@
 //!
 //! Reads RESP3 frames from a TCP stream, routes them through the
 //! sharded engine, and writes responses back. Supports pipelining
-//! by processing multiple frames from a single read.
+//! by dispatching multiple commands concurrently to shards.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
+use futures::future::join_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -67,15 +68,16 @@ pub async fn handle(
             Err(_) => return Ok(()), // idle timeout — close silently
         }
 
-        // process as many complete frames as the buffer holds (pipelining),
-        // batching all responses into a single write buffer
+        // parse all complete frames from the buffer first, then dispatch
+        // them concurrently to shards. this allows pipelined commands to
+        // be processed in parallel rather than serially.
         out.clear();
+        let mut frames = Vec::new();
         loop {
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response = process(frame, &engine, ctx, slow_log).await;
-                    response.serialize(&mut out);
+                    frames.push(frame);
                 }
                 Ok(None) => break, // need more data
                 Err(e) => {
@@ -84,6 +86,21 @@ pub async fn handle(
                     stream.write_all(&out).await?;
                     return Ok(());
                 }
+            }
+        }
+
+        // dispatch all commands concurrently — this is the key optimization.
+        // instead of await-ing each command serially (16 round-trips for a
+        // pipeline of 16), we dispatch all at once and await them together
+        // (effectively 1 round-trip worth of latency for all 16).
+        if !frames.is_empty() {
+            let futures: Vec<_> = frames
+                .into_iter()
+                .map(|frame| process(frame, &engine, ctx, slow_log))
+                .collect();
+            let responses = join_all(futures).await;
+            for response in responses {
+                response.serialize(&mut out);
             }
         }
 
