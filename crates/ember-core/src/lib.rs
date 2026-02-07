@@ -13,12 +13,12 @@ pub mod memory;
 pub mod shard;
 pub mod types;
 
+pub use concurrent::ConcurrentKeyspace;
 pub use engine::{Engine, EngineConfig};
 pub use error::ShardError;
 pub use keyspace::{
     EvictionPolicy, IncrError, Keyspace, KeyspaceStats, ShardConfig, TtlResult, WriteError,
     WrongType, ZAddResult,
 };
-pub use concurrent::ConcurrentKeyspace;
 pub use shard::{ShardPersistenceConfig, ShardRequest, ShardResponse};
 pub use types::Value;

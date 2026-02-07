@@ -174,7 +174,11 @@ async fn main() {
         enabled: args.slowlog_log_slower_than >= 0,
     };
 
-    info!(shards = shard_count, concurrent = args.concurrent, "ember server starting...");
+    info!(
+        shards = shard_count,
+        concurrent = args.concurrent,
+        "ember server starting..."
+    );
 
     let result = if args.concurrent {
         server::run_concurrent(

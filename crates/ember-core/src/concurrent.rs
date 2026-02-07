@@ -21,7 +21,9 @@ struct Entry {
 
 impl Entry {
     fn is_expired(&self) -> bool {
-        self.expires_at.map(|t| Instant::now() >= t).unwrap_or(false)
+        self.expires_at
+            .map(|t| Instant::now() >= t)
+            .unwrap_or(false)
     }
 }
 
@@ -100,7 +102,8 @@ impl ConcurrentKeyspace {
             if diff > 0 {
                 self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
             } else {
-                self.memory_used.fetch_sub((-diff) as usize, Ordering::Relaxed);
+                self.memory_used
+                    .fetch_sub((-diff) as usize, Ordering::Relaxed);
             }
         } else {
             self.memory_used.fetch_add(entry_size, Ordering::Relaxed);
@@ -258,7 +261,11 @@ mod tests {
     #[test]
     fn ttl_expires() {
         let ks = ConcurrentKeyspace::default();
-        ks.set("key".into(), Bytes::from("value"), Some(Duration::from_millis(10)));
+        ks.set(
+            "key".into(),
+            Bytes::from("value"),
+            Some(Duration::from_millis(10)),
+        );
         assert!(matches!(ks.ttl("key"), TtlResult::Seconds(_)));
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(ks.get("key"), None);

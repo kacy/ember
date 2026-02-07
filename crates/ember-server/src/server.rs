@@ -210,9 +210,7 @@ pub async fn run_concurrent(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
 
-    info!(
-        "listening on {addr} with concurrent keyspace (max {max_conn} connections)"
-    );
+    info!("listening on {addr} with concurrent keyspace (max {max_conn} connections)");
 
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
