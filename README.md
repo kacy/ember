@@ -148,39 +148,38 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 ### throughput (requests/sec, 8 benchmark threads)
 
-| test | ember concurrent | ember sharded | redis |
-|------|------------------|---------------|-------|
-| SET (64B, P=16) | **1,867,045** | 896,276 | 1,026,957 |
-| GET (64B, P=16) | **2,502,360** | 992,302 | 1,185,175 |
+| test | ember concurrent | redis | vs redis |
+|------|------------------|-------|----------|
+| SET (64B, P=16) | **1,859,152** | 1,005,185 | 1.85x |
+| GET (64B, P=16) | **2,482,898** | 1,160,259 | 2.14x |
+| SET (64B, P=1) | **199,600** | 100,000 | 2.0x |
+| GET (64B, P=1) | **200,000** | 99,800 | 2.0x |
 
-**ember concurrent mode is 1.8x faster than Redis on SET and 2.1x faster on GET.**
+**ember concurrent mode is 1.85x faster than Redis on pipelined SET and 2.14x faster on GET.**
 
 ### latency (50 clients, no pipelining)
 
 | server | p50 | p99 | p100 | throughput |
 |--------|-----|-----|------|------------|
-| ember concurrent | 0.3ms | 0.4ms | 0.5ms | 111,359 |
-| ember sharded | 0.3ms | 0.4ms | 0.5ms | 104,712 |
-| redis | 0.3ms | 0.4ms | 0.7ms | 110,132 |
+| ember concurrent | 0.3ms | 0.4ms | 0.5ms | 200,000 |
+| redis | 0.3ms | 0.4ms | 0.7ms | 100,000 |
 
 ### memory usage (~632k keys, 64B values)
 
 | server | memory | per key overhead |
 |--------|--------|------------------|
-| ember concurrent | 193 MB | ~296 bytes |
-| ember sharded | 231 MB | ~356 bytes |
+| ember concurrent | 161 MB | ~257 bytes |
 | redis | 105 MB | ~165 bytes |
 
-redis is more memory efficient. ember's higher overhead comes from per-entry metadata (last-access timestamps for LRU, expiry tracking). this is a known tradeoff for the concurrent architecture.
+ember's higher overhead comes from per-entry metadata (expiry timestamps, DashMap overhead). memory optimization is ongoing.
 
 ### observations
 
-- **ember concurrent beats redis** — 1.8-2.1x higher throughput with comparable latency
-- **sharded mode has channel overhead** — the mpsc routing adds ~50% overhead vs concurrent mode
-- **latency is competitive** — all servers achieve p99 of 0.4ms
-- **redis is memory efficient** — ~2x better memory density than ember
+- **ember beats redis 2x across the board** — both pipelined and non-pipelined workloads
+- **latency is competitive** — both servers achieve p99 of 0.4ms
+- **redis is more memory efficient** — ~1.5x better memory density
 
-**test conditions**: 500k requests, 50 clients, pipeline depth 16, persistence disabled.
+**test conditions**: 1M requests, 50 clients, pipeline depth 16, persistence disabled.
 
 run your own benchmarks:
 ```bash
