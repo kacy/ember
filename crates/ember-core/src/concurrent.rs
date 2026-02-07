@@ -4,26 +4,34 @@
 //! overhead by allowing direct access from multiple connection handlers.
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use dashmap::DashMap;
 
 use crate::keyspace::{EvictionPolicy, TtlResult};
+use crate::time;
 
 /// An entry in the concurrent keyspace.
+/// Optimized for memory: 40 bytes (down from 56).
 #[derive(Debug, Clone)]
 struct Entry {
     value: Bytes,
-    expires_at: Option<Instant>,
-    size: usize,
+    /// Monotonic expiry timestamp in ms. 0 = no expiry.
+    expires_at_ms: u64,
 }
 
 impl Entry {
+    #[inline]
     fn is_expired(&self) -> bool {
-        self.expires_at
-            .map(|t| Instant::now() >= t)
-            .unwrap_or(false)
+        time::is_expired(self.expires_at_ms)
+    }
+
+    /// Compute entry size on demand (key_len passed in).
+    #[inline]
+    fn size(&self, key_len: usize) -> usize {
+        // key heap + value heap + entry struct overhead
+        key_len + self.value.len() + 48
     }
 }
 
@@ -33,7 +41,8 @@ impl Entry {
 /// All operations are lock-free for non-conflicting keys.
 #[derive(Debug)]
 pub struct ConcurrentKeyspace {
-    data: DashMap<String, Entry>,
+    /// Using Box<str> instead of String saves 8 bytes per key (no capacity field).
+    data: DashMap<Box<str>, Entry>,
     memory_used: AtomicUsize,
     max_memory: Option<usize>,
     eviction_policy: EvictionPolicy,
@@ -59,10 +68,12 @@ impl ConcurrentKeyspace {
         let entry = self.data.get(key)?;
 
         if entry.is_expired() {
+            let key_len = entry.key().len();
+            let size = entry.size(key_len);
             drop(entry);
             // Remove expired entry
-            if let Some((_, removed)) = self.data.remove(key) {
-                self.memory_used.fetch_sub(removed.size, Ordering::Relaxed);
+            if self.data.remove(key).is_some() {
+                self.memory_used.fetch_sub(size, Ordering::Relaxed);
             }
             return None;
         }
@@ -74,8 +85,9 @@ impl ConcurrentKeyspace {
     pub fn set(&self, key: String, value: Bytes, ttl: Option<Duration>) -> bool {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
-        let entry_size = key.len() + value.len() + 64; // rough overhead estimate
-        let expires_at = ttl.map(|d| Instant::now() + d);
+        let key: Box<str> = key.into_boxed_str();
+        let entry_size = key.len() + value.len() + 48;
+        let expires_at_ms = time::expiry_from_duration(ttl);
 
         // Check memory limit
         if let Some(max) = self.max_memory {
@@ -91,14 +103,14 @@ impl ConcurrentKeyspace {
 
         let entry = Entry {
             value,
-            expires_at,
-            size: entry_size,
+            expires_at_ms,
         };
 
         // Update memory tracking
-        if let Some(old) = self.data.insert(key, entry) {
+        if let Some(old) = self.data.insert(key.clone(), entry) {
             // Replace: adjust memory
-            let diff = entry_size as isize - old.size as isize;
+            let old_size = old.size(key.len());
+            let diff = entry_size as isize - old_size as isize;
             if diff > 0 {
                 self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
             } else {
@@ -116,8 +128,9 @@ impl ConcurrentKeyspace {
     pub fn del(&self, key: &str) -> bool {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
-        if let Some((_, removed)) = self.data.remove(key) {
-            self.memory_used.fetch_sub(removed.size, Ordering::Relaxed);
+        if let Some((k, removed)) = self.data.remove(key) {
+            self.memory_used
+                .fetch_sub(removed.size(k.len()), Ordering::Relaxed);
             true
         } else {
             false
@@ -137,12 +150,9 @@ impl ConcurrentKeyspace {
                 if entry.is_expired() {
                     TtlResult::NotFound
                 } else {
-                    match entry.expires_at {
+                    match time::remaining_secs(entry.expires_at_ms) {
                         None => TtlResult::NoExpiry,
-                        Some(t) => {
-                            let remaining = t.saturating_duration_since(Instant::now());
-                            TtlResult::Seconds(remaining.as_secs())
-                        }
+                        Some(secs) => TtlResult::Seconds(secs),
                     }
                 }
             }
@@ -157,7 +167,7 @@ impl ConcurrentKeyspace {
             if entry.is_expired() {
                 return false;
             }
-            entry.expires_at = Some(Instant::now() + Duration::from_secs(seconds));
+            entry.expires_at_ms = time::now_ms() + seconds * 1000;
             true
         } else {
             false
@@ -200,14 +210,16 @@ impl ConcurrentKeyspace {
             if freed >= needed {
                 break;
             }
+            let key_len = entry.key().len();
             keys_to_remove.push(entry.key().clone());
-            freed += entry.value().size;
+            freed += entry.value().size(key_len);
         }
 
         // Remove collected keys
         for key in keys_to_remove {
-            if let Some((_, removed)) = self.data.remove(&key) {
-                self.memory_used.fetch_sub(removed.size, Ordering::Relaxed);
+            if let Some((k, removed)) = self.data.remove(&key) {
+                self.memory_used
+                    .fetch_sub(removed.size(k.len()), Ordering::Relaxed);
             }
         }
     }
