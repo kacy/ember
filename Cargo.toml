@@ -47,6 +47,9 @@ ordered-float = "5"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", features = ["http-listener"] }
 
+# benchmarking
+criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
+
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.2.1", path = "crates/ember-core" }
 ember-protocol = { version = "0.2.1", path = "crates/ember-protocol" }

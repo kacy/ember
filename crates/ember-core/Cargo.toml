@@ -24,3 +24,13 @@ ordered-float = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[[bench]]
+name = "keyspace"
+harness = false
+
+[[bench]]
+name = "engine"
+harness = false
