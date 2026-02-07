@@ -137,35 +137,73 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 | p99 latency | ~1ms | <200µs |
 | memory/key | ~90 bytes overhead | <40 bytes |
 
-## early benchmarks
+## benchmarks
 
-these are preliminary numbers from a MacBook Pro (M1 Pro, 8 cores). more rigorous benchmarking on Linux servers is planned.
+tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04, v0.2.2.
 
-| test | ember (8 cores) | ember (1 core) | redis | dragonfly* |
-|------|-----------------|----------------|-------|------------|
-| SET (3B, P=16) | 1,176,470 | 602,409 | 1,785,714 | 181,488 |
-| SET (64B, P=16) | 1,123,595 | 909,090 | 1,204,819 | 176,991 |
-| SET (1KB, P=16) | 625,000 | 526,315 | 1,204,819 | 32,626 |
-| GET (3B, P=16) | 952,381 | 990,099 | 1,136,363 | 23,474 |
-| GET (64B, P=16) | 917,431 | 1,030,927 | 1,369,863 | 35,842 |
-| GET (1KB, P=16) | 1,020,408 | 990,099 | 1,282,051 | 34,710 |
-| SET (64B, P=1) | 135,135 | 140,845 | 183,486 | 17,611 |
-| GET (64B, P=1) | 132,100 | 134,952 | 183,823 | 16,943 |
+### throughput (requests/sec)
 
-*\*dragonfly ran in Docker on macOS, which adds significant overhead (Linux VM). not representative of native performance.*
+| test | ember (8 vCPU) | ember (1 vCPU) | redis | dragonfly |
+|------|----------------|----------------|-------|-----------|
+| SET (3B, P=16) | 925,962 | 926,759 | 1,149,977 | 604,144 |
+| SET (64B, P=16) | 878,087 | 877,824 | 1,205,783 | 556,533 |
+| SET (1KB, P=16) | 629,937 | 625,900 | 770,338 | 544,000 |
+| GET (3B, P=16) | 789,456 | 795,198 | 879,149 | 400,672 |
+| GET (64B, P=16) | 789,291 | 808,387 | 877,894 | 395,359 |
+| GET (1KB, P=16) | 783,656 | 802,672 | 877,719 | 393,584 |
+| SET (64B, P=1) | 105,708 | 102,040 | 107,066 | 87,183 |
+| GET (64B, P=1) | 106,044 | 103,519 | 106,723 | 87,260 |
 
-**test conditions**: 100k requests, 50 clients, pipeline depth 16 (except P=1 tests). all servers ran with persistence disabled.
+### latency (50 clients, no pipelining)
 
-**observations**:
-- redis outperforms ember on this Mac — likely due to highly optimized ARM builds and years of macOS tuning
-- ember's multi-core scaling is limited here because `redis-benchmark` is single-threaded
-- proper Linux benchmarks with `memtier_benchmark` and parallel clients are needed for accurate multi-core comparison
+| server | p50 | p99 | p100 | throughput |
+|--------|-----|-----|------|------------|
+| ember (8 vCPU) | 0.3ms | 0.4ms | 0.5ms | 103,412 |
+| ember (1 vCPU) | 0.3ms | 0.4ms | 0.6ms | 102,669 |
+| redis | 0.3ms | 0.4ms | 0.5ms | 109,170 |
+| dragonfly | 0.3ms | 0.5ms | 4.0ms | 88,417 |
+
+### multi-core scaling (8 parallel benchmark processes)
+
+| server | SET (64B, P=16) |
+|--------|-----------------|
+| ember (8 vCPU) | 803,774 |
+| ember (1 vCPU) | 812,449 |
+| redis | 990,217 |
+| dragonfly | 607,880 |
+
+**test conditions**: 100k requests, 50 clients, pipeline depth 16 (except P=1). persistence disabled.
+
+### observations
+
+- **redis leads** on single-client throughput (~1.2M SET/sec vs ember's ~900k)
+- **ember latency is competitive** — p99 of 0.4ms matches redis
+- **multi-core scaling is broken** — ember shows 1.0x scaling (8 vCPU ≈ 1 vCPU)
+- **dragonfly has latency tail** — p100 of 4ms vs ember/redis at 0.5ms
+
+the lack of multi-core scaling indicates a bottleneck in ember's sharded architecture. this is a known issue being investigated — see [performance roadmap](#performance-roadmap) below.
 
 run your own benchmarks:
 ```bash
 make bench-compare   # full comparison (requires redis, optionally dragonfly)
 make bench-quick     # ember only
 ```
+
+## performance roadmap
+
+ember's sharded architecture isn't delivering expected multi-core scaling. investigation areas:
+
+1. **connection-to-shard affinity** — currently each connection can hit any shard. pinning connections to shards would reduce cross-thread routing.
+
+2. **mpsc channel overhead** — the engine uses tokio mpsc channels for request routing. lock-free queues (crossbeam) may reduce contention.
+
+3. **response serialization** — responses are serialized per-request. batching or zero-copy improvements could help.
+
+4. **io_uring integration** — currently using epoll via tokio. io_uring would reduce syscall overhead on Linux.
+
+5. **memory allocator** — jemalloc or mimalloc may improve multi-threaded allocation patterns.
+
+contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## status
 
