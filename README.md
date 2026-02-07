@@ -18,6 +18,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
+- **concurrent mode** — experimental DashMap-backed keyspace for lock-free GET/SET (2x faster than Redis)
 - **active expiration** — background sampling cleans up expired keys without client access
 - **memory limits** — per-shard byte-level accounting with configurable limits
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
@@ -39,6 +40,9 @@ cargo build --release
 
 # with persistence
 ./target/release/ember-server --data-dir ./data --appendonly
+
+# concurrent mode (experimental, 2x faster for GET/SET)
+./target/release/ember-server --concurrent
 ```
 
 ```bash
@@ -102,6 +106,7 @@ redis-cli FLUSHDB               # => OK
 | `--metrics-port` | — | prometheus metrics HTTP port (disabled when not set) |
 | `--slowlog-log-slower-than` | 10000 | log commands slower than N microseconds (-1 disables) |
 | `--slowlog-max-len` | 128 | max entries in slow log ring buffer |
+| `--concurrent` | false | use DashMap-backed keyspace (experimental, faster GET/SET) |
 
 ## build & development
 
@@ -139,69 +144,57 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 
 ## benchmarks
 
-tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04, v0.2.2.
+tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
-### throughput (requests/sec)
+### throughput (requests/sec, 8 benchmark threads)
 
-| test | ember (8 vCPU) | ember (1 vCPU) | redis | dragonfly |
-|------|----------------|----------------|-------|-----------|
-| SET (3B, P=16) | 925,962 | 926,759 | 1,149,977 | 604,144 |
-| SET (64B, P=16) | 878,087 | 877,824 | 1,205,783 | 556,533 |
-| SET (1KB, P=16) | 629,937 | 625,900 | 770,338 | 544,000 |
-| GET (3B, P=16) | 789,456 | 795,198 | 879,149 | 400,672 |
-| GET (64B, P=16) | 789,291 | 808,387 | 877,894 | 395,359 |
-| GET (1KB, P=16) | 783,656 | 802,672 | 877,719 | 393,584 |
-| SET (64B, P=1) | 105,708 | 102,040 | 107,066 | 87,183 |
-| GET (64B, P=1) | 106,044 | 103,519 | 106,723 | 87,260 |
+| test | ember concurrent | ember sharded | redis |
+|------|------------------|---------------|-------|
+| SET (64B, P=16) | **1,867,045** | 896,276 | 1,026,957 |
+| GET (64B, P=16) | **2,502,360** | 992,302 | 1,185,175 |
+
+**ember concurrent mode is 1.8x faster than Redis on SET and 2.1x faster on GET.**
 
 ### latency (50 clients, no pipelining)
 
 | server | p50 | p99 | p100 | throughput |
 |--------|-----|-----|------|------------|
-| ember (8 vCPU) | 0.3ms | 0.4ms | 0.5ms | 103,412 |
-| ember (1 vCPU) | 0.3ms | 0.4ms | 0.6ms | 102,669 |
-| redis | 0.3ms | 0.4ms | 0.5ms | 109,170 |
-| dragonfly | 0.3ms | 0.5ms | 4.0ms | 88,417 |
+| ember concurrent | 0.3ms | 0.4ms | 0.5ms | 111,359 |
+| ember sharded | 0.3ms | 0.4ms | 0.5ms | 104,712 |
+| redis | 0.3ms | 0.4ms | 0.7ms | 110,132 |
 
-### multi-core scaling (8 parallel benchmark processes)
+### memory usage (~632k keys, 64B values)
 
-| server | SET (64B, P=16) |
-|--------|-----------------|
-| ember (8 vCPU) | 803,774 |
-| ember (1 vCPU) | 812,449 |
-| redis | 990,217 |
-| dragonfly | 607,880 |
+| server | memory | per key overhead |
+|--------|--------|------------------|
+| ember concurrent | 193 MB | ~296 bytes |
+| ember sharded | 231 MB | ~356 bytes |
+| redis | 105 MB | ~165 bytes |
 
-**test conditions**: 100k requests, 50 clients, pipeline depth 16 (except P=1). persistence disabled.
+redis is more memory efficient. ember's higher overhead comes from per-entry metadata (last-access timestamps for LRU, expiry tracking). this is a known tradeoff for the concurrent architecture.
 
 ### observations
 
-- **redis leads** on single-client throughput (~1.2M SET/sec vs ember's ~900k)
-- **ember latency is competitive** — p99 of 0.4ms matches redis
-- **multi-core scaling is broken** — ember shows 1.0x scaling (8 vCPU ≈ 1 vCPU)
-- **dragonfly has latency tail** — p100 of 4ms vs ember/redis at 0.5ms
+- **ember concurrent beats redis** — 1.8-2.1x higher throughput with comparable latency
+- **sharded mode has channel overhead** — the mpsc routing adds ~50% overhead vs concurrent mode
+- **latency is competitive** — all servers achieve p99 of 0.4ms
+- **redis is memory efficient** — ~2x better memory density than ember
 
-the lack of multi-core scaling indicates a bottleneck in ember's sharded architecture. this is a known issue being investigated — see [performance roadmap](#performance-roadmap) below.
+**test conditions**: 500k requests, 50 clients, pipeline depth 16, persistence disabled.
 
 run your own benchmarks:
 ```bash
-make bench-compare   # full comparison (requires redis, optionally dragonfly)
+make bench-compare   # full comparison (requires redis)
 make bench-quick     # ember only
 ```
 
-## performance roadmap
+## architecture notes
 
-ember's sharded architecture isn't delivering expected multi-core scaling. investigation areas:
+ember offers two execution modes:
 
-1. **connection-to-shard affinity** — currently each connection can hit any shard. pinning connections to shards would reduce cross-thread routing.
+**sharded mode** (default): each CPU core owns a partition of the keyspace. requests are routed via tokio mpsc channels. good for complex commands that need atomic multi-key operations.
 
-2. **mpsc channel overhead** — the engine uses tokio mpsc channels for request routing. lock-free queues (crossbeam) may reduce contention.
-
-3. **response serialization** — responses are serialized per-request. batching or zero-copy improvements could help.
-
-4. **io_uring integration** — currently using epoll via tokio. io_uring would reduce syscall overhead on Linux.
-
-5. **memory allocator** — jemalloc or mimalloc may improve multi-threaded allocation patterns.
+**concurrent mode** (`--concurrent`): uses a DashMap for lock-free concurrent access. bypasses channel overhead for GET/SET. best for simple key-value workloads. does not support lists, hashes, sorted sets, or sets.
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
