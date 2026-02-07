@@ -517,8 +517,7 @@ impl Keyspace {
                     }
                     _ => return Err(IncrError::WrongType),
                 };
-                let expire = time::remaining_ms(entry.expires_at_ms)
-                    .map(Duration::from_millis);
+                let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
                 (val, expire)
             }
             None => (0, None),
