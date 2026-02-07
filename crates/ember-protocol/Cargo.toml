@@ -13,3 +13,10 @@ readme = "README.md"
 bytes = { workspace = true }
 itoa = "1"
 thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "protocol"
+harness = false
