@@ -93,7 +93,7 @@ fn bench_mixed(c: &mut Criterion) {
         let mut i = 0u64;
         b.iter(|| {
             let key = format!("key:{}", i % KEY_COUNT as u64);
-            if i % 2 == 0 {
+            if i.is_multiple_of(2) {
                 let _ = black_box(ks.get(&key));
             } else {
                 black_box(ks.set(key, value.clone(), None));
