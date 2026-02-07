@@ -74,8 +74,7 @@ pub async fn handle(
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response =
-                        process(frame, &engine, ctx, slow_log).await;
+                    let response = process(frame, &engine, ctx, slow_log).await;
                     response.serialize(&mut out);
                 }
                 Ok(None) => break, // need more data
@@ -353,9 +352,7 @@ async fn execute(
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
 
-        Command::Info { section } => {
-            render_info(engine, ctx, section.as_deref()).await
-        }
+        Command::Info { section } => render_info(engine, ctx, section.as_deref()).await,
 
         Command::BgSave => match engine.broadcast(|| ShardRequest::Snapshot).await {
             Ok(_) => Frame::Simple("Background saving started".into()),
@@ -969,11 +966,7 @@ where
 /// With no argument, returns all sections. With a section name,
 /// returns only that section. Matches Redis convention of `#` headers
 /// followed by `key:value` pairs separated by `\r\n`.
-async fn render_info(
-    engine: &Engine,
-    ctx: &Arc<ServerContext>,
-    section: Option<&str>,
-) -> Frame {
+async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<&str>) -> Frame {
     let section_upper = section.map(|s| s.to_ascii_uppercase());
     let want_all = section_upper.is_none();
     let want = |name: &str| want_all || section_upper.as_deref() == Some(name);

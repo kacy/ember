@@ -118,7 +118,9 @@ impl SlowLog {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let n = count.unwrap_or(inner.entries.len()).min(inner.entries.len());
+        let n = count
+            .unwrap_or(inner.entries.len())
+            .min(inner.entries.len());
         inner.entries.iter().rev().take(n).cloned().collect()
     }
 

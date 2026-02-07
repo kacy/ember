@@ -64,7 +64,10 @@ pub async fn run(
         .as_ref()
         .map(|p| p.append_only)
         .unwrap_or(false);
-    let max_memory = config.shard.max_memory.map(|per_shard| per_shard * shard_count);
+    let max_memory = config
+        .shard
+        .max_memory
+        .map(|per_shard| per_shard * shard_count);
 
     let engine = Engine::with_config(shard_count, config);
 
