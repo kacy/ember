@@ -3247,4 +3247,190 @@ mod tests {
         assert!(ks.sismember("s", "m").is_err());
         assert!(ks.scard("s").is_err());
     }
+
+    // --- edge case tests ---
+
+    #[test]
+    fn zero_ttl_expires_immediately() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), Some(Duration::ZERO));
+
+        // key should be expired immediately
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(ks.get("key").unwrap().is_none());
+    }
+
+    #[test]
+    fn very_small_ttl_expires_quickly() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_millis(1)),
+        );
+
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(ks.get("key").unwrap().is_none());
+    }
+
+    #[test]
+    fn list_auto_deleted_when_empty() {
+        let mut ks = Keyspace::new();
+        ks.lpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
+        assert_eq!(ks.len(), 1);
+
+        // pop all elements
+        let _ = ks.lpop("list");
+        let _ = ks.lpop("list");
+
+        // list should be auto-deleted
+        assert_eq!(ks.len(), 0);
+        assert!(!ks.exists("list"));
+    }
+
+    #[test]
+    fn set_auto_deleted_when_empty() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "b".into()]).unwrap();
+        assert_eq!(ks.len(), 1);
+
+        // remove all members
+        ks.srem("s", &["a".into(), "b".into()]).unwrap();
+
+        // set should be auto-deleted
+        assert_eq!(ks.len(), 0);
+        assert!(!ks.exists("s"));
+    }
+
+    #[test]
+    fn hash_auto_deleted_when_empty() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("f1".into(), Bytes::from("v1")),
+                ("f2".into(), Bytes::from("v2")),
+            ],
+        )
+        .unwrap();
+        assert_eq!(ks.len(), 1);
+
+        // delete all fields
+        ks.hdel("h", &["f1".into(), "f2".into()]).unwrap();
+
+        // hash should be auto-deleted
+        assert_eq!(ks.len(), 0);
+        assert!(!ks.exists("h"));
+    }
+
+    #[test]
+    fn sadd_duplicate_members_counted_once() {
+        let mut ks = Keyspace::new();
+        // add same member twice in one call
+        let count = ks.sadd("s", &["a".into(), "a".into()]).unwrap();
+        // should only count as 1 new member
+        assert_eq!(count, 1);
+        assert_eq!(ks.scard("s").unwrap(), 1);
+    }
+
+    #[test]
+    fn srem_non_existent_member_returns_zero() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into()]).unwrap();
+        let removed = ks.srem("s", &["nonexistent".into()]).unwrap();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn hincrby_overflow_returns_error() {
+        let mut ks = Keyspace::new();
+        // set field to near max
+        ks.hset("h", &[("count".into(), Bytes::from(i64::MAX.to_string()))])
+            .unwrap();
+
+        // try to increment by 1 - should overflow
+        let result = ks.hincrby("h", "count", 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn hincrby_on_non_integer_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.hset("h", &[("field".into(), Bytes::from("not_a_number"))])
+            .unwrap();
+
+        let result = ks.hincrby("h", "field", 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn incr_at_max_value_overflows() {
+        let mut ks = Keyspace::new();
+        ks.set("counter".into(), Bytes::from(i64::MAX.to_string()), None);
+
+        let result = ks.incr("counter");
+        assert!(matches!(result, Err(IncrError::Overflow)));
+    }
+
+    #[test]
+    fn decr_at_min_value_underflows() {
+        let mut ks = Keyspace::new();
+        ks.set("counter".into(), Bytes::from(i64::MIN.to_string()), None);
+
+        let result = ks.decr("counter");
+        assert!(matches!(result, Err(IncrError::Overflow)));
+    }
+
+    #[test]
+    fn lrange_inverted_start_stop_returns_empty() {
+        let mut ks = Keyspace::new();
+        ks.lpush(
+            "list",
+            &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")],
+        )
+        .unwrap();
+
+        // start > stop with positive indices
+        let result = ks.lrange("list", 2, 0).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn lrange_large_stop_clamps_to_len() {
+        let mut ks = Keyspace::new();
+        ks.lpush("list", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
+
+        // large indices should clamp to list bounds
+        let result = ks.lrange("list", 0, 1000).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn empty_string_key_works() {
+        let mut ks = Keyspace::new();
+        ks.set("".into(), Bytes::from("value"), None);
+        assert_eq!(
+            ks.get("").unwrap(),
+            Some(Value::String(Bytes::from("value")))
+        );
+        assert!(ks.exists(""));
+    }
+
+    #[test]
+    fn empty_value_works() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from(""), None);
+        assert_eq!(ks.get("key").unwrap(), Some(Value::String(Bytes::from(""))));
+    }
+
+    #[test]
+    fn binary_data_in_value() {
+        let mut ks = Keyspace::new();
+        // value with null bytes and other binary data
+        let binary = Bytes::from(vec![0u8, 1, 2, 255, 0, 128]);
+        ks.set("binary".into(), binary.clone(), None);
+        assert_eq!(ks.get("binary").unwrap(), Some(Value::String(binary)));
+    }
 }
