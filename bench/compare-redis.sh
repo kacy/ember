@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 #
-# Runs redis-benchmark against Ember, Redis, and Dragonfly to produce
-# a meaningful performance comparison. Tests both single-threaded and
-# multi-threaded configurations.
+# Comprehensive benchmark comparing Ember (concurrent + sharded), Redis, and Dragonfly.
 #
 # Usage:
 #   bash bench/compare-redis.sh              # full comparison
@@ -11,33 +9,36 @@
 #   bash bench/compare-redis.sh --json       # JSON output for CI
 #
 # Environment variables:
-#   EMBER_PORT       ember server port              (default: 6379)
-#   REDIS_PORT       redis server port              (default: 6399)
-#   DRAGONFLY_PORT   dragonfly server port          (default: 6389)
-#   BENCH_REQUESTS   requests per test              (default: 100000)
-#   BENCH_CLIENTS    concurrent clients             (default: 50)
-#   BENCH_PIPELINE   pipeline depth for P>1 tests   (default: 16)
-#   EMBER_BIN        path to ember-server binary    (default: ./target/release/ember-server)
-#   DRAGONFLY_BIN    path to dragonfly binary       (default: dragonfly)
+#   EMBER_CONCURRENT_PORT   ember concurrent port         (default: 6379)
+#   EMBER_SHARDED_PORT      ember sharded port            (default: 6380)
+#   REDIS_PORT              redis server port             (default: 6399)
+#   DRAGONFLY_PORT          dragonfly server port         (default: 6389)
+#   BENCH_REQUESTS          requests per test             (default: 100000)
+#   BENCH_CLIENTS           concurrent clients            (default: 50)
+#   BENCH_PIPELINE          pipeline depth for P>1 tests  (default: 16)
+#   BENCH_THREADS           redis-benchmark threads       (default: CPU cores)
+#   EMBER_BIN               path to ember-server binary   (default: ./target/release/ember-server)
+#   DRAGONFLY_BIN           path to dragonfly binary      (default: dragonfly)
 
 set -euo pipefail
 
 # --- configuration ---
 
-EMBER_PORT="${EMBER_PORT:-6379}"
-EMBER_PORT_SINGLE="${EMBER_PORT_SINGLE:-6378}"
+EMBER_CONCURRENT_PORT="${EMBER_CONCURRENT_PORT:-6379}"
+EMBER_SHARDED_PORT="${EMBER_SHARDED_PORT:-6380}"
 REDIS_PORT="${REDIS_PORT:-6399}"
 DRAGONFLY_PORT="${DRAGONFLY_PORT:-6389}"
 REQUESTS="${BENCH_REQUESTS:-100000}"
 CLIENTS="${BENCH_CLIENTS:-50}"
 PIPELINE="${BENCH_PIPELINE:-16}"
 EMBER_BIN="${EMBER_BIN:-./target/release/ember-server}"
+
+# detect CPU cores early for THREADS default
+CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
+THREADS="${BENCH_THREADS:-$CPU_CORES}"
 DRAGONFLY_BIN="${DRAGONFLY_BIN:-dragonfly}"
 RESULTS_DIR="bench/results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-
-# detect CPU cores
-CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
 
 EMBER_ONLY=false
 QUICK_MODE=false
@@ -54,14 +55,14 @@ done
 
 # --- helpers ---
 
-EMBER_PID=""
-EMBER_SINGLE_PID=""
+EMBER_CONCURRENT_PID=""
+EMBER_SHARDED_PID=""
 REDIS_PID=""
 DRAGONFLY_PID=""
 
 cleanup() {
-    [[ -n "$EMBER_PID" ]] && kill "$EMBER_PID" 2>/dev/null && wait "$EMBER_PID" 2>/dev/null || true
-    [[ -n "$EMBER_SINGLE_PID" ]] && kill "$EMBER_SINGLE_PID" 2>/dev/null && wait "$EMBER_SINGLE_PID" 2>/dev/null || true
+    [[ -n "$EMBER_CONCURRENT_PID" ]] && kill "$EMBER_CONCURRENT_PID" 2>/dev/null && wait "$EMBER_CONCURRENT_PID" 2>/dev/null || true
+    [[ -n "$EMBER_SHARDED_PID" ]] && kill "$EMBER_SHARDED_PID" 2>/dev/null && wait "$EMBER_SHARDED_PID" 2>/dev/null || true
     [[ -n "$REDIS_PID" ]] && kill "$REDIS_PID" 2>/dev/null && wait "$REDIS_PID" 2>/dev/null || true
     [[ -n "$DRAGONFLY_PID" ]] && kill "$DRAGONFLY_PID" 2>/dev/null && wait "$DRAGONFLY_PID" 2>/dev/null || true
 }
@@ -92,13 +93,13 @@ run_benchmark() {
     local port=$1
     local data_size=$2
     local pipeline=$3
-    redis-benchmark -p "$port" -t set,get -n "$REQUESTS" -c "$CLIENTS" -P "$pipeline" -d "$data_size" --csv -q 2>/dev/null
+    redis-benchmark -p "$port" -t set,get -n "$REQUESTS" -c "$CLIENTS" -P "$pipeline" -d "$data_size" --threads "$THREADS" --csv -q 2>/dev/null
 }
 
 # pre-populate keys so GET benchmarks have data to read
 populate_keys() {
     local port=$1
-    redis-benchmark -p "$port" -t set -n "$REQUESTS" -c "$CLIENTS" -P "$PIPELINE" -d 3 -q > /dev/null 2>&1
+    redis-benchmark -p "$port" -t set -n "$REQUESTS" -c "$CLIENTS" -P "$PIPELINE" -d 3 --threads "$THREADS" -q > /dev/null 2>&1
 }
 
 format_number() {
@@ -160,19 +161,20 @@ echo "cpu cores:    $CPU_CORES"
 echo "requests:     $REQUESTS"
 echo "clients:      $CLIENTS"
 echo "pipeline:     $PIPELINE"
+echo "threads:      $THREADS"
 echo ""
 
-# ember with all cores
-echo "starting ember ($CPU_CORES shards) on port $EMBER_PORT..."
-"$EMBER_BIN" --port "$EMBER_PORT" > /dev/null 2>&1 &
-EMBER_PID=$!
-wait_for_server "$EMBER_PORT" "ember"
+# ember concurrent mode (DashMap-backed, fastest for GET/SET)
+echo "starting ember concurrent on port $EMBER_CONCURRENT_PORT..."
+"$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent > /dev/null 2>&1 &
+EMBER_CONCURRENT_PID=$!
+wait_for_server "$EMBER_CONCURRENT_PORT" "ember-concurrent"
 
-# ember with 1 shard (for single-threaded comparison)
-echo "starting ember (1 shard) on port $EMBER_PORT_SINGLE..."
-"$EMBER_BIN" --port "$EMBER_PORT_SINGLE" --shards 1 > /dev/null 2>&1 &
-EMBER_SINGLE_PID=$!
-wait_for_server "$EMBER_PORT_SINGLE" "ember-single"
+# ember sharded mode (channel-based, supports all data types)
+echo "starting ember sharded ($CPU_CORES shards) on port $EMBER_SHARDED_PORT..."
+"$EMBER_BIN" --port "$EMBER_SHARDED_PORT" > /dev/null 2>&1 &
+EMBER_SHARDED_PID=$!
+wait_for_server "$EMBER_SHARDED_PORT" "ember-sharded"
 
 if [[ "$HAS_REDIS" == "true" ]]; then
     echo "starting redis on port $REDIS_PORT..."
@@ -217,14 +219,14 @@ echo "running benchmarks..."
 echo ""
 
 # pre-populate all servers
-populate_keys "$EMBER_PORT"
-populate_keys "$EMBER_PORT_SINGLE"
+populate_keys "$EMBER_CONCURRENT_PORT"
+populate_keys "$EMBER_SHARDED_PORT"
 [[ "$HAS_REDIS" == "true" ]] && populate_keys "$REDIS_PORT"
 [[ "$HAS_DRAGONFLY" == "true" ]] && populate_keys "$DRAGONFLY_PORT"
 
 declare -a LABELS=()
-declare -a EMBER_MULTI_RESULTS=()
-declare -a EMBER_SINGLE_RESULTS=()
+declare -a EMBER_CONCURRENT_RESULTS=()
+declare -a EMBER_SHARDED_RESULTS=()
 declare -a REDIS_RESULTS=()
 declare -a DRAGONFLY_RESULTS=()
 
@@ -238,15 +240,15 @@ for test_spec in "${TESTS[@]}"; do
         test_type="GET"
     fi
 
-    # ember multi-core
-    csv=$(run_benchmark "$EMBER_PORT" "$data_size" "$pipeline")
+    # ember concurrent
+    csv=$(run_benchmark "$EMBER_CONCURRENT_PORT" "$data_size" "$pipeline")
     rps=$(extract_rps "$csv" "$test_type")
-    EMBER_MULTI_RESULTS+=("${rps:-0}")
+    EMBER_CONCURRENT_RESULTS+=("${rps:-0}")
 
-    # ember single-core
-    csv=$(run_benchmark "$EMBER_PORT_SINGLE" "$data_size" "$pipeline")
+    # ember sharded
+    csv=$(run_benchmark "$EMBER_SHARDED_PORT" "$data_size" "$pipeline")
     rps=$(extract_rps "$csv" "$test_type")
-    EMBER_SINGLE_RESULTS+=("${rps:-0}")
+    EMBER_SHARDED_RESULTS+=("${rps:-0}")
 
     # redis
     if [[ "$HAS_REDIS" == "true" ]]; then
@@ -274,16 +276,16 @@ if [[ "$JSON_OUTPUT" == "true" ]]; then
     echo "    \"clients\": $CLIENTS,"
     echo "    \"pipeline\": $PIPELINE"
     echo "  },"
-    echo "  \"ember_multi\": {"
+    echo "  \"ember_concurrent\": {"
     for i in "${!LABELS[@]}"; do
         comma=$([[ $i -lt $((${#LABELS[@]} - 1)) ]] && echo "," || echo "")
-        echo "    \"${LABELS[$i]}\": ${EMBER_MULTI_RESULTS[$i]}$comma"
+        echo "    \"${LABELS[$i]}\": ${EMBER_CONCURRENT_RESULTS[$i]}$comma"
     done
     echo "  },"
-    echo "  \"ember_single\": {"
+    echo "  \"ember_sharded\": {"
     for i in "${!LABELS[@]}"; do
         comma=$([[ $i -lt $((${#LABELS[@]} - 1)) ]] && echo "," || echo "")
-        echo "    \"${LABELS[$i]}\": ${EMBER_SINGLE_RESULTS[$i]}$comma"
+        echo "    \"${LABELS[$i]}\": ${EMBER_SHARDED_RESULTS[$i]}$comma"
     done
     echo "  }"
     if [[ "$HAS_REDIS" == "true" ]]; then
@@ -313,87 +315,114 @@ else
     echo "system: $CPU_CORES cores, $REQUESTS requests, $CLIENTS clients"
     echo ""
 
-    # --- single-threaded comparison ---
-    echo "--- single-threaded comparison (ember 1 shard vs redis) ---"
+    # --- all servers comparison ---
+    echo "=== throughput comparison (requests/sec) ==="
     echo ""
+
+    # build header
+    header="%-22s %16s %16s"
+    header_args=("test" "ember concurrent" "ember sharded")
+    divider="%-22s %16s %16s"
+    divider_args=("----" "----------------" "-------------")
+
     if [[ "$HAS_REDIS" == "true" ]]; then
-        printf "%-20s %14s %14s %10s\n" "test" "ember (1)" "redis" "ratio"
-        printf "%-20s %14s %14s %10s\n" "----" "---------" "-----" "-----"
-        for i in "${!LABELS[@]}"; do
-            e=${EMBER_SINGLE_RESULTS[$i]}
-            r=${REDIS_RESULTS[$i]}
-            ratio=$(calc_ratio "$e" "$r")
-            printf "%-20s %14s %14s %10s\n" "${LABELS[$i]}" \
-                "$(format_number "$e")" \
-                "$(format_number "$r")" \
-                "$ratio"
-        done
-    else
-        printf "%-20s %14s\n" "test" "ember (1)"
-        printf "%-20s %14s\n" "----" "---------"
-        for i in "${!LABELS[@]}"; do
-            printf "%-20s %14s\n" "${LABELS[$i]}" "$(format_number "${EMBER_SINGLE_RESULTS[$i]}")"
-        done
-        echo ""
-        echo "(redis not installed - single-threaded comparison unavailable)"
+        header="$header %12s"
+        header_args+=("redis")
+        divider="$divider %12s"
+        divider_args+=("-----")
     fi
-
-    echo ""
-
-    # --- multi-threaded comparison ---
-    echo "--- multi-threaded comparison (ember $CPU_CORES shards vs dragonfly) ---"
-    echo ""
     if [[ "$HAS_DRAGONFLY" == "true" ]]; then
-        printf "%-20s %14s %14s %10s\n" "test" "ember ($CPU_CORES)" "dragonfly" "ratio"
-        printf "%-20s %14s %14s %10s\n" "----" "----------" "---------" "-----"
-        for i in "${!LABELS[@]}"; do
-            e=${EMBER_MULTI_RESULTS[$i]}
-            d=${DRAGONFLY_RESULTS[$i]}
-            ratio=$(calc_ratio "$e" "$d")
-            printf "%-20s %14s %14s %10s\n" "${LABELS[$i]}" \
-                "$(format_number "$e")" \
-                "$(format_number "$d")" \
-                "$ratio"
-        done
-    else
-        printf "%-20s %14s\n" "test" "ember ($CPU_CORES)"
-        printf "%-20s %14s\n" "----" "----------"
-        for i in "${!LABELS[@]}"; do
-            printf "%-20s %14s\n" "${LABELS[$i]}" "$(format_number "${EMBER_MULTI_RESULTS[$i]}")"
-        done
-        echo ""
-        echo "(dragonfly not installed - multi-threaded comparison unavailable)"
+        header="$header %12s"
+        header_args+=("dragonfly")
+        divider="$divider %12s"
+        divider_args+=("---------")
     fi
 
+    printf "$header\n" "${header_args[@]}"
+    printf "$divider\n" "${divider_args[@]}"
+
+    for i in "${!LABELS[@]}"; do
+        ec=${EMBER_CONCURRENT_RESULTS[$i]}
+        es=${EMBER_SHARDED_RESULTS[$i]}
+
+        row="%-22s %16s %16s"
+        row_args=("${LABELS[$i]}" "$(format_number "$ec")" "$(format_number "$es")")
+
+        if [[ "$HAS_REDIS" == "true" ]]; then
+            row="$row %12s"
+            row_args+=("$(format_number "${REDIS_RESULTS[$i]}")")
+        fi
+        if [[ "$HAS_DRAGONFLY" == "true" ]]; then
+            row="$row %12s"
+            row_args+=("$(format_number "${DRAGONFLY_RESULTS[$i]}")")
+        fi
+
+        printf "$row\n" "${row_args[@]}"
+    done
+
+    echo ""
     echo ""
 
-    # --- scaling efficiency ---
-    echo "--- scaling efficiency (ember multi-core vs single-core) ---"
+    # --- vs redis ---
+    if [[ "$HAS_REDIS" == "true" ]]; then
+        echo "=== ember vs redis ==="
+        echo ""
+        printf "%-22s %16s %16s\n" "test" "concurrent" "sharded"
+        printf "%-22s %16s %16s\n" "----" "----------" "-------"
+        for i in "${!LABELS[@]}"; do
+            ec=${EMBER_CONCURRENT_RESULTS[$i]}
+            es=${EMBER_SHARDED_RESULTS[$i]}
+            r=${REDIS_RESULTS[$i]}
+            ratio_c=$(calc_ratio "$ec" "$r")
+            ratio_s=$(calc_ratio "$es" "$r")
+            printf "%-22s %16s %16s\n" "${LABELS[$i]}" "$ratio_c" "$ratio_s"
+        done
+        echo ""
+        echo ""
+    fi
+
+    # --- vs dragonfly ---
+    if [[ "$HAS_DRAGONFLY" == "true" ]]; then
+        echo "=== ember vs dragonfly ==="
+        echo ""
+        printf "%-22s %16s %16s\n" "test" "concurrent" "sharded"
+        printf "%-22s %16s %16s\n" "----" "----------" "-------"
+        for i in "${!LABELS[@]}"; do
+            ec=${EMBER_CONCURRENT_RESULTS[$i]}
+            es=${EMBER_SHARDED_RESULTS[$i]}
+            d=${DRAGONFLY_RESULTS[$i]}
+            ratio_c=$(calc_ratio "$ec" "$d")
+            ratio_s=$(calc_ratio "$es" "$d")
+            printf "%-22s %16s %16s\n" "${LABELS[$i]}" "$ratio_c" "$ratio_s"
+        done
+        echo ""
+        echo ""
+    fi
+
+    # --- ember modes comparison ---
+    echo "=== ember concurrent vs sharded ==="
     echo ""
-    printf "%-20s %14s %14s %10s\n" "test" "ember ($CPU_CORES)" "ember (1)" "scaling"
-    printf "%-20s %14s %14s %10s\n" "----" "----------" "---------" "-------"
+    printf "%-22s %10s\n" "test" "ratio"
+    printf "%-22s %10s\n" "----" "-----"
     for i in "${!LABELS[@]}"; do
-        m=${EMBER_MULTI_RESULTS[$i]}
-        s=${EMBER_SINGLE_RESULTS[$i]}
-        scaling=$(calc_ratio "$m" "$s")
-        printf "%-20s %14s %14s %10s\n" "${LABELS[$i]}" \
-            "$(format_number "$m")" \
-            "$(format_number "$s")" \
-            "$scaling"
+        ec=${EMBER_CONCURRENT_RESULTS[$i]}
+        es=${EMBER_SHARDED_RESULTS[$i]}
+        ratio=$(calc_ratio "$ec" "$es")
+        printf "%-22s %10s\n" "${LABELS[$i]}" "$ratio"
     done
     echo ""
-    echo "(ideal scaling on $CPU_CORES cores would be ${CPU_CORES}.0x)"
+    echo "(concurrent mode uses DashMap, sharded uses channel routing)"
 fi
 
 # --- save raw results ---
 
 RESULT_FILE="$RESULTS_DIR/$TIMESTAMP.csv"
 {
-    echo "test,ember_multi_rps,ember_single_rps,redis_rps,dragonfly_rps"
+    echo "test,ember_concurrent_rps,ember_sharded_rps,redis_rps,dragonfly_rps"
     for i in "${!LABELS[@]}"; do
         redis_val="${REDIS_RESULTS[$i]:-}"
         dragonfly_val="${DRAGONFLY_RESULTS[$i]:-}"
-        echo "${LABELS[$i]},${EMBER_MULTI_RESULTS[$i]},${EMBER_SINGLE_RESULTS[$i]},${redis_val},${dragonfly_val}"
+        echo "${LABELS[$i]},${EMBER_CONCURRENT_RESULTS[$i]},${EMBER_SHARDED_RESULTS[$i]},${redis_val},${dragonfly_val}"
     done
 } > "$RESULT_FILE"
 
