@@ -18,5 +18,5 @@ pub use keyspace::{
     EvictionPolicy, IncrError, Keyspace, KeyspaceStats, ShardConfig, TtlResult, WriteError,
     WrongType, ZAddResult,
 };
-pub use shard::{ShardPersistenceConfig, ShardRequest, ShardResponse};
+pub use shard::{ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse, spawn_shard};
 pub use types::Value;

@@ -68,6 +68,11 @@ struct Args {
     /// number of shards (worker threads). defaults to available CPU cores
     #[arg(long)]
     shards: Option<usize>,
+
+    /// use worker-per-core architecture with SO_REUSEPORT for better scaling.
+    /// each worker gets its own accept loop and tokio runtime.
+    #[arg(long)]
+    workers: bool,
 }
 
 #[tokio::main]
@@ -168,18 +173,33 @@ async fn main() {
         enabled: args.slowlog_log_slower_than >= 0,
     };
 
-    info!(shards = shard_count, "ember server starting...");
+    info!(shards = shard_count, workers = args.workers, "ember server starting...");
 
-    if let Err(e) = server::run(
-        addr,
-        shard_count,
-        engine_config,
-        None,
-        args.metrics_port.is_some(),
-        slowlog_config,
-    )
-    .await
-    {
+    let result = if args.workers {
+        // Worker mode: multiple accept loops with SO_REUSEPORT.
+        server::run_with_workers(
+            addr,
+            shard_count,
+            engine_config,
+            None,
+            args.metrics_port.is_some(),
+            slowlog_config,
+        )
+        .await
+    } else {
+        // Default mode: single accept loop in tokio multi-threaded runtime.
+        server::run(
+            addr,
+            shard_count,
+            engine_config,
+            None,
+            args.metrics_port.is_some(),
+            slowlog_config,
+        )
+        .await
+    };
+
+    if let Err(e) = result {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }
