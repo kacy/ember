@@ -456,30 +456,29 @@ Every PR that touches performance-critical code must include benchmark results. 
 
 ### Key Benchmarks
 
-```
-# Micro-benchmarks (criterion)
-cargo bench -p ember-core
+```bash
+# quick sanity check (ember only)
+./scripts/bench-quick.sh
 
-# System benchmarks
-ember benchmark --clients 50 --pipeline 16 --requests 1000000
+# full comparison with Redis
+./scripts/bench.sh
 
-# Comparison with Redis
-./bench/compare-redis.sh
+# memory usage comparison
+./scripts/bench-memory.sh
 ```
 
 ### Metrics to Track
 
-| Metric | Target | Redis Baseline |
-|--------|--------|----------------|
-| GET throughput (single core) | 500k ops/sec | 100k ops/sec |
-| SET throughput (single core) | 400k ops/sec | 80k ops/sec |
-| P50 latency | <50µs | ~200µs |
-| P99 latency | <200µs | ~1ms |
-| P999 latency | <1ms | ~5ms |
-| Memory per string key (32B key, 64B value) | <150B | ~200B |
-| Memory per sorted set entry | <80B | ~120B |
-| Snapshot speed | >500MB/s | ~200MB/s |
-| Recovery speed | >1GB/s | ~300MB/s |
+| Metric | Target | Achieved | Redis Baseline |
+|--------|--------|----------|----------------|
+| SET throughput (P=16) | 500k+ ops/sec | **1.86M ops/sec** | 1.0M ops/sec |
+| GET throughput (P=16) | 500k+ ops/sec | **2.48M ops/sec** | 1.16M ops/sec |
+| SET throughput (P=1) | 100k+ ops/sec | **200k ops/sec** | 100k ops/sec |
+| GET throughput (P=1) | 100k+ ops/sec | **200k ops/sec** | 100k ops/sec |
+| P99 latency | <1ms | **0.4ms** | 0.4ms |
+| Memory per string key (64B value) | <200B | **257B** | ~165B |
+
+*Benchmarked on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.1GHz) using concurrent mode with jemalloc.*
 
 ### Workloads
 

@@ -443,4 +443,74 @@ mod tests {
         assert_eq!(ss.rank("a"), Some(2));
         assert_eq!(ss.rank("b"), Some(0));
     }
+
+    #[test]
+    fn positive_infinity_score() {
+        let mut ss = SortedSet::new();
+        ss.add("normal".into(), 100.0);
+        ss.add("infinite".into(), f64::INFINITY);
+        ss.add("large".into(), 1e308);
+
+        // infinity should sort after everything
+        assert_eq!(ss.rank("infinite"), Some(2));
+        assert_eq!(ss.rank("large"), Some(1));
+        assert_eq!(ss.rank("normal"), Some(0));
+    }
+
+    #[test]
+    fn negative_infinity_score() {
+        let mut ss = SortedSet::new();
+        ss.add("normal".into(), 100.0);
+        ss.add("neg_inf".into(), f64::NEG_INFINITY);
+        ss.add("small".into(), -1e308);
+
+        // negative infinity should sort before everything
+        assert_eq!(ss.rank("neg_inf"), Some(0));
+        assert_eq!(ss.rank("small"), Some(1));
+        assert_eq!(ss.rank("normal"), Some(2));
+    }
+
+    #[test]
+    fn zero_score() {
+        let mut ss = SortedSet::new();
+        ss.add("positive".into(), 1.0);
+        ss.add("zero".into(), 0.0);
+        ss.add("negative".into(), -1.0);
+
+        assert_eq!(ss.rank("negative"), Some(0));
+        assert_eq!(ss.rank("zero"), Some(1));
+        assert_eq!(ss.rank("positive"), Some(2));
+    }
+
+    #[test]
+    fn range_by_rank_on_empty_set() {
+        let ss = SortedSet::new();
+        assert!(ss.range_by_rank(0, -1).is_empty());
+        assert!(ss.range_by_rank(0, 100).is_empty());
+    }
+
+    #[test]
+    fn range_by_rank_inverted_indices() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+
+        // start > stop with positive indices should return empty
+        let result = ss.range_by_rank(2, 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn remove_all_members_leaves_empty() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+
+        ss.remove("a");
+        ss.remove("b");
+
+        assert_eq!(ss.len(), 0);
+        assert!(ss.range_by_rank(0, -1).is_empty());
+    }
 }
