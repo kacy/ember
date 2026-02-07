@@ -148,13 +148,13 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 
 | mode | vs redis | vs dragonfly | best for |
 |------|----------|--------------|----------|
-| concurrent | **1.8-2.1x faster** | **3-6x faster** | simple GET/SET workloads |
-| sharded | ~0.9x (channel overhead) | **1.6-2.5x faster** | all data types |
+| concurrent | **1.8-2.1x faster** | **3.3-3.8x faster** | simple GET/SET workloads |
+| sharded | ~0.9x (channel overhead) | **1.5-1.6x faster** | all data types |
 
 **highlights**:
-- concurrent mode: 1.86M SET/sec, 2.48M GET/sec
+- concurrent mode: 1.86M SET/sec, 2.49M GET/sec
 - p99 latency: 0.4ms (same as redis)
-- memory: ~257 bytes/key (redis: ~165 bytes/key)
+- memory: ~161 bytes/key (redis: ~105 bytes/key)
 
 ```bash
 ./bench/bench-quick.sh   # quick sanity check

@@ -10,41 +10,41 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (64B, P=16) | **1,859,152** | 896,276 | 1,005,185 | 557,000 |
-| GET (64B, P=16) | **2,482,898** | 992,302 | 1,160,259 | 395,000 |
-| SET (64B, P=1) | **199,600** | 104,712 | 100,000 | 87,000 |
-| GET (64B, P=1) | **200,000** | 104,712 | 99,800 | 87,000 |
+| SET (64B, P=16) | **1,859,464** | 863,823 | 992,380 | 551,514 |
+| GET (64B, P=16) | **2,489,950** | 965,532 | 1,163,051 | 640,389 |
+| SET (64B, P=1) | **222,123** | 199,840 | 117,647 | 222,222 |
+| GET (64B, P=1) | **222,222** | 222,123 | 124,937 | 222,222 |
 
 ### vs redis
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **1.85x** | **2.14x** | best for simple GET/SET workloads |
-| ember sharded | 0.89x | 0.86x | channel overhead, but supports all data types |
+| ember concurrent | **1.8x** | **2.1x** | best for simple GET/SET workloads |
+| ember sharded | 0.9x | 0.8x | channel overhead, but supports all data types |
 
 ### vs dragonfly
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **3.3x** | **6.3x** | dragonfly tested with default config |
-| ember sharded | **1.6x** | **2.5x** | both use thread-per-core architecture |
+| ember concurrent | **3.3x** | **3.8x** | dragonfly tested with default config |
+| ember sharded | **1.6x** | **1.5x** | both use thread-per-core architecture |
 
 ### latency (50 clients, no pipelining)
 
 | server | p50 | p99 | p100 |
 |--------|-----|-----|------|
-| ember concurrent | 0.3ms | 0.4ms | 0.5ms |
-| ember sharded | 0.3ms | 0.4ms | 0.5ms |
-| redis | 0.3ms | 0.4ms | 0.7ms |
-| dragonfly | 0.4ms | 0.5ms | 4.0ms |
+| ember concurrent | 0.3ms | 0.4ms | 0.6ms |
+| ember sharded | 0.3ms | 0.4ms | 0.6ms |
+| redis | 0.3ms | 0.4ms | 0.5ms |
 
-### memory usage (~632k keys, 64B values)
+### memory usage (~1M keys, 64B values)
 
 | server | memory | per key |
 |--------|--------|---------|
-| ember concurrent | 161 MB | ~257 bytes |
-| ember sharded | 231 MB | ~356 bytes |
-| redis | 105 MB | ~165 bytes |
+| ember | 161 MB | ~161 bytes |
+| redis | 105 MB | ~105 bytes |
+
+ember uses more memory per key due to storing additional metadata for LRU eviction and expiration tracking.
 
 ### with persistence enabled
 
@@ -62,10 +62,10 @@ persistence overhead is minimal with everysec fsync. `appendfsync always` has si
 
 | cores | ember sharded SET | scaling factor |
 |-------|-------------------|----------------|
-| 1 | 812,449 | 1.0x |
-| 8 | 803,774 | 1.0x |
+| 1 | ~100k | 1.0x |
+| 8 | ~860k | 8.6x |
 
-**note**: sharded mode currently shows 1.0x scaling on 8 cores. the architecture routes requests through channels which creates a bottleneck. concurrent mode avoids this by using lock-free DashMap access.
+sharded mode scales linearly with cores for pipelined workloads. concurrent mode uses a global DashMap and doesn't scale with core count but has lower per-request overhead.
 
 ## execution modes
 
@@ -73,7 +73,7 @@ ember offers two modes with different tradeoffs:
 
 **concurrent mode** (`--concurrent`):
 - uses DashMap for lock-free access
-- 2x faster than redis for GET/SET
+- 1.8-2.1x faster than redis for GET/SET
 - only supports string operations
 - best for simple key-value workloads
 
@@ -81,7 +81,7 @@ ember offers two modes with different tradeoffs:
 - each CPU core owns a keyspace partition
 - requests routed via tokio channels
 - supports all data types (lists, hashes, sets, sorted sets)
-- channel overhead reduces throughput vs concurrent mode
+- ~0.9x redis throughput with pipelining, but 1.7x faster without pipelining
 
 ## running benchmarks
 
@@ -89,7 +89,7 @@ ember offers two modes with different tradeoffs:
 
 ```bash
 # build with jemalloc for best performance
-cargo build --release --features jemalloc
+cargo build --release -p ember-server --features jemalloc
 
 # quick sanity check (ember only)
 ./bench/bench-quick.sh
@@ -139,7 +139,7 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 
 ```bash
 # customize benchmark parameters
-REQUESTS=1000000 THREADS=16 ./bench/bench.sh
+BENCH_REQUESTS=1000000 BENCH_THREADS=16 ./bench/compare-redis.sh
 
 # customize memory test
 KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
@@ -149,12 +149,14 @@ KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
 
 | variable | default | description |
 |----------|---------|-------------|
-| `EMBER_PORT` | 6379 | ember multi-core port |
+| `EMBER_CONCURRENT_PORT` | 6379 | ember concurrent mode port |
+| `EMBER_SHARDED_PORT` | 6380 | ember sharded mode port |
 | `REDIS_PORT` | 6399 | redis port |
 | `DRAGONFLY_PORT` | 6389 | dragonfly port |
 | `BENCH_REQUESTS` | 100000 | requests per test |
 | `BENCH_CLIENTS` | 50 | concurrent connections |
 | `BENCH_PIPELINE` | 16 | pipeline depth |
+| `BENCH_THREADS` | CPU cores | redis-benchmark threads |
 
 ## micro-benchmarks
 
