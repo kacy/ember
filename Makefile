@@ -41,12 +41,20 @@ bench-protocol:
 	cargo bench -p ember-protocol
 
 bench-compare:
-	cargo build --release -p ember-server
-	bash bench/compare-redis.sh
+	cargo build --release -p ember-server --features jemalloc
+	bash bench/bench.sh
 
 bench-quick:
-	cargo build --release -p ember-server
-	bash bench/compare-redis.sh --ember-only
+	cargo build --release -p ember-server --features jemalloc
+	bash bench/bench-quick.sh
+
+bench-memory:
+	cargo build --release -p ember-server --features jemalloc
+	bash bench/bench-memory.sh
+
+bench-full:
+	cargo build --release -p ember-server --features jemalloc
+	bash bench/compare-redis.sh
 
 # --- versioning & releases ---
 #
