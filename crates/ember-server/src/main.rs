@@ -1,3 +1,9 @@
+// use jemalloc as the global allocator for better multi-threaded performance.
+// reduces allocation contention compared to the default system allocator.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod config;
 mod connection;
 mod metrics;

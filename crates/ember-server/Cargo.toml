@@ -9,6 +9,10 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+default = ["jemalloc"]
+jemalloc = ["tikv-jemallocator"]
+
 [dependencies]
 bytes = { workspace = true }
 emberkv-core = { workspace = true }
@@ -21,3 +25,6 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
+
+# optional: better multi-threaded allocation performance
+tikv-jemallocator = { version = "0.6", optional = true }
