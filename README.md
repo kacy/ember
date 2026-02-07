@@ -93,6 +93,7 @@ redis-cli FLUSHDB               # => OK
 |------|---------|-------------|
 | `--host` | 127.0.0.1 | address to bind to |
 | `--port` | 6379 | port to listen on |
+| `--shards` | CPU cores | number of worker threads (shards) |
 | `--max-memory` | unlimited | memory limit (e.g., 256M, 1G) |
 | `--eviction-policy` | noeviction | `noeviction` or `allkeys-lru` |
 | `--data-dir` | — | directory for persistence files |
@@ -135,6 +136,36 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 | throughput | ~100k ops/sec/core | 500k+ ops/sec/core |
 | p99 latency | ~1ms | <200µs |
 | memory/key | ~90 bytes overhead | <40 bytes |
+
+## early benchmarks
+
+these are preliminary numbers from a MacBook Pro (M1 Pro, 8 cores). more rigorous benchmarking on Linux servers is planned.
+
+| test | ember (8 cores) | ember (1 core) | redis | dragonfly* |
+|------|-----------------|----------------|-------|------------|
+| SET (3B, P=16) | 1,176,470 | 602,409 | 1,785,714 | 181,488 |
+| SET (64B, P=16) | 1,123,595 | 909,090 | 1,204,819 | 176,991 |
+| SET (1KB, P=16) | 625,000 | 526,315 | 1,204,819 | 32,626 |
+| GET (3B, P=16) | 952,381 | 990,099 | 1,136,363 | 23,474 |
+| GET (64B, P=16) | 917,431 | 1,030,927 | 1,369,863 | 35,842 |
+| GET (1KB, P=16) | 1,020,408 | 990,099 | 1,282,051 | 34,710 |
+| SET (64B, P=1) | 135,135 | 140,845 | 183,486 | 17,611 |
+| GET (64B, P=1) | 132,100 | 134,952 | 183,823 | 16,943 |
+
+*\*dragonfly ran in Docker on macOS, which adds significant overhead (Linux VM). not representative of native performance.*
+
+**test conditions**: 100k requests, 50 clients, pipeline depth 16 (except P=1 tests). all servers ran with persistence disabled.
+
+**observations**:
+- redis outperforms ember on this Mac — likely due to highly optimized ARM builds and years of macOS tuning
+- ember's multi-core scaling is limited here because `redis-benchmark` is single-threaded
+- proper Linux benchmarks with `memtier_benchmark` and parallel clients are needed for accurate multi-core comparison
+
+run your own benchmarks:
+```bash
+make bench-compare   # full comparison (requires redis, optionally dragonfly)
+make bench-quick     # ember only
+```
 
 ## status
 
