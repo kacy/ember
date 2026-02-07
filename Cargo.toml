@@ -10,7 +10,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/kacy/ember"
@@ -51,7 +51,7 @@ metrics-exporter-prometheus = { version = "0.16", features = ["http-listener"] }
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
 # internal crates (version required for crates.io publishing)
-emberkv-core = { version = "0.2.1", path = "crates/ember-core" }
-ember-protocol = { version = "0.2.1", path = "crates/ember-protocol" }
-ember-persistence = { version = "0.2.1", path = "crates/ember-persistence" }
-ember-cluster = { version = "0.2.1", path = "crates/ember-cluster" }
+emberkv-core = { version = "0.3.0", path = "crates/ember-core" }
+ember-protocol = { version = "0.3.0", path = "crates/ember-protocol" }
+ember-persistence = { version = "0.3.0", path = "crates/ember-persistence" }
+ember-cluster = { version = "0.3.0", path = "crates/ember-cluster" }
