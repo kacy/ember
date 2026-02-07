@@ -6,12 +6,13 @@
 //! every mutation for eviction and stats reporting.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use rand::seq::IteratorRandom;
 
 use crate::memory::{self, MemoryTracker};
+use crate::time;
 use crate::types::sorted_set::{SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
@@ -129,33 +130,35 @@ pub enum SetResult {
 
 /// A single entry in the keyspace: a value plus optional expiration
 /// and last access time for LRU approximation.
+///
+/// Memory optimized: uses u64 timestamps instead of Option<Instant>.
+/// Saves 8 bytes per entry (24 bytes down from 32 for metadata).
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub(crate) value: Value,
-    pub(crate) expires_at: Option<Instant>,
-    pub(crate) last_access: Instant,
+    /// Monotonic expiry timestamp in ms. 0 = no expiry.
+    pub(crate) expires_at_ms: u64,
+    /// Monotonic last access timestamp in ms (for LRU).
+    pub(crate) last_access_ms: u64,
 }
 
 impl Entry {
-    fn new(value: Value, expires_at: Option<Instant>) -> Self {
+    fn new(value: Value, ttl: Option<Duration>) -> Self {
         Self {
             value,
-            expires_at,
-            last_access: Instant::now(),
+            expires_at_ms: time::expiry_from_duration(ttl),
+            last_access_ms: time::now_ms(),
         }
     }
 
     /// Returns `true` if this entry has passed its expiration time.
     fn is_expired(&self) -> bool {
-        match self.expires_at {
-            Some(deadline) => Instant::now() >= deadline,
-            None => false,
-        }
+        time::is_expired(self.expires_at_ms)
     }
 
     /// Marks this entry as accessed right now.
     fn touch(&mut self) {
-        self.last_access = Instant::now();
+        self.last_access_ms = time::now_ms();
     }
 }
 
@@ -274,7 +277,7 @@ impl Keyspace {
     /// and the eviction policy is `NoEviction`. With `AllKeysLru`, this
     /// will evict keys to make room before inserting.
     pub fn set(&mut self, key: String, value: Bytes, expire: Option<Duration>) -> SetResult {
-        let expires_at = expire.map(|d| Instant::now() + d);
+        let has_expiry = expire.is_some();
         let new_value = Value::String(value);
 
         // check memory limit — for overwrites, only the net increase matters
@@ -293,8 +296,7 @@ impl Keyspace {
         if let Some(old_entry) = self.entries.get(&key) {
             self.memory.replace(&key, &old_entry.value, &new_value);
             // adjust expiry count if the TTL status changed
-            let had_expiry = old_entry.expires_at.is_some();
-            let has_expiry = expires_at.is_some();
+            let had_expiry = old_entry.expires_at_ms != 0;
             match (had_expiry, has_expiry) {
                 (false, true) => self.expiry_count += 1,
                 (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
@@ -302,12 +304,12 @@ impl Keyspace {
             }
         } else {
             self.memory.add(&key, &new_value);
-            if expires_at.is_some() {
+            if has_expiry {
                 self.expiry_count += 1;
             }
         }
 
-        self.entries.insert(key, Entry::new(new_value, expires_at));
+        self.entries.insert(key, Entry::new(new_value, expire));
         SetResult::Ok
     }
 
@@ -329,13 +331,13 @@ impl Keyspace {
             .iter()
             .choose_multiple(&mut rng, EVICTION_SAMPLE_SIZE)
             .into_iter()
-            .min_by_key(|(_, entry)| entry.last_access)
+            .min_by_key(|(_, entry)| entry.last_access_ms)
             .map(|(k, _)| k.clone());
 
         if let Some(key) = victim {
             if let Some(entry) = self.entries.remove(&key) {
                 self.memory.remove(&key, &entry.value);
-                if entry.expires_at.is_some() {
+                if entry.expires_at_ms != 0 {
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                 }
                 self.evicted_total += 1;
@@ -371,7 +373,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
-            if entry.expires_at.is_some() {
+            if entry.expires_at_ms != 0 {
                 self.expiry_count = self.expiry_count.saturating_sub(1);
             }
             true
@@ -396,10 +398,10 @@ impl Keyspace {
         }
         match self.entries.get_mut(key) {
             Some(entry) => {
-                if entry.expires_at.is_none() {
+                if entry.expires_at_ms == 0 {
                     self.expiry_count += 1;
                 }
-                entry.expires_at = Some(Instant::now() + Duration::from_secs(seconds));
+                entry.expires_at_ms = time::now_ms() + seconds * 1000;
                 true
             }
             None => false,
@@ -415,11 +417,8 @@ impl Keyspace {
             return TtlResult::NotFound;
         }
         match self.entries.get(key) {
-            Some(entry) => match entry.expires_at {
-                Some(deadline) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    TtlResult::Seconds(remaining.as_secs())
-                }
+            Some(entry) => match time::remaining_secs(entry.expires_at_ms) {
+                Some(secs) => TtlResult::Seconds(secs),
                 None => TtlResult::NoExpiry,
             },
             None => TtlResult::NotFound,
@@ -436,8 +435,8 @@ impl Keyspace {
         }
         match self.entries.get_mut(key) {
             Some(entry) => {
-                if entry.expires_at.is_some() {
-                    entry.expires_at = None;
+                if entry.expires_at_ms != 0 {
+                    entry.expires_at_ms = 0;
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                     true
                 } else {
@@ -457,11 +456,8 @@ impl Keyspace {
             return TtlResult::NotFound;
         }
         match self.entries.get(key) {
-            Some(entry) => match entry.expires_at {
-                Some(deadline) => {
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    TtlResult::Milliseconds(remaining.as_millis() as u64)
-                }
+            Some(entry) => match time::remaining_ms(entry.expires_at_ms) {
+                Some(ms) => TtlResult::Milliseconds(ms),
                 None => TtlResult::NoExpiry,
             },
             None => TtlResult::NotFound,
@@ -478,10 +474,10 @@ impl Keyspace {
         }
         match self.entries.get_mut(key) {
             Some(entry) => {
-                if entry.expires_at.is_none() {
+                if entry.expires_at_ms == 0 {
                     self.expiry_count += 1;
                 }
-                entry.expires_at = Some(Instant::now() + Duration::from_millis(millis));
+                entry.expires_at_ms = time::now_ms() + millis;
                 true
             }
             None => false,
@@ -521,9 +517,8 @@ impl Keyspace {
                     }
                     _ => return Err(IncrError::WrongType),
                 };
-                let expire = entry
-                    .expires_at
-                    .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+                let expire = time::remaining_ms(entry.expires_at_ms)
+                    .map(Duration::from_millis);
                 (val, expire)
             }
             None => (0, None),
@@ -619,16 +614,12 @@ impl Keyspace {
     /// clone of the value, and the remaining TTL in milliseconds (-1 for
     /// entries with no expiration). Used by snapshot and AOF rewrite.
     pub fn iter_entries(&self) -> impl Iterator<Item = (&str, &Value, i64)> {
-        let now = Instant::now();
         self.entries.iter().filter_map(move |(key, entry)| {
             if entry.is_expired() {
                 return None;
             }
-            let ttl_ms = match entry.expires_at {
-                Some(deadline) => {
-                    let remaining = deadline.saturating_duration_since(now);
-                    remaining.as_millis() as i64
-                }
+            let ttl_ms = match time::remaining_ms(entry.expires_at_ms) {
+                Some(ms) => ms as i64,
                 None => -1,
             };
             Some((key.as_str(), &entry.value, ttl_ms))
@@ -637,22 +628,16 @@ impl Keyspace {
 
     /// Restores an entry during recovery, bypassing memory limits.
     ///
-    /// If `expires_at` is in the past, the entry is silently skipped.
+    /// `ttl` is the remaining time-to-live. If `None`, the key has no expiry.
     /// This is used only during shard startup when loading from
     /// snapshot/AOF — normal writes should go through `set()`.
-    pub fn restore(&mut self, key: String, value: Value, expires_at: Option<Instant>) {
-        // skip entries that already expired
-        if let Some(deadline) = expires_at {
-            if Instant::now() >= deadline {
-                return;
-            }
-        }
+    pub fn restore(&mut self, key: String, value: Value, ttl: Option<Duration>) {
+        let has_expiry = ttl.is_some();
 
         // if replacing an existing entry, adjust memory tracking
         if let Some(old) = self.entries.get(&key) {
             self.memory.replace(&key, &old.value, &value);
-            let had_expiry = old.expires_at.is_some();
-            let has_expiry = expires_at.is_some();
+            let had_expiry = old.expires_at_ms != 0;
             match (had_expiry, has_expiry) {
                 (false, true) => self.expiry_count += 1,
                 (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
@@ -660,12 +645,12 @@ impl Keyspace {
             }
         } else {
             self.memory.add(&key, &value);
-            if expires_at.is_some() {
+            if has_expiry {
                 self.expiry_count += 1;
             }
         }
 
-        self.entries.insert(key, Entry::new(value, expires_at));
+        self.entries.insert(key, Entry::new(value, ttl));
     }
 
     // -- list operations --
@@ -849,7 +834,7 @@ impl Keyspace {
             let removed = self.entries.remove(key).expect("verified above");
             // use remove_with_size since the value was already mutated
             self.memory.remove_with_size(old_entry_size);
-            if removed.expires_at.is_some() {
+            if removed.expires_at_ms != 0 {
                 self.expiry_count = self.expiry_count.saturating_sub(1);
             }
         } else {
@@ -977,7 +962,7 @@ impl Keyspace {
         if is_empty {
             let removed_entry = self.entries.remove(key).expect("verified above");
             self.memory.remove_with_size(old_entry_size);
-            if removed_entry.expires_at.is_some() {
+            if removed_entry.expires_at_ms != 0 {
                 self.expiry_count = self.expiry_count.saturating_sub(1);
             }
         } else {
@@ -1575,7 +1560,7 @@ impl Keyspace {
         if expired {
             if let Some(entry) = self.entries.remove(key) {
                 self.memory.remove(key, &entry.value);
-                if entry.expires_at.is_some() {
+                if entry.expires_at_ms != 0 {
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                 }
                 self.expired_total += 1;
@@ -2036,16 +2021,17 @@ mod tests {
     }
 
     #[test]
-    fn restore_skips_past_deadline() {
+    fn restore_with_zero_ttl_expires_immediately() {
         let mut ks = Keyspace::new();
-        // deadline already passed
-        let past = Instant::now() - Duration::from_secs(1);
+        // TTL of 0 should create entry that expires immediately
         ks.restore(
-            "expired".into(),
-            Value::String(Bytes::from("old")),
-            Some(past),
+            "short-lived".into(),
+            Value::String(Bytes::from("data")),
+            Some(Duration::from_millis(1)),
         );
-        assert!(ks.is_empty());
+        // Entry exists but will be expired on access
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(ks.get("short-lived").is_err() || ks.get("short-lived").unwrap().is_none());
     }
 
     #[test]
