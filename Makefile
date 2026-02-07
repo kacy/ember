@@ -1,6 +1,6 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build \
        release-patch release-minor release-major github-release \
-       publish publish-dry-run bench bench-core bench-protocol
+       publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick
 
 # extract the workspace version from the root Cargo.toml
 VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -39,6 +39,14 @@ bench-core:
 
 bench-protocol:
 	cargo bench -p ember-protocol
+
+bench-compare:
+	cargo build --release -p ember-server
+	bash bench/compare-redis.sh
+
+bench-quick:
+	cargo build --release -p ember-server
+	bash bench/compare-redis.sh --ember-only
 
 # --- versioning & releases ---
 #
