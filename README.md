@@ -144,56 +144,30 @@ ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](http
 
 ## benchmarks
 
-tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
+tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md](bench/README.md) for full results.
 
-### throughput (requests/sec, 8 benchmark threads)
+| mode | vs redis | vs dragonfly | best for |
+|------|----------|--------------|----------|
+| concurrent | **1.8-2.1x faster** | **3-6x faster** | simple GET/SET workloads |
+| sharded | ~0.9x (channel overhead) | **1.6-2.5x faster** | all data types |
 
-| test | ember concurrent | redis | vs redis |
-|------|------------------|-------|----------|
-| SET (64B, P=16) | **1,859,152** | 1,005,185 | 1.85x |
-| GET (64B, P=16) | **2,482,898** | 1,160,259 | 2.14x |
-| SET (64B, P=1) | **199,600** | 100,000 | 2.0x |
-| GET (64B, P=1) | **200,000** | 99,800 | 2.0x |
+**highlights**:
+- concurrent mode: 1.86M SET/sec, 2.48M GET/sec
+- p99 latency: 0.4ms (same as redis)
+- memory: ~257 bytes/key (redis: ~165 bytes/key)
 
-**ember concurrent mode is 1.85x faster than Redis on pipelined SET and 2.14x faster on GET.**
-
-### latency (50 clients, no pipelining)
-
-| server | p50 | p99 | p100 | throughput |
-|--------|-----|-----|------|------------|
-| ember concurrent | 0.3ms | 0.4ms | 0.5ms | 200,000 |
-| redis | 0.3ms | 0.4ms | 0.7ms | 100,000 |
-
-### memory usage (~632k keys, 64B values)
-
-| server | memory | per key overhead |
-|--------|--------|------------------|
-| ember concurrent | 161 MB | ~257 bytes |
-| redis | 105 MB | ~165 bytes |
-
-ember's higher overhead comes from per-entry metadata (expiry timestamps, DashMap overhead). memory optimization is ongoing.
-
-### observations
-
-- **ember beats redis 2x across the board** — both pipelined and non-pipelined workloads
-- **latency is competitive** — both servers achieve p99 of 0.4ms
-- **redis is more memory efficient** — ~1.5x better memory density
-
-**test conditions**: 1M requests, 50 clients, pipeline depth 16, persistence disabled.
-
-run your own benchmarks:
 ```bash
-make bench-compare   # full comparison (requires redis)
-make bench-quick     # ember only
+./bench/bench-quick.sh   # quick sanity check
+./bench/bench.sh         # full comparison vs redis
 ```
 
-## architecture notes
+## architecture
 
 ember offers two execution modes:
 
-**sharded mode** (default): each CPU core owns a partition of the keyspace. requests are routed via tokio mpsc channels. good for complex commands that need atomic multi-key operations.
+**sharded mode** (default): thread-per-core with channel-based routing. supports all data types (lists, hashes, sets, sorted sets). has channel overhead but enables atomic multi-key operations.
 
-**concurrent mode** (`--concurrent`): uses a DashMap for lock-free concurrent access. bypasses channel overhead for GET/SET. best for simple key-value workloads. does not support lists, hashes, sorted sets, or sets.
+**concurrent mode** (`--concurrent`): lock-free DashMap access. 2x faster than sharded mode but only supports string operations.
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
