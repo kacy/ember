@@ -67,16 +67,34 @@ impl SlowLog {
         }
     }
 
+    /// Returns whether the slow log is enabled.
+    ///
+    /// Used by the connection handler to skip timing overhead entirely
+    /// when both metrics and slowlog are disabled.
+    pub fn is_enabled(&self) -> bool {
+        self.config.enabled
+    }
+
     /// Records a command if it exceeded the threshold.
     ///
     /// Called from the connection handler after each command completes.
     /// The mutex is effectively uncontended since slow commands are rare.
+    /// If the lock is poisoned (another thread panicked while holding it),
+    /// we recover by clearing the entries rather than propagating the panic.
     pub fn maybe_record(&self, duration: Duration, command: &str) {
         if !self.config.enabled || duration < self.config.slower_than {
             return;
         }
 
-        let mut inner = self.inner.lock().expect("slowlog lock poisoned");
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.entries.clear();
+                guard
+            }
+        };
+
         let id = inner.next_id;
         inner.next_id += 1;
 
@@ -96,19 +114,28 @@ impl SlowLog {
     ///
     /// If `count` is `None`, returns all entries.
     pub fn get(&self, count: Option<usize>) -> Vec<SlowLogEntry> {
-        let inner = self.inner.lock().expect("slowlog lock poisoned");
+        let inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let n = count.unwrap_or(inner.entries.len()).min(inner.entries.len());
         inner.entries.iter().rev().take(n).cloned().collect()
     }
 
     /// Returns the number of entries currently in the log.
     pub fn len(&self) -> usize {
-        self.inner.lock().expect("slowlog lock poisoned").entries.len()
+        match self.inner.lock() {
+            Ok(guard) => guard.entries.len(),
+            Err(poisoned) => poisoned.into_inner().entries.len(),
+        }
     }
 
     /// Clears all entries from the log.
     pub fn reset(&self) {
-        let mut inner = self.inner.lock().expect("slowlog lock poisoned");
+        let mut inner = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         inner.entries.clear();
     }
 }

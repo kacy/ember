@@ -4,10 +4,12 @@ the main server binary for [ember](https://github.com/kacy/ember). accepts TCP c
 
 ## what's in here
 
-- **main** — CLI arg parsing (host, port, max-memory, eviction policy, persistence config)
+- **main** — CLI arg parsing (host, port, max-memory, eviction policy, persistence, metrics, slowlog config)
 - **server** — TCP accept loop with configurable connection limits, graceful shutdown on SIGINT/SIGTERM, spawns a handler task per client
-- **connection** — per-connection event loop: read → parse frames → dispatch commands → write responses. handles idle timeouts, buffer limits, and protocol errors
+- **connection** — per-connection event loop: read → parse frames → dispatch commands → write responses. handles idle timeouts, buffer limits, and protocol errors. renders multi-section INFO and handles SLOWLOG commands
 - **config** — configuration helpers for byte sizes, eviction policies, fsync policies
+- **metrics** — prometheus exporter, per-command histogram/counter recording, background stats poller
+- **slowlog** — ring buffer for slow command logging with configurable threshold and capacity
 
 ## running
 
@@ -20,6 +22,9 @@ cargo run --release -p ember-server -- --max-memory 256M --eviction-policy allke
 
 # with AOF persistence
 cargo run --release -p ember-server -- --data-dir ./data --appendonly --appendfsync everysec
+
+# with prometheus metrics on port 9100
+cargo run --release -p ember-server -- --metrics-port 9100
 ```
 
 compatible with `redis-cli` and any RESP3 client.
