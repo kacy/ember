@@ -1,12 +1,13 @@
-//! Per-connection handler.
+//! Per-connection handler for sharded engine mode.
 //!
 //! Reads RESP3 frames from a TCP stream, routes them through the
 //! sharded engine, and writes responses back. Supports pipelining
-//! by dispatching multiple commands concurrently to shards.
+//! by dispatching multiple commands concurrently to shards using
+//! `join_all` for parallel execution.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
@@ -15,21 +16,10 @@ use futures::future::join_all;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+use crate::connection_common::{BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE};
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
-
-/// Initial read buffer capacity. 4KB covers most commands comfortably
-/// without over-allocating for simple PING/SET/GET workloads.
-const BUF_CAPACITY: usize = 4096;
-
-/// Maximum read buffer size before we disconnect the client. Prevents
-/// a single slow or malicious client from consuming unbounded memory
-/// with incomplete frames.
-const MAX_BUF_SIZE: usize = 64 * 1024 * 1024; // 64 MB
-
-/// How long a connection can be idle (no data received) before we
-/// close it. Prevents abandoned connections from leaking resources.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+use std::time::Duration;
 
 /// Drives a single client connection to completion.
 ///

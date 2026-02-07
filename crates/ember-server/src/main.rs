@@ -7,6 +7,7 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod concurrent_handler;
 mod config;
 mod connection;
+mod connection_common;
 mod metrics;
 mod server;
 mod slowlog;
