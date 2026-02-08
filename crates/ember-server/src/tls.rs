@@ -166,8 +166,11 @@ mod tests {
     fn test_missing_key_file() {
         // create temp cert file
         let tmp = std::env::temp_dir().join("test_cert.pem");
-        std::fs::write(&tmp, "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n")
-            .unwrap();
+        std::fs::write(
+            &tmp,
+            "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
 
         let config = TlsConfig {
             cert_file: tmp.to_string_lossy().into(),
