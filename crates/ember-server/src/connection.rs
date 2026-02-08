@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
@@ -22,7 +22,6 @@ use crate::connection_common::{BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE};
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
-use std::time::Duration;
 
 /// Drives a single client connection to completion.
 ///
@@ -85,15 +84,7 @@ pub async fn handle(
 
         // check if any frame is a subscribe command — if so, we need
         // to enter subscriber mode which changes the connection loop
-        let mut enter_sub = false;
-        if !frames.is_empty() {
-            for frame in &frames {
-                if is_subscribe_frame(frame) {
-                    enter_sub = true;
-                    break;
-                }
-            }
-        }
+        let enter_sub = frames.iter().any(is_subscribe_frame);
 
         if enter_sub {
             // process any non-subscribe commands that came before
@@ -135,15 +126,14 @@ pub async fn handle(
     }
 }
 
-/// Checks if a raw frame is a SUBSCRIBE or PSUBSCRIBE command.
+/// Checks if a raw frame is a SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE command.
 fn is_subscribe_frame(frame: &Frame) -> bool {
     if let Frame::Array(parts) = frame {
         if let Some(Frame::Bulk(name)) = parts.first() {
-            let upper = String::from_utf8_lossy(name).to_ascii_uppercase();
-            return matches!(
-                upper.as_str(),
-                "SUBSCRIBE" | "PSUBSCRIBE" | "UNSUBSCRIBE" | "PUNSUBSCRIBE"
-            );
+            return name.eq_ignore_ascii_case(b"SUBSCRIBE")
+                || name.eq_ignore_ascii_case(b"PSUBSCRIBE")
+                || name.eq_ignore_ascii_case(b"UNSUBSCRIBE")
+                || name.eq_ignore_ascii_case(b"PUNSUBSCRIBE");
         }
     }
     false
@@ -339,58 +329,69 @@ fn handle_sub_command(
 }
 
 /// Receives a message from any active subscription (channels or patterns).
+///
+/// Uses `FuturesUnordered` to efficiently await all broadcast receivers
+/// concurrently, avoiding busy-wait polling. Returns `None` only when
+/// there are no active subscriptions.
 async fn recv_any_message(
     channel_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
     pattern_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
 ) -> Option<PubMessage> {
-    // we need to poll all receivers — use a simple approach with select
-    // on the first available message from any receiver
+    use std::pin::Pin;
+
+    use futures::stream::{FuturesUnordered, StreamExt};
+
     if channel_rxs.is_empty() && pattern_rxs.is_empty() {
         // no subscriptions — sleep forever (will be cancelled by select)
-        std::future::pending::<Option<PubMessage>>().await
-    } else {
-        // poll all receivers using tokio::select on a merged stream
-        // for simplicity, use a polling approach
-        loop {
-            for (_ch, rx) in channel_rxs.iter_mut() {
-                match rx.try_recv() {
-                    Ok(msg) => return Some(msg),
-                    Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                        tracing::warn!("subscriber lagged, missed {n} messages");
-                        // try again to get the next available
-                        if let Ok(msg) = rx.try_recv() {
-                            return Some(msg);
-                        }
-                    }
-                    Err(_) => {}
-                }
+        return std::future::pending::<Option<PubMessage>>().await;
+    }
+
+    type RecvFuture<'a> = Pin<
+        Box<
+            dyn std::future::Future<Output = Result<PubMessage, broadcast::error::RecvError>>
+                + Send
+                + 'a,
+        >,
+    >;
+
+    // collect all receivers into a FuturesUnordered so we await them
+    // all concurrently without spinning. each future resolves when its
+    // broadcast channel has a message (or reports lag).
+    let mut pending: FuturesUnordered<RecvFuture<'_>> = FuturesUnordered::new();
+
+    for rx in channel_rxs.values_mut() {
+        pending.push(Box::pin(rx.recv()));
+    }
+    for rx in pattern_rxs.values_mut() {
+        pending.push(Box::pin(rx.recv()));
+    }
+
+    while let Some(result) = pending.next().await {
+        match result {
+            Ok(msg) => return Some(msg),
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!("subscriber lagged, missed {n} messages");
+                // the receiver auto-advances past the gap, so the next
+                // call to recv() will return the oldest available message.
+                // we drop through to re-poll on the next loop iteration.
             }
-            for (_pat, rx) in pattern_rxs.iter_mut() {
-                match rx.try_recv() {
-                    Ok(msg) => return Some(msg),
-                    Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                        tracing::warn!("subscriber lagged, missed {n} messages");
-                        if let Ok(msg) = rx.try_recv() {
-                            return Some(msg);
-                        }
-                    }
-                    Err(_) => {}
-                }
+            Err(broadcast::error::RecvError::Closed) => {
+                // sender was dropped — channel was removed. skip it.
             }
-            // yield to avoid busy-spinning
-            tokio::task::yield_now().await;
         }
     }
+
+    None
 }
 
 /// Serializes a subscribe/unsubscribe response: ["type", channel, count]
 fn serialize_sub_response(kind: &str, channel: &str, count: usize, out: &mut BytesMut) {
-    let frame = Frame::Array(vec![
-        Frame::Bulk(Bytes::from(kind.to_string())),
-        Frame::Bulk(Bytes::from(channel.to_string())),
+    Frame::Array(vec![
+        Frame::Bulk(Bytes::copy_from_slice(kind.as_bytes())),
+        Frame::Bulk(Bytes::copy_from_slice(channel.as_bytes())),
         Frame::Integer(count as i64),
-    ]);
-    frame.serialize(out);
+    ])
+    .serialize(out);
 }
 
 /// Serializes a pushed message for subscribers.
@@ -400,15 +401,15 @@ fn serialize_sub_response(kind: &str, channel: &str, count: usize, out: &mut Byt
 fn serialize_push_message(msg: &PubMessage, out: &mut BytesMut) {
     let frame = if let Some(ref pattern) = msg.pattern {
         Frame::Array(vec![
-            Frame::Bulk(Bytes::from("pmessage")),
-            Frame::Bulk(Bytes::from(pattern.clone())),
-            Frame::Bulk(Bytes::from(msg.channel.clone())),
+            Frame::Bulk(Bytes::from_static(b"pmessage")),
+            Frame::Bulk(Bytes::copy_from_slice(pattern.as_bytes())),
+            Frame::Bulk(Bytes::copy_from_slice(msg.channel.as_bytes())),
             Frame::Bulk(msg.data.clone()),
         ])
     } else {
         Frame::Array(vec![
-            Frame::Bulk(Bytes::from("message")),
-            Frame::Bulk(Bytes::from(msg.channel.clone())),
+            Frame::Bulk(Bytes::from_static(b"message")),
+            Frame::Bulk(Bytes::copy_from_slice(msg.channel.as_bytes())),
             Frame::Bulk(msg.data.clone()),
         ])
     };

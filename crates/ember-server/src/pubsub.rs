@@ -63,13 +63,13 @@ impl PubSubManager {
     }
 
     /// Unsubscribe from an exact channel. Returns true if the channel
-    /// had active subscriptions.
+    /// existed in the registry.
     ///
     /// Note: the actual receiver is dropped by the caller. This just
-    /// cleans up empty channels.
+    /// cleans up empty channels and adjusts the subscription count.
     pub fn unsubscribe(&self, channel: &str) -> bool {
-        self.subscription_count.fetch_sub(1, Ordering::Relaxed);
         if let Some(entry) = self.channels.get(channel) {
+            self.subscription_count.fetch_sub(1, Ordering::Relaxed);
             // if no receivers left, remove the channel entirely
             if entry.receiver_count() <= 1 {
                 drop(entry);
@@ -92,11 +92,11 @@ impl PubSubManager {
         entry.subscribe()
     }
 
-    /// Unsubscribe from a pattern. Returns true if the pattern had
-    /// active subscriptions.
+    /// Unsubscribe from a pattern. Returns true if the pattern existed
+    /// in the registry.
     pub fn punsubscribe(&self, pattern: &str) -> bool {
-        self.subscription_count.fetch_sub(1, Ordering::Relaxed);
         if let Some(entry) = self.patterns.get(pattern) {
+            self.subscription_count.fetch_sub(1, Ordering::Relaxed);
             if entry.receiver_count() <= 1 {
                 drop(entry);
                 self.patterns.remove(pattern);
