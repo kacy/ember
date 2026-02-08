@@ -1,6 +1,7 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build docker-run \
        release-patch release-minor release-major github-release \
-       publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick
+       publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick \
+       helm-lint helm-template
 
 # extract the workspace version from the root Cargo.toml
 VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -128,3 +129,11 @@ publish:
 	done
 	@echo ""
 	@echo "all crates published successfully"
+
+# --- helm ---
+
+helm-lint:
+	helm lint helm/ember
+
+helm-template:
+	helm template ember helm/ember
