@@ -8,26 +8,39 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 ### throughput (requests/sec)
 
+#### redis-benchmark
+
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (64B, P=16) | **1,859,464** | 863,823 | 992,380 | 551,514 |
-| GET (64B, P=16) | **2,489,950** | 965,532 | 1,163,051 | 640,389 |
-| SET (64B, P=1) | **222,123** | 199,840 | 117,647 | 222,222 |
-| GET (64B, P=1) | **222,222** | 222,123 | 124,937 | 222,222 |
+| SET (64B, P=16) | **1,897,056** | 911,363 | 1,011,232 | 897,714 |
+| GET (64B, P=16) | **2,580,102** | 992,633 | 1,192,761 | 928,148 |
+| SET (64B, P=1) | **199,600** | **199,600** | 99,800 | 199,600 |
+| GET (64B, P=1) | **200,000** | **200,000** | 99,900 | 200,000 |
+
+#### memtier_benchmark
+
+| test | ember concurrent | ember sharded | redis | dragonfly |
+|------|------------------|---------------|-------|-----------|
+| SET (64B, P=16) | **1,781,625** | 1,139,899 | 1,121,736 | 1,002,678 |
+| GET (64B, P=16) | **2,111,459** | 1,326,564 | 1,335,645 | 1,073,396 |
+| mixed 1:10 (64B, P=16) | **2,153,732** | 1,298,726 | 1,305,540 | 1,056,071 |
+| mixed 1:1 (64B, P=16) | **1,964,419** | 1,228,596 | 1,238,508 | 1,023,236 |
+| SET (64B, P=1) | **255,763** | 159,418 | 161,217 | 304,207 |
+| GET (64B, P=1) | **264,149** | 498,078 | 262,139 | 186,270 |
 
 ### vs redis
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **1.8x** | **2.1x** | best for simple GET/SET workloads |
+| ember concurrent | **1.9x** | **2.2x** | best for simple GET/SET workloads |
 | ember sharded | 0.9x | 0.8x | channel overhead, but supports all data types |
 
 ### vs dragonfly
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **3.3x** | **3.8x** | dragonfly tested with default config |
-| ember sharded | **1.6x** | **1.5x** | both use thread-per-core architecture |
+| ember concurrent | **2.0x** | **2.7x** | redis-benchmark, pipelined |
+| ember sharded | 1.0x | 1.1x | comparable throughput |
 
 **important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
@@ -42,13 +55,14 @@ dragonfly in particular offers features ember simply doesn't have:
 
 ember's concurrent mode shows higher throughput on simple GET/SET because it's architecturally minimal — essentially a concurrent hashmap with RESP3 parsing. this simplicity is a tradeoff, not an advantage. for anything resembling production use, Redis and Dragonfly are the sensible choices. ember exists primarily as a learning project and for workloads where simplicity matters more than features.
 
-### latency (50 clients, no pipelining)
+### latency (48 clients, no pipelining, memtier_benchmark)
 
-| server | p50 | p99 | p100 |
-|--------|-----|-----|------|
-| ember concurrent | 0.3ms | 0.4ms | 0.6ms |
-| ember sharded | 0.3ms | 0.4ms | 0.6ms |
-| redis | 0.3ms | 0.4ms | 0.5ms |
+| server | p99 SET | p99 GET |
+|--------|---------|---------|
+| ember concurrent | 0.41ms | 0.38ms |
+| ember sharded | 0.56ms | 0.51ms |
+| redis | 0.55ms | 0.54ms |
+| dragonfly | 0.98ms | 0.98ms |
 
 ### memory usage (~1M keys, 64B values)
 
@@ -86,7 +100,7 @@ ember offers two modes with different tradeoffs:
 
 **concurrent mode** (`--concurrent`):
 - uses DashMap for lock-free access
-- 1.8-2.1x faster than redis for GET/SET
+- 1.9-2.2x faster than redis for GET/SET
 - only supports string operations
 - best for simple key-value workloads
 
@@ -94,7 +108,7 @@ ember offers two modes with different tradeoffs:
 - each CPU core owns a keyspace partition
 - requests routed via tokio channels
 - supports all data types (lists, hashes, sets, sorted sets)
-- ~0.9x redis throughput with pipelining, but 1.7x faster without pipelining
+- ~0.9x redis throughput with pipelining, 2x faster without pipelining
 
 ## running benchmarks
 
