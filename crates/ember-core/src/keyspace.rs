@@ -11,6 +11,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use rand::seq::IteratorRandom;
 
+use tracing::warn;
+
+use crate::dropper::DropHandle;
 use crate::memory::{self, MemoryTracker};
 use crate::time;
 use crate::types::sorted_set::{SortedSet, ZAddFlags};
@@ -269,6 +272,9 @@ pub struct Keyspace {
     expired_total: u64,
     /// Cumulative count of keys removed by eviction.
     evicted_total: u64,
+    /// When set, large values are dropped on a background thread instead
+    /// of inline on the shard thread. See [`crate::dropper`].
+    drop_handle: Option<DropHandle>,
 }
 
 impl Keyspace {
@@ -286,7 +292,15 @@ impl Keyspace {
             expiry_count: 0,
             expired_total: 0,
             evicted_total: 0,
+            drop_handle: None,
         }
+    }
+
+    /// Attaches a background drop handle for lazy free. When set, large
+    /// values removed by del/eviction/expiration are dropped on a
+    /// background thread instead of blocking the shard.
+    pub fn set_drop_handle(&mut self, handle: DropHandle) {
+        self.drop_handle = Some(handle);
     }
 
     /// Retrieves the string value for `key`, or `None` if missing/expired.
@@ -394,6 +408,7 @@ impl Keyspace {
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                 }
                 self.evicted_total += 1;
+                self.defer_drop(entry.value);
                 return true;
             }
         }
@@ -426,6 +441,9 @@ impl Keyspace {
     }
 
     /// Removes a key. Returns `true` if the key existed (and wasn't expired).
+    ///
+    /// When a drop handle is set, large values are dropped on the
+    /// background thread instead of inline.
     pub fn del(&mut self, key: &str) -> bool {
         if self.remove_if_expired(key) {
             return false;
@@ -435,10 +453,45 @@ impl Keyspace {
             if entry.expires_at_ms != 0 {
                 self.expiry_count = self.expiry_count.saturating_sub(1);
             }
+            self.defer_drop(entry.value);
             true
         } else {
             false
         }
+    }
+
+    /// Removes a key like `del`, but always defers the value's destructor
+    /// to the background drop thread (when available). Semantically
+    /// identical to DEL — the key is gone immediately, memory is
+    /// accounted for immediately, but the actual deallocation happens
+    /// off the hot path.
+    pub fn unlink(&mut self, key: &str) -> bool {
+        if self.remove_if_expired(key) {
+            return false;
+        }
+        if let Some(entry) = self.entries.remove(key) {
+            self.memory.remove(key, &entry.value);
+            if entry.expires_at_ms != 0 {
+                self.expiry_count = self.expiry_count.saturating_sub(1);
+            }
+            // always defer for UNLINK, regardless of value size
+            if let Some(ref handle) = self.drop_handle {
+                handle.defer_value(entry.value);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Replaces the entries map with an empty one and resets memory
+    /// tracking. Returns the old entries so the caller can send them
+    /// to the background drop thread.
+    pub(crate) fn flush_async(&mut self) -> HashMap<String, Entry> {
+        let old = std::mem::take(&mut self.entries);
+        self.memory.reset();
+        self.expiry_count = 0;
+        old
     }
 
     /// Returns `true` if the key exists and hasn't expired.
@@ -679,6 +732,13 @@ impl Keyspace {
     /// Warning: O(n) scan of the entire keyspace. Use SCAN for production
     /// workloads with large key counts.
     pub fn keys(&self, pattern: &str) -> Vec<String> {
+        let len = self.entries.len();
+        if len > 10_000 {
+            warn!(
+                key_count = len,
+                "KEYS on large keyspace, consider SCAN instead"
+            );
+        }
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
@@ -1752,9 +1812,18 @@ impl Keyspace {
                     self.expiry_count = self.expiry_count.saturating_sub(1);
                 }
                 self.expired_total += 1;
+                self.defer_drop(entry.value);
             }
         }
         expired
+    }
+
+    /// Sends a value to the background drop thread if one is configured
+    /// and the value is large enough to justify the overhead.
+    fn defer_drop(&self, value: Value) {
+        if let Some(ref handle) = self.drop_handle {
+            handle.defer_value(value);
+        }
     }
 }
 
