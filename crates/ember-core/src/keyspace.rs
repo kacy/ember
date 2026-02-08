@@ -77,6 +77,42 @@ impl std::fmt::Display for IncrError {
 }
 
 impl std::error::Error for IncrError {}
+
+/// Errors that can occur during INCRBYFLOAT operations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IncrFloatError {
+    /// Key holds a non-string type.
+    WrongType,
+    /// Value is not a valid float.
+    NotAFloat,
+    /// Result would be NaN or Infinity.
+    NanOrInfinity,
+    /// Memory limit reached.
+    OutOfMemory,
+}
+
+impl std::fmt::Display for IncrFloatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IncrFloatError::WrongType => write!(
+                f,
+                "WRONGTYPE Operation against a key holding the wrong kind of value"
+            ),
+            IncrFloatError::NotAFloat => {
+                write!(f, "ERR value is not a valid float")
+            }
+            IncrFloatError::NanOrInfinity => {
+                write!(f, "ERR increment would produce NaN or Infinity")
+            }
+            IncrFloatError::OutOfMemory => {
+                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IncrFloatError {}
+
 /// Result of a ZADD operation, containing both the client-facing count
 /// and the list of members that were actually applied (for AOF correctness).
 #[derive(Debug, Clone)]
@@ -529,6 +565,46 @@ impl Keyspace {
         match self.set(key.to_owned(), new_bytes, existing_expire) {
             SetResult::Ok => Ok(new_val),
             SetResult::OutOfMemory => Err(IncrError::OutOfMemory),
+        }
+    }
+
+    /// Adds a float `delta` to the current value of the key, creating it
+    /// if necessary. Used by INCRBYFLOAT.
+    ///
+    /// Preserves the existing TTL when updating an existing key.
+    /// Returns the new value as a string (matching Redis behavior).
+    pub fn incr_by_float(&mut self, key: &str, delta: f64) -> Result<String, IncrFloatError> {
+        self.remove_if_expired(key);
+
+        let (current, existing_expire) = match self.entries.get(key) {
+            Some(entry) => {
+                let val = match &entry.value {
+                    Value::String(data) => {
+                        let s = std::str::from_utf8(data)
+                            .map_err(|_| IncrFloatError::NotAFloat)?;
+                        s.parse::<f64>().map_err(|_| IncrFloatError::NotAFloat)?
+                    }
+                    _ => return Err(IncrFloatError::WrongType),
+                };
+                let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
+                (val, expire)
+            }
+            None => (0.0, None),
+        };
+
+        let new_val = current + delta;
+        if new_val.is_nan() || new_val.is_infinite() {
+            return Err(IncrFloatError::NanOrInfinity);
+        }
+
+        // Redis strips trailing zeros: "10.5" not "10.50000..."
+        // but keeps at least one decimal if the result is a whole number
+        let formatted = format_float(new_val);
+        let new_bytes = Bytes::from(formatted.clone());
+
+        match self.set(key.to_owned(), new_bytes, existing_expire) {
+            SetResult::Ok => Ok(formatted),
+            SetResult::OutOfMemory => Err(IncrFloatError::OutOfMemory),
         }
     }
 
@@ -1581,6 +1657,28 @@ impl Default for Keyspace {
 /// - `*` matches any sequence of characters (including empty)
 /// - `?` matches exactly one character
 /// - `[abc]` matches one character from the set
+/// Formats a float value matching Redis behavior.
+///
+/// Uses up to 17 significant digits and strips unnecessary trailing zeros,
+/// but always keeps at least one decimal place for non-integer results.
+fn format_float(val: f64) -> String {
+    if val == 0.0 {
+        return "0".into();
+    }
+    // Use enough precision to round-trip
+    let s = format!("{:.17e}", val);
+    // Parse back to get the clean representation
+    let reparsed: f64 = s.parse().unwrap_or(val);
+    // If it's a whole number, format without decimals
+    if reparsed == reparsed.trunc() && reparsed.abs() < 1e15 {
+        format!("{}", reparsed as i64)
+    } else {
+        // Use ryu-like formatting via Display which strips trailing zeros
+        let formatted = format!("{}", reparsed);
+        formatted
+    }
+}
+
 /// - `[^abc]` or `[!abc]` matches one character NOT in the set
 ///
 /// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
@@ -3432,5 +3530,60 @@ mod tests {
         let binary = Bytes::from(vec![0u8, 1, 2, 255, 0, 128]);
         ks.set("binary".into(), binary.clone(), None);
         assert_eq!(ks.get("binary").unwrap(), Some(Value::String(binary)));
+    }
+
+    #[test]
+    fn incr_by_float_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10.5"), None);
+        let result = ks.incr_by_float("n", 2.3).unwrap();
+        let f: f64 = result.parse().unwrap();
+        assert!((f - 12.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn incr_by_float_new_key() {
+        let mut ks = Keyspace::new();
+        let result = ks.incr_by_float("new", 3.14).unwrap();
+        let f: f64 = result.parse().unwrap();
+        assert!((f - 3.14).abs() < 0.001);
+    }
+
+    #[test]
+    fn incr_by_float_negative() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let result = ks.incr_by_float("n", -3.5).unwrap();
+        let f: f64 = result.parse().unwrap();
+        assert!((f - 6.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn incr_by_float_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("mylist", &[Bytes::from("a")]).unwrap();
+        let err = ks.incr_by_float("mylist", 1.0).unwrap_err();
+        assert_eq!(err, IncrFloatError::WrongType);
+    }
+
+    #[test]
+    fn incr_by_float_not_a_float() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("hello"), None);
+        let err = ks.incr_by_float("s", 1.0).unwrap_err();
+        assert_eq!(err, IncrFloatError::NotAFloat);
+    }
+
+    #[test]
+    fn format_float_integers() {
+        assert_eq!(super::format_float(10.0), "10");
+        assert_eq!(super::format_float(0.0), "0");
+        assert_eq!(super::format_float(-5.0), "-5");
+    }
+
+    #[test]
+    fn format_float_decimals() {
+        assert_eq!(super::format_float(3.14), "3.14");
+        assert_eq!(super::format_float(10.5), "10.5");
     }
 }

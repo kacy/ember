@@ -18,7 +18,8 @@ use tracing::{info, warn};
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{
-    IncrError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult, WriteError,
+    IncrError, IncrFloatError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult,
+    WriteError,
 };
 use crate::types::sorted_set::ZAddFlags;
 use crate::types::Value;
@@ -69,6 +70,10 @@ pub enum ShardRequest {
     DecrBy {
         key: String,
         delta: i64,
+    },
+    IncrByFloat {
+        key: String,
+        delta: f64,
     },
     Del {
         key: String,
@@ -259,6 +264,8 @@ pub enum ShardResponse {
     Rank(Option<usize>),
     /// Scored array of (member, score) pairs (e.g. ZRANGE).
     ScoredArray(Vec<(String, f64)>),
+    /// A bulk string result (e.g. INCRBYFLOAT).
+    BulkString(String),
     /// Command used against a key holding the wrong kind of value.
     WrongType,
     /// An error message.
@@ -538,6 +545,12 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
             Err(e) => ShardResponse::Err(e.to_string()),
         },
+        ShardRequest::IncrByFloat { key, delta } => match ks.incr_by_float(key, *delta) {
+            Ok(val) => ShardResponse::BulkString(val),
+            Err(IncrFloatError::WrongType) => ShardResponse::WrongType,
+            Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
@@ -785,6 +798,15 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             Some(AofRecord::DecrBy {
                 key: key.clone(),
                 delta: *delta,
+            })
+        }
+        // INCRBYFLOAT: record as a SET with the resulting value to avoid
+        // float rounding drift during replay.
+        (ShardRequest::IncrByFloat { key, .. }, ShardResponse::BulkString(val)) => {
+            Some(AofRecord::Set {
+                key: key.clone(),
+                value: Bytes::from(val.clone()),
+                expire_ms: -1, // preserve existing TTL via the SET path
             })
         }
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
@@ -1316,6 +1338,45 @@ mod tests {
             },
         );
         assert!(matches!(resp, ShardResponse::Integer(42)));
+    }
+
+    #[test]
+    fn dispatch_incrbyfloat() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10.5"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrByFloat {
+                key: "n".into(),
+                delta: 2.3,
+            },
+        );
+        match resp {
+            ShardResponse::BulkString(val) => {
+                let f: f64 = val.parse().unwrap();
+                assert!((f - 12.8).abs() < 0.001);
+            }
+            other => panic!("expected BulkString, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_incrbyfloat_new_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrByFloat {
+                key: "new".into(),
+                delta: 3.14,
+            },
+        );
+        match resp {
+            ShardResponse::BulkString(val) => {
+                let f: f64 = val.parse().unwrap();
+                assert!((f - 3.14).abs() < 0.001);
+            }
+            other => panic!("expected BulkString, got {other:?}"),
+        }
     }
 
     #[test]

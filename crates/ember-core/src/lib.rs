@@ -18,8 +18,8 @@ pub use concurrent::ConcurrentKeyspace;
 pub use engine::{Engine, EngineConfig};
 pub use error::ShardError;
 pub use keyspace::{
-    EvictionPolicy, IncrError, Keyspace, KeyspaceStats, ShardConfig, TtlResult, WriteError,
-    WrongType, ZAddResult,
+    EvictionPolicy, IncrError, IncrFloatError, Keyspace, KeyspaceStats, ShardConfig, TtlResult,
+    WriteError, WrongType, ZAddResult,
 };
 pub use shard::{ShardPersistenceConfig, ShardRequest, ShardResponse};
 pub use types::Value;

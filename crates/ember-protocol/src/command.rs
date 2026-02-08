@@ -53,6 +53,9 @@ pub enum Command {
     /// DECRBY `key` `decrement`. Decrements the integer value of a key by the given amount.
     DecrBy { key: String, delta: i64 },
 
+    /// INCRBYFLOAT `key` `increment`. Increments the float value of a key by the given amount.
+    IncrByFloat { key: String, delta: f64 },
+
     /// DEL `key` \[key ...\]. Returns the number of keys removed.
     Del { keys: Vec<String> },
 
@@ -339,6 +342,7 @@ impl Command {
             Command::Decr { .. } => "decr",
             Command::IncrBy { .. } => "incrby",
             Command::DecrBy { .. } => "decrby",
+            Command::IncrByFloat { .. } => "incrbyfloat",
             Command::Del { .. } => "del",
             Command::Exists { .. } => "exists",
             Command::MGet { .. } => "mget",
@@ -448,6 +452,7 @@ impl Command {
             "DECR" => parse_decr(&frames[1..]),
             "INCRBY" => parse_incrby(&frames[1..]),
             "DECRBY" => parse_decrby(&frames[1..]),
+            "INCRBYFLOAT" => parse_incrbyfloat(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
             "MGET" => parse_mget(&frames[1..]),
@@ -672,6 +677,23 @@ fn parse_decrby(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
     let delta = parse_i64(&args[1], "DECRBY")?;
     Ok(Command::DecrBy { key, delta })
+}
+
+fn parse_incrbyfloat(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("INCRBYFLOAT".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let s = extract_string(&args[1])?;
+    let delta: f64 = s.parse().map_err(|_| {
+        ProtocolError::InvalidCommandFrame("value is not a valid float for 'INCRBYFLOAT'".into())
+    })?;
+    if delta.is_nan() || delta.is_infinite() {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "increment would produce NaN or Infinity".into(),
+        ));
+    }
+    Ok(Command::IncrByFloat { key, delta })
 }
 
 fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3579,5 +3601,43 @@ mod tests {
     fn decrby_wrong_arity() {
         let err = Command::from_frame(cmd(&["DECRBY"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- INCRBYFLOAT ---
+
+    #[test]
+    fn incrbyfloat_basic() {
+        let cmd = Command::from_frame(cmd(&["INCRBYFLOAT", "key", "2.5"])).unwrap();
+        match cmd {
+            Command::IncrByFloat { key, delta } => {
+                assert_eq!(key, "key");
+                assert!((delta - 2.5).abs() < f64::EPSILON);
+            }
+            other => panic!("expected IncrByFloat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incrbyfloat_negative() {
+        let cmd = Command::from_frame(cmd(&["INCRBYFLOAT", "key", "-1.5"])).unwrap();
+        match cmd {
+            Command::IncrByFloat { key, delta } => {
+                assert_eq!(key, "key");
+                assert!((delta - (-1.5)).abs() < f64::EPSILON);
+            }
+            other => panic!("expected IncrByFloat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incrbyfloat_wrong_arity() {
+        let err = Command::from_frame(cmd(&["INCRBYFLOAT", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn incrbyfloat_not_a_float() {
+        let err = Command::from_frame(cmd(&["INCRBYFLOAT", "key", "abc"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 }

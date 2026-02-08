@@ -604,6 +604,21 @@ async fn execute(
             }
         }
 
+        Command::IncrByFloat { key, delta } => {
+            let req = ShardRequest::IncrByFloat {
+                key: key.clone(),
+                delta,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::BulkString(val)) => Frame::Bulk(Bytes::from(val)),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Persist { key } => {
             let req = ShardRequest::Persist { key: key.clone() };
             match engine.route(&key, req).await {
