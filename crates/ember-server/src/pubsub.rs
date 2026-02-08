@@ -4,9 +4,7 @@
 //! subscribers. Supports both exact channel names and glob patterns.
 //! Thread-safe via DashMap for lock-free concurrent access.
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -56,13 +54,10 @@ impl PubSubManager {
     /// Subscribe to an exact channel. Returns a receiver for messages
     /// on that channel.
     pub fn subscribe(&self, channel: &str) -> broadcast::Receiver<PubMessage> {
-        let entry = self
-            .channels
-            .entry(channel.to_string())
-            .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-                tx
-            });
+        let entry = self.channels.entry(channel.to_string()).or_insert_with(|| {
+            let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
+            tx
+        });
         self.subscription_count.fetch_add(1, Ordering::Relaxed);
         entry.subscribe()
     }
@@ -89,13 +84,10 @@ impl PubSubManager {
     /// Subscribe to a glob pattern. Returns a receiver for messages
     /// matching the pattern.
     pub fn psubscribe(&self, pattern: &str) -> broadcast::Receiver<PubMessage> {
-        let entry = self
-            .patterns
-            .entry(pattern.to_string())
-            .or_insert_with(|| {
-                let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-                tx
-            });
+        let entry = self.patterns.entry(pattern.to_string()).or_insert_with(|| {
+            let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
+            tx
+        });
         self.subscription_count.fetch_add(1, Ordering::Relaxed);
         entry.subscribe()
     }
@@ -148,16 +140,19 @@ impl PubSubManager {
     }
 
     /// Returns the total number of active subscriptions.
+    #[allow(dead_code)] // used in tests and future PUBSUB commands
     pub fn total_subscriptions(&self) -> usize {
         self.subscription_count.load(Ordering::Relaxed)
     }
 
     /// Returns the number of active channels (with at least one subscriber).
+    #[allow(dead_code)]
     pub fn active_channels(&self) -> usize {
         self.channels.len()
     }
 
     /// Returns the number of active patterns.
+    #[allow(dead_code)]
     pub fn active_patterns(&self) -> usize {
         self.patterns.len()
     }

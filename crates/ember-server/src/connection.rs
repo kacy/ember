@@ -113,10 +113,7 @@ pub async fn handle(
 
             // enter subscriber mode — this blocks until all subscriptions
             // are removed or the client disconnects
-            handle_subscriber_mode(
-                &mut stream, &mut buf, &mut out, &engine, ctx, slow_log, pubsub, sub_frames,
-            )
-            .await?;
+            handle_subscriber_mode(&mut stream, &mut buf, &mut out, pubsub, sub_frames).await?;
             return Ok(());
         }
 
@@ -162,9 +159,6 @@ async fn handle_subscriber_mode(
     stream: &mut TcpStream,
     buf: &mut BytesMut,
     out: &mut BytesMut,
-    engine: &Engine,
-    ctx: &Arc<ServerContext>,
-    slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     initial_frames: Vec<Frame>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -175,9 +169,7 @@ async fn handle_subscriber_mode(
     // process the initial subscribe commands
     for frame in initial_frames {
         if let Ok(cmd) = Command::from_frame(frame) {
-            handle_sub_command(
-                cmd, pubsub, &mut channel_rxs, &mut pattern_rxs, out,
-            );
+            handle_sub_command(cmd, pubsub, &mut channel_rxs, &mut pattern_rxs, out);
         }
     }
 

@@ -273,7 +273,6 @@ pub enum Command {
     SlowLogReset,
 
     // --- pub/sub commands ---
-
     /// SUBSCRIBE `channel` \[channel ...\]. Subscribe to one or more channels.
     Subscribe { channels: Vec<String> },
 
@@ -1481,18 +1480,12 @@ fn parse_subscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(ProtocolError::WrongArity("SUBSCRIBE".into()));
     }
-    let channels: Vec<String> = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
+    let channels: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
     Ok(Command::Subscribe { channels })
 }
 
 fn parse_unsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
-    let channels: Vec<String> = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
+    let channels: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
     Ok(Command::Unsubscribe { channels })
 }
 
@@ -1500,18 +1493,12 @@ fn parse_psubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(ProtocolError::WrongArity("PSUBSCRIBE".into()));
     }
-    let patterns: Vec<String> = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
+    let patterns: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
     Ok(Command::PSubscribe { patterns })
 }
 
 fn parse_punsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
-    let patterns: Vec<String> = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
+    let patterns: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
     Ok(Command::PUnsubscribe { patterns })
 }
 
