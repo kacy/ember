@@ -15,6 +15,7 @@ use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
+use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{
@@ -92,6 +93,10 @@ pub enum ShardRequest {
         newkey: String,
     },
     Del {
+        key: String,
+    },
+    /// Like DEL but defers value deallocation to the background drop thread.
+    Unlink {
         key: String,
     },
     Exists {
@@ -234,6 +239,8 @@ pub enum ShardRequest {
     RewriteAof,
     /// Clears all keys from the keyspace.
     FlushDb,
+    /// Clears all keys, deferring deallocation to the background drop thread.
+    FlushDbAsync,
     /// Scans keys in the keyspace.
     Scan {
         cursor: u64,
@@ -346,14 +353,16 @@ impl ShardHandle {
 /// Spawns a shard task and returns the handle for communicating with it.
 ///
 /// `buffer` controls the mpsc channel capacity — higher values absorb
-/// burst traffic at the cost of memory.
+/// burst traffic at the cost of memory. When `drop_handle` is provided,
+/// large value deallocations are deferred to the background drop thread.
 pub fn spawn_shard(
     buffer: usize,
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
+    drop_handle: Option<DropHandle>,
 ) -> ShardHandle {
     let (tx, rx) = mpsc::channel(buffer);
-    tokio::spawn(run_shard(rx, config, persistence));
+    tokio::spawn(run_shard(rx, config, persistence, drop_handle));
     ShardHandle { tx }
 }
 
@@ -363,9 +372,14 @@ async fn run_shard(
     mut rx: mpsc::Receiver<ShardMessage>,
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
+    drop_handle: Option<DropHandle>,
 ) {
     let shard_id = config.shard_id;
     let mut keyspace = Keyspace::with_config(config);
+
+    if let Some(handle) = drop_handle.clone() {
+        keyspace.set_drop_handle(handle);
+    }
 
     // -- recovery --
     if let Some(ref pcfg) = persistence {
@@ -467,6 +481,15 @@ async fn run_shard(
                                 let _ = msg.reply.send(resp);
                                 continue;
                             }
+                            RequestKind::FlushDbAsync => {
+                                let old_entries = keyspace.flush_async();
+                                if let Some(ref handle) = drop_handle {
+                                    handle.defer_entries(old_entries);
+                                }
+                                // else: old_entries drops inline here
+                                let _ = msg.reply.send(ShardResponse::Ok);
+                                continue;
+                            }
                             RequestKind::Other => {}
                         }
 
@@ -494,11 +517,12 @@ async fn run_shard(
     }
 }
 
-/// Lightweight tag so we can identify snapshot/rewrite requests after
-/// dispatch without borrowing the request again.
+/// Lightweight tag so we can identify requests that need special
+/// handling after dispatch without borrowing the request again.
 enum RequestKind {
     Snapshot,
     RewriteAof,
+    FlushDbAsync,
     Other,
 }
 
@@ -506,6 +530,7 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
     match req {
         ShardRequest::Snapshot => RequestKind::Snapshot,
         ShardRequest::RewriteAof => RequestKind::RewriteAof,
+        ShardRequest::FlushDbAsync => RequestKind::FlushDbAsync,
         _ => RequestKind::Other,
     }
 }
@@ -588,6 +613,7 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             }
         }
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
+        ShardRequest::Unlink { key } => ShardResponse::Bool(ks.unlink(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
@@ -757,8 +783,10 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(count) => ShardResponse::Len(count),
             Err(_) => ShardResponse::WrongType,
         },
-        // snapshot/rewrite are handled in the main loop, not here
-        ShardRequest::Snapshot | ShardRequest::RewriteAof => ShardResponse::Ok,
+        // snapshot/rewrite/flush_async are handled in the main loop, not here
+        ShardRequest::Snapshot | ShardRequest::RewriteAof | ShardRequest::FlushDbAsync => {
+            ShardResponse::Ok
+        }
     }
 }
 
@@ -779,7 +807,8 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 expire_ms,
             })
         }
-        (ShardRequest::Del { key }, ShardResponse::Bool(true)) => {
+        (ShardRequest::Del { key }, ShardResponse::Bool(true))
+        | (ShardRequest::Unlink { key }, ShardResponse::Bool(true)) => {
             Some(AofRecord::Del { key: key.clone() })
         }
         (ShardRequest::Expire { key, seconds }, ShardResponse::Bool(true)) => {
@@ -1080,7 +1109,7 @@ mod tests {
 
     #[tokio::test]
     async fn shard_round_trip() {
-        let handle = spawn_shard(16, ShardConfig::default(), None);
+        let handle = spawn_shard(16, ShardConfig::default(), None, None);
 
         let resp = handle
             .send(ShardRequest::Set {
@@ -1110,7 +1139,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_key_through_shard() {
-        let handle = spawn_shard(16, ShardConfig::default(), None);
+        let handle = spawn_shard(16, ShardConfig::default(), None, None);
 
         handle
             .send(ShardRequest::Set {
@@ -1134,7 +1163,7 @@ mod tests {
 
     #[tokio::test]
     async fn active_expiration_cleans_up_without_access() {
-        let handle = spawn_shard(16, ShardConfig::default(), None);
+        let handle = spawn_shard(16, ShardConfig::default(), None, None);
 
         // set a key with a short TTL
         handle
@@ -1198,7 +1227,7 @@ mod tests {
 
         // write some keys then trigger a snapshot
         {
-            let handle = spawn_shard(16, config.clone(), Some(pcfg.clone()));
+            let handle = spawn_shard(16, config.clone(), Some(pcfg.clone()), None);
             handle
                 .send(ShardRequest::Set {
                     key: "a".into(),
@@ -1239,7 +1268,7 @@ mod tests {
 
         // start a new shard with the same config — should recover
         {
-            let handle = spawn_shard(16, config, Some(pcfg));
+            let handle = spawn_shard(16, config, Some(pcfg), None);
             // give it a moment to recover
             tokio::time::sleep(Duration::from_millis(50)).await;
 
