@@ -19,8 +19,7 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE,
@@ -30,16 +29,20 @@ use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 
 /// Handles a connection using the concurrent keyspace for GET/SET.
-pub async fn handle(
-    mut stream: TcpStream,
+///
+/// Generic over the stream type to support both plain TCP and TLS connections.
+/// Callers should set TCP_NODELAY on the underlying socket before calling.
+pub async fn handle<S>(
+    mut stream: S,
     keyspace: Arc<ConcurrentKeyspace>,
     engine: Engine, // fallback for complex commands
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    stream.set_nodelay(true)?;
-
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut authenticated = ctx.requirepass.is_none();
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
