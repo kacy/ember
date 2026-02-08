@@ -1,0 +1,10 @@
+.git
+target/
+bench/
+docs/
+tests/
+clients/
+*.md
+!LICENSE*
+.DS_Store
+*.swp
