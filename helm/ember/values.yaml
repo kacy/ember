@@ -1,0 +1,32 @@
+replicaCount: 1
+
+image:
+  repository: ember
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 6379
+
+ember:
+  port: 6379
+  metricsPort: 9100
+  maxMemory: ""
+  evictionPolicy: noeviction
+  appendonly: false
+  appendfsync: everysec
+  concurrent: false
+  requirepass: ""
+
+resources: {}
+  # limits:
+  #   cpu: "2"
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 500m
+  #   memory: 256Mi
+
+serviceAccount:
+  create: true
+  name: ""

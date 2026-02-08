@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ember.fullname" . }}
+  labels:
+    {{- include "ember.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ember.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ember.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ember.serviceAccountName" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: EMBER_HOST
+              value: "0.0.0.0"
+            - name: EMBER_PORT
+              value: {{ .Values.ember.port | quote }}
+            {{- if .Values.ember.metricsPort }}
+            - name: EMBER_METRICS_PORT
+              value: {{ .Values.ember.metricsPort | quote }}
+            {{- end }}
+            {{- if .Values.ember.maxMemory }}
+            - name: EMBER_MAX_MEMORY
+              value: {{ .Values.ember.maxMemory | quote }}
+            {{- end }}
+            {{- if ne .Values.ember.evictionPolicy "noeviction" }}
+            - name: EMBER_EVICTION_POLICY
+              value: {{ .Values.ember.evictionPolicy | quote }}
+            {{- end }}
+            {{- if .Values.ember.appendonly }}
+            - name: EMBER_APPENDONLY
+              value: "true"
+            - name: EMBER_APPENDFSYNC
+              value: {{ .Values.ember.appendfsync | quote }}
+            {{- end }}
+            {{- if .Values.ember.concurrent }}
+            - name: EMBER_CONCURRENT
+              value: "true"
+            {{- end }}
+            {{- if .Values.ember.requirepass }}
+            - name: EMBER_REQUIREPASS
+              value: {{ .Values.ember.requirepass | quote }}
+            {{- end }}
+          ports:
+            - name: cache
+              containerPort: {{ .Values.ember.port }}
+              protocol: TCP
+            {{- if .Values.ember.metricsPort }}
+            - name: metrics
+              containerPort: {{ .Values.ember.metricsPort }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            tcpSocket:
+              port: cache
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: cache
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          emptyDir: {}

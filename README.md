@@ -141,10 +141,33 @@ make check    # fmt, clippy, tests
 make build    # debug build
 make release  # release build
 make test     # run all tests
-make docker-build  # build docker image
+make docker-build   # build docker image
+make helm-lint      # validate helm chart
+make helm-template  # render helm templates
 ```
 
 see [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and code standards.
+
+## kubernetes
+
+deploy to kubernetes with [Helm](https://helm.sh):
+
+```bash
+# install with defaults (single replica, ClusterIP service)
+helm install ember helm/ember
+
+# install with custom settings
+helm install ember helm/ember \
+  --set ember.maxMemory=512M \
+  --set ember.evictionPolicy=allkeys-lru \
+  --set ember.appendonly=true
+
+# connect via port-forward
+kubectl port-forward svc/ember 6379:6379
+redis-cli -h 127.0.0.1
+```
+
+see [helm/ember/values.yaml](helm/ember/values.yaml) for all configurable values.
 
 ## project structure
 
