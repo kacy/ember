@@ -9,12 +9,12 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 ## features
 
 - **resp3 protocol** — full compatibility with `redis-cli` and existing Redis clients
-- **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, INCR, DECR
+- **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN
 - **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
 - **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZRANGE, ZCARD
 - **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
-- **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN
+- **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
@@ -184,7 +184,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 76 commands, 639 tests, ~21k lines of code
+**current**: 83 commands, 695 tests, ~22k lines of code
 
 ## security
 

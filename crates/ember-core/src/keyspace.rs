@@ -77,6 +77,59 @@ impl std::fmt::Display for IncrError {
 }
 
 impl std::error::Error for IncrError {}
+
+/// Errors that can occur during INCRBYFLOAT operations.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IncrFloatError {
+    /// Key holds a non-string type.
+    WrongType,
+    /// Value is not a valid float.
+    NotAFloat,
+    /// Result would be NaN or Infinity.
+    NanOrInfinity,
+    /// Memory limit reached.
+    OutOfMemory,
+}
+
+impl std::fmt::Display for IncrFloatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IncrFloatError::WrongType => write!(
+                f,
+                "WRONGTYPE Operation against a key holding the wrong kind of value"
+            ),
+            IncrFloatError::NotAFloat => {
+                write!(f, "ERR value is not a valid float")
+            }
+            IncrFloatError::NanOrInfinity => {
+                write!(f, "ERR increment would produce NaN or Infinity")
+            }
+            IncrFloatError::OutOfMemory => {
+                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IncrFloatError {}
+
+/// Error returned when RENAME fails because the source key doesn't exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameError {
+    /// The source key does not exist.
+    NoSuchKey,
+}
+
+impl std::fmt::Display for RenameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenameError::NoSuchKey => write!(f, "ERR no such key"),
+        }
+    }
+}
+
+impl std::error::Error for RenameError {}
+
 /// Result of a ZADD operation, containing both the client-facing count
 /// and the list of members that were actually applied (for AOF correctness).
 #[derive(Debug, Clone)]
@@ -500,11 +553,11 @@ impl Keyspace {
         self.incr_by(key, -1)
     }
 
-    /// Shared implementation for INCR/DECR. Adds `delta` to the current
-    /// integer value of the key, creating it if necessary.
+    /// Adds `delta` to the current integer value of the key, creating it
+    /// if necessary. Used by INCR, DECR, INCRBY, and DECRBY.
     ///
     /// Preserves the existing TTL when updating an existing key.
-    fn incr_by(&mut self, key: &str, delta: i64) -> Result<i64, IncrError> {
+    pub fn incr_by(&mut self, key: &str, delta: i64) -> Result<i64, IncrError> {
         self.remove_if_expired(key);
 
         // read current value and TTL
@@ -530,6 +583,136 @@ impl Keyspace {
             SetResult::Ok => Ok(new_val),
             SetResult::OutOfMemory => Err(IncrError::OutOfMemory),
         }
+    }
+
+    /// Adds a float `delta` to the current value of the key, creating it
+    /// if necessary. Used by INCRBYFLOAT.
+    ///
+    /// Preserves the existing TTL when updating an existing key.
+    /// Returns the new value as a string (matching Redis behavior).
+    pub fn incr_by_float(&mut self, key: &str, delta: f64) -> Result<String, IncrFloatError> {
+        self.remove_if_expired(key);
+
+        let (current, existing_expire) = match self.entries.get(key) {
+            Some(entry) => {
+                let val = match &entry.value {
+                    Value::String(data) => {
+                        let s = std::str::from_utf8(data).map_err(|_| IncrFloatError::NotAFloat)?;
+                        s.parse::<f64>().map_err(|_| IncrFloatError::NotAFloat)?
+                    }
+                    _ => return Err(IncrFloatError::WrongType),
+                };
+                let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
+                (val, expire)
+            }
+            None => (0.0, None),
+        };
+
+        let new_val = current + delta;
+        if new_val.is_nan() || new_val.is_infinite() {
+            return Err(IncrFloatError::NanOrInfinity);
+        }
+
+        // Redis strips trailing zeros: "10.5" not "10.50000..."
+        // but keeps at least one decimal if the result is a whole number
+        let formatted = format_float(new_val);
+        let new_bytes = Bytes::from(formatted.clone());
+
+        match self.set(key.to_owned(), new_bytes, existing_expire) {
+            SetResult::Ok => Ok(formatted),
+            SetResult::OutOfMemory => Err(IncrFloatError::OutOfMemory),
+        }
+    }
+
+    /// Appends a value to an existing string key, or creates a new key if
+    /// it doesn't exist. Returns the new string length.
+    pub fn append(&mut self, key: &str, value: &[u8]) -> Result<usize, WriteError> {
+        self.remove_if_expired(key);
+
+        match self.entries.get(key) {
+            Some(entry) => match &entry.value {
+                Value::String(existing) => {
+                    let mut new_data = Vec::with_capacity(existing.len() + value.len());
+                    new_data.extend_from_slice(existing);
+                    new_data.extend_from_slice(value);
+                    let new_len = new_data.len();
+                    let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
+                    match self.set(key.to_owned(), Bytes::from(new_data), expire) {
+                        SetResult::Ok => Ok(new_len),
+                        SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
+                    }
+                }
+                _ => Err(WriteError::WrongType),
+            },
+            None => {
+                let new_len = value.len();
+                match self.set(key.to_owned(), Bytes::copy_from_slice(value), None) {
+                    SetResult::Ok => Ok(new_len),
+                    SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
+                }
+            }
+        }
+    }
+
+    /// Returns the length of the string value stored at key.
+    /// Returns 0 if the key does not exist.
+    pub fn strlen(&mut self, key: &str) -> Result<usize, WrongType> {
+        self.remove_if_expired(key);
+
+        match self.entries.get(key) {
+            Some(entry) => match &entry.value {
+                Value::String(data) => Ok(data.len()),
+                _ => Err(WrongType),
+            },
+            None => Ok(0),
+        }
+    }
+
+    /// Returns all keys matching a glob pattern.
+    ///
+    /// Warning: O(n) scan of the entire keyspace. Use SCAN for production
+    /// workloads with large key counts.
+    pub fn keys(&self, pattern: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_expired())
+            .filter(|(key, _)| glob_match(pattern, key))
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    /// Renames a key to a new name. Returns an error if the source key
+    /// doesn't exist. If the destination key already exists, it is overwritten.
+    pub fn rename(&mut self, key: &str, newkey: &str) -> Result<(), RenameError> {
+        self.remove_if_expired(key);
+        self.remove_if_expired(newkey);
+
+        let entry = match self.entries.remove(key) {
+            Some(entry) => entry,
+            None => return Err(RenameError::NoSuchKey),
+        };
+
+        // update memory tracking for old key removal
+        self.memory.remove(key, &entry.value);
+        if entry.expires_at_ms != 0 {
+            self.expiry_count = self.expiry_count.saturating_sub(1);
+        }
+
+        // remove destination if it exists
+        if let Some(old_dest) = self.entries.remove(newkey) {
+            self.memory.remove(newkey, &old_dest.value);
+            if old_dest.expires_at_ms != 0 {
+                self.expiry_count = self.expiry_count.saturating_sub(1);
+            }
+        }
+
+        // re-insert with the new key name, preserving value and expiry
+        self.memory.add(newkey, &entry.value);
+        if entry.expires_at_ms != 0 {
+            self.expiry_count += 1;
+        }
+        self.entries.insert(newkey.to_owned(), entry);
+        Ok(())
     }
 
     /// Returns aggregated stats for this keyspace.
@@ -1581,6 +1764,28 @@ impl Default for Keyspace {
 /// - `*` matches any sequence of characters (including empty)
 /// - `?` matches exactly one character
 /// - `[abc]` matches one character from the set
+/// Formats a float value matching Redis behavior.
+///
+/// Uses up to 17 significant digits and strips unnecessary trailing zeros,
+/// but always keeps at least one decimal place for non-integer results.
+fn format_float(val: f64) -> String {
+    if val == 0.0 {
+        return "0".into();
+    }
+    // Use enough precision to round-trip
+    let s = format!("{:.17e}", val);
+    // Parse back to get the clean representation
+    let reparsed: f64 = s.parse().unwrap_or(val);
+    // If it's a whole number, format without decimals
+    if reparsed == reparsed.trunc() && reparsed.abs() < 1e15 {
+        format!("{}", reparsed as i64)
+    } else {
+        // Use ryu-like formatting via Display which strips trailing zeros
+        let formatted = format!("{}", reparsed);
+        formatted
+    }
+}
+
 /// - `[^abc]` or `[!abc]` matches one character NOT in the set
 ///
 /// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
@@ -3432,5 +3637,230 @@ mod tests {
         let binary = Bytes::from(vec![0u8, 1, 2, 255, 0, 128]);
         ks.set("binary".into(), binary.clone(), None);
         assert_eq!(ks.get("binary").unwrap(), Some(Value::String(binary)));
+    }
+
+    #[test]
+    fn incr_by_float_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10.5"), None);
+        let result = ks.incr_by_float("n", 2.3).unwrap();
+        let f: f64 = result.parse().unwrap();
+        assert!((f - 12.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn incr_by_float_new_key() {
+        let mut ks = Keyspace::new();
+        let result = ks.incr_by_float("new", 2.72).unwrap();
+        let f: f64 = result.parse().unwrap();
+        assert!((f - 2.72).abs() < 0.001);
+    }
+
+    #[test]
+    fn incr_by_float_negative() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let result = ks.incr_by_float("n", -3.5).unwrap();
+        let f: f64 = result.parse().unwrap();
+        assert!((f - 6.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn incr_by_float_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("mylist", &[Bytes::from("a")]).unwrap();
+        let err = ks.incr_by_float("mylist", 1.0).unwrap_err();
+        assert_eq!(err, IncrFloatError::WrongType);
+    }
+
+    #[test]
+    fn incr_by_float_not_a_float() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("hello"), None);
+        let err = ks.incr_by_float("s", 1.0).unwrap_err();
+        assert_eq!(err, IncrFloatError::NotAFloat);
+    }
+
+    #[test]
+    fn append_to_existing_key() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        let len = ks.append("key", b" world").unwrap();
+        assert_eq!(len, 11);
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("hello world")))
+        );
+    }
+
+    #[test]
+    fn append_to_new_key() {
+        let mut ks = Keyspace::new();
+        let len = ks.append("new", b"value").unwrap();
+        assert_eq!(len, 5);
+        assert_eq!(
+            ks.get("new").unwrap(),
+            Some(Value::String(Bytes::from("value")))
+        );
+    }
+
+    #[test]
+    fn append_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("mylist", &[Bytes::from("a")]).unwrap();
+        let err = ks.append("mylist", b"value").unwrap_err();
+        assert_eq!(err, WriteError::WrongType);
+    }
+
+    #[test]
+    fn strlen_existing_key() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        assert_eq!(ks.strlen("key").unwrap(), 5);
+    }
+
+    #[test]
+    fn strlen_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.strlen("missing").unwrap(), 0);
+    }
+
+    #[test]
+    fn strlen_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("mylist", &[Bytes::from("a")]).unwrap();
+        let err = ks.strlen("mylist").unwrap_err();
+        assert_eq!(err, WrongType);
+    }
+
+    #[test]
+    fn format_float_integers() {
+        assert_eq!(super::format_float(10.0), "10");
+        assert_eq!(super::format_float(0.0), "0");
+        assert_eq!(super::format_float(-5.0), "-5");
+    }
+
+    #[test]
+    fn format_float_decimals() {
+        assert_eq!(super::format_float(2.72), "2.72");
+        assert_eq!(super::format_float(10.5), "10.5");
+    }
+
+    // --- keys tests ---
+
+    #[test]
+    fn keys_match_all() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), None);
+        ks.set("c".into(), Bytes::from("3"), None);
+        let mut result = ks.keys("*");
+        result.sort();
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn keys_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+        let mut result = ks.keys("user:*");
+        result.sort();
+        assert_eq!(result, vec!["user:1", "user:2"]);
+    }
+
+    #[test]
+    fn keys_skips_expired() {
+        let mut ks = Keyspace::new();
+        ks.set("live".into(), Bytes::from("a"), None);
+        ks.set(
+            "dead".into(),
+            Bytes::from("b"),
+            Some(Duration::from_millis(1)),
+        );
+        thread::sleep(Duration::from_millis(5));
+        let result = ks.keys("*");
+        assert_eq!(result, vec!["live"]);
+    }
+
+    #[test]
+    fn keys_empty_keyspace() {
+        let ks = Keyspace::new();
+        assert!(ks.keys("*").is_empty());
+    }
+
+    // --- rename tests ---
+
+    #[test]
+    fn rename_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("old".into(), Bytes::from("value"), None);
+        ks.rename("old", "new").unwrap();
+        assert!(!ks.exists("old"));
+        assert_eq!(
+            ks.get("new").unwrap(),
+            Some(Value::String(Bytes::from("value")))
+        );
+    }
+
+    #[test]
+    fn rename_preserves_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "old".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
+        ks.rename("old", "new").unwrap();
+        match ks.ttl("new") {
+            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
+            other => panic!("expected TTL preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_overwrites_destination() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("new_val"), None);
+        ks.set("dst".into(), Bytes::from("old_val"), None);
+        ks.rename("src", "dst").unwrap();
+        assert!(!ks.exists("src"));
+        assert_eq!(
+            ks.get("dst").unwrap(),
+            Some(Value::String(Bytes::from("new_val")))
+        );
+        assert_eq!(ks.len(), 1);
+    }
+
+    #[test]
+    fn rename_missing_key_returns_error() {
+        let mut ks = Keyspace::new();
+        let err = ks.rename("missing", "new").unwrap_err();
+        assert_eq!(err, RenameError::NoSuchKey);
+    }
+
+    #[test]
+    fn rename_same_key() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), None);
+        // renaming to itself should succeed (Redis behavior)
+        ks.rename("key", "key").unwrap();
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("val")))
+        );
+    }
+
+    #[test]
+    fn rename_tracks_memory() {
+        let mut ks = Keyspace::new();
+        ks.set("old".into(), Bytes::from("value"), None);
+        let before = ks.stats().used_bytes;
+        ks.rename("old", "new").unwrap();
+        let after = ks.stats().used_bytes;
+        // same key length, so memory should be the same
+        assert_eq!(before, after);
+        assert_eq!(ks.stats().key_count, 1);
     }
 }
