@@ -608,6 +608,53 @@ impl Keyspace {
         }
     }
 
+    /// Appends a value to an existing string key, or creates a new key if
+    /// it doesn't exist. Returns the new string length.
+    pub fn append(&mut self, key: &str, value: &[u8]) -> Result<usize, WriteError> {
+        self.remove_if_expired(key);
+
+        match self.entries.get(key) {
+            Some(entry) => {
+                match &entry.value {
+                    Value::String(existing) => {
+                        let mut new_data = Vec::with_capacity(existing.len() + value.len());
+                        new_data.extend_from_slice(existing);
+                        new_data.extend_from_slice(value);
+                        let new_len = new_data.len();
+                        let expire =
+                            time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
+                        match self.set(key.to_owned(), Bytes::from(new_data), expire) {
+                            SetResult::Ok => Ok(new_len),
+                            SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
+                        }
+                    }
+                    _ => Err(WriteError::WrongType),
+                }
+            }
+            None => {
+                let new_len = value.len();
+                match self.set(key.to_owned(), Bytes::copy_from_slice(value), None) {
+                    SetResult::Ok => Ok(new_len),
+                    SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
+                }
+            }
+        }
+    }
+
+    /// Returns the length of the string value stored at key.
+    /// Returns 0 if the key does not exist.
+    pub fn strlen(&mut self, key: &str) -> Result<usize, WrongType> {
+        self.remove_if_expired(key);
+
+        match self.entries.get(key) {
+            Some(entry) => match &entry.value {
+                Value::String(data) => Ok(data.len()),
+                _ => Err(WrongType),
+            },
+            None => Ok(0),
+        }
+    }
+
     /// Returns aggregated stats for this keyspace.
     ///
     /// All fields are tracked incrementally — this is O(1).
@@ -3572,6 +3619,58 @@ mod tests {
         ks.set("s".into(), Bytes::from("hello"), None);
         let err = ks.incr_by_float("s", 1.0).unwrap_err();
         assert_eq!(err, IncrFloatError::NotAFloat);
+    }
+
+    #[test]
+    fn append_to_existing_key() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        let len = ks.append("key", b" world").unwrap();
+        assert_eq!(len, 11);
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("hello world")))
+        );
+    }
+
+    #[test]
+    fn append_to_new_key() {
+        let mut ks = Keyspace::new();
+        let len = ks.append("new", b"value").unwrap();
+        assert_eq!(len, 5);
+        assert_eq!(
+            ks.get("new").unwrap(),
+            Some(Value::String(Bytes::from("value")))
+        );
+    }
+
+    #[test]
+    fn append_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("mylist", &[Bytes::from("a")]).unwrap();
+        let err = ks.append("mylist", b"value").unwrap_err();
+        assert_eq!(err, WriteError::WrongType);
+    }
+
+    #[test]
+    fn strlen_existing_key() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        assert_eq!(ks.strlen("key").unwrap(), 5);
+    }
+
+    #[test]
+    fn strlen_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.strlen("missing").unwrap(), 0);
+    }
+
+    #[test]
+    fn strlen_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("mylist", &[Bytes::from("a")]).unwrap();
+        let err = ks.strlen("mylist").unwrap_err();
+        assert_eq!(err, WrongType);
     }
 
     #[test]

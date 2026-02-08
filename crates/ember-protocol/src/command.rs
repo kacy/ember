@@ -56,6 +56,12 @@ pub enum Command {
     /// INCRBYFLOAT `key` `increment`. Increments the float value of a key by the given amount.
     IncrByFloat { key: String, delta: f64 },
 
+    /// APPEND `key` `value`. Appends a value to a string key. Returns the new length.
+    Append { key: String, value: Bytes },
+
+    /// STRLEN `key`. Returns the length of the string value stored at key.
+    Strlen { key: String },
+
     /// DEL `key` \[key ...\]. Returns the number of keys removed.
     Del { keys: Vec<String> },
 
@@ -343,6 +349,8 @@ impl Command {
             Command::IncrBy { .. } => "incrby",
             Command::DecrBy { .. } => "decrby",
             Command::IncrByFloat { .. } => "incrbyfloat",
+            Command::Append { .. } => "append",
+            Command::Strlen { .. } => "strlen",
             Command::Del { .. } => "del",
             Command::Exists { .. } => "exists",
             Command::MGet { .. } => "mget",
@@ -453,6 +461,8 @@ impl Command {
             "INCRBY" => parse_incrby(&frames[1..]),
             "DECRBY" => parse_decrby(&frames[1..]),
             "INCRBYFLOAT" => parse_incrbyfloat(&frames[1..]),
+            "APPEND" => parse_append(&frames[1..]),
+            "STRLEN" => parse_strlen(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
             "MGET" => parse_mget(&frames[1..]),
@@ -694,6 +704,23 @@ fn parse_incrbyfloat(args: &[Frame]) -> Result<Command, ProtocolError> {
         ));
     }
     Ok(Command::IncrByFloat { key, delta })
+}
+
+fn parse_append(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("APPEND".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let value = extract_bytes(&args[1])?;
+    Ok(Command::Append { key, value })
+}
+
+fn parse_strlen(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("STRLEN".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Strlen { key })
 }
 
 fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3639,5 +3666,38 @@ mod tests {
     fn incrbyfloat_not_a_float() {
         let err = Command::from_frame(cmd(&["INCRBYFLOAT", "key", "abc"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- APPEND / STRLEN ---
+
+    #[test]
+    fn append_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["APPEND", "key", "value"])).unwrap(),
+            Command::Append {
+                key: "key".into(),
+                value: Bytes::from("value")
+            },
+        );
+    }
+
+    #[test]
+    fn append_wrong_arity() {
+        let err = Command::from_frame(cmd(&["APPEND", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn strlen_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["STRLEN", "key"])).unwrap(),
+            Command::Strlen { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn strlen_wrong_arity() {
+        let err = Command::from_frame(cmd(&["STRLEN"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

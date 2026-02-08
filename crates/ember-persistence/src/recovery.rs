@@ -291,6 +291,17 @@ fn replay_aof(
             AofRecord::DecrBy { key, delta } => {
                 apply_incr(map, key, -delta);
             }
+            AofRecord::Append { key, value } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::String(Bytes::new()), -1));
+                if let RecoveredValue::String(ref mut data) = entry.0 {
+                    let mut new_data = Vec::with_capacity(data.len() + value.len());
+                    new_data.extend_from_slice(data);
+                    new_data.extend_from_slice(&value);
+                    *data = Bytes::from(new_data);
+                }
+            }
             AofRecord::HSet { key, fields } => {
                 let entry = map
                     .entry(key)

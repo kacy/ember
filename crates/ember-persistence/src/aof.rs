@@ -56,6 +56,7 @@ const TAG_SADD: u8 = 17;
 const TAG_SREM: u8 = 18;
 const TAG_INCRBY: u8 = 19;
 const TAG_DECRBY: u8 = 20;
+const TAG_APPEND: u8 = 21;
 
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +115,8 @@ pub enum AofRecord {
     IncrBy { key: String, delta: i64 },
     /// DECRBY key delta.
     DecrBy { key: String, delta: i64 },
+    /// APPEND key value.
+    Append { key: String, value: Bytes },
 }
 
 impl AofRecord {
@@ -246,6 +249,11 @@ impl AofRecord {
                 format::write_u8(&mut buf, TAG_DECRBY).expect("vec write");
                 format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
                 format::write_i64(&mut buf, *delta).expect("vec write");
+            }
+            AofRecord::Append { key, value } => {
+                format::write_u8(&mut buf, TAG_APPEND).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_bytes(&mut buf, value).expect("vec write");
             }
         }
         buf
@@ -386,6 +394,11 @@ impl AofRecord {
                 let key = read_string(&mut cursor, "key")?;
                 let delta = format::read_i64(&mut cursor)?;
                 Ok(AofRecord::DecrBy { key, delta })
+            }
+            TAG_APPEND => {
+                let key = read_string(&mut cursor, "key")?;
+                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                Ok(AofRecord::Append { key, value })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }

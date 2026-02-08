@@ -75,6 +75,13 @@ pub enum ShardRequest {
         key: String,
         delta: f64,
     },
+    Append {
+        key: String,
+        value: Bytes,
+    },
+    Strlen {
+        key: String,
+    },
     Del {
         key: String,
     },
@@ -551,6 +558,15 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
             Err(e) => ShardResponse::Err(e.to_string()),
         },
+        ShardRequest::Append { key, value } => match ks.append(key, value) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::Strlen { key } => match ks.strlen(key) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
@@ -806,7 +822,14 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             Some(AofRecord::Set {
                 key: key.clone(),
                 value: Bytes::from(val.clone()),
-                expire_ms: -1, // preserve existing TTL via the SET path
+                expire_ms: -1,
+            })
+        }
+        // APPEND: record the appended value for replay
+        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => {
+            Some(AofRecord::Append {
+                key: key.clone(),
+                value: value.clone(),
             })
         }
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
@@ -1357,6 +1380,52 @@ mod tests {
                 assert!((f - 12.8).abs() < 0.001);
             }
             other => panic!("expected BulkString, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_append() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("hello"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Append {
+                key: "k".into(),
+                value: Bytes::from(" world"),
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Len(11)));
+    }
+
+    #[test]
+    fn dispatch_strlen() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("hello"), None);
+        let resp = dispatch(&mut ks, &ShardRequest::Strlen { key: "k".into() });
+        assert!(matches!(resp, ShardResponse::Len(5)));
+    }
+
+    #[test]
+    fn dispatch_strlen_missing() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(&mut ks, &ShardRequest::Strlen { key: "nope".into() });
+        assert!(matches!(resp, ShardResponse::Len(0)));
+    }
+
+    #[test]
+    fn to_aof_record_for_append() {
+        let req = ShardRequest::Append {
+            key: "k".into(),
+            value: Bytes::from("data"),
+        };
+        let resp = ShardResponse::Len(10);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::Append { key, value } => {
+                assert_eq!(key, "k");
+                assert_eq!(value, Bytes::from("data"));
+            }
+            other => panic!("expected Append, got {other:?}"),
         }
     }
 
