@@ -12,6 +12,7 @@ mod metrics;
 mod pubsub;
 mod server;
 mod slowlog;
+mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -81,6 +82,28 @@ struct Args {
     /// when set, connections must authenticate before executing any data commands.
     #[arg(long)]
     requirepass: Option<String>,
+
+    // -- TLS options (matching redis) --
+    /// port for TLS connections. when set, enables TLS alongside plain TCP
+    #[arg(long)]
+    tls_port: Option<u16>,
+
+    /// path to server certificate file (PEM format)
+    #[arg(long)]
+    tls_cert_file: Option<String>,
+
+    /// path to server private key file (PEM format)
+    #[arg(long)]
+    tls_key_file: Option<String>,
+
+    /// path to CA certificate for client verification (enables mTLS)
+    #[arg(long)]
+    tls_ca_cert_file: Option<String>,
+
+    /// require client certificates when CA cert is configured.
+    /// accepts: yes, no. default: no
+    #[arg(long, default_value = "no")]
+    tls_auth_clients: String,
 }
 
 #[tokio::main]
@@ -191,6 +214,49 @@ async fn main() {
         info!("authentication enabled (requirepass set)");
     }
 
+    // build TLS config if --tls-port is set
+    let tls_config = if let Some(tls_port) = args.tls_port {
+        let cert_file = args.tls_cert_file.unwrap_or_else(|| {
+            eprintln!("--tls-port requires --tls-cert-file and --tls-key-file");
+            std::process::exit(1);
+        });
+        let key_file = args.tls_key_file.unwrap_or_else(|| {
+            eprintln!("--tls-port requires --tls-cert-file and --tls-key-file");
+            std::process::exit(1);
+        });
+
+        let auth_clients = match args.tls_auth_clients.to_lowercase().as_str() {
+            "yes" | "true" | "1" => true,
+            "no" | "false" | "0" => false,
+            _ => {
+                eprintln!("--tls-auth-clients must be 'yes' or 'no'");
+                std::process::exit(1);
+            }
+        };
+
+        let tls_addr: SocketAddr = format!("{}:{}", args.host, tls_port)
+            .parse()
+            .expect("invalid TLS bind address");
+
+        info!(
+            tls_port = tls_port,
+            cert = %cert_file,
+            "TLS enabled"
+        );
+
+        Some((
+            tls_addr,
+            tls::TlsConfig {
+                cert_file,
+                key_file,
+                ca_cert_file: args.tls_ca_cert_file,
+                auth_clients,
+            },
+        ))
+    } else {
+        None
+    };
+
     let result = if args.concurrent {
         server::run_concurrent(
             addr,
@@ -202,6 +268,7 @@ async fn main() {
             args.metrics_port.is_some(),
             slowlog_config,
             args.requirepass,
+            tls_config,
         )
         .await
     } else {
@@ -213,6 +280,7 @@ async fn main() {
             args.metrics_port.is_some(),
             slowlog_config,
             args.requirepass,
+            tls_config,
         )
         .await
     };

@@ -18,6 +18,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms)
+- **tls support** — redis-compatible TLS on a separate port, with optional mTLS for client certificates
 - **protected mode** — rejects non-loopback connections when no password is set on public binds
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
@@ -46,6 +47,10 @@ cargo build --release
 
 # concurrent mode (experimental, 2x faster for GET/SET)
 ./target/release/ember-server --concurrent
+
+# with TLS (runs alongside plain TCP)
+./target/release/ember-server --tls-port 6380 \
+  --tls-cert-file cert.pem --tls-key-file key.pem
 ```
 
 ```bash
@@ -92,6 +97,11 @@ redis-cli SREM tags fast              # => (integer) 1
 redis-cli SCAN 0 MATCH "user:*" COUNT 100
 redis-cli DBSIZE                # => (integer) 6
 redis-cli FLUSHDB               # => OK
+
+# TLS connection
+redis-cli -p 6380 --tls --insecure PING
+# or with cert verification
+redis-cli -p 6380 --tls --cacert cert.pem PING
 ```
 
 ## configuration
@@ -111,6 +121,11 @@ redis-cli FLUSHDB               # => OK
 | `--slowlog-max-len` | 128 | max entries in slow log ring buffer |
 | `--concurrent` | false | use DashMap-backed keyspace (experimental, faster GET/SET) |
 | `--requirepass` | — | require AUTH with this password before running commands |
+| `--tls-port` | — | port for TLS connections (enables TLS when set) |
+| `--tls-cert-file` | — | path to server certificate (PEM) |
+| `--tls-key-file` | — | path to server private key (PEM) |
+| `--tls-ca-cert-file` | — | path to CA certificate for client verification |
+| `--tls-auth-clients` | no | require client certificates (`yes` or `no`) |
 
 ## build & development
 

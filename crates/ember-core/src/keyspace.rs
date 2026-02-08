@@ -1758,12 +1758,6 @@ impl Default for Keyspace {
     }
 }
 
-/// Glob-style pattern matching for SCAN's MATCH option.
-///
-/// Supports:
-/// - `*` matches any sequence of characters (including empty)
-/// - `?` matches exactly one character
-/// - `[abc]` matches one character from the set
 /// Formats a float value matching Redis behavior.
 ///
 /// Uses up to 17 significant digits and strips unnecessary trailing zeros,
@@ -1786,6 +1780,12 @@ fn format_float(val: f64) -> String {
     }
 }
 
+/// Glob-style pattern matching for SCAN's MATCH option.
+///
+/// Supports:
+/// - `*` matches any sequence of characters (including empty)
+/// - `?` matches exactly one character
+/// - `[abc]` matches one character from the set
 /// - `[^abc]` or `[!abc]` matches one character NOT in the set
 ///
 /// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
