@@ -166,13 +166,13 @@ echo ""
 
 # ember concurrent mode (DashMap-backed, fastest for GET/SET)
 echo "starting ember concurrent on port $EMBER_CONCURRENT_PORT..."
-"$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent > /dev/null 2>&1 &
+"$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --shards "$CPU_CORES" --concurrent > /dev/null 2>&1 &
 EMBER_CONCURRENT_PID=$!
 wait_for_server "$EMBER_CONCURRENT_PORT" "ember-concurrent"
 
 # ember sharded mode (channel-based, supports all data types)
 echo "starting ember sharded ($CPU_CORES shards) on port $EMBER_SHARDED_PORT..."
-"$EMBER_BIN" --port "$EMBER_SHARDED_PORT" > /dev/null 2>&1 &
+"$EMBER_BIN" --port "$EMBER_SHARDED_PORT" --shards "$CPU_CORES" > /dev/null 2>&1 &
 EMBER_SHARDED_PID=$!
 wait_for_server "$EMBER_SHARDED_PORT" "ember-sharded"
 

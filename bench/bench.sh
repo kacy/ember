@@ -57,8 +57,8 @@ fi
 cleanup
 
 echo "starting servers..."
-$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
-$EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_SHARDED_PORT --shards $THREADS > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_CONCURRENT_PORT --shards $THREADS --concurrent > /dev/null 2>&1 &
 redis-server --port $REDIS_PORT --daemonize yes --save "" --appendonly no > /dev/null 2>&1
 sleep 2
 
