@@ -268,6 +268,7 @@ async fn main() {
             args.metrics_port.is_some(),
             slowlog_config,
             args.requirepass,
+            tls_config,
         )
         .await
     } else {
@@ -279,6 +280,7 @@ async fn main() {
             args.metrics_port.is_some(),
             slowlog_config,
             args.requirepass,
+            tls_config,
         )
         .await
     };

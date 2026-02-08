@@ -1,4 +1,4 @@
-//! TCP server that accepts client connections and spawns handler tasks.
+//! TCP/TLS server that accepts client connections and spawns handler tasks.
 //!
 //! Handles graceful shutdown on SIGINT/SIGTERM: stops accepting new
 //! connections and waits for in-flight requests to drain before exiting.
@@ -12,11 +12,13 @@ use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
+use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use crate::connection;
 use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
+use crate::tls::TlsConfig;
 
 /// Default maximum number of concurrent client connections.
 const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
@@ -50,8 +52,12 @@ pub struct ServerContext {
 /// Limits concurrent connections to `max_connections` — excess clients
 /// are dropped immediately.
 ///
+/// If `tls` is provided, also binds a TLS listener on the specified address.
+/// Both plain TCP and TLS connections share the same engine and connection limits.
+///
 /// On SIGINT or SIGTERM the server stops accepting new connections,
 /// waits for existing handlers to finish, then exits cleanly.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     addr: SocketAddr,
     shard_count: usize,
@@ -60,6 +66,7 @@ pub async fn run(
     metrics_enabled: bool,
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
+    tls: Option<(SocketAddr, TlsConfig)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
@@ -85,6 +92,17 @@ pub async fn run(
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
+
+    // set up TLS listener if configured
+    let tls_listener: Option<(TcpListener, TlsAcceptor)> = if let Some((tls_addr, tls_config)) = tls
+    {
+        let acceptor = crate::tls::load_tls_acceptor(&tls_config)?;
+        let tls_tcp = TcpListener::bind(tls_addr).await?;
+        info!("TLS listening on {tls_addr}");
+        Some((tls_tcp, acceptor))
+    } else {
+        None
+    };
 
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
@@ -112,6 +130,14 @@ pub async fn run(
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
+    // helper to accept from TLS listener or pend forever if disabled
+    let tls_accept = || async {
+        match &tls_listener {
+            Some((listener, _)) => listener.accept().await,
+            None => std::future::pending().await,
+        }
+    };
+
     loop {
         tokio::select! {
             biased;
@@ -121,6 +147,7 @@ pub async fn run(
                 break;
             }
 
+            // plain TCP accept
             result = listener.accept() => {
                 let (stream, peer) = result?;
 
@@ -172,6 +199,64 @@ pub async fn run(
                     drop(permit);
                 });
             }
+
+            // TLS accept (pends forever if TLS not configured)
+            result = tls_accept() => {
+                let (stream, peer) = result?;
+
+                if let Err(e) = stream.set_nodelay(true) {
+                    warn!("failed to set TCP_NODELAY: {e}");
+                }
+
+                // protected mode check on TLS connections too
+                if is_protected_mode_violation(&ctx, &peer) {
+                    reject_protected_mode(stream).await;
+                    continue;
+                }
+
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("connection limit reached, dropping TLS connection from {peer}");
+                        if metrics_enabled {
+                            crate::metrics::on_connection_rejected();
+                        }
+                        drop(stream);
+                        continue;
+                    }
+                };
+
+                if metrics_enabled {
+                    crate::metrics::on_connection_accepted();
+                }
+                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
+                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
+
+                let engine = engine.clone();
+                let ctx = Arc::clone(&ctx);
+                let slow_log = Arc::clone(&slow_log);
+                let pubsub = Arc::clone(&pubsub);
+                let acceptor = tls_listener.as_ref().map(|(_, a)| a.clone()).unwrap();
+
+                tokio::spawn(async move {
+                    // perform TLS handshake
+                    match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            if let Err(e) = connection::handle(tls_stream, engine, &ctx, &slow_log, &pubsub).await {
+                                error!("TLS connection error from {peer}: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            warn!("TLS handshake failed from {peer}: {e}");
+                        }
+                    }
+                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
+                    if ctx.metrics_enabled {
+                        crate::metrics::on_connection_closed();
+                    }
+                    drop(permit);
+                });
+            }
         }
     }
 
@@ -199,6 +284,8 @@ async fn reject_protected_mode(mut stream: tokio::net::TcpStream) {
 /// This mode bypasses shard channels for GET/SET operations, accessing
 /// the keyspace directly from connection handlers. Falls back to the
 /// sharded engine for complex commands.
+///
+/// If `tls` is provided, also binds a TLS listener on the specified address.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_concurrent(
     addr: SocketAddr,
@@ -210,6 +297,7 @@ pub async fn run_concurrent(
     metrics_enabled: bool,
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
+    tls: Option<(SocketAddr, TlsConfig)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
         .persistence
@@ -230,6 +318,17 @@ pub async fn run_concurrent(
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
+
+    // set up TLS listener if configured
+    let tls_listener: Option<(TcpListener, TlsAcceptor)> = if let Some((tls_addr, tls_config)) = tls
+    {
+        let acceptor = crate::tls::load_tls_acceptor(&tls_config)?;
+        let tls_tcp = TcpListener::bind(tls_addr).await?;
+        info!("TLS listening on {tls_addr}");
+        Some((tls_tcp, acceptor))
+    } else {
+        None
+    };
 
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
@@ -254,6 +353,14 @@ pub async fn run_concurrent(
     let shutdown = tokio::signal::ctrl_c();
     tokio::pin!(shutdown);
 
+    // helper to accept from TLS listener or pend forever if disabled
+    let tls_accept = || async {
+        match &tls_listener {
+            Some((listener, _)) => listener.accept().await,
+            None => std::future::pending().await,
+        }
+    };
+
     loop {
         tokio::select! {
             biased;
@@ -263,6 +370,7 @@ pub async fn run_concurrent(
                 break;
             }
 
+            // plain TCP accept
             result = listener.accept() => {
                 let (stream, peer) = result?;
 
@@ -304,6 +412,65 @@ pub async fn run_concurrent(
                         stream, keyspace, engine, &ctx, &slow_log, &pubsub
                     ).await {
                         error!("connection error from {peer}: {e}");
+                    }
+                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
+                    if ctx.metrics_enabled {
+                        crate::metrics::on_connection_closed();
+                    }
+                    drop(permit);
+                });
+            }
+
+            // TLS accept (pends forever if TLS not configured)
+            result = tls_accept() => {
+                let (stream, peer) = result?;
+
+                if let Err(e) = stream.set_nodelay(true) {
+                    warn!("failed to set TCP_NODELAY: {e}");
+                }
+
+                if is_protected_mode_violation(&ctx, &peer) {
+                    reject_protected_mode(stream).await;
+                    continue;
+                }
+
+                let permit = match semaphore.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("connection limit reached, dropping TLS connection from {peer}");
+                        if metrics_enabled {
+                            crate::metrics::on_connection_rejected();
+                        }
+                        drop(stream);
+                        continue;
+                    }
+                };
+
+                if metrics_enabled {
+                    crate::metrics::on_connection_accepted();
+                }
+                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
+                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
+
+                let keyspace = Arc::clone(&keyspace);
+                let engine = engine.clone();
+                let ctx = Arc::clone(&ctx);
+                let slow_log = Arc::clone(&slow_log);
+                let pubsub = Arc::clone(&pubsub);
+                let acceptor = tls_listener.as_ref().map(|(_, a)| a.clone()).unwrap();
+
+                tokio::spawn(async move {
+                    match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            if let Err(e) = crate::concurrent_handler::handle(
+                                tls_stream, keyspace, engine, &ctx, &slow_log, &pubsub
+                            ).await {
+                                error!("TLS connection error from {peer}: {e}");
+                            }
+                        }
+                        Err(e) => {
+                            warn!("TLS handshake failed from {peer}: {e}");
+                        }
                     }
                     ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
                     if ctx.metrics_enabled {

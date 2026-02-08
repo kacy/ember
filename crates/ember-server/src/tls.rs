@@ -155,8 +155,11 @@ mod tests {
             ca_cert_file: None,
             auth_clients: false,
         };
-        let err = load_tls_acceptor(&config).unwrap_err();
-        assert!(matches!(err, TlsError::CertFileNotFound(_)));
+        match load_tls_acceptor(&config) {
+            Err(TlsError::CertFileNotFound(_)) => {}
+            Err(e) => panic!("expected CertFileNotFound, got: {e}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
     }
 
     #[test]
@@ -172,8 +175,11 @@ mod tests {
             ca_cert_file: None,
             auth_clients: false,
         };
-        let err = load_tls_acceptor(&config).unwrap_err();
-        assert!(matches!(err, TlsError::KeyFileNotFound(_)));
+        match load_tls_acceptor(&config) {
+            Err(TlsError::KeyFileNotFound(_)) => {}
+            Err(e) => panic!("expected KeyFileNotFound, got: {e}"),
+            Ok(_) => panic!("expected error, got Ok"),
+        }
 
         std::fs::remove_file(tmp).ok();
     }
