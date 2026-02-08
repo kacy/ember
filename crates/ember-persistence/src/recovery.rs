@@ -285,6 +285,28 @@ fn replay_aof(
             AofRecord::Decr { key } => {
                 apply_incr(map, key, -1);
             }
+            AofRecord::IncrBy { key, delta } => {
+                apply_incr(map, key, delta);
+            }
+            AofRecord::DecrBy { key, delta } => {
+                apply_incr(map, key, -delta);
+            }
+            AofRecord::Append { key, value } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::String(Bytes::new()), -1));
+                if let RecoveredValue::String(ref mut data) = entry.0 {
+                    let mut new_data = Vec::with_capacity(data.len() + value.len());
+                    new_data.extend_from_slice(data);
+                    new_data.extend_from_slice(&value);
+                    *data = Bytes::from(new_data);
+                }
+            }
+            AofRecord::Rename { key, newkey } => {
+                if let Some(entry) = map.remove(&key) {
+                    map.insert(newkey, entry);
+                }
+            }
             AofRecord::HSet { key, fields } => {
                 let entry = map
                     .entry(key)

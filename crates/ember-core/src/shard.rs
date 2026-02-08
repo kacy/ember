@@ -18,7 +18,8 @@ use tracing::{info, warn};
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{
-    IncrError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult, WriteError,
+    IncrError, IncrFloatError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult,
+    WriteError,
 };
 use crate::types::sorted_set::ZAddFlags;
 use crate::types::Value;
@@ -61,6 +62,34 @@ pub enum ShardRequest {
     },
     Decr {
         key: String,
+    },
+    IncrBy {
+        key: String,
+        delta: i64,
+    },
+    DecrBy {
+        key: String,
+        delta: i64,
+    },
+    IncrByFloat {
+        key: String,
+        delta: f64,
+    },
+    Append {
+        key: String,
+        value: Bytes,
+    },
+    Strlen {
+        key: String,
+    },
+    /// Returns all keys matching a glob pattern in this shard.
+    Keys {
+        pattern: String,
+    },
+    /// Renames a key within this shard.
+    Rename {
+        key: String,
+        newkey: String,
     },
     Del {
         key: String,
@@ -251,6 +280,8 @@ pub enum ShardResponse {
     Rank(Option<usize>),
     /// Scored array of (member, score) pairs (e.g. ZRANGE).
     ScoredArray(Vec<(String, f64)>),
+    /// A bulk string result (e.g. INCRBYFLOAT).
+    BulkString(String),
     /// Command used against a key holding the wrong kind of value.
     WrongType,
     /// An error message.
@@ -518,6 +549,44 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
             Err(e) => ShardResponse::Err(e.to_string()),
         },
+        ShardRequest::IncrBy { key, delta } => match ks.incr_by(key, *delta) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
+        ShardRequest::DecrBy { key, delta } => match ks.incr_by(key, -delta) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
+        ShardRequest::IncrByFloat { key, delta } => match ks.incr_by_float(key, *delta) {
+            Ok(val) => ShardResponse::BulkString(val),
+            Err(IncrFloatError::WrongType) => ShardResponse::WrongType,
+            Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
+        ShardRequest::Append { key, value } => match ks.append(key, value) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::Strlen { key } => match ks.strlen(key) {
+            Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::Keys { pattern } => {
+            let keys = ks.keys(pattern);
+            ShardResponse::StringArray(keys)
+        }
+        ShardRequest::Rename { key, newkey } => {
+            use crate::keyspace::RenameError;
+            match ks.rename(key, newkey) {
+                Ok(()) => ShardResponse::Ok,
+                Err(RenameError::NoSuchKey) => ShardResponse::Err("ERR no such key".into()),
+            }
+        }
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
@@ -755,6 +824,36 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
         (ShardRequest::Decr { key }, ShardResponse::Integer(_)) => {
             Some(AofRecord::Decr { key: key.clone() })
         }
+        (ShardRequest::IncrBy { key, delta }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::IncrBy {
+                key: key.clone(),
+                delta: *delta,
+            })
+        }
+        (ShardRequest::DecrBy { key, delta }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::DecrBy {
+                key: key.clone(),
+                delta: *delta,
+            })
+        }
+        // INCRBYFLOAT: record as a SET with the resulting value to avoid
+        // float rounding drift during replay.
+        (ShardRequest::IncrByFloat { key, .. }, ShardResponse::BulkString(val)) => {
+            Some(AofRecord::Set {
+                key: key.clone(),
+                value: Bytes::from(val.clone()),
+                expire_ms: -1,
+            })
+        }
+        // APPEND: record the appended value for replay
+        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => Some(AofRecord::Append {
+            key: key.clone(),
+            value: value.clone(),
+        }),
+        (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => Some(AofRecord::Rename {
+            key: key.clone(),
+            newkey: newkey.clone(),
+        }),
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
             Some(AofRecord::Persist { key: key.clone() })
         }
@@ -1246,6 +1345,132 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_incrby() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrBy {
+                key: "n".into(),
+                delta: 5,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Integer(15)));
+    }
+
+    #[test]
+    fn dispatch_decrby() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::DecrBy {
+                key: "n".into(),
+                delta: 3,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Integer(7)));
+    }
+
+    #[test]
+    fn dispatch_incrby_new_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrBy {
+                key: "new".into(),
+                delta: 42,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Integer(42)));
+    }
+
+    #[test]
+    fn dispatch_incrbyfloat() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10.5"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrByFloat {
+                key: "n".into(),
+                delta: 2.3,
+            },
+        );
+        match resp {
+            ShardResponse::BulkString(val) => {
+                let f: f64 = val.parse().unwrap();
+                assert!((f - 12.8).abs() < 0.001);
+            }
+            other => panic!("expected BulkString, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_append() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("hello"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Append {
+                key: "k".into(),
+                value: Bytes::from(" world"),
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Len(11)));
+    }
+
+    #[test]
+    fn dispatch_strlen() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("hello"), None);
+        let resp = dispatch(&mut ks, &ShardRequest::Strlen { key: "k".into() });
+        assert!(matches!(resp, ShardResponse::Len(5)));
+    }
+
+    #[test]
+    fn dispatch_strlen_missing() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(&mut ks, &ShardRequest::Strlen { key: "nope".into() });
+        assert!(matches!(resp, ShardResponse::Len(0)));
+    }
+
+    #[test]
+    fn to_aof_record_for_append() {
+        let req = ShardRequest::Append {
+            key: "k".into(),
+            value: Bytes::from("data"),
+        };
+        let resp = ShardResponse::Len(10);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::Append { key, value } => {
+                assert_eq!(key, "k");
+                assert_eq!(value, Bytes::from("data"));
+            }
+            other => panic!("expected Append, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_incrbyfloat_new_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrByFloat {
+                key: "new".into(),
+                delta: 2.72,
+            },
+        );
+        match resp {
+            ShardResponse::BulkString(val) => {
+                let f: f64 = val.parse().unwrap();
+                assert!((f - 2.72).abs() < 0.001);
+            }
+            other => panic!("expected BulkString, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn to_aof_record_for_incr() {
         let req = ShardRequest::Incr { key: "c".into() };
         let resp = ShardResponse::Integer(1);
@@ -1259,6 +1484,40 @@ mod tests {
         let resp = ShardResponse::Integer(-1);
         let record = to_aof_record(&req, &resp).unwrap();
         assert!(matches!(record, AofRecord::Decr { .. }));
+    }
+
+    #[test]
+    fn to_aof_record_for_incrby() {
+        let req = ShardRequest::IncrBy {
+            key: "c".into(),
+            delta: 5,
+        };
+        let resp = ShardResponse::Integer(15);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::IncrBy { key, delta } => {
+                assert_eq!(key, "c");
+                assert_eq!(delta, 5);
+            }
+            other => panic!("expected IncrBy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_for_decrby() {
+        let req = ShardRequest::DecrBy {
+            key: "c".into(),
+            delta: 3,
+        };
+        let resp = ShardResponse::Integer(7);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::DecrBy { key, delta } => {
+                assert_eq!(key, "c");
+                assert_eq!(delta, 3);
+            }
+            other => panic!("expected DecrBy, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1656,5 +1915,72 @@ mod tests {
         };
         let resp = ShardResponse::Len(0);
         assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn dispatch_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Keys {
+                pattern: "user:*".into(),
+            },
+        );
+        match resp {
+            ShardResponse::StringArray(mut keys) => {
+                keys.sort();
+                assert_eq!(keys, vec!["user:1", "user:2"]);
+            }
+            other => panic!("expected StringArray, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_rename() {
+        let mut ks = Keyspace::new();
+        ks.set("old".into(), Bytes::from("value"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Rename {
+                key: "old".into(),
+                newkey: "new".into(),
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        assert!(!ks.exists("old"));
+        assert!(ks.exists("new"));
+    }
+
+    #[test]
+    fn dispatch_rename_missing_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Rename {
+                key: "missing".into(),
+                newkey: "new".into(),
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Err(_)));
+    }
+
+    #[test]
+    fn to_aof_record_for_rename() {
+        let req = ShardRequest::Rename {
+            key: "old".into(),
+            newkey: "new".into(),
+        };
+        let resp = ShardResponse::Ok;
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::Rename { key, newkey } => {
+                assert_eq!(key, "old");
+                assert_eq!(newkey, "new");
+            }
+            other => panic!("expected Rename, got {other:?}"),
+        }
     }
 }
