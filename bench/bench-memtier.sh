@@ -58,18 +58,31 @@ done
 
 # --- helpers ---
 
-EMBER_CONCURRENT_PID=""
-EMBER_SHARDED_PID=""
-REDIS_PID=""
-DRAGONFLY_PID=""
+SERVER_PID=""
 
 cleanup() {
-    [[ -n "$EMBER_CONCURRENT_PID" ]] && kill "$EMBER_CONCURRENT_PID" 2>/dev/null && wait "$EMBER_CONCURRENT_PID" 2>/dev/null || true
-    [[ -n "$EMBER_SHARDED_PID" ]] && kill "$EMBER_SHARDED_PID" 2>/dev/null && wait "$EMBER_SHARDED_PID" 2>/dev/null || true
-    [[ -n "$REDIS_PID" ]] && kill "$REDIS_PID" 2>/dev/null && wait "$REDIS_PID" 2>/dev/null || true
-    [[ -n "$DRAGONFLY_PID" ]] && kill "$DRAGONFLY_PID" 2>/dev/null && wait "$DRAGONFLY_PID" 2>/dev/null || true
+    [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+start_server() {
+    local name=$1
+    local port=$2
+    shift 2
+
+    echo "  starting $name on port $port..."
+    "$@" > /dev/null 2>&1 &
+    SERVER_PID=$!
+    wait_for_server "$port" "$name"
+}
+
+stop_server() {
+    if [[ -n "$SERVER_PID" ]]; then
+        kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null || true
+        SERVER_PID=""
+        sleep 0.5
+    fi
+}
 
 wait_for_server() {
     local port=$1
@@ -89,34 +102,58 @@ wait_for_server() {
 #
 # writes to a temp file to avoid both bash variable null-byte truncation
 # and pipe buffering issues observed with certain memtier builds.
+# retries once on failure since memtier occasionally produces no output.
 run_memtier() {
     local port=$1
     local pipeline=$2
     local ratio=$3
     local data_size=$4
-    local tmpfile
-    tmpfile=$(mktemp)
+    local attempt
 
-    memtier_benchmark \
-        -s 127.0.0.1 -p "$port" \
-        --threads="$MEMTIER_THREADS" \
-        --clients="$MEMTIER_CLIENTS" \
-        --requests="$MEMTIER_REQUESTS" \
-        --pipeline="$pipeline" \
-        --data-size="$data_size" \
-        --ratio="$ratio" \
-        --key-minimum=1 \
-        --key-maximum="$KEY_MAX" \
-        --hide-histogram \
-        > "$tmpfile" 2>/dev/null || true
+    for attempt in 1 2; do
+        local tmpfile
+        tmpfile=$(mktemp)
 
-    if grep -q "^Totals" "$tmpfile"; then
-        awk '/^Totals/{printf "%.0f %.3f\n", $2, $7}' "$tmpfile"
-    else
-        echo "warning: no Totals in memtier output for port $port" >&2
-        echo "0 0.000"
-    fi
-    rm -f "$tmpfile"
+        memtier_benchmark \
+            -s 127.0.0.1 -p "$port" \
+            --threads="$MEMTIER_THREADS" \
+            --clients="$MEMTIER_CLIENTS" \
+            --requests="$MEMTIER_REQUESTS" \
+            --pipeline="$pipeline" \
+            --data-size="$data_size" \
+            --ratio="$ratio" \
+            --key-minimum=1 \
+            --key-maximum="$KEY_MAX" \
+            --hide-histogram \
+            > "$tmpfile" 2>/dev/null || true
+
+        if grep -q "^Totals" "$tmpfile"; then
+            local parsed
+            parsed=$(awk '/^Totals/{printf "%.0f %.3f\n", $2, $7}' "$tmpfile")
+            local ops=${parsed%% *}
+
+            # retry if memtier reported 0 ops (connection errors, etc.)
+            if [[ "$ops" -eq 0 ]] && [[ $attempt -eq 1 ]]; then
+                echo "    retrying (0 ops on attempt 1)..." >&2
+                rm -f "$tmpfile"
+                sleep 2
+                continue
+            fi
+
+            echo "$parsed"
+            rm -f "$tmpfile"
+            return
+        fi
+
+        rm -f "$tmpfile"
+        if [[ $attempt -eq 1 ]]; then
+            echo "    retrying (no output on attempt 1)..." >&2
+            sleep 2
+        fi
+    done
+
+    echo "warning: no Totals in memtier output for port $port after 2 attempts" >&2
+    echo "0 0.000"
 }
 
 # pre-populate keys so GET tests hit data
@@ -190,8 +227,6 @@ fi
 
 mkdir -p "$RESULTS_DIR"
 
-# --- start servers ---
-
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
 
 echo ""
@@ -202,30 +237,6 @@ echo "requests:     $MEMTIER_REQUESTS per client ($TOTAL_REQUESTS total)"
 echo "pipeline:     $PIPELINE"
 echo "key range:    1 - $KEY_MAX"
 echo ""
-
-echo "starting ember concurrent on port $EMBER_CONCURRENT_PORT..."
-"$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent > /dev/null 2>&1 &
-EMBER_CONCURRENT_PID=$!
-wait_for_server "$EMBER_CONCURRENT_PORT" "ember-concurrent"
-
-echo "starting ember sharded ($CPU_CORES shards) on port $EMBER_SHARDED_PORT..."
-"$EMBER_BIN" --port "$EMBER_SHARDED_PORT" > /dev/null 2>&1 &
-EMBER_SHARDED_PID=$!
-wait_for_server "$EMBER_SHARDED_PORT" "ember-sharded"
-
-if [[ "$HAS_REDIS" == "true" ]]; then
-    echo "starting redis on port $REDIS_PORT..."
-    redis-server --port "$REDIS_PORT" --save "" --appendonly no --loglevel warning > /dev/null 2>&1 &
-    REDIS_PID=$!
-    wait_for_server "$REDIS_PORT" "redis"
-fi
-
-if [[ "$HAS_DRAGONFLY" == "true" ]]; then
-    echo "starting dragonfly on port $DRAGONFLY_PORT..."
-    "$DRAGONFLY_BIN" --port "$DRAGONFLY_PORT" --dbfilename "" > /dev/null 2>&1 &
-    DRAGONFLY_PID=$!
-    wait_for_server "$DRAGONFLY_PORT" "dragonfly"
-fi
 
 # --- test matrix ---
 # format: "label|data_size|pipeline|ratio"
@@ -251,16 +262,13 @@ else
 fi
 
 # --- run benchmarks ---
+#
+# each server is started, benchmarked, and stopped individually.
+# running all servers simultaneously causes CPU contention that
+# produces unreliable results with memtier's higher thread count.
 
 echo ""
-echo "pre-populating keys..."
-populate_keys "$EMBER_CONCURRENT_PORT"
-populate_keys "$EMBER_SHARDED_PORT"
-[[ "$HAS_REDIS" == "true" ]] && populate_keys "$REDIS_PORT"
-[[ "$HAS_DRAGONFLY" == "true" ]] && populate_keys "$DRAGONFLY_PORT"
-
-echo ""
-echo "running benchmarks..."
+echo "running benchmarks (one server at a time)..."
 echo ""
 
 # collect labels from the test matrix
@@ -270,18 +278,32 @@ for test_spec in "${TESTS[@]}"; do
     LABELS+=("$label")
 done
 
-# run all tests for one server before moving to the next.
-# this avoids CPU contention from rapidly switching between
-# servers running on the same machine.
+# run all tests for a server, collecting ops and p99 into arrays
 run_server_tests() {
     local port=$1
     local name=$2
     local -n ops_arr=$3
     local -n p99_arr=$4
 
-    echo "  $name (port $port)..."
+    populate_keys "$port"
+
+    echo "  benchmarking $name..."
+    local first=true
     for test_spec in "${TESTS[@]}"; do
         IFS='|' read -r label data_size pipeline ratio <<< "$test_spec"
+
+        # brief pause between tests to let connections fully drain
+        if [[ "$first" == "true" ]]; then
+            first=false
+        else
+            sleep 1
+            # verify server is still alive between tests
+            if ! redis-cli -p "$port" ping > /dev/null 2>&1; then
+                echo "    warning: $name not responding, waiting..." >&2
+                sleep 3
+            fi
+        fi
+
         local result ops p99
         result=$(run_memtier "$port" "$pipeline" "$ratio" "$data_size")
         ops=${result%% *}
@@ -300,10 +322,33 @@ declare -a ES_P99=()
 declare -a R_P99=()
 declare -a D_P99=()
 
+# ember concurrent
+start_server "ember concurrent" "$EMBER_CONCURRENT_PORT" \
+    "$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent
 run_server_tests "$EMBER_CONCURRENT_PORT" "ember concurrent" EC_OPS EC_P99
+stop_server
+
+# ember sharded
+start_server "ember sharded" "$EMBER_SHARDED_PORT" \
+    "$EMBER_BIN" --port "$EMBER_SHARDED_PORT"
 run_server_tests "$EMBER_SHARDED_PORT" "ember sharded" ES_OPS ES_P99
-[[ "$HAS_REDIS" == "true" ]] && run_server_tests "$REDIS_PORT" "redis" R_OPS R_P99
-[[ "$HAS_DRAGONFLY" == "true" ]] && run_server_tests "$DRAGONFLY_PORT" "dragonfly" D_OPS D_P99
+stop_server
+
+# redis
+if [[ "$HAS_REDIS" == "true" ]]; then
+    start_server "redis" "$REDIS_PORT" \
+        redis-server --port "$REDIS_PORT" --save "" --appendonly no --loglevel warning
+    run_server_tests "$REDIS_PORT" "redis" R_OPS R_P99
+    stop_server
+fi
+
+# dragonfly
+if [[ "$HAS_DRAGONFLY" == "true" ]]; then
+    start_server "dragonfly" "$DRAGONFLY_PORT" \
+        "$DRAGONFLY_BIN" --port "$DRAGONFLY_PORT" --logtostderr --dbfilename ""
+    run_server_tests "$DRAGONFLY_PORT" "dragonfly" D_OPS D_P99
+    stop_server
+fi
 
 # --- output results ---
 
