@@ -85,51 +85,29 @@ wait_for_server() {
     done
 }
 
-# run memtier_benchmark and return raw output.
-# retries once if the first attempt produces no Totals line (e.g. due to
-# ephemeral connection errors under heavy load).
+# run memtier_benchmark and output "ops_sec p99_ms" on a single line.
+#
+# pipes directly through awk rather than capturing in a variable —
+# memtier's output can contain bytes that truncate bash strings.
 run_memtier() {
     local port=$1
     local pipeline=$2
     local ratio=$3
     local data_size=$4
-    local attempt output
 
-    for attempt in 1 2; do
-        output=$(memtier_benchmark \
-            -s 127.0.0.1 -p "$port" \
-            --threads="$MEMTIER_THREADS" \
-            --clients="$MEMTIER_CLIENTS" \
-            --requests="$MEMTIER_REQUESTS" \
-            --pipeline="$pipeline" \
-            --data-size="$data_size" \
-            --ratio="$ratio" \
-            --key-minimum=1 \
-            --key-maximum="$KEY_MAX" \
-            --hide-histogram \
-            2>/dev/null || true)
-
-        if echo "$output" | grep -q "^Totals"; then
-            echo "$output"
-            return
-        fi
-
-        # brief pause before retry
-        sleep 1
-    done
-
-    # return whatever we got (extract_ops will yield 0)
-    echo "$output"
-}
-
-# extract ops/sec from the Totals line
-extract_ops() {
-    echo "$1" | grep "^Totals" | tail -1 | awk '{printf "%.0f", $2}'
-}
-
-# extract p99 latency (ms) from the Totals line
-extract_p99() {
-    echo "$1" | grep "^Totals" | tail -1 | awk '{printf "%.3f", $7}'
+    memtier_benchmark \
+        -s 127.0.0.1 -p "$port" \
+        --threads="$MEMTIER_THREADS" \
+        --clients="$MEMTIER_CLIENTS" \
+        --requests="$MEMTIER_REQUESTS" \
+        --pipeline="$pipeline" \
+        --data-size="$data_size" \
+        --ratio="$ratio" \
+        --key-minimum=1 \
+        --key-maximum="$KEY_MAX" \
+        --hide-histogram \
+        2>/dev/null \
+    | awk '/^Totals/{printf "%.0f %.3f\n", $2, $7}' || true
 }
 
 # pre-populate keys so GET tests hit data
@@ -295,9 +273,12 @@ run_server_tests() {
     echo "  $name (port $port)..."
     for test_spec in "${TESTS[@]}"; do
         IFS='|' read -r label data_size pipeline ratio <<< "$test_spec"
-        output=$(run_memtier "$port" "$pipeline" "$ratio" "$data_size")
-        ops_arr+=("$(extract_ops "$output")")
-        p99_arr+=("$(extract_p99 "$output")")
+        local result ops p99
+        result=$(run_memtier "$port" "$pipeline" "$ratio" "$data_size")
+        ops=${result%% *}
+        p99=${result##* }
+        ops_arr+=("${ops:-0}")
+        p99_arr+=("${p99:-0.000}")
     done
 }
 
