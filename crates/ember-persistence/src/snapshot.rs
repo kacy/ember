@@ -230,43 +230,43 @@ impl SnapshotReader {
         let mut buf = Vec::new();
 
         let key_bytes = format::read_bytes(&mut self.reader)?;
-        format::write_bytes(&mut buf, &key_bytes).expect("vec write");
+        format::write_bytes(&mut buf, &key_bytes)?;
 
         let value = if self.version == 1 {
             // v1: no type tag, value is always a string
             let value_bytes = format::read_bytes(&mut self.reader)?;
-            format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+            format::write_bytes(&mut buf, &value_bytes)?;
             SnapValue::String(Bytes::from(value_bytes))
         } else {
             // v2+: type-tagged values
             let type_tag = format::read_u8(&mut self.reader)?;
-            format::write_u8(&mut buf, type_tag).expect("vec write");
+            format::write_u8(&mut buf, type_tag)?;
             match type_tag {
                 TYPE_STRING => {
                     let value_bytes = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+                    format::write_bytes(&mut buf, &value_bytes)?;
                     SnapValue::String(Bytes::from(value_bytes))
                 }
                 TYPE_LIST => {
                     let count = format::read_u32(&mut self.reader)?;
-                    format::write_u32(&mut buf, count).expect("vec write");
+                    format::write_u32(&mut buf, count)?;
                     let mut deque = VecDeque::with_capacity(count as usize);
                     for _ in 0..count {
                         let item = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &item).expect("vec write");
+                        format::write_bytes(&mut buf, &item)?;
                         deque.push_back(Bytes::from(item));
                     }
                     SnapValue::List(deque)
                 }
                 TYPE_SORTED_SET => {
                     let count = format::read_u32(&mut self.reader)?;
-                    format::write_u32(&mut buf, count).expect("vec write");
+                    format::write_u32(&mut buf, count)?;
                     let mut members = Vec::with_capacity(count as usize);
                     for _ in 0..count {
                         let score = format::read_f64(&mut self.reader)?;
-                        format::write_f64(&mut buf, score).expect("vec write");
+                        format::write_f64(&mut buf, score)?;
                         let member_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &member_bytes).expect("vec write");
+                        format::write_bytes(&mut buf, &member_bytes)?;
                         let member = String::from_utf8(member_bytes).map_err(|_| {
                             FormatError::Io(io::Error::new(
                                 io::ErrorKind::InvalidData,
@@ -279,11 +279,11 @@ impl SnapshotReader {
                 }
                 TYPE_HASH => {
                     let count = format::read_u32(&mut self.reader)?;
-                    format::write_u32(&mut buf, count).expect("vec write");
+                    format::write_u32(&mut buf, count)?;
                     let mut map = HashMap::with_capacity(count as usize);
                     for _ in 0..count {
                         let field_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &field_bytes).expect("vec write");
+                        format::write_bytes(&mut buf, &field_bytes)?;
                         let field = String::from_utf8(field_bytes).map_err(|_| {
                             FormatError::Io(io::Error::new(
                                 io::ErrorKind::InvalidData,
@@ -291,18 +291,18 @@ impl SnapshotReader {
                             ))
                         })?;
                         let value_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &value_bytes).expect("vec write");
+                        format::write_bytes(&mut buf, &value_bytes)?;
                         map.insert(field, Bytes::from(value_bytes));
                     }
                     SnapValue::Hash(map)
                 }
                 TYPE_SET => {
                     let count = format::read_u32(&mut self.reader)?;
-                    format::write_u32(&mut buf, count).expect("vec write");
+                    format::write_u32(&mut buf, count)?;
                     let mut set = HashSet::with_capacity(count as usize);
                     for _ in 0..count {
                         let member_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &member_bytes).expect("vec write");
+                        format::write_bytes(&mut buf, &member_bytes)?;
                         let member = String::from_utf8(member_bytes).map_err(|_| {
                             FormatError::Io(io::Error::new(
                                 io::ErrorKind::InvalidData,
@@ -320,7 +320,7 @@ impl SnapshotReader {
         };
 
         let expire_ms = format::read_i64(&mut self.reader)?;
-        format::write_i64(&mut buf, expire_ms).expect("vec write");
+        format::write_i64(&mut buf, expire_ms)?;
         self.hasher.update(&buf);
 
         let key = String::from_utf8(key_bytes).map_err(|_| {
