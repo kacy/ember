@@ -1569,8 +1569,14 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                 human_bytes(stats.used_bytes)
             ));
             if let Some(max) = ctx.max_memory {
+                let effective = ember_core::memory::effective_limit(max);
                 out.push_str(&format!("max_memory:{max}\r\n"));
                 out.push_str(&format!("max_memory_human:{}\r\n", human_bytes(max)));
+                out.push_str(&format!("max_memory_effective:{effective}\r\n"));
+                out.push_str(&format!(
+                    "max_memory_effective_human:{}\r\n",
+                    human_bytes(effective)
+                ));
             } else {
                 out.push_str("max_memory:0\r\n");
                 out.push_str("max_memory_human:unlimited\r\n");

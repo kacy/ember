@@ -403,9 +403,15 @@ impl Keyspace {
     /// Checks whether the memory limit allows a write that would increase
     /// usage by `estimated_increase` bytes. Attempts eviction if the
     /// policy allows it. Returns `true` if the write can proceed.
+    ///
+    /// The comparison uses [`memory::effective_limit`] rather than the raw
+    /// configured maximum. This reserves headroom for allocator overhead
+    /// and fragmentation that our per-entry estimates can't account for,
+    /// preventing the OS from OOM-killing us before eviction triggers.
     fn enforce_memory_limit(&mut self, estimated_increase: usize) -> bool {
         if let Some(max) = self.config.max_memory {
-            while self.memory.used_bytes() + estimated_increase > max {
+            let limit = memory::effective_limit(max);
+            while self.memory.used_bytes() + estimated_increase > limit {
                 match self.config.eviction_policy {
                     EvictionPolicy::NoEviction => return false,
                     EvictionPolicy::AllKeysLru => {
@@ -2130,6 +2136,25 @@ mod tests {
         // "a" should have been evicted
         assert!(!ks.exists("a"));
         assert!(ks.exists("b"));
+    }
+
+    #[test]
+    fn safety_margin_rejects_near_raw_limit() {
+        // one entry = 1 (key) + 3 (val) + 96 (overhead) = 100 bytes.
+        // configure max_memory = 112. effective limit = 112 * 90 / 100 = 100.
+        // the entry fills exactly the effective limit, so a second entry should
+        // be rejected even though the raw limit has 12 bytes of headroom.
+        let config = ShardConfig {
+            max_memory: Some(112),
+            eviction_policy: EvictionPolicy::NoEviction,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+
+        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+
+        let result = ks.set("b".into(), Bytes::from("val"), None);
+        assert_eq!(result, SetResult::OutOfMemory);
     }
 
     #[test]
