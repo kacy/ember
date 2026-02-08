@@ -222,7 +222,9 @@ impl MigrationManager {
         let migration = Migration::new_importing(slot, source, local_id);
         self.incoming.insert(slot, migration);
         self.pending_keys.insert(slot, HashSet::new());
-        Ok(self.incoming.get(&slot).unwrap())
+        self.incoming
+            .get(&slot)
+            .ok_or(MigrationError::NoMigrationInProgress { slot })
     }
 
     /// Start migrating a slot to another node.
@@ -244,7 +246,9 @@ impl MigrationManager {
         let migration = Migration::new_migrating(slot, local_id, target);
         self.outgoing.insert(slot, migration);
         self.pending_keys.insert(slot, HashSet::new());
-        Ok(self.outgoing.get(&slot).unwrap())
+        self.outgoing
+            .get(&slot)
+            .ok_or(MigrationError::NoMigrationInProgress { slot })
     }
 
     /// Record that a key has been migrated.
