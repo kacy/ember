@@ -7,7 +7,7 @@
 # requirements:
 #   - ember built with: cargo build --release --features jemalloc
 #   - redis-server and redis-benchmark installed
-#   - redis-benchmark installed (redis 6+)
+#   - redis-benchmark with --threads support (redis 6+)
 
 set -e
 
@@ -15,6 +15,7 @@ REQUESTS=${REQUESTS:-500000}
 CLIENTS=${CLIENTS:-50}
 PIPELINE=${PIPELINE:-16}
 VALUE_SIZE=${VALUE_SIZE:-64}
+THREADS=${THREADS:-8}
 
 EMBER_SHARDED_PORT=6380
 EMBER_CONCURRENT_PORT=6381
@@ -35,6 +36,7 @@ echo "requests:   $REQUESTS"
 echo "clients:    $CLIENTS"
 echo "pipeline:   $PIPELINE"
 echo "value size: ${VALUE_SIZE}B"
+echo "threads:    $THREADS"
 echo "============================================="
 echo ""
 
@@ -55,7 +57,7 @@ fi
 cleanup
 
 echo "starting servers..."
-$EMBER_BIN --port $EMBER_SHARDED_PORT --shards $THREADS > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
 $EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent > /dev/null 2>&1 &
 redis-server --port $REDIS_PORT --daemonize yes --save "" --appendonly no > /dev/null 2>&1
 sleep 2
@@ -66,28 +68,28 @@ redis-cli -p $EMBER_CONCURRENT_PORT PING > /dev/null || { echo "ember concurrent
 redis-cli -p $REDIS_PORT PING > /dev/null || { echo "redis failed to start"; exit 1; }
 
 echo ""
-echo "=== THROUGHPUT (P=$PIPELINE) ==="
+echo "=== THROUGHPUT (P=$PIPELINE, $THREADS threads) ==="
 echo ""
 
 echo "ember sharded:"
 echo -n "  SET: "
-redis-benchmark -p $EMBER_SHARDED_PORT -t set -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+redis-benchmark -p $EMBER_SHARDED_PORT -t set -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 echo -n "  GET: "
-redis-benchmark -p $EMBER_SHARDED_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+redis-benchmark -p $EMBER_SHARDED_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 
 echo ""
 echo "ember concurrent:"
 echo -n "  SET: "
-redis-benchmark -p $EMBER_CONCURRENT_PORT -t set -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+redis-benchmark -p $EMBER_CONCURRENT_PORT -t set -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 echo -n "  GET: "
-redis-benchmark -p $EMBER_CONCURRENT_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+redis-benchmark -p $EMBER_CONCURRENT_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 
 echo ""
 echo "redis:"
 echo -n "  SET: "
-redis-benchmark -p $REDIS_PORT -t set -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+redis-benchmark -p $REDIS_PORT -t set -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 echo -n "  GET: "
-redis-benchmark -p $REDIS_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+redis-benchmark -p $REDIS_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 
 echo ""
 echo "=== LATENCY (P=1, single thread) ==="

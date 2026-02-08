@@ -13,10 +13,10 @@
 #   EMBER_SHARDED_PORT      ember sharded port            (default: 6380)
 #   REDIS_PORT              redis server port             (default: 6399)
 #   DRAGONFLY_PORT          dragonfly server port         (default: 6389)
-#   BENCH_REQUESTS          requests per test             (default: 500000)
+#   BENCH_REQUESTS          requests per test             (default: 100000)
 #   BENCH_CLIENTS           concurrent clients            (default: 50)
 #   BENCH_PIPELINE          pipeline depth for P>1 tests  (default: 16)
-#   BENCH_THREADS           redis-benchmark threads       (default: 1)
+#   BENCH_THREADS           redis-benchmark threads       (default: CPU cores)
 #   EMBER_BIN               path to ember-server binary   (default: ./target/release/ember-server)
 #   DRAGONFLY_BIN           path to dragonfly binary      (default: dragonfly)
 
@@ -28,17 +28,14 @@ EMBER_CONCURRENT_PORT="${EMBER_CONCURRENT_PORT:-6379}"
 EMBER_SHARDED_PORT="${EMBER_SHARDED_PORT:-6380}"
 REDIS_PORT="${REDIS_PORT:-6399}"
 DRAGONFLY_PORT="${DRAGONFLY_PORT:-6389}"
-REQUESTS="${BENCH_REQUESTS:-500000}"
+REQUESTS="${BENCH_REQUESTS:-100000}"
 CLIENTS="${BENCH_CLIENTS:-50}"
 PIPELINE="${BENCH_PIPELINE:-16}"
 EMBER_BIN="${EMBER_BIN:-./target/release/ember-server}"
 
-# detect CPU cores for ember --shards default
+# detect CPU cores early for THREADS default
 CPU_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)
-
-# redis-benchmark --threads defaults to 1. multi-threaded mode adds coordination
-# overhead that actually reduces measured throughput on most systems.
-THREADS="${BENCH_THREADS:-1}"
+THREADS="${BENCH_THREADS:-$CPU_CORES}"
 DRAGONFLY_BIN="${DRAGONFLY_BIN:-dragonfly}"
 RESULTS_DIR="bench/results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -175,7 +172,7 @@ wait_for_server "$EMBER_CONCURRENT_PORT" "ember-concurrent"
 
 # ember sharded mode (channel-based, supports all data types)
 echo "starting ember sharded ($CPU_CORES shards) on port $EMBER_SHARDED_PORT..."
-"$EMBER_BIN" --port "$EMBER_SHARDED_PORT" --shards "$CPU_CORES" > /dev/null 2>&1 &
+"$EMBER_BIN" --port "$EMBER_SHARDED_PORT" > /dev/null 2>&1 &
 EMBER_SHARDED_PID=$!
 wait_for_server "$EMBER_SHARDED_PORT" "ember-sharded"
 

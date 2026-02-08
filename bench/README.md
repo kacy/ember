@@ -161,7 +161,7 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 
 ```bash
 # customize redis-benchmark parameters
-BENCH_REQUESTS=1000000 ./bench/compare-redis.sh
+BENCH_REQUESTS=1000000 BENCH_THREADS=16 ./bench/compare-redis.sh
 
 # customize memtier_benchmark parameters
 MEMTIER_THREADS=8 MEMTIER_CLIENTS=16 MEMTIER_REQUESTS=20000 ./bench/bench-memtier.sh
@@ -180,10 +180,10 @@ KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
 | `EMBER_SHARDED_PORT` | 6380 | ember sharded mode port |
 | `REDIS_PORT` | 6399 | redis port |
 | `DRAGONFLY_PORT` | 6389 | dragonfly port |
-| `BENCH_REQUESTS` | 500000 | requests per test |
+| `BENCH_REQUESTS` | 100000 | requests per test |
 | `BENCH_CLIENTS` | 50 | concurrent connections |
 | `BENCH_PIPELINE` | 16 | pipeline depth |
-| `BENCH_THREADS` | 1 | redis-benchmark threads |
+| `BENCH_THREADS` | CPU cores | redis-benchmark threads |
 
 ### bench-memtier.sh (memtier_benchmark)
 
