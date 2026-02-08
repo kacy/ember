@@ -555,6 +555,7 @@ version = "0.3.0"
 dependencies = [
  "bytes",
  "clap",
+ "dashmap",
  "ember-cluster",
  "ember-persistence",
  "ember-protocol",
