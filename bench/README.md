@@ -29,16 +29,18 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 | ember concurrent | **3.3x** | **3.8x** | dragonfly tested with default config |
 | ember sharded | **1.6x** | **1.5x** | both use thread-per-core architecture |
 
-**important caveat**: this comparison is not apples-to-apples. dragonfly is a production-ready Redis replacement with features ember doesn't have:
+**important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
-- full Redis API compatibility (100+ commands vs ember's 76)
+dragonfly in particular offers features ember simply doesn't have:
+
+- full Redis API compatibility (200+ commands vs ember's ~85)
 - sophisticated memory management (dashtable for ~25% of Redis memory usage)
 - transactional semantics (MULTI/EXEC, Lua scripting)
 - fork-free snapshotting
-- replication and clustering
-- streams and more
+- mature replication and clustering
+- streams, modules, and much more
 
-ember's concurrent mode wins on raw GET/SET throughput because it's architecturally simpler — essentially a concurrent hashmap with RESP3 parsing. this simplicity comes at the cost of features. for production Redis replacement, dragonfly is likely the better choice. ember is best suited for simple caching workloads where raw throughput matters more than feature completeness.
+ember's concurrent mode shows higher throughput on simple GET/SET because it's architecturally minimal — essentially a concurrent hashmap with RESP3 parsing. this simplicity is a tradeoff, not an advantage. for anything resembling production use, Redis and Dragonfly are the sensible choices. ember exists primarily as a learning project and for workloads where simplicity matters more than features.
 
 ### latency (50 clients, no pipelining)
 
