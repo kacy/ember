@@ -141,6 +141,28 @@ impl Default for MemoryTracker {
     }
 }
 
+/// Element count threshold below which values are dropped inline rather
+/// than sent to the background drop thread. Strings are always inline
+/// (Bytes::drop is O(1)), but collections with more than this many
+/// elements get deferred.
+pub const LAZY_FREE_THRESHOLD: usize = 64;
+
+/// Returns `true` if dropping this value is expensive enough to justify
+/// sending it to the background drop thread.
+///
+/// Strings are always cheap to drop (reference-counted `Bytes`).
+/// Collections are considered large when they exceed [`LAZY_FREE_THRESHOLD`]
+/// elements.
+pub fn is_large_value(value: &Value) -> bool {
+    match value {
+        Value::String(_) => false,
+        Value::List(d) => d.len() > LAZY_FREE_THRESHOLD,
+        Value::SortedSet(ss) => ss.len() > LAZY_FREE_THRESHOLD,
+        Value::Hash(m) => m.len() > LAZY_FREE_THRESHOLD,
+        Value::Set(s) => s.len() > LAZY_FREE_THRESHOLD,
+    }
+}
+
 /// Estimates the total memory footprint of a single entry.
 ///
 /// key heap allocation + value bytes + fixed per-entry overhead.
@@ -324,5 +346,47 @@ mod tests {
     #[test]
     fn effective_limit_zero() {
         assert_eq!(effective_limit(0), 0);
+    }
+
+    #[test]
+    fn string_is_never_large() {
+        let val = Value::String(Bytes::from(vec![0u8; 10_000]));
+        assert!(!is_large_value(&val));
+    }
+
+    #[test]
+    fn small_list_is_not_large() {
+        let mut d = std::collections::VecDeque::new();
+        for _ in 0..LAZY_FREE_THRESHOLD {
+            d.push_back(Bytes::from("x"));
+        }
+        assert!(!is_large_value(&Value::List(d)));
+    }
+
+    #[test]
+    fn big_list_is_large() {
+        let mut d = std::collections::VecDeque::new();
+        for _ in 0..=LAZY_FREE_THRESHOLD {
+            d.push_back(Bytes::from("x"));
+        }
+        assert!(is_large_value(&Value::List(d)));
+    }
+
+    #[test]
+    fn big_hash_is_large() {
+        let mut m = std::collections::HashMap::new();
+        for i in 0..=LAZY_FREE_THRESHOLD {
+            m.insert(format!("f{i}"), Bytes::from("v"));
+        }
+        assert!(is_large_value(&Value::Hash(m)));
+    }
+
+    #[test]
+    fn big_set_is_large() {
+        let mut s = std::collections::HashSet::new();
+        for i in 0..=LAZY_FREE_THRESHOLD {
+            s.insert(format!("m{i}"));
+        }
+        assert!(is_large_value(&Value::Set(s)));
     }
 }
