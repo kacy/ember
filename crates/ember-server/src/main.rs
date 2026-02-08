@@ -29,80 +29,80 @@ use crate::config::{
 #[command(name = "ember-server", about = "ember cache server")]
 struct Args {
     /// address to bind to
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "127.0.0.1", env = "EMBER_HOST")]
     host: String,
 
     /// port to listen on
-    #[arg(short, long, default_value_t = 6379)]
+    #[arg(short, long, default_value_t = 6379, env = "EMBER_PORT")]
     port: u16,
 
     /// maximum memory limit (e.g. "100M", "1G", "512K"). default: unlimited
-    #[arg(long)]
+    #[arg(long, env = "EMBER_MAX_MEMORY")]
     max_memory: Option<String>,
 
     /// eviction policy when memory limit is reached: noeviction or allkeys-lru
-    #[arg(long, default_value = "noeviction")]
+    #[arg(long, default_value = "noeviction", env = "EMBER_EVICTION_POLICY")]
     eviction_policy: String,
 
     /// directory for AOF and snapshot files. required if --appendonly is set
-    #[arg(long)]
+    #[arg(long, env = "EMBER_DATA_DIR")]
     data_dir: Option<PathBuf>,
 
     /// enable append-only file logging for durability
-    #[arg(long)]
+    #[arg(long, env = "EMBER_APPENDONLY")]
     appendonly: bool,
 
     /// fsync policy for the AOF: always, everysec, or no
-    #[arg(long, default_value = "everysec")]
+    #[arg(long, default_value = "everysec", env = "EMBER_APPENDFSYNC")]
     appendfsync: String,
 
     /// port for prometheus metrics HTTP endpoint. disabled when not set
-    #[arg(long)]
+    #[arg(long, env = "EMBER_METRICS_PORT")]
     metrics_port: Option<u16>,
 
     /// log commands slower than this many microseconds. default: 10000 (10ms).
     /// set to -1 to disable, 0 to log every command
-    #[arg(long, default_value_t = 10_000)]
+    #[arg(long, default_value_t = 10_000, env = "EMBER_SLOWLOG_LOG_SLOWER_THAN")]
     slowlog_log_slower_than: i64,
 
     /// maximum number of entries in the slow log ring buffer
-    #[arg(long, default_value_t = 128)]
+    #[arg(long, default_value_t = 128, env = "EMBER_SLOWLOG_MAX_LEN")]
     slowlog_max_len: usize,
 
     /// number of shards (worker threads). defaults to available CPU cores
-    #[arg(long)]
+    #[arg(long, env = "EMBER_SHARDS")]
     shards: Option<usize>,
 
     /// use concurrent keyspace (DashMap) instead of sharded channels.
     /// experimental: bypasses channel overhead for GET/SET commands.
-    #[arg(long)]
+    #[arg(long, env = "EMBER_CONCURRENT")]
     concurrent: bool,
 
     /// require clients to AUTH with this password before running commands.
     /// when set, connections must authenticate before executing any data commands.
-    #[arg(long)]
+    #[arg(long, env = "EMBER_REQUIREPASS")]
     requirepass: Option<String>,
 
     // -- TLS options (matching redis) --
     /// port for TLS connections. when set, enables TLS alongside plain TCP
-    #[arg(long)]
+    #[arg(long, env = "EMBER_TLS_PORT")]
     tls_port: Option<u16>,
 
     /// path to server certificate file (PEM format)
-    #[arg(long)]
+    #[arg(long, env = "EMBER_TLS_CERT_FILE")]
     tls_cert_file: Option<String>,
 
     /// path to server private key file (PEM format)
-    #[arg(long)]
+    #[arg(long, env = "EMBER_TLS_KEY_FILE")]
     tls_key_file: Option<String>,
 
     /// path to CA certificate for client verification (enables mTLS)
-    #[arg(long)]
+    #[arg(long, env = "EMBER_TLS_CA_CERT_FILE")]
     tls_ca_cert_file: Option<String>,
 
     /// require client certificates when CA cert is configured.
     /// accepts: yes, no. default: no
-    #[arg(long, default_value = "no")]
+    #[arg(long, default_value = "no", env = "EMBER_TLS_AUTH_CLIENTS")]
     tls_auth_clients: String,
 }
 
