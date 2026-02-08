@@ -3304,4 +3304,101 @@ mod tests {
             },
         );
     }
+
+    // --- pub/sub ---
+
+    #[test]
+    fn subscribe_single_channel() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SUBSCRIBE", "news"])).unwrap(),
+            Command::Subscribe {
+                channels: vec!["news".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn subscribe_multiple_channels() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SUBSCRIBE", "ch1", "ch2", "ch3"])).unwrap(),
+            Command::Subscribe {
+                channels: vec!["ch1".into(), "ch2".into(), "ch3".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn subscribe_no_args() {
+        let err = Command::from_frame(cmd(&["SUBSCRIBE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn unsubscribe_all() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNSUBSCRIBE"])).unwrap(),
+            Command::Unsubscribe { channels: vec![] },
+        );
+    }
+
+    #[test]
+    fn unsubscribe_specific() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNSUBSCRIBE", "news"])).unwrap(),
+            Command::Unsubscribe {
+                channels: vec!["news".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn psubscribe_pattern() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PSUBSCRIBE", "news.*"])).unwrap(),
+            Command::PSubscribe {
+                patterns: vec!["news.*".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn psubscribe_no_args() {
+        let err = Command::from_frame(cmd(&["PSUBSCRIBE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn punsubscribe_all() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUNSUBSCRIBE"])).unwrap(),
+            Command::PUnsubscribe { patterns: vec![] },
+        );
+    }
+
+    #[test]
+    fn publish_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBLISH", "news", "hello world"])).unwrap(),
+            Command::Publish {
+                channel: "news".into(),
+                message: Bytes::from("hello world"),
+            },
+        );
+    }
+
+    #[test]
+    fn publish_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PUBLISH", "news"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn subscribe_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["subscribe", "ch"])).unwrap(),
+            Command::Subscribe {
+                channels: vec!["ch".into()]
+            },
+        );
+    }
 }
