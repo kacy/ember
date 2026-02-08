@@ -50,6 +50,11 @@ metrics-exporter-prometheus = { version = "0.16", features = ["http-listener"] }
 # benchmarking
 criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 
+# tls
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
+rustls-pemfile = "2"
+
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.3.0", path = "crates/ember-core" }
 ember-protocol = { version = "0.3.0", path = "crates/ember-protocol" }
