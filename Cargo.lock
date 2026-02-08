@@ -515,7 +515,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "ember-cluster"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "openraft",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "ember-persistence"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "crc32fast",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "ember-protocol"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "ember-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "clap",
@@ -563,22 +563,26 @@ dependencies = [
  "futures",
  "metrics",
  "metrics-exporter-prometheus",
+ "rustls",
+ "rustls-pemfile",
+ "thiserror 2.0.18",
  "tikv-jemallocator",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "emberkv-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "emberkv-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "criterion",
@@ -1641,6 +1645,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c665f33d38cea657d9614f766881e4d510e0eda4239891eea56b4cadcf01801b"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",
@@ -1658,6 +1663,15 @@ dependencies = [
  "rustls-pki-types",
  "schannel",
  "security-framework",
+]
+
+[[package]]
+name = "rustls-pemfile"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
