@@ -2,6 +2,13 @@
   <img src="ember-logo.png" alt="ember logo" width="200">
 </p>
 
+<p align="center">
+  <a href="https://github.com/kacy/ember/actions"><img src="https://github.com/kacy/ember/workflows/ci/badge.svg" alt="build status"></a>
+  <a href="https://crates.io/crates/ember-server"><img src="https://img.shields.io/crates/v/ember-server.svg" alt="crates.io"></a>
+  <img src="https://img.shields.io/badge/rust-1.75%2B-blue.svg" alt="rust version">
+  <a href="https://github.com/kacy/ember/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="license"></a>
+</p>
+
 # ember
 
 a low-latency, memory-efficient, distributed cache written in Rust. designed to outperform Redis on throughput, latency, and memory efficiency while keeping the codebase small and readable.
@@ -170,7 +177,7 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 | concurrent | **1.8-2.1x faster** | **3.3-3.8x faster**\* | simple GET/SET workloads |
 | sharded | ~0.9x (channel overhead) | **1.5-1.6x faster**\* | all data types |
 
-\*dragonfly comparison is not apples-to-apples — see [bench/README.md](bench/README.md) for important caveats. dragonfly is a production-ready system with features ember lacks.
+\*take these comparisons with a grain of salt. ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
 
 **highlights**:
 - concurrent mode: 1.86M SET/sec, 2.49M GET/sec (simple GET/SET only)
