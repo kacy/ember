@@ -113,6 +113,23 @@ impl std::fmt::Display for IncrFloatError {
 
 impl std::error::Error for IncrFloatError {}
 
+/// Error returned when RENAME fails because the source key doesn't exist.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenameError {
+    /// The source key does not exist.
+    NoSuchKey,
+}
+
+impl std::fmt::Display for RenameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RenameError::NoSuchKey => write!(f, "ERR no such key"),
+        }
+    }
+}
+
+impl std::error::Error for RenameError {}
+
 /// Result of a ZADD operation, containing both the client-facing count
 /// and the list of members that were actually applied (for AOF correctness).
 #[derive(Debug, Clone)]
@@ -580,8 +597,7 @@ impl Keyspace {
             Some(entry) => {
                 let val = match &entry.value {
                     Value::String(data) => {
-                        let s = std::str::from_utf8(data)
-                            .map_err(|_| IncrFloatError::NotAFloat)?;
+                        let s = std::str::from_utf8(data).map_err(|_| IncrFloatError::NotAFloat)?;
                         s.parse::<f64>().map_err(|_| IncrFloatError::NotAFloat)?
                     }
                     _ => return Err(IncrFloatError::WrongType),
@@ -614,23 +630,20 @@ impl Keyspace {
         self.remove_if_expired(key);
 
         match self.entries.get(key) {
-            Some(entry) => {
-                match &entry.value {
-                    Value::String(existing) => {
-                        let mut new_data = Vec::with_capacity(existing.len() + value.len());
-                        new_data.extend_from_slice(existing);
-                        new_data.extend_from_slice(value);
-                        let new_len = new_data.len();
-                        let expire =
-                            time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
-                        match self.set(key.to_owned(), Bytes::from(new_data), expire) {
-                            SetResult::Ok => Ok(new_len),
-                            SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
-                        }
+            Some(entry) => match &entry.value {
+                Value::String(existing) => {
+                    let mut new_data = Vec::with_capacity(existing.len() + value.len());
+                    new_data.extend_from_slice(existing);
+                    new_data.extend_from_slice(value);
+                    let new_len = new_data.len();
+                    let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
+                    match self.set(key.to_owned(), Bytes::from(new_data), expire) {
+                        SetResult::Ok => Ok(new_len),
+                        SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
                     }
-                    _ => Err(WriteError::WrongType),
                 }
-            }
+                _ => Err(WriteError::WrongType),
+            },
             None => {
                 let new_len = value.len();
                 match self.set(key.to_owned(), Bytes::copy_from_slice(value), None) {
@@ -653,6 +666,53 @@ impl Keyspace {
             },
             None => Ok(0),
         }
+    }
+
+    /// Returns all keys matching a glob pattern.
+    ///
+    /// Warning: O(n) scan of the entire keyspace. Use SCAN for production
+    /// workloads with large key counts.
+    pub fn keys(&self, pattern: &str) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_expired())
+            .filter(|(key, _)| glob_match(pattern, key))
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
+    /// Renames a key to a new name. Returns an error if the source key
+    /// doesn't exist. If the destination key already exists, it is overwritten.
+    pub fn rename(&mut self, key: &str, newkey: &str) -> Result<(), RenameError> {
+        self.remove_if_expired(key);
+        self.remove_if_expired(newkey);
+
+        let entry = match self.entries.remove(key) {
+            Some(entry) => entry,
+            None => return Err(RenameError::NoSuchKey),
+        };
+
+        // update memory tracking for old key removal
+        self.memory.remove(key, &entry.value);
+        if entry.expires_at_ms != 0 {
+            self.expiry_count = self.expiry_count.saturating_sub(1);
+        }
+
+        // remove destination if it exists
+        if let Some(old_dest) = self.entries.remove(newkey) {
+            self.memory.remove(newkey, &old_dest.value);
+            if old_dest.expires_at_ms != 0 {
+                self.expiry_count = self.expiry_count.saturating_sub(1);
+            }
+        }
+
+        // re-insert with the new key name, preserving value and expiry
+        self.memory.add(newkey, &entry.value);
+        if entry.expires_at_ms != 0 {
+            self.expiry_count += 1;
+        }
+        self.entries.insert(newkey.to_owned(), entry);
+        Ok(())
     }
 
     /// Returns aggregated stats for this keyspace.
@@ -3591,9 +3651,9 @@ mod tests {
     #[test]
     fn incr_by_float_new_key() {
         let mut ks = Keyspace::new();
-        let result = ks.incr_by_float("new", 3.14).unwrap();
+        let result = ks.incr_by_float("new", 2.72).unwrap();
         let f: f64 = result.parse().unwrap();
-        assert!((f - 3.14).abs() < 0.001);
+        assert!((f - 2.72).abs() < 0.001);
     }
 
     #[test]
@@ -3682,7 +3742,125 @@ mod tests {
 
     #[test]
     fn format_float_decimals() {
-        assert_eq!(super::format_float(3.14), "3.14");
+        assert_eq!(super::format_float(2.72), "2.72");
         assert_eq!(super::format_float(10.5), "10.5");
+    }
+
+    // --- keys tests ---
+
+    #[test]
+    fn keys_match_all() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), None);
+        ks.set("c".into(), Bytes::from("3"), None);
+        let mut result = ks.keys("*");
+        result.sort();
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn keys_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+        let mut result = ks.keys("user:*");
+        result.sort();
+        assert_eq!(result, vec!["user:1", "user:2"]);
+    }
+
+    #[test]
+    fn keys_skips_expired() {
+        let mut ks = Keyspace::new();
+        ks.set("live".into(), Bytes::from("a"), None);
+        ks.set(
+            "dead".into(),
+            Bytes::from("b"),
+            Some(Duration::from_millis(1)),
+        );
+        thread::sleep(Duration::from_millis(5));
+        let result = ks.keys("*");
+        assert_eq!(result, vec!["live"]);
+    }
+
+    #[test]
+    fn keys_empty_keyspace() {
+        let ks = Keyspace::new();
+        assert!(ks.keys("*").is_empty());
+    }
+
+    // --- rename tests ---
+
+    #[test]
+    fn rename_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("old".into(), Bytes::from("value"), None);
+        ks.rename("old", "new").unwrap();
+        assert!(!ks.exists("old"));
+        assert_eq!(
+            ks.get("new").unwrap(),
+            Some(Value::String(Bytes::from("value")))
+        );
+    }
+
+    #[test]
+    fn rename_preserves_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "old".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
+        ks.rename("old", "new").unwrap();
+        match ks.ttl("new") {
+            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
+            other => panic!("expected TTL preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rename_overwrites_destination() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("new_val"), None);
+        ks.set("dst".into(), Bytes::from("old_val"), None);
+        ks.rename("src", "dst").unwrap();
+        assert!(!ks.exists("src"));
+        assert_eq!(
+            ks.get("dst").unwrap(),
+            Some(Value::String(Bytes::from("new_val")))
+        );
+        assert_eq!(ks.len(), 1);
+    }
+
+    #[test]
+    fn rename_missing_key_returns_error() {
+        let mut ks = Keyspace::new();
+        let err = ks.rename("missing", "new").unwrap_err();
+        assert_eq!(err, RenameError::NoSuchKey);
+    }
+
+    #[test]
+    fn rename_same_key() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("val"), None);
+        // renaming to itself should succeed (Redis behavior)
+        ks.rename("key", "key").unwrap();
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("val")))
+        );
+    }
+
+    #[test]
+    fn rename_tracks_memory() {
+        let mut ks = Keyspace::new();
+        ks.set("old".into(), Bytes::from("value"), None);
+        let before = ks.stats().used_bytes;
+        ks.rename("old", "new").unwrap();
+        let after = ks.stats().used_bytes;
+        // same key length, so memory should be the same
+        assert_eq!(before, after);
+        assert_eq!(ks.stats().key_count, 1);
     }
 }

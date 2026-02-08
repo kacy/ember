@@ -773,6 +773,48 @@ async fn execute(
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
 
+        Command::Keys { pattern } => {
+            match engine
+                .broadcast(|| ShardRequest::Keys {
+                    pattern: pattern.clone(),
+                })
+                .await
+            {
+                Ok(responses) => {
+                    let mut all_keys = Vec::new();
+                    for r in responses {
+                        if let ShardResponse::StringArray(keys) = r {
+                            all_keys.extend(keys);
+                        }
+                    }
+                    Frame::Array(
+                        all_keys
+                            .into_iter()
+                            .map(|k| Frame::Bulk(Bytes::from(k)))
+                            .collect(),
+                    )
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Rename { key, newkey } => {
+            // Route to the source key's shard. Both keys must hash to the
+            // same shard for a correct rename (same as Redis Cluster's
+            // cross-slot restriction). If they don't, the rename operates
+            // on the source shard and the newkey will live there.
+            let req = ShardRequest::Rename {
+                key: key.clone(),
+                newkey,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Scan {
             cursor,
             pattern,

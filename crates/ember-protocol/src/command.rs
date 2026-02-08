@@ -62,6 +62,12 @@ pub enum Command {
     /// STRLEN `key`. Returns the length of the string value stored at key.
     Strlen { key: String },
 
+    /// KEYS `pattern`. Returns all keys matching a glob pattern.
+    Keys { pattern: String },
+
+    /// RENAME `key` `newkey`. Renames a key.
+    Rename { key: String, newkey: String },
+
     /// DEL `key` \[key ...\]. Returns the number of keys removed.
     Del { keys: Vec<String> },
 
@@ -351,6 +357,8 @@ impl Command {
             Command::IncrByFloat { .. } => "incrbyfloat",
             Command::Append { .. } => "append",
             Command::Strlen { .. } => "strlen",
+            Command::Keys { .. } => "keys",
+            Command::Rename { .. } => "rename",
             Command::Del { .. } => "del",
             Command::Exists { .. } => "exists",
             Command::MGet { .. } => "mget",
@@ -463,6 +471,8 @@ impl Command {
             "INCRBYFLOAT" => parse_incrbyfloat(&frames[1..]),
             "APPEND" => parse_append(&frames[1..]),
             "STRLEN" => parse_strlen(&frames[1..]),
+            "KEYS" => parse_keys(&frames[1..]),
+            "RENAME" => parse_rename(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
             "MGET" => parse_mget(&frames[1..]),
@@ -721,6 +731,23 @@ fn parse_strlen(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Strlen { key })
+}
+
+fn parse_keys(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("KEYS".into()));
+    }
+    let pattern = extract_string(&args[0])?;
+    Ok(Command::Keys { pattern })
+}
+
+fn parse_rename(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("RENAME".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let newkey = extract_string(&args[1])?;
+    Ok(Command::Rename { key, newkey })
 }
 
 fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3698,6 +3725,43 @@ mod tests {
     #[test]
     fn strlen_wrong_arity() {
         let err = Command::from_frame(cmd(&["STRLEN"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- KEYS ---
+
+    #[test]
+    fn keys_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["KEYS", "user:*"])).unwrap(),
+            Command::Keys {
+                pattern: "user:*".into()
+            },
+        );
+    }
+
+    #[test]
+    fn keys_wrong_arity() {
+        let err = Command::from_frame(cmd(&["KEYS"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- RENAME ---
+
+    #[test]
+    fn rename_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["RENAME", "old", "new"])).unwrap(),
+            Command::Rename {
+                key: "old".into(),
+                newkey: "new".into()
+            },
+        );
+    }
+
+    #[test]
+    fn rename_wrong_arity() {
+        let err = Command::from_frame(cmd(&["RENAME", "only"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

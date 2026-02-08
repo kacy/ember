@@ -82,6 +82,15 @@ pub enum ShardRequest {
     Strlen {
         key: String,
     },
+    /// Returns all keys matching a glob pattern in this shard.
+    Keys {
+        pattern: String,
+    },
+    /// Renames a key within this shard.
+    Rename {
+        key: String,
+        newkey: String,
+    },
     Del {
         key: String,
     },
@@ -567,6 +576,17 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(len) => ShardResponse::Len(len),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::Keys { pattern } => {
+            let keys = ks.keys(pattern);
+            ShardResponse::StringArray(keys)
+        }
+        ShardRequest::Rename { key, newkey } => {
+            use crate::keyspace::RenameError;
+            match ks.rename(key, newkey) {
+                Ok(()) => ShardResponse::Ok,
+                Err(RenameError::NoSuchKey) => ShardResponse::Err("ERR no such key".into()),
+            }
+        }
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
@@ -826,12 +846,14 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             })
         }
         // APPEND: record the appended value for replay
-        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => {
-            Some(AofRecord::Append {
-                key: key.clone(),
-                value: value.clone(),
-            })
-        }
+        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => Some(AofRecord::Append {
+            key: key.clone(),
+            value: value.clone(),
+        }),
+        (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => Some(AofRecord::Rename {
+            key: key.clone(),
+            newkey: newkey.clone(),
+        }),
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
             Some(AofRecord::Persist { key: key.clone() })
         }
@@ -1436,13 +1458,13 @@ mod tests {
             &mut ks,
             &ShardRequest::IncrByFloat {
                 key: "new".into(),
-                delta: 3.14,
+                delta: 2.72,
             },
         );
         match resp {
             ShardResponse::BulkString(val) => {
                 let f: f64 = val.parse().unwrap();
-                assert!((f - 3.14).abs() < 0.001);
+                assert!((f - 2.72).abs() < 0.001);
             }
             other => panic!("expected BulkString, got {other:?}"),
         }
@@ -1893,5 +1915,72 @@ mod tests {
         };
         let resp = ShardResponse::Len(0);
         assert!(to_aof_record(&req, &resp).is_none());
+    }
+
+    #[test]
+    fn dispatch_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Keys {
+                pattern: "user:*".into(),
+            },
+        );
+        match resp {
+            ShardResponse::StringArray(mut keys) => {
+                keys.sort();
+                assert_eq!(keys, vec!["user:1", "user:2"]);
+            }
+            other => panic!("expected StringArray, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_rename() {
+        let mut ks = Keyspace::new();
+        ks.set("old".into(), Bytes::from("value"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Rename {
+                key: "old".into(),
+                newkey: "new".into(),
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        assert!(!ks.exists("old"));
+        assert!(ks.exists("new"));
+    }
+
+    #[test]
+    fn dispatch_rename_missing_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::Rename {
+                key: "missing".into(),
+                newkey: "new".into(),
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Err(_)));
+    }
+
+    #[test]
+    fn to_aof_record_for_rename() {
+        let req = ShardRequest::Rename {
+            key: "old".into(),
+            newkey: "new".into(),
+        };
+        let resp = ShardResponse::Ok;
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::Rename { key, newkey } => {
+                assert_eq!(key, "old");
+                assert_eq!(newkey, "new");
+            }
+            other => panic!("expected Rename, got {other:?}"),
+        }
     }
 }

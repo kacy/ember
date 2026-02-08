@@ -302,6 +302,11 @@ fn replay_aof(
                     *data = Bytes::from(new_data);
                 }
             }
+            AofRecord::Rename { key, newkey } => {
+                if let Some(entry) = map.remove(&key) {
+                    map.insert(newkey, entry);
+                }
+            }
             AofRecord::HSet { key, fields } => {
                 let entry = map
                     .entry(key)
