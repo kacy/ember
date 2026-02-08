@@ -22,7 +22,9 @@ use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::connection_common::{BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE};
+use crate::connection_common::{
+    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE,
+};
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -37,6 +39,8 @@ pub async fn handle(
     pubsub: &Arc<PubSubManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     stream.set_nodelay(true)?;
+
+    let mut authenticated = ctx.requirepass.is_none();
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -62,8 +66,27 @@ pub async fn handle(
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response = process(frame, &keyspace, &engine, ctx, slow_log, pubsub).await;
-                    response.serialize(&mut out);
+
+                    if !authenticated {
+                        if is_auth_frame(&frame) {
+                            let (response, success) = try_auth(frame, ctx);
+                            response.serialize(&mut out);
+                            if success {
+                                authenticated = true;
+                            }
+                        } else if is_allowed_before_auth(&frame) {
+                            let response =
+                                process(frame, &keyspace, &engine, ctx, slow_log, pubsub).await;
+                            response.serialize(&mut out);
+                        } else {
+                            Frame::Error("NOAUTH Authentication required.".into())
+                                .serialize(&mut out);
+                        }
+                    } else {
+                        let response =
+                            process(frame, &keyspace, &engine, ctx, slow_log, pubsub).await;
+                        response.serialize(&mut out);
+                    }
                 }
                 Ok(None) => break,
                 Err(e) => {
@@ -99,7 +122,7 @@ async fn process(
                 None
             };
 
-            let response = execute_concurrent(cmd, keyspace, engine, pubsub).await;
+            let response = execute_concurrent(cmd, keyspace, engine, ctx, pubsub).await;
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
@@ -122,6 +145,7 @@ async fn execute_concurrent(
     cmd: Command,
     keyspace: &Arc<ConcurrentKeyspace>,
     _engine: &Engine,
+    ctx: &Arc<ServerContext>,
     pubsub: &Arc<PubSubManager>,
 ) -> Frame {
     match cmd {
@@ -232,6 +256,37 @@ async fn execute_concurrent(
         | Command::PUnsubscribe { .. } => {
             Frame::Error("ERR pub/sub not supported in concurrent mode yet".into())
         }
+
+        // AUTH on an already-authenticated connection (re-auth)
+        Command::Auth { username, password } => match &ctx.requirepass {
+            None => Frame::Error(
+                "ERR Client sent AUTH, but no password is set. \
+                 Did you mean ACL SETUSER with >password?"
+                    .into(),
+            ),
+            Some(expected) => {
+                if let Some(ref user) = username {
+                    if user != "default" {
+                        return Frame::Error(
+                            "WRONGPASS invalid username-password pair \
+                             or user is disabled."
+                                .into(),
+                        );
+                    }
+                }
+                if password == *expected {
+                    Frame::Simple("OK".into())
+                } else {
+                    Frame::Error(
+                        "WRONGPASS invalid username-password pair \
+                         or user is disabled."
+                            .into(),
+                    )
+                }
+            }
+        },
+
+        Command::Quit => Frame::Simple("OK".into()),
 
         // For unsupported commands, return an error
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),

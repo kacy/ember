@@ -15,8 +15,10 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME
-- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
+- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
+- **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms)
+- **protected mode** — rejects non-loopback connections when no password is set on public binds
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
 - **concurrent mode** — experimental DashMap-backed keyspace for lock-free GET/SET (2x faster than Redis)
@@ -108,6 +110,7 @@ redis-cli FLUSHDB               # => OK
 | `--slowlog-log-slower-than` | 10000 | log commands slower than N microseconds (-1 disables) |
 | `--slowlog-max-len` | 128 | max entries in slow log ring buffer |
 | `--concurrent` | false | use DashMap-backed keyspace (experimental, faster GET/SET) |
+| `--requirepass` | — | require AUTH with this password before running commands |
 
 ## build & development
 
@@ -184,7 +187,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 83 commands, 695 tests, ~22k lines of code
+**current**: 85 commands, 701 tests, ~23k lines of code
 
 ## security
 
@@ -193,7 +196,7 @@ see [SECURITY.md](SECURITY.md) for:
 - security considerations for deployment
 - recommended configuration
 
-**note**: ember does not currently support authentication. always run behind a firewall or in a trusted network.
+**note**: use `--requirepass` to enable authentication. protected mode is active by default when no password is set, rejecting non-loopback connections on public binds.
 
 ## license
 

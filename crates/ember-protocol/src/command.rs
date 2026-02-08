@@ -318,6 +318,17 @@ pub enum Command {
     /// PUBSUB NUMPAT. Returns the number of active pattern subscriptions.
     PubSubNumPat,
 
+    /// AUTH \[username\] password. Authenticate the connection.
+    Auth {
+        /// Username for ACL-style auth. None for legacy AUTH.
+        username: Option<String>,
+        /// The password to validate.
+        password: String,
+    },
+
+    /// QUIT. Requests the server to close the connection.
+    Quit,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -432,6 +443,8 @@ impl Command {
             Command::PubSubChannels { .. } => "pubsub",
             Command::PubSubNumSub { .. } => "pubsub",
             Command::PubSubNumPat => "pubsub",
+            Command::Auth { .. } => "auth",
+            Command::Quit => "quit",
             Command::Unknown(_) => "unknown",
         }
     }
@@ -526,6 +539,8 @@ impl Command {
             "PUNSUBSCRIBE" => parse_punsubscribe(&frames[1..]),
             "PUBLISH" => parse_publish(&frames[1..]),
             "PUBSUB" => parse_pubsub(&frames[1..]),
+            "AUTH" => parse_auth(&frames[1..]),
+            "QUIT" => parse_quit(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1655,6 +1670,34 @@ fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
             "unknown PUBSUB subcommand '{other}'"
         ))),
     }
+}
+
+fn parse_auth(args: &[Frame]) -> Result<Command, ProtocolError> {
+    match args.len() {
+        1 => {
+            let password = extract_string(&args[0])?;
+            Ok(Command::Auth {
+                username: None,
+                password,
+            })
+        }
+        2 => {
+            let username = extract_string(&args[0])?;
+            let password = extract_string(&args[1])?;
+            Ok(Command::Auth {
+                username: Some(username),
+                password,
+            })
+        }
+        _ => Err(ProtocolError::WrongArity("AUTH".into())),
+    }
+}
+
+fn parse_quit(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("QUIT".into()));
+    }
+    Ok(Command::Quit)
 }
 
 #[cfg(test)]
@@ -3762,6 +3805,55 @@ mod tests {
     #[test]
     fn rename_wrong_arity() {
         let err = Command::from_frame(cmd(&["RENAME", "only"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- AUTH ---
+
+    #[test]
+    fn auth_legacy() {
+        assert_eq!(
+            Command::from_frame(cmd(&["AUTH", "secret"])).unwrap(),
+            Command::Auth {
+                username: None,
+                password: "secret".into()
+            },
+        );
+    }
+
+    #[test]
+    fn auth_with_username() {
+        assert_eq!(
+            Command::from_frame(cmd(&["AUTH", "default", "secret"])).unwrap(),
+            Command::Auth {
+                username: Some("default".into()),
+                password: "secret".into()
+            },
+        );
+    }
+
+    #[test]
+    fn auth_no_args() {
+        let err = Command::from_frame(cmd(&["AUTH"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn auth_too_many_args() {
+        let err = Command::from_frame(cmd(&["AUTH", "a", "b", "c"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- QUIT ---
+
+    #[test]
+    fn quit_basic() {
+        assert_eq!(Command::from_frame(cmd(&["QUIT"])).unwrap(), Command::Quit,);
+    }
+
+    #[test]
+    fn quit_wrong_arity() {
+        let err = Command::from_frame(cmd(&["QUIT", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }
