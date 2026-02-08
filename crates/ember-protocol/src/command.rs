@@ -47,6 +47,12 @@ pub enum Command {
     /// DECR `key`. Decrements the integer value of a key by 1.
     Decr { key: String },
 
+    /// INCRBY `key` `increment`. Increments the integer value of a key by the given amount.
+    IncrBy { key: String, delta: i64 },
+
+    /// DECRBY `key` `decrement`. Decrements the integer value of a key by the given amount.
+    DecrBy { key: String, delta: i64 },
+
     /// DEL `key` \[key ...\]. Returns the number of keys removed.
     Del { keys: Vec<String> },
 
@@ -331,6 +337,8 @@ impl Command {
             Command::Set { .. } => "set",
             Command::Incr { .. } => "incr",
             Command::Decr { .. } => "decr",
+            Command::IncrBy { .. } => "incrby",
+            Command::DecrBy { .. } => "decrby",
             Command::Del { .. } => "del",
             Command::Exists { .. } => "exists",
             Command::MGet { .. } => "mget",
@@ -438,6 +446,8 @@ impl Command {
             "SET" => parse_set(&frames[1..]),
             "INCR" => parse_incr(&frames[1..]),
             "DECR" => parse_decr(&frames[1..]),
+            "INCRBY" => parse_incrby(&frames[1..]),
+            "DECRBY" => parse_decrby(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
             "MGET" => parse_mget(&frames[1..]),
@@ -644,6 +654,24 @@ fn parse_decr(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Decr { key })
+}
+
+fn parse_incrby(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("INCRBY".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let delta = parse_i64(&args[1], "INCRBY")?;
+    Ok(Command::IncrBy { key, delta })
+}
+
+fn parse_decrby(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("DECRBY".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let delta = parse_i64(&args[1], "DECRBY")?;
+    Ok(Command::DecrBy { key, delta })
 }
 
 fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3498,5 +3526,58 @@ mod tests {
     fn pubsub_unknown_subcommand() {
         let err = Command::from_frame(cmd(&["PUBSUB", "BOGUS"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- INCRBY / DECRBY ---
+
+    #[test]
+    fn incrby_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["INCRBY", "counter", "5"])).unwrap(),
+            Command::IncrBy {
+                key: "counter".into(),
+                delta: 5
+            },
+        );
+    }
+
+    #[test]
+    fn incrby_negative() {
+        assert_eq!(
+            Command::from_frame(cmd(&["INCRBY", "counter", "-3"])).unwrap(),
+            Command::IncrBy {
+                key: "counter".into(),
+                delta: -3
+            },
+        );
+    }
+
+    #[test]
+    fn incrby_wrong_arity() {
+        let err = Command::from_frame(cmd(&["INCRBY", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn incrby_not_integer() {
+        let err = Command::from_frame(cmd(&["INCRBY", "key", "abc"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn decrby_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["DECRBY", "counter", "10"])).unwrap(),
+            Command::DecrBy {
+                key: "counter".into(),
+                delta: 10
+            },
+        );
+    }
+
+    #[test]
+    fn decrby_wrong_arity() {
+        let err = Command::from_frame(cmd(&["DECRBY"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

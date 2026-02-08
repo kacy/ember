@@ -62,6 +62,14 @@ pub enum ShardRequest {
     Decr {
         key: String,
     },
+    IncrBy {
+        key: String,
+        delta: i64,
+    },
+    DecrBy {
+        key: String,
+        delta: i64,
+    },
     Del {
         key: String,
     },
@@ -518,6 +526,18 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
             Err(e) => ShardResponse::Err(e.to_string()),
         },
+        ShardRequest::IncrBy { key, delta } => match ks.incr_by(key, *delta) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
+        ShardRequest::DecrBy { key, delta } => match ks.incr_by(key, -delta) {
+            Ok(val) => ShardResponse::Integer(val),
+            Err(IncrError::WrongType) => ShardResponse::WrongType,
+            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
@@ -754,6 +774,18 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
         }
         (ShardRequest::Decr { key }, ShardResponse::Integer(_)) => {
             Some(AofRecord::Decr { key: key.clone() })
+        }
+        (ShardRequest::IncrBy { key, delta }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::IncrBy {
+                key: key.clone(),
+                delta: *delta,
+            })
+        }
+        (ShardRequest::DecrBy { key, delta }, ShardResponse::Integer(_)) => {
+            Some(AofRecord::DecrBy {
+                key: key.clone(),
+                delta: *delta,
+            })
         }
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
             Some(AofRecord::Persist { key: key.clone() })
@@ -1246,6 +1278,47 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_incrby() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrBy {
+                key: "n".into(),
+                delta: 5,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Integer(15)));
+    }
+
+    #[test]
+    fn dispatch_decrby() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("10"), None);
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::DecrBy {
+                key: "n".into(),
+                delta: 3,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Integer(7)));
+    }
+
+    #[test]
+    fn dispatch_incrby_new_key() {
+        let mut ks = Keyspace::new();
+        let resp = dispatch(
+            &mut ks,
+            &ShardRequest::IncrBy {
+                key: "new".into(),
+                delta: 42,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Integer(42)));
+    }
+
+    #[test]
     fn to_aof_record_for_incr() {
         let req = ShardRequest::Incr { key: "c".into() };
         let resp = ShardResponse::Integer(1);
@@ -1259,6 +1332,40 @@ mod tests {
         let resp = ShardResponse::Integer(-1);
         let record = to_aof_record(&req, &resp).unwrap();
         assert!(matches!(record, AofRecord::Decr { .. }));
+    }
+
+    #[test]
+    fn to_aof_record_for_incrby() {
+        let req = ShardRequest::IncrBy {
+            key: "c".into(),
+            delta: 5,
+        };
+        let resp = ShardResponse::Integer(15);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::IncrBy { key, delta } => {
+                assert_eq!(key, "c");
+                assert_eq!(delta, 5);
+            }
+            other => panic!("expected IncrBy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_aof_record_for_decrby() {
+        let req = ShardRequest::DecrBy {
+            key: "c".into(),
+            delta: 3,
+        };
+        let resp = ShardResponse::Integer(7);
+        let record = to_aof_record(&req, &resp).unwrap();
+        match record {
+            AofRecord::DecrBy { key, delta } => {
+                assert_eq!(key, "c");
+                assert_eq!(delta, 3);
+            }
+            other => panic!("expected DecrBy, got {other:?}"),
+        }
     }
 
     #[test]

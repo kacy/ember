@@ -54,6 +54,8 @@ const TAG_HDEL: u8 = 15;
 const TAG_HINCRBY: u8 = 16;
 const TAG_SADD: u8 = 17;
 const TAG_SREM: u8 = 18;
+const TAG_INCRBY: u8 = 19;
+const TAG_DECRBY: u8 = 20;
 
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +110,10 @@ pub enum AofRecord {
     SAdd { key: String, members: Vec<String> },
     /// SREM key member [member ...].
     SRem { key: String, members: Vec<String> },
+    /// INCRBY key delta.
+    IncrBy { key: String, delta: i64 },
+    /// DECRBY key delta.
+    DecrBy { key: String, delta: i64 },
 }
 
 impl AofRecord {
@@ -230,6 +236,16 @@ impl AofRecord {
                 for member in members {
                     format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
                 }
+            }
+            AofRecord::IncrBy { key, delta } => {
+                format::write_u8(&mut buf, TAG_INCRBY).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_i64(&mut buf, *delta).expect("vec write");
+            }
+            AofRecord::DecrBy { key, delta } => {
+                format::write_u8(&mut buf, TAG_DECRBY).expect("vec write");
+                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_i64(&mut buf, *delta).expect("vec write");
             }
         }
         buf
@@ -360,6 +376,16 @@ impl AofRecord {
                     members.push(read_string(&mut cursor, "member")?);
                 }
                 Ok(AofRecord::SRem { key, members })
+            }
+            TAG_INCRBY => {
+                let key = read_string(&mut cursor, "key")?;
+                let delta = format::read_i64(&mut cursor)?;
+                Ok(AofRecord::IncrBy { key, delta })
+            }
+            TAG_DECRBY => {
+                let key = read_string(&mut cursor, "key")?;
+                let delta = format::read_i64(&mut cursor)?;
+                Ok(AofRecord::DecrBy { key, delta })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }

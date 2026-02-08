@@ -285,6 +285,12 @@ fn replay_aof(
             AofRecord::Decr { key } => {
                 apply_incr(map, key, -1);
             }
+            AofRecord::IncrBy { key, delta } => {
+                apply_incr(map, key, delta);
+            }
+            AofRecord::DecrBy { key, delta } => {
+                apply_incr(map, key, -delta);
+            }
             AofRecord::HSet { key, fields } => {
                 let entry = map
                     .entry(key)

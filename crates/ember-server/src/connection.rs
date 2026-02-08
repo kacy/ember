@@ -555,9 +555,7 @@ async fn execute(
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
-                Ok(ShardResponse::OutOfMemory) => {
-                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
-                }
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -569,9 +567,37 @@ async fn execute(
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
-                Ok(ShardResponse::OutOfMemory) => {
-                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
-                }
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::IncrBy { key, delta } => {
+            let req = ShardRequest::IncrBy {
+                key: key.clone(),
+                delta,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::DecrBy { key, delta } => {
+            let req = ShardRequest::DecrBy {
+                key: key.clone(),
+                delta,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),

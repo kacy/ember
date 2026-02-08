@@ -500,11 +500,11 @@ impl Keyspace {
         self.incr_by(key, -1)
     }
 
-    /// Shared implementation for INCR/DECR. Adds `delta` to the current
-    /// integer value of the key, creating it if necessary.
+    /// Adds `delta` to the current integer value of the key, creating it
+    /// if necessary. Used by INCR, DECR, INCRBY, and DECRBY.
     ///
     /// Preserves the existing TTL when updating an existing key.
-    fn incr_by(&mut self, key: &str, delta: i64) -> Result<i64, IncrError> {
+    pub fn incr_by(&mut self, key: &str, delta: i64) -> Result<i64, IncrError> {
         self.remove_if_expired(key);
 
         // read current value and TTL
