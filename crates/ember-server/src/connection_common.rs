@@ -6,6 +6,11 @@
 
 use std::time::Duration;
 
+use ember_protocol::types::Frame;
+use ember_protocol::Command;
+
+use crate::server::ServerContext;
+
 /// Initial read buffer capacity. 4KB covers most commands comfortably
 /// without over-allocating for simple PING/SET/GET workloads.
 pub const BUF_CAPACITY: usize = 4096;
@@ -20,3 +25,84 @@ pub const MAX_BUF_SIZE: usize = 64 * 1024 * 1024;
 /// close it. Prevents abandoned connections from leaking resources.
 /// 5 minutes matches Redis default behavior.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Checks if a raw frame is an AUTH command (before full parsing).
+///
+/// Peeks at the first bulk element to avoid a full `Command::from_frame`
+/// round-trip on unauthenticated connections.
+pub fn is_auth_frame(frame: &Frame) -> bool {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return name.eq_ignore_ascii_case(b"AUTH");
+        }
+    }
+    false
+}
+
+/// Checks if a raw frame represents a command allowed before authentication.
+///
+/// Per Redis semantics, only AUTH, PING, ECHO, and QUIT are permitted
+/// on unauthenticated connections.
+pub fn is_allowed_before_auth(frame: &Frame) -> bool {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return name.eq_ignore_ascii_case(b"AUTH")
+                || name.eq_ignore_ascii_case(b"PING")
+                || name.eq_ignore_ascii_case(b"ECHO")
+                || name.eq_ignore_ascii_case(b"QUIT");
+        }
+    }
+    false
+}
+
+/// Attempts to authenticate using an AUTH frame.
+///
+/// Returns `(response_frame, authenticated)`. The caller should flip
+/// their per-connection auth state when `authenticated` is true.
+pub fn try_auth(frame: Frame, ctx: &ServerContext) -> (Frame, bool) {
+    let cmd = match Command::from_frame(frame) {
+        Ok(cmd) => cmd,
+        Err(e) => return (Frame::Error(format!("ERR {e}")), false),
+    };
+
+    match cmd {
+        Command::Auth { username, password } => match &ctx.requirepass {
+            None => (
+                Frame::Error(
+                    "ERR Client sent AUTH, but no password is set. \
+                     Did you mean ACL SETUSER with >password?"
+                        .into(),
+                ),
+                false,
+            ),
+            Some(expected) => {
+                // only the "default" username is accepted (no full ACL yet)
+                if let Some(ref user) = username {
+                    if user != "default" {
+                        return (
+                            Frame::Error(
+                                "WRONGPASS invalid username-password pair \
+                                 or user is disabled."
+                                    .into(),
+                            ),
+                            false,
+                        );
+                    }
+                }
+                if password == *expected {
+                    (Frame::Simple("OK".into()), true)
+                } else {
+                    (
+                        Frame::Error(
+                            "WRONGPASS invalid username-password pair \
+                             or user is disabled."
+                                .into(),
+                        ),
+                        false,
+                    )
+                }
+            }
+        },
+        _ => (Frame::Error("ERR expected AUTH command".into()), false),
+    }
+}

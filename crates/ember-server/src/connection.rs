@@ -18,7 +18,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 
-use crate::connection_common::{BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE};
+use crate::connection_common::{
+    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE,
+};
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -38,6 +40,9 @@ pub async fn handle(
     // disable Nagle's algorithm — cache servers need low-latency writes,
     // and we already batch responses from pipelining into a single write
     stream.set_nodelay(true)?;
+
+    // per-connection auth state. auto-authenticated when no password is set.
+    let mut authenticated = ctx.requirepass.is_none();
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -80,6 +85,29 @@ pub async fn handle(
                     return Ok(());
                 }
             }
+        }
+
+        // when not yet authenticated, process frames serially so that an
+        // AUTH command in a pipeline takes effect for subsequent frames
+        if !authenticated {
+            for frame in frames {
+                if is_auth_frame(&frame) {
+                    let (response, success) = try_auth(frame, ctx);
+                    response.serialize(&mut out);
+                    if success {
+                        authenticated = true;
+                    }
+                } else if is_allowed_before_auth(&frame) {
+                    let response = process(frame, &engine, ctx, slow_log, pubsub).await;
+                    response.serialize(&mut out);
+                } else {
+                    Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
+                }
+            }
+            if !out.is_empty() {
+                stream.write_all(&out).await?;
+            }
+            continue;
         }
 
         // check if any frame is a subscribe command — if so, we need
@@ -1413,6 +1441,37 @@ async fn execute(
         | Command::PUnsubscribe { .. } => {
             Frame::Error("ERR subscribe commands should not reach execute".into())
         }
+
+        // AUTH on an already-authenticated connection (re-auth)
+        Command::Auth { username, password } => match &ctx.requirepass {
+            None => Frame::Error(
+                "ERR Client sent AUTH, but no password is set. \
+                 Did you mean ACL SETUSER with >password?"
+                    .into(),
+            ),
+            Some(expected) => {
+                if let Some(ref user) = username {
+                    if user != "default" {
+                        return Frame::Error(
+                            "WRONGPASS invalid username-password pair \
+                             or user is disabled."
+                                .into(),
+                        );
+                    }
+                }
+                if password == *expected {
+                    Frame::Simple("OK".into())
+                } else {
+                    Frame::Error(
+                        "WRONGPASS invalid username-password pair \
+                         or user is disabled."
+                            .into(),
+                    )
+                }
+            }
+        },
+
+        Command::Quit => Frame::Simple("OK".into()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
