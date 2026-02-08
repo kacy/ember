@@ -208,6 +208,23 @@ async fn execute_concurrent(
             Frame::Integer(count as i64)
         }
 
+        Command::PubSubChannels { pattern } => {
+            let names = pubsub.channel_names(pattern.as_deref());
+            Frame::Array(names.into_iter().map(|n| Frame::Bulk(n.into())).collect())
+        }
+
+        Command::PubSubNumSub { channels } => {
+            let pairs = pubsub.numsub(&channels);
+            let mut frames = Vec::with_capacity(pairs.len() * 2);
+            for (ch, count) in pairs {
+                frames.push(Frame::Bulk(ch.into()));
+                frames.push(Frame::Integer(count as i64));
+            }
+            Frame::Array(frames)
+        }
+
+        Command::PubSubNumPat => Frame::Integer(pubsub.active_patterns() as i64),
+
         // subscribe commands are handled in the connection layer, not here
         Command::Subscribe { .. }
         | Command::Unsubscribe { .. }

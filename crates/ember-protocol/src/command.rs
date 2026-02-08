@@ -288,6 +288,15 @@ pub enum Command {
     /// PUBLISH `channel` `message`. Publish a message to a channel.
     Publish { channel: String, message: Bytes },
 
+    /// PUBSUB CHANNELS \[pattern\]. List active channels, optionally matching a glob.
+    PubSubChannels { pattern: Option<String> },
+
+    /// PUBSUB NUMSUB \[channel ...\]. Returns subscriber counts for given channels.
+    PubSubNumSub { channels: Vec<String> },
+
+    /// PUBSUB NUMPAT. Returns the number of active pattern subscriptions.
+    PubSubNumPat,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -392,6 +401,9 @@ impl Command {
             Command::PSubscribe { .. } => "psubscribe",
             Command::PUnsubscribe { .. } => "punsubscribe",
             Command::Publish { .. } => "publish",
+            Command::PubSubChannels { .. } => "pubsub",
+            Command::PubSubNumSub { .. } => "pubsub",
+            Command::PubSubNumPat => "pubsub",
             Command::Unknown(_) => "unknown",
         }
     }
@@ -478,6 +490,7 @@ impl Command {
             "PSUBSCRIBE" => parse_psubscribe(&frames[1..]),
             "PUNSUBSCRIBE" => parse_punsubscribe(&frames[1..]),
             "PUBLISH" => parse_publish(&frames[1..]),
+            "PUBSUB" => parse_pubsub(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1509,6 +1522,35 @@ fn parse_publish(args: &[Frame]) -> Result<Command, ProtocolError> {
     let channel = extract_string(&args[0])?;
     let message = extract_bytes(&args[1])?;
     Ok(Command::Publish { channel, message })
+}
+
+fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("PUBSUB".into()));
+    }
+
+    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
+    match subcmd.as_str() {
+        "CHANNELS" => {
+            let pattern = if args.len() > 1 {
+                Some(extract_string(&args[1])?)
+            } else {
+                None
+            };
+            Ok(Command::PubSubChannels { pattern })
+        }
+        "NUMSUB" => {
+            let channels: Vec<String> = args[1..]
+                .iter()
+                .map(extract_string)
+                .collect::<Result<_, _>>()?;
+            Ok(Command::PubSubNumSub { channels })
+        }
+        "NUMPAT" => Ok(Command::PubSubNumPat),
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown PUBSUB subcommand '{other}'"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -3400,5 +3442,61 @@ mod tests {
                 channels: vec!["ch".into()]
             },
         );
+    }
+
+    #[test]
+    fn pubsub_channels_no_pattern() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "CHANNELS"])).unwrap(),
+            Command::PubSubChannels { pattern: None },
+        );
+    }
+
+    #[test]
+    fn pubsub_channels_with_pattern() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "CHANNELS", "news.*"])).unwrap(),
+            Command::PubSubChannels {
+                pattern: Some("news.*".into())
+            },
+        );
+    }
+
+    #[test]
+    fn pubsub_numsub_no_args() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "NUMSUB"])).unwrap(),
+            Command::PubSubNumSub { channels: vec![] },
+        );
+    }
+
+    #[test]
+    fn pubsub_numsub_with_channels() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "NUMSUB", "ch1", "ch2"])).unwrap(),
+            Command::PubSubNumSub {
+                channels: vec!["ch1".into(), "ch2".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn pubsub_numpat() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "NUMPAT"])).unwrap(),
+            Command::PubSubNumPat,
+        );
+    }
+
+    #[test]
+    fn pubsub_no_subcommand() {
+        let err = Command::from_frame(cmd(&["PUBSUB"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn pubsub_unknown_subcommand() {
+        let err = Command::from_frame(cmd(&["PUBSUB", "BOGUS"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 }

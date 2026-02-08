@@ -140,19 +140,42 @@ impl PubSubManager {
     }
 
     /// Returns the total number of active subscriptions.
-    #[allow(dead_code)] // used in tests and future PUBSUB commands
+    #[allow(dead_code)] // used in tests
     pub fn total_subscriptions(&self) -> usize {
         self.subscription_count.load(Ordering::Relaxed)
     }
 
-    /// Returns the number of active channels (with at least one subscriber).
-    #[allow(dead_code)]
-    pub fn active_channels(&self) -> usize {
-        self.channels.len()
+    /// Returns active channel names, optionally filtered by a glob pattern.
+    /// Used by PUBSUB CHANNELS [pattern].
+    pub fn channel_names(&self, pattern: Option<&str>) -> Vec<String> {
+        self.channels
+            .iter()
+            .map(|entry| entry.key().clone())
+            .filter(|name| match pattern {
+                Some(pat) => glob_match(pat, name),
+                None => true,
+            })
+            .collect()
     }
 
-    /// Returns the number of active patterns.
-    #[allow(dead_code)]
+    /// Returns (channel, subscriber_count) pairs for the given channels.
+    /// Used by PUBSUB NUMSUB [channel ...].
+    pub fn numsub(&self, channels: &[String]) -> Vec<(String, usize)> {
+        channels
+            .iter()
+            .map(|ch| {
+                let count = self
+                    .channels
+                    .get(ch)
+                    .map(|tx| tx.receiver_count())
+                    .unwrap_or(0);
+                (ch.clone(), count)
+            })
+            .collect()
+    }
+
+    /// Returns the number of active pattern subscriptions.
+    /// Used by PUBSUB NUMPAT.
     pub fn active_patterns(&self) -> usize {
         self.patterns.len()
     }
@@ -396,7 +419,7 @@ mod tests {
         let _rx2 = mgr.subscribe("b");
         let _rx3 = mgr.psubscribe("c.*");
         assert_eq!(mgr.total_subscriptions(), 3);
-        assert_eq!(mgr.active_channels(), 2);
+        assert_eq!(mgr.channel_names(None).len(), 2);
         assert_eq!(mgr.active_patterns(), 1);
     }
 }
