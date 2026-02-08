@@ -1,0 +1,17 @@
+ember has been deployed!
+
+to connect from within the cluster:
+
+  redis-cli -h {{ include "ember.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local -p {{ .Values.service.port }}
+
+to connect from your local machine:
+
+  kubectl port-forward svc/{{ include "ember.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  redis-cli -h 127.0.0.1 -p {{ .Values.service.port }}
+{{- if .Values.ember.metricsPort }}
+
+prometheus metrics are available at:
+
+  kubectl port-forward svc/{{ include "ember.fullname" . }} {{ .Values.ember.metricsPort }}:{{ .Values.ember.metricsPort }}
+  curl http://127.0.0.1:{{ .Values.ember.metricsPort }}/metrics
+{{- end }}
