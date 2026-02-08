@@ -113,8 +113,11 @@ cargo build --release -p ember-server --features jemalloc
 # memory usage test
 ./bench/bench-memory.sh
 
-# comprehensive comparison (redis + dragonfly)
+# comprehensive comparison using redis-benchmark (redis + dragonfly)
 ./bench/compare-redis.sh
+
+# comprehensive comparison using memtier_benchmark (redis + dragonfly)
+./bench/bench-memtier.sh
 ```
 
 ### cloud VM benchmarking
@@ -129,10 +132,15 @@ gcloud compute instances create ember-bench \
   --image-family=ubuntu-2204-lts \
   --image-project=ubuntu-os-cloud
 
-# set up and run
+# bootstrap (installs rust, redis, memtier_benchmark, dragonfly)
+gcloud compute ssh ember-bench --zone=us-central1-a -- 'bash -s' < ./bench/setup-vm.sh
+
+# run benchmarks
 gcloud compute ssh ember-bench --zone=us-central1-a
-bash -s < ./bench/setup-vm.sh
-cd ember && ./bench/bench.sh
+cd ember
+./bench/compare-redis.sh      # redis-benchmark suite
+./bench/bench-memtier.sh      # memtier_benchmark suite
+./bench/bench-memory.sh       # memory comparison
 
 # cleanup
 gcloud compute instances delete ember-bench --zone=us-central1-a
@@ -145,20 +153,26 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 | `bench.sh` | full benchmark: ember (sharded + concurrent) vs redis |
 | `bench-quick.sh` | quick sanity check (~10 seconds) |
 | `bench-memory.sh` | memory usage with 1M keys |
-| `compare-redis.sh` | comprehensive comparison with dragonfly support |
-| `setup-vm.sh` | install dependencies on fresh ubuntu VM |
+| `compare-redis.sh` | comprehensive comparison using redis-benchmark |
+| `bench-memtier.sh` | comprehensive comparison using memtier_benchmark |
+| `setup-vm.sh` | bootstrap dependencies on fresh ubuntu VM |
 
 ## configuration
 
 ```bash
-# customize benchmark parameters
+# customize redis-benchmark parameters
 BENCH_REQUESTS=1000000 BENCH_THREADS=16 ./bench/compare-redis.sh
+
+# customize memtier_benchmark parameters
+MEMTIER_THREADS=8 MEMTIER_CLIENTS=16 MEMTIER_REQUESTS=20000 ./bench/bench-memtier.sh
 
 # customize memory test
 KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
 ```
 
 ## environment variables
+
+### compare-redis.sh (redis-benchmark)
 
 | variable | default | description |
 |----------|---------|-------------|
@@ -170,6 +184,19 @@ KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
 | `BENCH_CLIENTS` | 50 | concurrent connections |
 | `BENCH_PIPELINE` | 16 | pipeline depth |
 | `BENCH_THREADS` | CPU cores | redis-benchmark threads |
+
+### bench-memtier.sh (memtier_benchmark)
+
+| variable | default | description |
+|----------|---------|-------------|
+| `EMBER_CONCURRENT_PORT` | 6379 | ember concurrent mode port |
+| `EMBER_SHARDED_PORT` | 6380 | ember sharded mode port |
+| `REDIS_PORT` | 6399 | redis port |
+| `DRAGONFLY_PORT` | 6389 | dragonfly port |
+| `MEMTIER_THREADS` | 4 | memtier threads |
+| `MEMTIER_CLIENTS` | 12 | clients per thread (48 total) |
+| `MEMTIER_REQUESTS` | 10000 | requests per client (480k total) |
+| `MEMTIER_PIPELINE` | 16 | pipeline depth |
 
 ## micro-benchmarks
 
