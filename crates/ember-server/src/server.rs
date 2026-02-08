@@ -133,7 +133,10 @@ pub async fn run(
     // helper to accept from TLS listener or pend forever if disabled
     let tls_accept = || async {
         match &tls_listener {
-            Some((listener, _)) => listener.accept().await,
+            Some((listener, acceptor)) => {
+                let (stream, addr) = listener.accept().await?;
+                Ok::<_, std::io::Error>((stream, addr, acceptor.clone()))
+            }
             None => std::future::pending().await,
         }
     };
@@ -202,7 +205,7 @@ pub async fn run(
 
             // TLS accept (pends forever if TLS not configured)
             result = tls_accept() => {
-                let (stream, peer) = result?;
+                let (stream, peer, acceptor) = result?;
 
                 if let Err(e) = stream.set_nodelay(true) {
                     warn!("failed to set TCP_NODELAY: {e}");
@@ -236,7 +239,6 @@ pub async fn run(
                 let ctx = Arc::clone(&ctx);
                 let slow_log = Arc::clone(&slow_log);
                 let pubsub = Arc::clone(&pubsub);
-                let acceptor = tls_listener.as_ref().map(|(_, a)| a.clone()).unwrap();
 
                 tokio::spawn(async move {
                     // perform TLS handshake
@@ -356,7 +358,10 @@ pub async fn run_concurrent(
     // helper to accept from TLS listener or pend forever if disabled
     let tls_accept = || async {
         match &tls_listener {
-            Some((listener, _)) => listener.accept().await,
+            Some((listener, acceptor)) => {
+                let (stream, addr) = listener.accept().await?;
+                Ok::<_, std::io::Error>((stream, addr, acceptor.clone()))
+            }
             None => std::future::pending().await,
         }
     };
@@ -423,7 +428,7 @@ pub async fn run_concurrent(
 
             // TLS accept (pends forever if TLS not configured)
             result = tls_accept() => {
-                let (stream, peer) = result?;
+                let (stream, peer, acceptor) = result?;
 
                 if let Err(e) = stream.set_nodelay(true) {
                     warn!("failed to set TCP_NODELAY: {e}");
@@ -457,7 +462,6 @@ pub async fn run_concurrent(
                 let ctx = Arc::clone(&ctx);
                 let slow_log = Arc::clone(&slow_log);
                 let pubsub = Arc::clone(&pubsub);
-                let acceptor = tls_listener.as_ref().map(|(_, a)| a.clone()).unwrap();
 
                 tokio::spawn(async move {
                     match acceptor.accept(stream).await {
