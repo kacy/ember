@@ -276,7 +276,31 @@ echo ""
 echo "running benchmarks..."
 echo ""
 
+# collect labels from the test matrix
 declare -a LABELS=()
+for test_spec in "${TESTS[@]}"; do
+    IFS='|' read -r label _ _ _ <<< "$test_spec"
+    LABELS+=("$label")
+done
+
+# run all tests for one server before moving to the next.
+# this avoids CPU contention from rapidly switching between
+# servers running on the same machine.
+run_server_tests() {
+    local port=$1
+    local name=$2
+    local -n ops_arr=$3
+    local -n p99_arr=$4
+
+    echo "  $name (port $port)..."
+    for test_spec in "${TESTS[@]}"; do
+        IFS='|' read -r label data_size pipeline ratio <<< "$test_spec"
+        output=$(run_memtier "$port" "$pipeline" "$ratio" "$data_size")
+        ops_arr+=("$(extract_ops "$output")")
+        p99_arr+=("$(extract_p99 "$output")")
+    done
+}
+
 declare -a EC_OPS=()
 declare -a ES_OPS=()
 declare -a R_OPS=()
@@ -286,36 +310,10 @@ declare -a ES_P99=()
 declare -a R_P99=()
 declare -a D_P99=()
 
-for test_spec in "${TESTS[@]}"; do
-    IFS='|' read -r label data_size pipeline ratio <<< "$test_spec"
-    LABELS+=("$label")
-
-    echo "  $label..."
-
-    output=$(run_memtier "$EMBER_CONCURRENT_PORT" "$pipeline" "$ratio" "$data_size")
-    EC_OPS+=("$(extract_ops "$output")")
-    EC_P99+=("$(extract_p99 "$output")")
-    sleep 0.5
-
-    output=$(run_memtier "$EMBER_SHARDED_PORT" "$pipeline" "$ratio" "$data_size")
-    ES_OPS+=("$(extract_ops "$output")")
-    ES_P99+=("$(extract_p99 "$output")")
-    sleep 0.5
-
-    if [[ "$HAS_REDIS" == "true" ]]; then
-        output=$(run_memtier "$REDIS_PORT" "$pipeline" "$ratio" "$data_size")
-        R_OPS+=("$(extract_ops "$output")")
-        R_P99+=("$(extract_p99 "$output")")
-        sleep 0.5
-    fi
-
-    if [[ "$HAS_DRAGONFLY" == "true" ]]; then
-        output=$(run_memtier "$DRAGONFLY_PORT" "$pipeline" "$ratio" "$data_size")
-        D_OPS+=("$(extract_ops "$output")")
-        D_P99+=("$(extract_p99 "$output")")
-        sleep 0.5
-    fi
-done
+run_server_tests "$EMBER_CONCURRENT_PORT" "ember concurrent" EC_OPS EC_P99
+run_server_tests "$EMBER_SHARDED_PORT" "ember sharded" ES_OPS ES_P99
+[[ "$HAS_REDIS" == "true" ]] && run_server_tests "$REDIS_PORT" "redis" R_OPS R_P99
+[[ "$HAS_DRAGONFLY" == "true" ]] && run_server_tests "$DRAGONFLY_PORT" "dragonfly" D_OPS D_P99
 
 # --- output results ---
 
