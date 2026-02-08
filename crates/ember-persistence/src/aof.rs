@@ -124,7 +124,7 @@ pub enum AofRecord {
 
 impl AofRecord {
     /// Serializes this record into a byte vector (tag + payload, no CRC).
-    fn to_bytes(&self) -> Vec<u8> {
+    fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
         let mut buf = Vec::new();
         match self {
             AofRecord::Set {
@@ -132,139 +132,139 @@ impl AofRecord {
                 value,
                 expire_ms,
             } => {
-                format::write_u8(&mut buf, TAG_SET).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_bytes(&mut buf, value).expect("vec write");
-                format::write_i64(&mut buf, *expire_ms).expect("vec write");
+                format::write_u8(&mut buf, TAG_SET)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, value)?;
+                format::write_i64(&mut buf, *expire_ms)?;
             }
             AofRecord::Del { key } => {
-                format::write_u8(&mut buf, TAG_DEL).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_DEL)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
             }
             AofRecord::Expire { key, seconds } => {
-                format::write_u8(&mut buf, TAG_EXPIRE).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_i64(&mut buf, *seconds as i64).expect("vec write");
+                format::write_u8(&mut buf, TAG_EXPIRE)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *seconds as i64)?;
             }
             AofRecord::LPush { key, values } => {
-                format::write_u8(&mut buf, TAG_LPUSH).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, values.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_LPUSH)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, values.len() as u32)?;
                 for v in values {
-                    format::write_bytes(&mut buf, v).expect("vec write");
+                    format::write_bytes(&mut buf, v)?;
                 }
             }
             AofRecord::RPush { key, values } => {
-                format::write_u8(&mut buf, TAG_RPUSH).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, values.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_RPUSH)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, values.len() as u32)?;
                 for v in values {
-                    format::write_bytes(&mut buf, v).expect("vec write");
+                    format::write_bytes(&mut buf, v)?;
                 }
             }
             AofRecord::LPop { key } => {
-                format::write_u8(&mut buf, TAG_LPOP).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_LPOP)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
             }
             AofRecord::RPop { key } => {
-                format::write_u8(&mut buf, TAG_RPOP).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_RPOP)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
             }
             AofRecord::ZAdd { key, members } => {
-                format::write_u8(&mut buf, TAG_ZADD).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_ZADD)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, members.len() as u32)?;
                 for (score, member) in members {
-                    format::write_f64(&mut buf, *score).expect("vec write");
-                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                    format::write_f64(&mut buf, *score)?;
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
             AofRecord::ZRem { key, members } => {
-                format::write_u8(&mut buf, TAG_ZREM).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_ZREM)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, members.len() as u32)?;
                 for member in members {
-                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
             AofRecord::Persist { key } => {
-                format::write_u8(&mut buf, TAG_PERSIST).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_PERSIST)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
             }
             AofRecord::Pexpire { key, milliseconds } => {
-                format::write_u8(&mut buf, TAG_PEXPIRE).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_i64(&mut buf, *milliseconds as i64).expect("vec write");
+                format::write_u8(&mut buf, TAG_PEXPIRE)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *milliseconds as i64)?;
             }
             AofRecord::Incr { key } => {
-                format::write_u8(&mut buf, TAG_INCR).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_INCR)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
             }
             AofRecord::Decr { key } => {
-                format::write_u8(&mut buf, TAG_DECR).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_DECR)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
             }
             AofRecord::HSet { key, fields } => {
-                format::write_u8(&mut buf, TAG_HSET).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, fields.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_HSET)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, fields.len() as u32)?;
                 for (field, value) in fields {
-                    format::write_bytes(&mut buf, field.as_bytes()).expect("vec write");
-                    format::write_bytes(&mut buf, value).expect("vec write");
+                    format::write_bytes(&mut buf, field.as_bytes())?;
+                    format::write_bytes(&mut buf, value)?;
                 }
             }
             AofRecord::HDel { key, fields } => {
-                format::write_u8(&mut buf, TAG_HDEL).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, fields.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_HDEL)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, fields.len() as u32)?;
                 for field in fields {
-                    format::write_bytes(&mut buf, field.as_bytes()).expect("vec write");
+                    format::write_bytes(&mut buf, field.as_bytes())?;
                 }
             }
             AofRecord::HIncrBy { key, field, delta } => {
-                format::write_u8(&mut buf, TAG_HINCRBY).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_bytes(&mut buf, field.as_bytes()).expect("vec write");
-                format::write_i64(&mut buf, *delta).expect("vec write");
+                format::write_u8(&mut buf, TAG_HINCRBY)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, field.as_bytes())?;
+                format::write_i64(&mut buf, *delta)?;
             }
             AofRecord::SAdd { key, members } => {
-                format::write_u8(&mut buf, TAG_SADD).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_SADD)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, members.len() as u32)?;
                 for member in members {
-                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
             AofRecord::SRem { key, members } => {
-                format::write_u8(&mut buf, TAG_SREM).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_u32(&mut buf, members.len() as u32).expect("vec write");
+                format::write_u8(&mut buf, TAG_SREM)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u32(&mut buf, members.len() as u32)?;
                 for member in members {
-                    format::write_bytes(&mut buf, member.as_bytes()).expect("vec write");
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
             AofRecord::IncrBy { key, delta } => {
-                format::write_u8(&mut buf, TAG_INCRBY).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_i64(&mut buf, *delta).expect("vec write");
+                format::write_u8(&mut buf, TAG_INCRBY)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *delta)?;
             }
             AofRecord::DecrBy { key, delta } => {
-                format::write_u8(&mut buf, TAG_DECRBY).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_i64(&mut buf, *delta).expect("vec write");
+                format::write_u8(&mut buf, TAG_DECRBY)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *delta)?;
             }
             AofRecord::Append { key, value } => {
-                format::write_u8(&mut buf, TAG_APPEND).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_bytes(&mut buf, value).expect("vec write");
+                format::write_u8(&mut buf, TAG_APPEND)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, value)?;
             }
             AofRecord::Rename { key, newkey } => {
-                format::write_u8(&mut buf, TAG_RENAME).expect("vec write");
-                format::write_bytes(&mut buf, key.as_bytes()).expect("vec write");
-                format::write_bytes(&mut buf, newkey.as_bytes()).expect("vec write");
+                format::write_u8(&mut buf, TAG_RENAME)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, newkey.as_bytes())?;
             }
         }
-        buf
+        Ok(buf)
     }
 
     /// Deserializes a record from a byte slice (tag + payload, no CRC).
@@ -456,7 +456,7 @@ impl AofWriter {
 
     /// Appends a record to the AOF. Writes tag+payload+crc32.
     pub fn write_record(&mut self, record: &AofRecord) -> Result<(), FormatError> {
-        let payload = record.to_bytes();
+        let payload = record.to_bytes()?;
         let checksum = format::crc32(&payload);
         self.writer.write_all(&payload)?;
         format::write_u32(&mut self.writer, checksum)?;
@@ -556,71 +556,71 @@ impl AofReader {
             TAG_SET => {
                 // key_len + key + value_len + value + expire_ms
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
                 let value = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &value).expect("vec write");
+                format::write_bytes(&mut payload, &value)?;
                 let expire_ms = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, expire_ms).expect("vec write");
+                format::write_i64(&mut payload, expire_ms)?;
             }
             TAG_DEL => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
             }
             TAG_EXPIRE => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
                 let seconds = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, seconds).expect("vec write");
+                format::write_i64(&mut payload, seconds)?;
             }
             TAG_LPUSH | TAG_RPUSH => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
-                format::write_u32(&mut payload, count).expect("vec write");
+                format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let val = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &val).expect("vec write");
+                    format::write_bytes(&mut payload, &val)?;
                 }
             }
             TAG_LPOP | TAG_RPOP => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
             }
             TAG_ZADD => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
-                format::write_u32(&mut payload, count).expect("vec write");
+                format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let score = format::read_f64(&mut self.reader)?;
-                    format::write_f64(&mut payload, score).expect("vec write");
+                    format::write_f64(&mut payload, score)?;
                     let member = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &member).expect("vec write");
+                    format::write_bytes(&mut payload, &member)?;
                 }
             }
             TAG_ZREM => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
-                format::write_u32(&mut payload, count).expect("vec write");
+                format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let member = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &member).expect("vec write");
+                    format::write_bytes(&mut payload, &member)?;
                 }
             }
             TAG_PERSIST => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
             }
             TAG_PEXPIRE => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
                 let millis = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, millis).expect("vec write");
+                format::write_i64(&mut payload, millis)?;
             }
             TAG_INCR | TAG_DECR => {
                 let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key).expect("vec write");
+                format::write_bytes(&mut payload, &key)?;
             }
             _ => return Err(FormatError::UnknownTag(tag)),
         }
@@ -648,7 +648,7 @@ mod tests {
             value: Bytes::from("world"),
             expire_ms: 5000,
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -656,7 +656,7 @@ mod tests {
     #[test]
     fn record_round_trip_del() {
         let rec = AofRecord::Del { key: "gone".into() };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -667,7 +667,7 @@ mod tests {
             key: "ttl".into(),
             seconds: 300,
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -679,7 +679,7 @@ mod tests {
             value: Bytes::from("v"),
             expire_ms: -1,
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -852,7 +852,7 @@ mod tests {
             key: "list".into(),
             values: vec![Bytes::from("a"), Bytes::from("b")],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -863,7 +863,7 @@ mod tests {
             key: "list".into(),
             values: vec![Bytes::from("x")],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn record_round_trip_lpop() {
         let rec = AofRecord::LPop { key: "list".into() };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -879,7 +879,7 @@ mod tests {
     #[test]
     fn record_round_trip_rpop() {
         let rec = AofRecord::RPop { key: "list".into() };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -924,7 +924,7 @@ mod tests {
             key: "board".into(),
             members: vec![(100.0, "alice".into()), (200.5, "bob".into())],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -935,7 +935,7 @@ mod tests {
             key: "board".into(),
             members: vec!["alice".into(), "bob".into()],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -977,7 +977,7 @@ mod tests {
         let rec = AofRecord::Persist {
             key: "mykey".into(),
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -988,7 +988,7 @@ mod tests {
             key: "mykey".into(),
             milliseconds: 5000,
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -998,7 +998,7 @@ mod tests {
         let rec = AofRecord::Incr {
             key: "counter".into(),
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -1008,7 +1008,7 @@ mod tests {
         let rec = AofRecord::Decr {
             key: "counter".into(),
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -1062,7 +1062,7 @@ mod tests {
                 ("f2".into(), Bytes::from("v2")),
             ],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -1073,7 +1073,7 @@ mod tests {
             key: "hash".into(),
             fields: vec!["f1".into(), "f2".into()],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -1085,7 +1085,7 @@ mod tests {
             field: "counter".into(),
             delta: -42,
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -1096,7 +1096,7 @@ mod tests {
             key: "set".into(),
             members: vec!["m1".into(), "m2".into(), "m3".into()],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
@@ -1107,7 +1107,7 @@ mod tests {
             key: "set".into(),
             members: vec!["m1".into()],
         };
-        let bytes = rec.to_bytes();
+        let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
     }
