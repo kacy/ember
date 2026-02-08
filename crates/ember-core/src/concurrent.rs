@@ -10,6 +10,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 
 use crate::keyspace::{EvictionPolicy, TtlResult};
+use crate::memory;
 use crate::time;
 
 /// An entry in the concurrent keyspace.
@@ -89,10 +90,11 @@ impl ConcurrentKeyspace {
         let entry_size = key.len() + value.len() + 48;
         let expires_at_ms = time::expiry_from_duration(ttl);
 
-        // Check memory limit
+        // Check memory limit (with safety margin for allocator overhead)
         if let Some(max) = self.max_memory {
+            let limit = memory::effective_limit(max);
             let current = self.memory_used.load(Ordering::Relaxed);
-            if current + entry_size > max {
+            if current + entry_size > limit {
                 if self.eviction_policy == EvictionPolicy::NoEviction {
                     return false;
                 }

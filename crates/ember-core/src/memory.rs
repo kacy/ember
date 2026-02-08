@@ -13,8 +13,33 @@
 //!
 //! The constants assume Rust's standard library allocator. Custom allocators
 //! (jemalloc, mimalloc) may have different per-allocation overhead.
+//!
+//! # Safety margin
+//!
+//! Because overhead constants are estimates and allocator fragmentation is
+//! unpredictable, we apply a safety margin when enforcing memory limits.
+//! The effective limit is set to [`MEMORY_SAFETY_MARGIN_PERCENT`]% of the
+//! configured max, reserving headroom so the process doesn't OOM before
+//! eviction has a chance to kick in.
 
 use crate::types::Value;
+
+/// Percentage of the configured `max_memory` that we actually use as the
+/// effective write limit. The remaining headroom absorbs allocator overhead,
+/// internal fragmentation, and estimation error in our per-entry constants.
+///
+/// 90% is conservative — it means a server configured with 1 GB will start
+/// rejecting writes (or evicting) at ~922 MB of estimated usage, leaving
+/// ~100 MB of breathing room for the allocator.
+pub const MEMORY_SAFETY_MARGIN_PERCENT: usize = 90;
+
+/// Computes the effective memory limit after applying the safety margin.
+///
+/// Returns the number of bytes at which writes should be rejected or
+/// eviction should begin — always less than the raw configured limit.
+pub fn effective_limit(max_bytes: usize) -> usize {
+    max_bytes * MEMORY_SAFETY_MARGIN_PERCENT / 100
+}
 
 /// Estimated overhead per entry in the HashMap.
 ///
@@ -282,5 +307,22 @@ mod tests {
         t.remove("k1", &v1);
         assert_eq!(t.key_count(), 1);
         assert_eq!(t.used_bytes(), entry_size("k2", &v2));
+    }
+
+    #[test]
+    fn effective_limit_applies_margin() {
+        // 1000 bytes configured → 900 effective at 90%
+        assert_eq!(effective_limit(1000), 900);
+    }
+
+    #[test]
+    fn effective_limit_rounds_down() {
+        // 1001 * 90 / 100 = 900 (integer division truncates)
+        assert_eq!(effective_limit(1001), 900);
+    }
+
+    #[test]
+    fn effective_limit_zero() {
+        assert_eq!(effective_limit(0), 0);
     }
 }
