@@ -1,6 +1,6 @@
 //! Per-connection handler for sharded engine mode.
 //!
-//! Reads RESP3 frames from a TCP stream, routes them through the
+//! Reads RESP3 frames from a TCP/TLS stream, routes them through the
 //! sharded engine, and writes responses back. Supports pipelining
 //! by dispatching multiple commands concurrently to shards using
 //! `join_all` for parallel execution.
@@ -14,8 +14,7 @@ use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use futures::future::join_all;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use crate::connection_common::{
@@ -30,17 +29,19 @@ use crate::slowlog::SlowLog;
 /// Reads data into a buffer, parses complete frames, dispatches commands
 /// through the engine, and writes serialized responses back. The loop
 /// exits when the client disconnects or a protocol error occurs.
-pub async fn handle(
-    mut stream: TcpStream,
+///
+/// Generic over the stream type to support both plain TCP and TLS connections.
+/// Callers should set TCP_NODELAY on the underlying socket before calling.
+pub async fn handle<S>(
+    mut stream: S,
     engine: Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // disable Nagle's algorithm — cache servers need low-latency writes,
-    // and we already batch responses from pipelining into a single write
-    stream.set_nodelay(true)?;
-
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     // per-connection auth state. auto-authenticated when no password is set.
     let mut authenticated = ctx.requirepass.is_none();
 
@@ -173,13 +174,16 @@ fn is_subscribe_frame(frame: &Frame) -> bool {
 /// PSUBSCRIBE, PUNSUBSCRIBE, and PING. All other commands return an error.
 /// Returns to the caller when all subscriptions are removed or the client
 /// disconnects.
-async fn handle_subscriber_mode(
-    stream: &mut TcpStream,
+async fn handle_subscriber_mode<S>(
+    stream: &mut S,
     buf: &mut BytesMut,
     out: &mut BytesMut,
     pubsub: &Arc<PubSubManager>,
     initial_frames: Vec<Frame>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     // track subscriptions: channel/pattern -> receiver
     let mut channel_rxs: HashMap<String, broadcast::Receiver<PubMessage>> = HashMap::new();
     let mut pattern_rxs: HashMap<String, broadcast::Receiver<PubMessage>> = HashMap::new();

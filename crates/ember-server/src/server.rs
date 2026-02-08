@@ -122,18 +122,18 @@ pub async fn run(
             }
 
             result = listener.accept() => {
-                let (mut stream, peer) = result?;
+                let (stream, peer) = result?;
+
+                // disable Nagle's algorithm — cache servers need low-latency writes.
+                // done here before passing to handler so TLS streams also benefit.
+                if let Err(e) = stream.set_nodelay(true) {
+                    warn!("failed to set TCP_NODELAY: {e}");
+                }
 
                 // protected mode: reject non-loopback connections when no
                 // password is set and the server is bound to a public address
                 if is_protected_mode_violation(&ctx, &peer) {
-                    let msg = "-DENIED Ember is running in protected mode \
-                               because no password is set. In this mode \
-                               connections are only accepted from the loopback \
-                               interface. Set a password with --requirepass or \
-                               bind to 127.0.0.1 to resolve this.\r\n";
-                    let _ = stream.write_all(msg.as_bytes()).await;
-                    let _ = stream.shutdown().await;
+                    reject_protected_mode(stream).await;
                     continue;
                 }
 
@@ -181,6 +181,17 @@ pub async fn run(
     info!("all connections drained, shutting down");
 
     Ok(())
+}
+
+/// Sends the protected mode rejection message and closes the connection.
+async fn reject_protected_mode(mut stream: tokio::net::TcpStream) {
+    let msg = "-DENIED Ember is running in protected mode \
+               because no password is set. In this mode \
+               connections are only accepted from the loopback \
+               interface. Set a password with --requirepass or \
+               bind to 127.0.0.1 to resolve this.\r\n";
+    let _ = stream.write_all(msg.as_bytes()).await;
+    let _ = stream.shutdown().await;
 }
 
 /// Runs the server with a concurrent keyspace (DashMap-backed).
@@ -253,16 +264,14 @@ pub async fn run_concurrent(
             }
 
             result = listener.accept() => {
-                let (mut stream, peer) = result?;
+                let (stream, peer) = result?;
+
+                if let Err(e) = stream.set_nodelay(true) {
+                    warn!("failed to set TCP_NODELAY: {e}");
+                }
 
                 if is_protected_mode_violation(&ctx, &peer) {
-                    let msg = "-DENIED Ember is running in protected mode \
-                               because no password is set. In this mode \
-                               connections are only accepted from the loopback \
-                               interface. Set a password with --requirepass or \
-                               bind to 127.0.0.1 to resolve this.\r\n";
-                    let _ = stream.write_all(msg.as_bytes()).await;
-                    let _ = stream.shutdown().await;
+                    reject_protected_mode(stream).await;
                     continue;
                 }
 
