@@ -16,6 +16,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF
+- **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
 - **concurrent mode** — experimental DashMap-backed keyspace for lock-free GET/SET (2x faster than Redis)
@@ -183,7 +184,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 65+ commands, 609 tests, ~14k lines of code
+**current**: 76 commands, 639 tests, ~21k lines of code
 
 ## security
 

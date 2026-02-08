@@ -23,6 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::connection_common::{BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE};
+use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 
@@ -33,6 +34,7 @@ pub async fn handle(
     engine: Engine, // fallback for complex commands
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
+    pubsub: &Arc<PubSubManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     stream.set_nodelay(true)?;
 
@@ -60,7 +62,7 @@ pub async fn handle(
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
-                    let response = process(frame, &keyspace, &engine, ctx, slow_log).await;
+                    let response = process(frame, &keyspace, &engine, ctx, slow_log, pubsub).await;
                     response.serialize(&mut out);
                 }
                 Ok(None) => break,
@@ -85,6 +87,7 @@ async fn process(
     engine: &Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
+    pubsub: &Arc<PubSubManager>,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
@@ -96,7 +99,7 @@ async fn process(
                 None
             };
 
-            let response = execute_concurrent(cmd, keyspace, engine).await;
+            let response = execute_concurrent(cmd, keyspace, engine, pubsub).await;
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
@@ -119,6 +122,7 @@ async fn execute_concurrent(
     cmd: Command,
     keyspace: &Arc<ConcurrentKeyspace>,
     _engine: &Engine,
+    pubsub: &Arc<PubSubManager>,
 ) -> Frame {
     match cmd {
         // Hot path: direct access without channels
@@ -196,6 +200,37 @@ async fn execute_concurrent(
         Command::FlushDb => {
             keyspace.clear();
             Frame::Simple("OK".into())
+        }
+
+        // -- pub/sub --
+        Command::Publish { channel, message } => {
+            let count = pubsub.publish(&channel, message);
+            Frame::Integer(count as i64)
+        }
+
+        Command::PubSubChannels { pattern } => {
+            let names = pubsub.channel_names(pattern.as_deref());
+            Frame::Array(names.into_iter().map(|n| Frame::Bulk(n.into())).collect())
+        }
+
+        Command::PubSubNumSub { channels } => {
+            let pairs = pubsub.numsub(&channels);
+            let mut frames = Vec::with_capacity(pairs.len() * 2);
+            for (ch, count) in pairs {
+                frames.push(Frame::Bulk(ch.into()));
+                frames.push(Frame::Integer(count as i64));
+            }
+            Frame::Array(frames)
+        }
+
+        Command::PubSubNumPat => Frame::Integer(pubsub.active_patterns() as i64),
+
+        // subscribe commands are handled in the connection layer, not here
+        Command::Subscribe { .. }
+        | Command::Unsubscribe { .. }
+        | Command::PSubscribe { .. }
+        | Command::PUnsubscribe { .. } => {
+            Frame::Error("ERR pub/sub not supported in concurrent mode yet".into())
         }
 
         // For unsupported commands, return an error

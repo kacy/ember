@@ -272,6 +272,31 @@ pub enum Command {
     /// SLOWLOG RESET. Clears the slow log.
     SlowLogReset,
 
+    // --- pub/sub commands ---
+    /// SUBSCRIBE `channel` \[channel ...\]. Subscribe to one or more channels.
+    Subscribe { channels: Vec<String> },
+
+    /// UNSUBSCRIBE \[channel ...\]. Unsubscribe from channels (all if none given).
+    Unsubscribe { channels: Vec<String> },
+
+    /// PSUBSCRIBE `pattern` \[pattern ...\]. Subscribe to channels matching patterns.
+    PSubscribe { patterns: Vec<String> },
+
+    /// PUNSUBSCRIBE \[pattern ...\]. Unsubscribe from patterns (all if none given).
+    PUnsubscribe { patterns: Vec<String> },
+
+    /// PUBLISH `channel` `message`. Publish a message to a channel.
+    Publish { channel: String, message: Bytes },
+
+    /// PUBSUB CHANNELS \[pattern\]. List active channels, optionally matching a glob.
+    PubSubChannels { pattern: Option<String> },
+
+    /// PUBSUB NUMSUB \[channel ...\]. Returns subscriber counts for given channels.
+    PubSubNumSub { channels: Vec<String> },
+
+    /// PUBSUB NUMPAT. Returns the number of active pattern subscriptions.
+    PubSubNumPat,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -371,6 +396,14 @@ impl Command {
             Command::SlowLogGet { .. } => "slowlog",
             Command::SlowLogLen => "slowlog",
             Command::SlowLogReset => "slowlog",
+            Command::Subscribe { .. } => "subscribe",
+            Command::Unsubscribe { .. } => "unsubscribe",
+            Command::PSubscribe { .. } => "psubscribe",
+            Command::PUnsubscribe { .. } => "punsubscribe",
+            Command::Publish { .. } => "publish",
+            Command::PubSubChannels { .. } => "pubsub",
+            Command::PubSubNumSub { .. } => "pubsub",
+            Command::PubSubNumPat => "pubsub",
             Command::Unknown(_) => "unknown",
         }
     }
@@ -452,6 +485,12 @@ impl Command {
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
             "SLOWLOG" => parse_slowlog(&frames[1..]),
+            "SUBSCRIBE" => parse_subscribe(&frames[1..]),
+            "UNSUBSCRIBE" => parse_unsubscribe(&frames[1..]),
+            "PSUBSCRIBE" => parse_psubscribe(&frames[1..]),
+            "PUNSUBSCRIBE" => parse_punsubscribe(&frames[1..]),
+            "PUBLISH" => parse_publish(&frames[1..]),
+            "PUBSUB" => parse_pubsub(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1448,6 +1487,70 @@ fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
         copy,
         replace,
     })
+}
+
+fn parse_subscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("SUBSCRIBE".into()));
+    }
+    let channels: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
+    Ok(Command::Subscribe { channels })
+}
+
+fn parse_unsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    let channels: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
+    Ok(Command::Unsubscribe { channels })
+}
+
+fn parse_psubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("PSUBSCRIBE".into()));
+    }
+    let patterns: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
+    Ok(Command::PSubscribe { patterns })
+}
+
+fn parse_punsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    let patterns: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
+    Ok(Command::PUnsubscribe { patterns })
+}
+
+fn parse_publish(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("PUBLISH".into()));
+    }
+    let channel = extract_string(&args[0])?;
+    let message = extract_bytes(&args[1])?;
+    Ok(Command::Publish { channel, message })
+}
+
+fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("PUBSUB".into()));
+    }
+
+    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
+    match subcmd.as_str() {
+        "CHANNELS" => {
+            let pattern = if args.len() > 1 {
+                Some(extract_string(&args[1])?)
+            } else {
+                None
+            };
+            Ok(Command::PubSubChannels { pattern })
+        }
+        "NUMSUB" => {
+            let channels: Vec<String> = args[1..]
+                .iter()
+                .map(extract_string)
+                .collect::<Result<_, _>>()?;
+            Ok(Command::PubSubNumSub { channels })
+        }
+        "NUMPAT" => Ok(Command::PubSubNumPat),
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown PUBSUB subcommand '{other}'"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -3242,5 +3345,158 @@ mod tests {
                 count: 10
             },
         );
+    }
+
+    // --- pub/sub ---
+
+    #[test]
+    fn subscribe_single_channel() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SUBSCRIBE", "news"])).unwrap(),
+            Command::Subscribe {
+                channels: vec!["news".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn subscribe_multiple_channels() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SUBSCRIBE", "ch1", "ch2", "ch3"])).unwrap(),
+            Command::Subscribe {
+                channels: vec!["ch1".into(), "ch2".into(), "ch3".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn subscribe_no_args() {
+        let err = Command::from_frame(cmd(&["SUBSCRIBE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn unsubscribe_all() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNSUBSCRIBE"])).unwrap(),
+            Command::Unsubscribe { channels: vec![] },
+        );
+    }
+
+    #[test]
+    fn unsubscribe_specific() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNSUBSCRIBE", "news"])).unwrap(),
+            Command::Unsubscribe {
+                channels: vec!["news".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn psubscribe_pattern() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PSUBSCRIBE", "news.*"])).unwrap(),
+            Command::PSubscribe {
+                patterns: vec!["news.*".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn psubscribe_no_args() {
+        let err = Command::from_frame(cmd(&["PSUBSCRIBE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn punsubscribe_all() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUNSUBSCRIBE"])).unwrap(),
+            Command::PUnsubscribe { patterns: vec![] },
+        );
+    }
+
+    #[test]
+    fn publish_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBLISH", "news", "hello world"])).unwrap(),
+            Command::Publish {
+                channel: "news".into(),
+                message: Bytes::from("hello world"),
+            },
+        );
+    }
+
+    #[test]
+    fn publish_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PUBLISH", "news"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn subscribe_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["subscribe", "ch"])).unwrap(),
+            Command::Subscribe {
+                channels: vec!["ch".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn pubsub_channels_no_pattern() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "CHANNELS"])).unwrap(),
+            Command::PubSubChannels { pattern: None },
+        );
+    }
+
+    #[test]
+    fn pubsub_channels_with_pattern() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "CHANNELS", "news.*"])).unwrap(),
+            Command::PubSubChannels {
+                pattern: Some("news.*".into())
+            },
+        );
+    }
+
+    #[test]
+    fn pubsub_numsub_no_args() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "NUMSUB"])).unwrap(),
+            Command::PubSubNumSub { channels: vec![] },
+        );
+    }
+
+    #[test]
+    fn pubsub_numsub_with_channels() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "NUMSUB", "ch1", "ch2"])).unwrap(),
+            Command::PubSubNumSub {
+                channels: vec!["ch1".into(), "ch2".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn pubsub_numpat() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PUBSUB", "NUMPAT"])).unwrap(),
+            Command::PubSubNumPat,
+        );
+    }
+
+    #[test]
+    fn pubsub_no_subcommand() {
+        let err = Command::from_frame(cmd(&["PUBSUB"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn pubsub_unknown_subcommand() {
+        let err = Command::from_frame(cmd(&["PUBSUB", "BOGUS"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 }

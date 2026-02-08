@@ -9,6 +9,7 @@ mod config;
 mod connection;
 mod connection_common;
 mod metrics;
+mod pubsub;
 mod server;
 mod slowlog;
 

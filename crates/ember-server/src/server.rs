@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
 
 use crate::connection;
+use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
 
 /// Default maximum number of concurrent client connections.
@@ -93,6 +94,7 @@ pub async fn run(
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
+    let pubsub = Arc::new(PubSubManager::new());
 
     info!(
         "listening on {addr} with {} shards (max {max_conn} connections)",
@@ -135,9 +137,10 @@ pub async fn run(
                 let engine = engine.clone();
                 let ctx = Arc::clone(&ctx);
                 let slow_log = Arc::clone(&slow_log);
+                let pubsub = Arc::clone(&pubsub);
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log).await {
+                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log, &pubsub).await {
                         error!("connection error from {peer}: {e}");
                     }
                     ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
@@ -209,6 +212,7 @@ pub async fn run_concurrent(
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
+    let pubsub = Arc::new(PubSubManager::new());
 
     info!("listening on {addr} with concurrent keyspace (max {max_conn} connections)");
 
@@ -249,10 +253,11 @@ pub async fn run_concurrent(
                 let engine = engine.clone();
                 let ctx = Arc::clone(&ctx);
                 let slow_log = Arc::clone(&slow_log);
+                let pubsub = Arc::clone(&pubsub);
 
                 tokio::spawn(async move {
                     if let Err(e) = crate::concurrent_handler::handle(
-                        stream, keyspace, engine, &ctx, &slow_log
+                        stream, keyspace, engine, &ctx, &slow_log, &pubsub
                     ).await {
                         error!("connection error from {peer}: {e}");
                     }
