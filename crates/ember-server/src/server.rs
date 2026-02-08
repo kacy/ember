@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
@@ -36,6 +37,10 @@ pub struct ServerContext {
     pub connections_accepted: AtomicU64,
     pub connections_active: AtomicU64,
     pub commands_processed: AtomicU64,
+    /// Password required for AUTH. None means no authentication needed.
+    pub requirepass: Option<String>,
+    /// The address the server is bound to (for protected mode checks).
+    pub bind_addr: SocketAddr,
 }
 
 /// Binds to `addr` and runs the accept loop.
@@ -54,6 +59,7 @@ pub async fn run(
     max_connections: Option<usize>,
     metrics_enabled: bool,
     slowlog_config: SlowLogConfig,
+    requirepass: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
@@ -91,6 +97,8 @@ pub async fn run(
         connections_accepted: AtomicU64::new(0),
         connections_active: AtomicU64::new(0),
         commands_processed: AtomicU64::new(0),
+        requirepass,
+        bind_addr: addr,
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
@@ -114,7 +122,20 @@ pub async fn run(
             }
 
             result = listener.accept() => {
-                let (stream, peer) = result?;
+                let (mut stream, peer) = result?;
+
+                // protected mode: reject non-loopback connections when no
+                // password is set and the server is bound to a public address
+                if is_protected_mode_violation(&ctx, &peer) {
+                    let msg = "-DENIED Ember is running in protected mode \
+                               because no password is set. In this mode \
+                               connections are only accepted from the loopback \
+                               interface. Set a password with --requirepass or \
+                               bind to 127.0.0.1 to resolve this.\r\n";
+                    let _ = stream.write_all(msg.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
 
                 let permit = match semaphore.clone().try_acquire_owned() {
                     Ok(permit) => permit,
@@ -177,6 +198,7 @@ pub async fn run_concurrent(
     max_connections: Option<usize>,
     metrics_enabled: bool,
     slowlog_config: SlowLogConfig,
+    requirepass: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
         .persistence
@@ -209,6 +231,8 @@ pub async fn run_concurrent(
         connections_accepted: AtomicU64::new(0),
         connections_active: AtomicU64::new(0),
         commands_processed: AtomicU64::new(0),
+        requirepass,
+        bind_addr: addr,
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
@@ -229,7 +253,18 @@ pub async fn run_concurrent(
             }
 
             result = listener.accept() => {
-                let (stream, peer) = result?;
+                let (mut stream, peer) = result?;
+
+                if is_protected_mode_violation(&ctx, &peer) {
+                    let msg = "-DENIED Ember is running in protected mode \
+                               because no password is set. In this mode \
+                               connections are only accepted from the loopback \
+                               interface. Set a password with --requirepass or \
+                               bind to 127.0.0.1 to resolve this.\r\n";
+                    let _ = stream.write_all(msg.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                    continue;
+                }
 
                 let permit = match semaphore.clone().try_acquire_owned() {
                     Ok(permit) => permit,
@@ -276,4 +311,20 @@ pub async fn run_concurrent(
     info!("all connections drained, shutting down");
 
     Ok(())
+}
+
+/// Returns true if the connection should be rejected by protected mode.
+///
+/// Protected mode activates when all three conditions hold:
+/// 1. No password is configured (requirepass is None)
+/// 2. The server is bound to a non-loopback address (e.g. 0.0.0.0)
+/// 3. The connecting client is from a non-loopback address
+fn is_protected_mode_violation(ctx: &ServerContext, peer: &SocketAddr) -> bool {
+    if ctx.requirepass.is_some() {
+        return false;
+    }
+    if ctx.bind_addr.ip().is_loopback() {
+        return false;
+    }
+    !peer.ip().is_loopback()
 }

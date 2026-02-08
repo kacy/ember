@@ -76,6 +76,11 @@ struct Args {
     /// experimental: bypasses channel overhead for GET/SET commands.
     #[arg(long)]
     concurrent: bool,
+
+    /// require clients to AUTH with this password before running commands.
+    /// when set, connections must authenticate before executing any data commands.
+    #[arg(long)]
+    requirepass: Option<String>,
 }
 
 #[tokio::main]
@@ -182,6 +187,10 @@ async fn main() {
         "ember server starting..."
     );
 
+    if args.requirepass.is_some() {
+        info!("authentication enabled (requirepass set)");
+    }
+
     let result = if args.concurrent {
         server::run_concurrent(
             addr,
@@ -192,6 +201,7 @@ async fn main() {
             None,
             args.metrics_port.is_some(),
             slowlog_config,
+            args.requirepass,
         )
         .await
     } else {
@@ -202,6 +212,7 @@ async fn main() {
             None,
             args.metrics_port.is_some(),
             slowlog_config,
+            args.requirepass,
         )
         .await
     };
