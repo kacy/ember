@@ -12,6 +12,7 @@ mod metrics;
 mod pubsub;
 mod server;
 mod slowlog;
+mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
