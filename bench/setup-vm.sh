@@ -58,8 +58,8 @@ else
         if curl -fsSL "$DRAGONFLY_URL" -o /tmp/dragonfly.tar.gz; then
             mkdir -p /tmp/dragonfly_extract
             tar -xzf /tmp/dragonfly.tar.gz -C /tmp/dragonfly_extract
-            # find the binary in the extracted archive
-            DRAGONFLY_BIN=$(find /tmp/dragonfly_extract -name "dragonfly" -type f | head -1)
+            # find the binary in the extracted archive (named dragonfly-<arch>)
+            DRAGONFLY_BIN=$(find /tmp/dragonfly_extract -name "dragonfly*" -type f ! -name "*.md" | head -1)
             if [[ -n "$DRAGONFLY_BIN" ]]; then
                 sudo mv "$DRAGONFLY_BIN" /usr/local/bin/dragonfly
                 sudo chmod +x /usr/local/bin/dragonfly
