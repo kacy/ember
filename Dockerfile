@@ -12,7 +12,7 @@ RUN cargo build --release --bin ember-server
 
 # ---
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -36,6 +36,6 @@ EXPOSE 9100
 
 LABEL org.opencontainers.image.title="ember" \
       org.opencontainers.image.description="low-latency distributed cache" \
-      org.opencontainers.image.source="https://github.com/emberkv/ember"
+      org.opencontainers.image.source="https://github.com/kacy/ember"
 
 ENTRYPOINT ["ember-server"]

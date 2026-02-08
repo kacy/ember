@@ -1,4 +1,4 @@
-.PHONY: build release test fmt fmt-check clippy check clean docker-build \
+.PHONY: build release test fmt fmt-check clippy check clean docker-build docker-run \
        release-patch release-minor release-major github-release \
        publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick
 
@@ -30,6 +30,9 @@ clean:
 
 docker-build:
 	docker build -t ember:latest .
+
+docker-run: docker-build
+	docker run --rm -p 6379:6379 ember:latest
 
 bench:
 	cargo bench --workspace
