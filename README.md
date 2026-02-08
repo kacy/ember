@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/kacy/ember/actions"><img src="https://github.com/kacy/ember/workflows/ci/badge.svg" alt="build status"></a>
   <a href="https://crates.io/crates/ember-server"><img src="https://img.shields.io/crates/v/ember-server.svg" alt="crates.io"></a>
-  <img src="https://img.shields.io/badge/rust-1.75%2B-blue.svg" alt="rust version">
+  <img src="https://img.shields.io/badge/rust-1.93%2B-blue.svg" alt="rust version">
   <a href="https://github.com/kacy/ember/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="license"></a>
 </p>
 
