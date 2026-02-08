@@ -7,6 +7,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::keyspace::ShardConfig;
 use crate::shard::{self, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse};
@@ -46,15 +47,25 @@ impl Engine {
 
     /// Creates an engine with `shard_count` shards and the given config.
     ///
+    /// Spawns a single background drop thread shared by all shards for
+    /// lazy-freeing large values.
+    ///
     /// Panics if `shard_count` is zero.
     pub fn with_config(shard_count: usize, config: EngineConfig) -> Self {
         assert!(shard_count > 0, "shard count must be at least 1");
+
+        let drop_handle = DropHandle::spawn();
 
         let shards = (0..shard_count)
             .map(|i| {
                 let mut shard_config = config.shard.clone();
                 shard_config.shard_id = i as u16;
-                shard::spawn_shard(SHARD_BUFFER, shard_config, config.persistence.clone())
+                shard::spawn_shard(
+                    SHARD_BUFFER,
+                    shard_config,
+                    config.persistence.clone(),
+                    Some(drop_handle.clone()),
+                )
             })
             .collect();
 

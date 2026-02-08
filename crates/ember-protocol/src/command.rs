@@ -71,6 +71,9 @@ pub enum Command {
     /// DEL `key` \[key ...\]. Returns the number of keys removed.
     Del { keys: Vec<String> },
 
+    /// UNLINK `key` \[key ...\]. Like DEL but frees memory in the background.
+    Unlink { keys: Vec<String> },
+
     /// EXISTS `key` \[key ...\]. Returns the number of keys that exist.
     Exists { keys: Vec<String> },
 
@@ -107,8 +110,8 @@ pub enum Command {
     /// BGREWRITEAOF. Triggers an AOF rewrite (snapshot + truncate).
     BgRewriteAof,
 
-    /// FLUSHDB. Removes all keys from the database.
-    FlushDb,
+    /// FLUSHDB \[ASYNC\]. Removes all keys from the database.
+    FlushDb { async_mode: bool },
 
     /// SCAN `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates keys.
     Scan {
@@ -371,6 +374,7 @@ impl Command {
             Command::Keys { .. } => "keys",
             Command::Rename { .. } => "rename",
             Command::Del { .. } => "del",
+            Command::Unlink { .. } => "unlink",
             Command::Exists { .. } => "exists",
             Command::MGet { .. } => "mget",
             Command::MSet { .. } => "mset",
@@ -383,7 +387,7 @@ impl Command {
             Command::Info { .. } => "info",
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
-            Command::FlushDb => "flushdb",
+            Command::FlushDb { .. } => "flushdb",
             Command::Scan { .. } => "scan",
             Command::LPush { .. } => "lpush",
             Command::RPush { .. } => "rpush",
@@ -487,6 +491,7 @@ impl Command {
             "KEYS" => parse_keys(&frames[1..]),
             "RENAME" => parse_rename(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
+            "UNLINK" => parse_unlink(&frames[1..]),
             "EXISTS" => parse_exists(&frames[1..]),
             "MGET" => parse_mget(&frames[1..]),
             "MSET" => parse_mset(&frames[1..]),
@@ -902,10 +907,27 @@ fn parse_bgrewriteaof(args: &[Frame]) -> Result<Command, ProtocolError> {
 }
 
 fn parse_flushdb(args: &[Frame]) -> Result<Command, ProtocolError> {
-    if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("FLUSHDB".into()));
+    if args.is_empty() {
+        return Ok(Command::FlushDb { async_mode: false });
     }
-    Ok(Command::FlushDb)
+    if args.len() == 1 {
+        let arg = extract_string(&args[0])?;
+        if arg.eq_ignore_ascii_case("ASYNC") {
+            return Ok(Command::FlushDb { async_mode: true });
+        }
+    }
+    Err(ProtocolError::WrongArity("FLUSHDB".into()))
+}
+
+fn parse_unlink(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("UNLINK".into()));
+    }
+    let keys = args
+        .iter()
+        .map(extract_string)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Command::Unlink { keys })
 }
 
 fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -2236,7 +2258,7 @@ mod tests {
     fn flushdb_basic() {
         assert_eq!(
             Command::from_frame(cmd(&["FLUSHDB"])).unwrap(),
-            Command::FlushDb,
+            Command::FlushDb { async_mode: false },
         );
     }
 
@@ -2244,13 +2266,57 @@ mod tests {
     fn flushdb_case_insensitive() {
         assert_eq!(
             Command::from_frame(cmd(&["flushdb"])).unwrap(),
-            Command::FlushDb,
+            Command::FlushDb { async_mode: false },
+        );
+    }
+
+    #[test]
+    fn flushdb_async() {
+        assert_eq!(
+            Command::from_frame(cmd(&["FLUSHDB", "ASYNC"])).unwrap(),
+            Command::FlushDb { async_mode: true },
+        );
+    }
+
+    #[test]
+    fn flushdb_async_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["flushdb", "async"])).unwrap(),
+            Command::FlushDb { async_mode: true },
         );
     }
 
     #[test]
     fn flushdb_extra_args() {
         let err = Command::from_frame(cmd(&["FLUSHDB", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- unlink ---
+
+    #[test]
+    fn unlink_single() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNLINK", "mykey"])).unwrap(),
+            Command::Unlink {
+                keys: vec!["mykey".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn unlink_multiple() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNLINK", "a", "b", "c"])).unwrap(),
+            Command::Unlink {
+                keys: vec!["a".into(), "b".into(), "c".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn unlink_no_args() {
+        let err = Command::from_frame(cmd(&["UNLINK"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 

@@ -186,7 +186,7 @@ async fn execute_concurrent(
             }
         }
 
-        Command::Del { keys } => {
+        Command::Del { keys } | Command::Unlink { keys } => {
             let mut count = 0i64;
             for key in keys {
                 if keyspace.del(&key) {
@@ -224,7 +224,7 @@ async fn execute_concurrent(
 
         Command::DbSize => Frame::Integer(keyspace.len() as i64),
 
-        Command::FlushDb => {
+        Command::FlushDb { .. } => {
             keyspace.clear();
             Frame::Simple("OK".into())
         }

@@ -5,6 +5,7 @@
 //! where each shard independently manages a partition of keys.
 
 pub mod concurrent;
+pub mod dropper;
 pub mod engine;
 pub mod error;
 pub mod expiry;

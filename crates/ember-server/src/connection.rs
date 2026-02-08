@@ -712,6 +712,10 @@ async fn execute(
             multi_key_bool(engine, &keys, |k| ShardRequest::Del { key: k }).await
         }
 
+        Command::Unlink { keys } => {
+            multi_key_bool(engine, &keys, |k| ShardRequest::Unlink { key: k }).await
+        }
+
         Command::Exists { keys } => {
             multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
         }
@@ -800,10 +804,17 @@ async fn execute(
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
 
-        Command::FlushDb => match engine.broadcast(|| ShardRequest::FlushDb).await {
-            Ok(_) => Frame::Simple("OK".into()),
-            Err(e) => Frame::Error(format!("ERR {e}")),
-        },
+        Command::FlushDb { async_mode } => {
+            let req = if async_mode {
+                || ShardRequest::FlushDbAsync
+            } else {
+                || ShardRequest::FlushDb
+            };
+            match engine.broadcast(req).await {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
 
         Command::Keys { pattern } => {
             match engine
