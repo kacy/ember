@@ -174,19 +174,20 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 
 | mode | vs redis | vs dragonfly | best for |
 |------|----------|--------------|----------|
-| concurrent | **1.8-2.1x faster** | **3.3-3.8x faster**\* | simple GET/SET workloads |
-| sharded | ~0.9x (channel overhead) | **1.5-1.6x faster**\* | all data types |
+| concurrent | **1.9-2.2x faster** | **2.0-2.7x faster**\* | simple GET/SET workloads |
+| sharded | ~0.9x (channel overhead) | ~1.0-1.1x | all data types |
 
 \*take these comparisons with a grain of salt. ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
 
 **highlights**:
-- concurrent mode: 1.86M SET/sec, 2.49M GET/sec (simple GET/SET only)
+- concurrent mode: 1.90M SET/sec, 2.58M GET/sec (simple GET/SET only)
 - p99 latency: 0.4ms (same as redis)
 - memory: ~161 bytes/key (redis: ~105 bytes/key)
 
 ```bash
-./bench/bench-quick.sh   # quick sanity check
-./bench/bench.sh         # full comparison vs redis
+./bench/bench-quick.sh       # quick sanity check
+./bench/compare-redis.sh     # redis-benchmark comparison
+./bench/bench-memtier.sh     # memtier_benchmark comparison
 ```
 
 ## architecture
