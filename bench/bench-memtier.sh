@@ -85,25 +85,41 @@ wait_for_server() {
     done
 }
 
-# run memtier_benchmark and return raw output
+# run memtier_benchmark and return raw output.
+# retries once if the first attempt produces no Totals line (e.g. due to
+# ephemeral connection errors under heavy load).
 run_memtier() {
     local port=$1
     local pipeline=$2
     local ratio=$3
     local data_size=$4
+    local attempt output
 
-    memtier_benchmark \
-        -s 127.0.0.1 -p "$port" \
-        --threads="$MEMTIER_THREADS" \
-        --clients="$MEMTIER_CLIENTS" \
-        --requests="$MEMTIER_REQUESTS" \
-        --pipeline="$pipeline" \
-        --data-size="$data_size" \
-        --ratio="$ratio" \
-        --key-minimum=1 \
-        --key-maximum="$KEY_MAX" \
-        --hide-histogram \
-        2>/dev/null
+    for attempt in 1 2; do
+        output=$(memtier_benchmark \
+            -s 127.0.0.1 -p "$port" \
+            --threads="$MEMTIER_THREADS" \
+            --clients="$MEMTIER_CLIENTS" \
+            --requests="$MEMTIER_REQUESTS" \
+            --pipeline="$pipeline" \
+            --data-size="$data_size" \
+            --ratio="$ratio" \
+            --key-minimum=1 \
+            --key-maximum="$KEY_MAX" \
+            --hide-histogram \
+            2>/dev/null || true)
+
+        if echo "$output" | grep -q "^Totals"; then
+            echo "$output"
+            return
+        fi
+
+        # brief pause before retry
+        sleep 1
+    done
+
+    # return whatever we got (extract_ops will yield 0)
+    echo "$output"
 }
 
 # extract ops/sec from the Totals line
@@ -279,21 +295,25 @@ for test_spec in "${TESTS[@]}"; do
     output=$(run_memtier "$EMBER_CONCURRENT_PORT" "$pipeline" "$ratio" "$data_size")
     EC_OPS+=("$(extract_ops "$output")")
     EC_P99+=("$(extract_p99 "$output")")
+    sleep 0.5
 
     output=$(run_memtier "$EMBER_SHARDED_PORT" "$pipeline" "$ratio" "$data_size")
     ES_OPS+=("$(extract_ops "$output")")
     ES_P99+=("$(extract_p99 "$output")")
+    sleep 0.5
 
     if [[ "$HAS_REDIS" == "true" ]]; then
         output=$(run_memtier "$REDIS_PORT" "$pipeline" "$ratio" "$data_size")
         R_OPS+=("$(extract_ops "$output")")
         R_P99+=("$(extract_p99 "$output")")
+        sleep 0.5
     fi
 
     if [[ "$HAS_DRAGONFLY" == "true" ]]; then
         output=$(run_memtier "$DRAGONFLY_PORT" "$pipeline" "$ratio" "$data_size")
         D_OPS+=("$(extract_ops "$output")")
         D_P99+=("$(extract_p99 "$output")")
+        sleep 0.5
     fi
 done
 
