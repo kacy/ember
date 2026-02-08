@@ -87,13 +87,15 @@ wait_for_server() {
 
 # run memtier_benchmark and output "ops_sec p99_ms" on a single line.
 #
-# pipes directly through awk rather than capturing in a variable —
-# memtier's output can contain bytes that truncate bash strings.
+# writes to a temp file to avoid both bash variable null-byte truncation
+# and pipe buffering issues observed with certain memtier builds.
 run_memtier() {
     local port=$1
     local pipeline=$2
     local ratio=$3
     local data_size=$4
+    local tmpfile
+    tmpfile=$(mktemp)
 
     memtier_benchmark \
         -s 127.0.0.1 -p "$port" \
@@ -106,8 +108,15 @@ run_memtier() {
         --key-minimum=1 \
         --key-maximum="$KEY_MAX" \
         --hide-histogram \
-        2>/dev/null \
-    | awk '/^Totals/{printf "%.0f %.3f\n", $2, $7}' || true
+        > "$tmpfile" 2>/dev/null || true
+
+    if grep -q "^Totals" "$tmpfile"; then
+        awk '/^Totals/{printf "%.0f %.3f\n", $2, $7}' "$tmpfile"
+    else
+        echo "warning: no Totals in memtier output for port $port" >&2
+        echo "0 0.000"
+    fi
+    rm -f "$tmpfile"
 }
 
 # pre-populate keys so GET tests hit data
