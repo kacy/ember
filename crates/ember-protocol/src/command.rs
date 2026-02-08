@@ -272,6 +272,23 @@ pub enum Command {
     /// SLOWLOG RESET. Clears the slow log.
     SlowLogReset,
 
+    // --- pub/sub commands ---
+
+    /// SUBSCRIBE `channel` \[channel ...\]. Subscribe to one or more channels.
+    Subscribe { channels: Vec<String> },
+
+    /// UNSUBSCRIBE \[channel ...\]. Unsubscribe from channels (all if none given).
+    Unsubscribe { channels: Vec<String> },
+
+    /// PSUBSCRIBE `pattern` \[pattern ...\]. Subscribe to channels matching patterns.
+    PSubscribe { patterns: Vec<String> },
+
+    /// PUNSUBSCRIBE \[pattern ...\]. Unsubscribe from patterns (all if none given).
+    PUnsubscribe { patterns: Vec<String> },
+
+    /// PUBLISH `channel` `message`. Publish a message to a channel.
+    Publish { channel: String, message: Bytes },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -371,6 +388,11 @@ impl Command {
             Command::SlowLogGet { .. } => "slowlog",
             Command::SlowLogLen => "slowlog",
             Command::SlowLogReset => "slowlog",
+            Command::Subscribe { .. } => "subscribe",
+            Command::Unsubscribe { .. } => "unsubscribe",
+            Command::PSubscribe { .. } => "psubscribe",
+            Command::PUnsubscribe { .. } => "punsubscribe",
+            Command::Publish { .. } => "publish",
             Command::Unknown(_) => "unknown",
         }
     }
@@ -452,6 +474,11 @@ impl Command {
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
             "SLOWLOG" => parse_slowlog(&frames[1..]),
+            "SUBSCRIBE" => parse_subscribe(&frames[1..]),
+            "UNSUBSCRIBE" => parse_unsubscribe(&frames[1..]),
+            "PSUBSCRIBE" => parse_psubscribe(&frames[1..]),
+            "PUNSUBSCRIBE" => parse_punsubscribe(&frames[1..]),
+            "PUBLISH" => parse_publish(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -1448,6 +1475,53 @@ fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
         copy,
         replace,
     })
+}
+
+fn parse_subscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("SUBSCRIBE".into()));
+    }
+    let channels: Vec<String> = args
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    Ok(Command::Subscribe { channels })
+}
+
+fn parse_unsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    let channels: Vec<String> = args
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    Ok(Command::Unsubscribe { channels })
+}
+
+fn parse_psubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("PSUBSCRIBE".into()));
+    }
+    let patterns: Vec<String> = args
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    Ok(Command::PSubscribe { patterns })
+}
+
+fn parse_punsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    let patterns: Vec<String> = args
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    Ok(Command::PUnsubscribe { patterns })
+}
+
+fn parse_publish(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("PUBLISH".into()));
+    }
+    let channel = extract_string(&args[0])?;
+    let message = extract_bytes(&args[1])?;
+    Ok(Command::Publish { channel, message })
 }
 
 #[cfg(test)]
