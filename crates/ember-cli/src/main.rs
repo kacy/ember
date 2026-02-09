@@ -17,7 +17,7 @@ use colored::Colorize;
 #[command(name = "ember-cli", version, about)]
 struct Args {
     /// Server hostname.
-    #[arg(short = 'h', long, default_value = "127.0.0.1")]
+    #[arg(short = 'H', long, default_value = "127.0.0.1")]
     host: String,
 
     /// Server port.
