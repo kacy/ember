@@ -35,12 +35,13 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **persistence** — append-only file (AOF) and point-in-time snapshots
 - **pipelining** — multiple commands per read for high throughput
+- **interactive CLI** — `ember-cli` with REPL, tab-completion, inline help, and one-shot mode
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
 
 ## quickstart
 
 ```bash
-# build
+# build server and cli
 cargo build --release
 
 # run the server (defaults to 127.0.0.1:6379)
@@ -60,55 +61,48 @@ cargo build --release
   --tls-cert-file cert.pem --tls-key-file key.pem
 ```
 
+ember speaks RESP3, so `redis-cli` works as a drop-in replacement — but `ember-cli` adds tab-completion, inline help, and auto-reconnect.
+
 ```bash
-# connect with redis-cli
+# ember-cli: interactive REPL with autocomplete and help
+ember-cli                       # starts REPL at 127.0.0.1:6379>
+ember-cli -H 10.0.0.1 -p 6380  # connect to a different host
+ember-cli -a mypassword         # authenticate
+
+# one-shot mode
+ember-cli SET hello world       # => OK
+ember-cli GET hello             # => "hello"
+
+# redis-cli works too — same protocol, same port
 redis-cli SET hello world       # => OK
 redis-cli GET hello             # => "world"
-redis-cli MSET a 1 b 2 c 3      # => OK
-redis-cli MGET a b c            # => 1) "1" 2) "2" 3) "3"
+```
 
-# expiration
-redis-cli SET temp data EX 60
-redis-cli TTL temp              # => 59
-redis-cli PTTL temp             # => 59000
-redis-cli PERSIST temp          # => (integer) 1
+```bash
+# everything below works with either ember-cli or redis-cli
+SET counter 10
+INCR counter                    # => (integer) 11
 
-# counters
-redis-cli SET counter 10
-redis-cli INCR counter          # => (integer) 11
-redis-cli DECR counter          # => (integer) 10
+LPUSH mylist a b c              # => (integer) 3
+LRANGE mylist 0 -1              # => 1) "c" 2) "b" 3) "a"
 
-# lists
-redis-cli LPUSH mylist a b c    # => (integer) 3
-redis-cli LRANGE mylist 0 -1    # => 1) "c" 2) "b" 3) "a"
+ZADD board 100 alice 200 bob
+ZRANGE board 0 -1 WITHSCORES
 
-# sorted sets
-redis-cli ZADD board 100 alice 200 bob
-redis-cli ZRANGE board 0 -1 WITHSCORES
-redis-cli ZCARD board           # => (integer) 2
+HSET user:1 name alice age 30
+HGETALL user:1                  # => 1) "name" 2) "alice" 3) "age" 4) "30"
 
-# hashes
-redis-cli HSET user:1 name alice age 30
-redis-cli HGET user:1 name      # => "alice"
-redis-cli HGETALL user:1        # => 1) "name" 2) "alice" 3) "age" 4) "30"
-redis-cli HINCRBY user:1 age 1  # => (integer) 31
+SADD tags rust cache fast       # => (integer) 3
+SMEMBERS tags                   # => 1) "cache" 2) "fast" 3) "rust"
 
-# sets
-redis-cli SADD tags rust cache fast   # => (integer) 3
-redis-cli SMEMBERS tags               # => 1) "cache" 2) "fast" 3) "rust"
-redis-cli SISMEMBER tags rust         # => (integer) 1
-redis-cli SCARD tags                  # => (integer) 3
-redis-cli SREM tags fast              # => (integer) 1
+SET temp data EX 60
+TTL temp                        # => 59
 
-# iteration
-redis-cli SCAN 0 MATCH "user:*" COUNT 100
-redis-cli DBSIZE                # => (integer) 6
-redis-cli FLUSHDB               # => OK
+SCAN 0 MATCH "user:*" COUNT 100
+DBSIZE                          # => (integer) 6
 
-# TLS connection
+# TLS (redis-cli only for now — ember-cli TLS coming soon)
 redis-cli -p 6380 --tls --insecure PING
-# or with cert verification
-redis-cli -p 6380 --tls --cacert cert.pem PING
 ```
 
 ## configuration
@@ -164,7 +158,7 @@ helm install ember helm/ember \
 
 # connect via port-forward
 kubectl port-forward svc/ember 6379:6379
-redis-cli -h 127.0.0.1
+ember-cli
 ```
 
 see [helm/ember/values.yaml](helm/ember/values.yaml) for all configurable values.
@@ -178,7 +172,7 @@ crates/
   ember-protocol/     RESP3 wire protocol
   ember-persistence/  AOF and snapshot durability
   ember-cluster/      raft consensus, gossip, slot management, migration
-  ember-cli/          interactive CLI tool
+  ember-cli/          interactive CLI client (REPL, one-shot, autocomplete)
 ```
 
 ## architecture
