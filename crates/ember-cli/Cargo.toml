@@ -15,3 +15,10 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+ember-protocol = { workspace = true }
+thiserror = { workspace = true }
+rustyline = "15"
+colored = "3"
+dirs = "6"
