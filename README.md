@@ -35,12 +35,13 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **persistence** — append-only file (AOF) and point-in-time snapshots
 - **pipelining** — multiple commands per read for high throughput
+- **interactive CLI** — `ember-cli` with REPL, tab-completion, inline help, and one-shot mode
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
 
 ## quickstart
 
 ```bash
-# build
+# build server and cli
 cargo build --release
 
 # run the server (defaults to 127.0.0.1:6379)
@@ -61,54 +62,56 @@ cargo build --release
 ```
 
 ```bash
-# connect with redis-cli
-redis-cli SET hello world       # => OK
-redis-cli GET hello             # => "world"
-redis-cli MSET a 1 b 2 c 3      # => OK
-redis-cli MGET a b c            # => 1) "1" 2) "2" 3) "3"
+# connect with ember-cli (or redis-cli — both work)
+ember-cli SET hello world       # => OK
+ember-cli GET hello             # => "hello"
+ember-cli MSET a 1 b 2 c 3     # => OK
+ember-cli MGET a b c            # => 1) "1" 2) "2" 3) "3"
+
+# interactive REPL
+ember-cli                       # starts REPL at 127.0.0.1:6379>
+ember-cli -H 10.0.0.1 -p 6380  # connect to a different host
+ember-cli -a mypassword         # authenticate
 
 # expiration
-redis-cli SET temp data EX 60
-redis-cli TTL temp              # => 59
-redis-cli PTTL temp             # => 59000
-redis-cli PERSIST temp          # => (integer) 1
+ember-cli SET temp data EX 60
+ember-cli TTL temp              # => 59
+ember-cli PERSIST temp          # => (integer) 1
 
 # counters
-redis-cli SET counter 10
-redis-cli INCR counter          # => (integer) 11
-redis-cli DECR counter          # => (integer) 10
+ember-cli SET counter 10
+ember-cli INCR counter          # => (integer) 11
+ember-cli DECR counter          # => (integer) 10
 
 # lists
-redis-cli LPUSH mylist a b c    # => (integer) 3
-redis-cli LRANGE mylist 0 -1    # => 1) "c" 2) "b" 3) "a"
+ember-cli LPUSH mylist a b c    # => (integer) 3
+ember-cli LRANGE mylist 0 -1    # => 1) "c" 2) "b" 3) "a"
 
 # sorted sets
-redis-cli ZADD board 100 alice 200 bob
-redis-cli ZRANGE board 0 -1 WITHSCORES
-redis-cli ZCARD board           # => (integer) 2
+ember-cli ZADD board 100 alice 200 bob
+ember-cli ZRANGE board 0 -1 WITHSCORES
+ember-cli ZCARD board           # => (integer) 2
 
 # hashes
-redis-cli HSET user:1 name alice age 30
-redis-cli HGET user:1 name      # => "alice"
-redis-cli HGETALL user:1        # => 1) "name" 2) "alice" 3) "age" 4) "30"
-redis-cli HINCRBY user:1 age 1  # => (integer) 31
+ember-cli HSET user:1 name alice age 30
+ember-cli HGET user:1 name      # => "alice"
+ember-cli HGETALL user:1        # => 1) "name" 2) "alice" 3) "age" 4) "30"
+ember-cli HINCRBY user:1 age 1  # => (integer) 31
 
 # sets
-redis-cli SADD tags rust cache fast   # => (integer) 3
-redis-cli SMEMBERS tags               # => 1) "cache" 2) "fast" 3) "rust"
-redis-cli SISMEMBER tags rust         # => (integer) 1
-redis-cli SCARD tags                  # => (integer) 3
-redis-cli SREM tags fast              # => (integer) 1
+ember-cli SADD tags rust cache fast   # => (integer) 3
+ember-cli SMEMBERS tags               # => 1) "cache" 2) "fast" 3) "rust"
+ember-cli SISMEMBER tags rust         # => (integer) 1
+ember-cli SCARD tags                  # => (integer) 3
+ember-cli SREM tags fast              # => (integer) 1
 
 # iteration
-redis-cli SCAN 0 MATCH "user:*" COUNT 100
-redis-cli DBSIZE                # => (integer) 6
-redis-cli FLUSHDB               # => OK
+ember-cli SCAN 0 MATCH "user:*" COUNT 100
+ember-cli DBSIZE                # => (integer) 6
+ember-cli FLUSHDB               # => OK
 
-# TLS connection
+# TLS connection (redis-cli only for now)
 redis-cli -p 6380 --tls --insecure PING
-# or with cert verification
-redis-cli -p 6380 --tls --cacert cert.pem PING
 ```
 
 ## configuration
@@ -164,7 +167,7 @@ helm install ember helm/ember \
 
 # connect via port-forward
 kubectl port-forward svc/ember 6379:6379
-redis-cli -h 127.0.0.1
+ember-cli
 ```
 
 see [helm/ember/values.yaml](helm/ember/values.yaml) for all configurable values.
@@ -178,7 +181,7 @@ crates/
   ember-protocol/     RESP3 wire protocol
   ember-persistence/  AOF and snapshot durability
   ember-cluster/      raft consensus, gossip, slot management, migration
-  ember-cli/          interactive CLI tool
+  ember-cli/          interactive CLI client (REPL, one-shot, autocomplete)
 ```
 
 ## architecture
