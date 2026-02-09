@@ -227,7 +227,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 85 commands, 701 tests, ~23k lines of code
+**current**: 85 commands, 753 tests, ~14k lines of code (excluding tests)
 
 ## security
 
