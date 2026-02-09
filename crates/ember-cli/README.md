@@ -2,15 +2,42 @@
 
 interactive command-line client for [ember](https://github.com/kacy/ember).
 
-> this crate is a stub — the CLI is planned for phase 5.
+## usage
 
-## planned features
+```bash
+# start interactive REPL
+ember-cli
 
-- interactive REPL with command history
-- syntax highlighting and autocomplete
-- inline help (`help SET`, `help ZADD`)
-- cluster management subcommands
-- built-in benchmarking
+# connect to a specific host and port
+ember-cli -h 10.0.0.1 -p 6380
+
+# authenticate
+ember-cli -a mypassword
+
+# one-shot mode — run a single command and exit
+ember-cli PING
+ember-cli SET greeting hello
+ember-cli GET greeting
+```
+
+## repl features
+
+- **tab completion** — press tab to autocomplete command names
+- **history** — command history saved to `~/.emberkv_history`
+- **inline help** — type `help` for all commands, `help SET` for details
+- **reconnection** — automatically reconnects if the server disconnects
+- **quoted strings** — supports double and single quoted arguments
+
+## local commands
+
+these are handled by the client and not sent to the server:
+
+| command | description |
+|---------|-------------|
+| `help` | show all commands grouped by category |
+| `help <command>` | show usage for a specific command |
+| `quit` / `exit` | exit the REPL |
+| `clear` | clear the terminal screen |
 
 ## related crates
 
