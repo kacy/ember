@@ -55,6 +55,25 @@ jobs:
           name: ember-server
           path: target/release/ember-server
 
+  helm:
+    name: helm lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: lint
+        run: helm lint helm/ember
+      - name: template
+        run: helm template ember helm/ember
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: docker build -t ember:ci .
+
   security:
     name: security
     runs-on: ubuntu-latest
