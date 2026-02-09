@@ -28,7 +28,11 @@ fn format_frame(frame: &Frame, indent: usize) -> String {
 
         Frame::Error(e) => format!("{prefix}{} {}", "(error)".red(), e.red()),
 
-        Frame::Integer(n) => format!("{prefix}{} {}", "(integer)".yellow(), n.to_string().yellow()),
+        Frame::Integer(n) => format!(
+            "{prefix}{} {}",
+            "(integer)".yellow(),
+            n.to_string().yellow()
+        ),
 
         Frame::Bulk(data) => {
             match std::str::from_utf8(data) {
@@ -123,8 +127,7 @@ mod tests {
 
     #[test]
     fn format_bulk_multiline() {
-        let out =
-            no_color(|| format_response(&Frame::Bulk(Bytes::from_static(b"line1\r\nline2"))));
+        let out = no_color(|| format_response(&Frame::Bulk(Bytes::from_static(b"line1\r\nline2"))));
         assert_eq!(out, "line1\r\nline2");
     }
 

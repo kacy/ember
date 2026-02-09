@@ -53,7 +53,12 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         // one-shot mode: send a single command and exit
-        run_oneshot(&args.host, args.port, args.password.as_deref(), &args.command)
+        run_oneshot(
+            &args.host,
+            args.port,
+            args.password.as_deref(),
+            &args.command,
+        )
     }
 }
 

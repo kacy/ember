@@ -354,18 +354,12 @@ mod tests {
 
     #[test]
     fn tokenize_simple() {
-        assert_eq!(
-            tokenize("SET foo bar").unwrap(),
-            vec!["SET", "foo", "bar"],
-        );
+        assert_eq!(tokenize("SET foo bar").unwrap(), vec!["SET", "foo", "bar"],);
     }
 
     #[test]
     fn tokenize_extra_whitespace() {
-        assert_eq!(
-            tokenize("  GET   key  ").unwrap(),
-            vec!["GET", "key"],
-        );
+        assert_eq!(tokenize("  GET   key  ").unwrap(), vec!["GET", "key"],);
     }
 
     #[test]
@@ -411,10 +405,7 @@ mod tests {
 
     #[test]
     fn tokenize_empty_quoted_string() {
-        assert_eq!(
-            tokenize(r#"SET key """#).unwrap(),
-            vec!["SET", "key", ""],
-        );
+        assert_eq!(tokenize(r#"SET key """#).unwrap(), vec!["SET", "key", ""],);
     }
 
     #[test]
@@ -440,17 +431,11 @@ mod tests {
     #[test]
     fn tokenize_adjacent_quoted_and_unquoted() {
         // "foo"bar should produce "foobar" — quotes don't force token boundaries
-        assert_eq!(
-            tokenize(r#""foo"bar"#).unwrap(),
-            vec!["foobar"],
-        );
+        assert_eq!(tokenize(r#""foo"bar"#).unwrap(), vec!["foobar"],);
     }
 
     #[test]
     fn tokenize_tabs() {
-        assert_eq!(
-            tokenize("GET\tkey").unwrap(),
-            vec!["GET", "key"],
-        );
+        assert_eq!(tokenize("GET\tkey").unwrap(), vec!["GET", "key"],);
     }
 }
