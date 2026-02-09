@@ -61,56 +61,47 @@ cargo build --release
   --tls-cert-file cert.pem --tls-key-file key.pem
 ```
 
-```bash
-# connect with ember-cli (or redis-cli — both work)
-ember-cli SET hello world       # => OK
-ember-cli GET hello             # => "hello"
-ember-cli MSET a 1 b 2 c 3     # => OK
-ember-cli MGET a b c            # => 1) "1" 2) "2" 3) "3"
+ember speaks RESP3, so `redis-cli` works as a drop-in replacement — but `ember-cli` adds tab-completion, inline help, and auto-reconnect.
 
-# interactive REPL
+```bash
+# ember-cli: interactive REPL with autocomplete and help
 ember-cli                       # starts REPL at 127.0.0.1:6379>
 ember-cli -H 10.0.0.1 -p 6380  # connect to a different host
 ember-cli -a mypassword         # authenticate
 
-# expiration
-ember-cli SET temp data EX 60
-ember-cli TTL temp              # => 59
-ember-cli PERSIST temp          # => (integer) 1
+# one-shot mode
+ember-cli SET hello world       # => OK
+ember-cli GET hello             # => "hello"
 
-# counters
-ember-cli SET counter 10
-ember-cli INCR counter          # => (integer) 11
-ember-cli DECR counter          # => (integer) 10
+# redis-cli works too — same protocol, same port
+redis-cli SET hello world       # => OK
+redis-cli GET hello             # => "world"
+```
 
-# lists
-ember-cli LPUSH mylist a b c    # => (integer) 3
-ember-cli LRANGE mylist 0 -1    # => 1) "c" 2) "b" 3) "a"
+```bash
+# everything below works with either ember-cli or redis-cli
+SET counter 10
+INCR counter                    # => (integer) 11
 
-# sorted sets
-ember-cli ZADD board 100 alice 200 bob
-ember-cli ZRANGE board 0 -1 WITHSCORES
-ember-cli ZCARD board           # => (integer) 2
+LPUSH mylist a b c              # => (integer) 3
+LRANGE mylist 0 -1              # => 1) "c" 2) "b" 3) "a"
 
-# hashes
-ember-cli HSET user:1 name alice age 30
-ember-cli HGET user:1 name      # => "alice"
-ember-cli HGETALL user:1        # => 1) "name" 2) "alice" 3) "age" 4) "30"
-ember-cli HINCRBY user:1 age 1  # => (integer) 31
+ZADD board 100 alice 200 bob
+ZRANGE board 0 -1 WITHSCORES
 
-# sets
-ember-cli SADD tags rust cache fast   # => (integer) 3
-ember-cli SMEMBERS tags               # => 1) "cache" 2) "fast" 3) "rust"
-ember-cli SISMEMBER tags rust         # => (integer) 1
-ember-cli SCARD tags                  # => (integer) 3
-ember-cli SREM tags fast              # => (integer) 1
+HSET user:1 name alice age 30
+HGETALL user:1                  # => 1) "name" 2) "alice" 3) "age" 4) "30"
 
-# iteration
-ember-cli SCAN 0 MATCH "user:*" COUNT 100
-ember-cli DBSIZE                # => (integer) 6
-ember-cli FLUSHDB               # => OK
+SADD tags rust cache fast       # => (integer) 3
+SMEMBERS tags                   # => 1) "cache" 2) "fast" 3) "rust"
 
-# TLS connection (redis-cli only for now)
+SET temp data EX 60
+TTL temp                        # => 59
+
+SCAN 0 MATCH "user:*" COUNT 100
+DBSIZE                          # => (integer) 6
+
+# TLS (redis-cli only for now — ember-cli TLS coming soon)
 redis-cli -p 6380 --tls --insecure PING
 ```
 
