@@ -3,4 +3,4 @@ name: ember
 description: a low-latency, memory-efficient distributed cache
 type: application
 version: 0.1.0
-appVersion: "0.3.1"
+appVersion: "latest"
