@@ -5,6 +5,7 @@
 //! validation. The server handles everything.
 
 use std::borrow::Cow;
+use std::io::Write;
 use std::path::PathBuf;
 
 use colored::Colorize;
@@ -29,7 +30,13 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
         return;
     }
 
-    let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("{}", format!("failed to create runtime: {e}").red());
+            return;
+        }
+    };
 
     // connect to server
     let mut conn = match rt.block_on(Connection::connect(host, port)) {
@@ -47,6 +54,7 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
     if let Some(pw) = password {
         if let Err(e) = rt.block_on(conn.authenticate(pw)) {
             eprintln!("{}", format!("authentication failed: {e}").red());
+            rt.block_on(conn.shutdown());
             return;
         }
     }
@@ -56,7 +64,14 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
         .completion_type(CompletionType::List)
         .build();
 
-    let mut rl = Editor::with_config(config).expect("failed to create editor");
+    let mut rl = match Editor::with_config(config) {
+        Ok(editor) => editor,
+        Err(e) => {
+            eprintln!("{}", format!("failed to create editor: {e}").red());
+            rt.block_on(conn.shutdown());
+            return;
+        }
+    };
     rl.set_helper(Some(EmberHelper));
 
     let history_path = history_file();
@@ -82,6 +97,7 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
                     "quit" | "exit" => break,
                     "clear" => {
                         print!("\x1B[2J\x1B[1;1H");
+                        let _ = std::io::stdout().flush();
                         continue;
                     }
                     "help" => {
@@ -110,18 +126,8 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
                     }
                     Err(ConnectionError::Disconnected) => {
                         eprintln!("{}", "server disconnected, reconnecting...".yellow());
-                        match rt.block_on(Connection::connect(host, port)) {
-                            Ok(mut new_conn) => {
-                                // re-authenticate if needed
-                                if let Some(pw) = password {
-                                    if let Err(e) = rt.block_on(new_conn.authenticate(pw)) {
-                                        eprintln!(
-                                            "{}",
-                                            format!("re-authentication failed: {e}").red()
-                                        );
-                                        break;
-                                    }
-                                }
+                        match rt.block_on(reconnect(host, port, password)) {
+                            Ok(new_conn) => {
                                 conn = new_conn;
                                 eprintln!("{}", "reconnected".green());
                             }
@@ -154,6 +160,22 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
     if let Some(ref path) = history_path {
         let _ = rl.save_history(path);
     }
+
+    // graceful shutdown — send QUIT and close the TCP stream
+    rt.block_on(conn.shutdown());
+}
+
+/// Establishes a new connection, authenticating if a password is provided.
+async fn reconnect(
+    host: &str,
+    port: u16,
+    password: Option<&str>,
+) -> Result<Connection, ConnectionError> {
+    let mut conn = Connection::connect(host, port).await?;
+    if let Some(pw) = password {
+        conn.authenticate(pw).await?;
+    }
+    Ok(conn)
 }
 
 /// Handles the `help` local command.
@@ -196,7 +218,7 @@ fn handle_help(input: &str) {
     );
 }
 
-/// Returns the path to the history file, creating the parent directory if needed.
+/// Returns the path to the history file.
 fn history_file() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".emberkv_history"))
 }
