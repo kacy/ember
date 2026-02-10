@@ -37,6 +37,9 @@ pub enum RecoveredValue {
     Hash(HashMap<String, Bytes>),
     /// Unordered set of unique string members.
     Set(HashSet<String>),
+    /// A protobuf message: type name + serialized bytes.
+    #[cfg(feature = "protobuf")]
+    Proto { type_name: String, data: Bytes },
 }
 
 impl From<SnapValue> for RecoveredValue {
@@ -47,6 +50,8 @@ impl From<SnapValue> for RecoveredValue {
             SnapValue::SortedSet(members) => RecoveredValue::SortedSet(members),
             SnapValue::Hash(map) => RecoveredValue::Hash(map),
             SnapValue::Set(set) => RecoveredValue::Set(set),
+            #[cfg(feature = "protobuf")]
+            SnapValue::Proto { type_name, data } => RecoveredValue::Proto { type_name, data },
         }
     }
 }

@@ -36,6 +36,8 @@ const TYPE_LIST: u8 = 1;
 const TYPE_SORTED_SET: u8 = 2;
 const TYPE_HASH: u8 = 3;
 const TYPE_SET: u8 = 4;
+#[cfg(feature = "protobuf")]
+const TYPE_PROTO: u8 = 5;
 
 /// The value stored in a snapshot entry.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +52,9 @@ pub enum SnapValue {
     Hash(HashMap<String, Bytes>),
     /// An unordered set of unique string members.
     Set(HashSet<String>),
+    /// A protobuf message: type name + serialized bytes.
+    #[cfg(feature = "protobuf")]
+    Proto { type_name: String, data: Bytes },
 }
 
 /// A single entry in a snapshot file.
@@ -189,6 +194,15 @@ impl SnapshotWriter {
                 for member in set {
                     format::write_bytes(&mut buf, member.as_bytes())?;
                 }
+            }
+            #[cfg(feature = "protobuf")]
+            SnapValue::Proto {
+                type_name,
+                data,
+            } => {
+                format::write_u8(&mut buf, TYPE_PROTO)?;
+                format::write_bytes(&mut buf, type_name.as_bytes())?;
+                format::write_bytes(&mut buf, data)?;
             }
         }
         format::write_i64(&mut buf, entry.expire_ms)?;
@@ -419,6 +433,23 @@ impl SnapshotReader {
                     }
                     SnapValue::Set(set)
                 }
+                #[cfg(feature = "protobuf")]
+                TYPE_PROTO => {
+                    let type_name_bytes = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut buf, &type_name_bytes)?;
+                    let type_name = String::from_utf8(type_name_bytes).map_err(|_| {
+                        FormatError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "proto type_name is not valid utf-8",
+                        ))
+                    })?;
+                    let data = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut buf, &data)?;
+                    SnapValue::Proto {
+                        type_name,
+                        data: Bytes::from(data),
+                    }
+                }
                 _ => {
                     return Err(FormatError::UnknownTag(type_tag));
                 }
@@ -550,6 +581,21 @@ impl SnapshotReader {
                     set.insert(member);
                 }
                 SnapValue::Set(set)
+            }
+            #[cfg(feature = "protobuf")]
+            TYPE_PROTO => {
+                let type_name_bytes = format::read_bytes(&mut cursor)?;
+                let type_name = String::from_utf8(type_name_bytes).map_err(|_| {
+                    FormatError::Io(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "proto type_name is not valid utf-8",
+                    ))
+                })?;
+                let data = format::read_bytes(&mut cursor)?;
+                SnapValue::Proto {
+                    type_name,
+                    data: Bytes::from(data),
+                }
             }
             _ => return Err(FormatError::UnknownTag(type_tag)),
         };

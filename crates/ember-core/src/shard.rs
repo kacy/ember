@@ -418,6 +418,8 @@ async fn run_shard(
                 }
                 RecoveredValue::Hash(map) => Value::Hash(map),
                 RecoveredValue::Set(set) => Value::Set(set),
+                #[cfg(feature = "protobuf")]
+                RecoveredValue::Proto { type_name, data } => Value::Proto { type_name, data },
             };
             keyspace.restore(entry.key, value, entry.ttl);
         }
@@ -1064,6 +1066,11 @@ fn write_snapshot(
             }
             Value::Hash(map) => SnapValue::Hash(map.clone()),
             Value::Set(set) => SnapValue::Set(set.clone()),
+            #[cfg(feature = "protobuf")]
+            Value::Proto { type_name, data } => SnapValue::Proto {
+                type_name: type_name.clone(),
+                data: data.clone(),
+            },
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),

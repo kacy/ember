@@ -11,7 +11,7 @@ readme = "README.md"
 
 [features]
 encryption = ["ember-persistence/encryption"]
-protobuf = ["prost-reflect"]
+protobuf = ["prost-reflect", "ember-persistence/protobuf"]
 
 [lib]
 name = "ember_core"
