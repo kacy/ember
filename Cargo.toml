@@ -59,6 +59,7 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 tokio-rustls = "0.26"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12"] }
 rustls-pemfile = "2"
+rustls-native-certs = "0.8"
 
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.4.1", path = "crates/ember-core" }

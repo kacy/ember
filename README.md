@@ -114,8 +114,8 @@ TTL temp                        # => 59
 SCAN 0 MATCH "user:*" COUNT 100
 DBSIZE                          # => (integer) 6
 
-# TLS (redis-cli only for now — ember-cli TLS coming soon)
-redis-cli -p 6380 --tls --insecure PING
+# TLS
+ember-cli -p 6380 --tls --tls-insecure PING
 ```
 
 ## configuration

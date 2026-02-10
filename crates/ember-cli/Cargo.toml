@@ -20,6 +20,10 @@ bytes = { workspace = true }
 ember-protocol = { workspace = true }
 thiserror = { workspace = true }
 rand = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rustls-native-certs = { workspace = true }
 rustyline = "15"
 colored = "3"
 dirs = "6"

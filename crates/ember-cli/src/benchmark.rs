@@ -16,6 +16,7 @@ use rand::{Rng, SeedableRng};
 use tokio::sync::Barrier;
 
 use crate::bench_conn::BenchConnection;
+use crate::tls::TlsClientConfig;
 
 /// Arguments for the built-in benchmark.
 #[derive(Debug, Args)]
@@ -55,6 +56,7 @@ pub fn run_benchmark(
     host: &str,
     port: u16,
     password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
 ) -> ExitCode {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -64,7 +66,9 @@ pub fn run_benchmark(
         }
     };
 
-    rt.block_on(async { run_benchmark_async(args, host, port, password).await })
+    // clone the TLS config so it can be moved into async tasks
+    let tls_owned = tls.cloned();
+    rt.block_on(async { run_benchmark_async(args, host, port, password, tls_owned.as_ref()).await })
 }
 
 async fn run_benchmark_async(
@@ -72,6 +76,7 @@ async fn run_benchmark_async(
     host: &str,
     port: u16,
     password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
 ) -> ExitCode {
     // print header
     println!();
@@ -88,7 +93,7 @@ async fn run_benchmark_async(
     for workload in &workloads {
         match workload.to_lowercase().as_str() {
             "ping" => {
-                if run_workload(args, host, port, password, "PING", WorkloadKind::Ping)
+                if run_workload(args, host, port, password, tls, "PING", WorkloadKind::Ping)
                     .await
                     .is_err()
                 {
@@ -96,7 +101,7 @@ async fn run_benchmark_async(
                 }
             }
             "set" => {
-                if run_workload(args, host, port, password, "SET", WorkloadKind::Set)
+                if run_workload(args, host, port, password, tls, "SET", WorkloadKind::Set)
                     .await
                     .is_err()
                 {
@@ -108,10 +113,10 @@ async fn run_benchmark_async(
                 if !args.quiet {
                     println!("  pre-populating {} keys...", format_num(args.keyspace));
                 }
-                if prepopulate(args, host, port, password).await.is_err() {
+                if prepopulate(args, host, port, password, tls).await.is_err() {
                     return ExitCode::FAILURE;
                 }
-                if run_workload(args, host, port, password, "GET", WorkloadKind::Get)
+                if run_workload(args, host, port, password, tls, "GET", WorkloadKind::Get)
                     .await
                     .is_err()
                 {
@@ -144,6 +149,7 @@ async fn run_workload(
     host: &str,
     port: u16,
     password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
     label: &str,
     kind: WorkloadKind,
 ) -> Result<(), ()> {
@@ -174,9 +180,10 @@ async fn run_workload(
         let value = value.clone();
         let barrier = barrier.clone();
         let keyspace = args.keyspace;
+        let tls = tls.cloned();
 
         let handle = tokio::spawn(async move {
-            let mut conn = match BenchConnection::connect(&host, port).await {
+            let mut conn = match BenchConnection::connect(&host, port, tls.as_ref()).await {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("{}", format!("connection failed: {e}").red());
@@ -296,6 +303,7 @@ async fn prepopulate(
     host: &str,
     port: u16,
     password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
 ) -> Result<(), ()> {
     let value = generate_value(args.data_size);
     let clients = args.clients.max(1) as usize;
@@ -315,9 +323,10 @@ async fn prepopulate(
         let host = host.to_string();
         let password = password.map(|s| s.to_string());
         let value = value.clone();
+        let tls = tls.cloned();
 
         let handle = tokio::spawn(async move {
-            let mut conn = match BenchConnection::connect(&host, port).await {
+            let mut conn = match BenchConnection::connect(&host, port, tls.as_ref()).await {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("{}", format!("prepopulate connect: {e}").red());
