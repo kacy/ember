@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use ember_cluster::{
     key_slot, ClusterNode, ClusterState, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
-    NodeId, SLOT_COUNT,
+    MigrationManager, NodeId, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
@@ -24,6 +24,7 @@ use tracing::{debug, error, info, warn};
 pub struct ClusterCoordinator {
     state: RwLock<ClusterState>,
     gossip: Mutex<GossipEngine>,
+    migration: Mutex<MigrationManager>,
     local_id: NodeId,
     /// bound UDP socket for gossip, set after spawn_gossip
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
@@ -72,6 +73,7 @@ impl ClusterCoordinator {
         let coordinator = Self {
             state: RwLock::new(state),
             gossip: Mutex::new(gossip),
+            migration: Mutex::new(MigrationManager::new()),
             local_id,
             udp_socket: Mutex::new(None),
         };
@@ -251,6 +253,119 @@ impl ClusterCoordinator {
         }
     }
 
+    // -- slot migration (SETSLOT) commands --
+
+    /// CLUSTER SETSLOT <slot> IMPORTING <node-id>
+    ///
+    /// Marks a slot as importing from the given source node. The local node
+    /// becomes the target of the migration.
+    pub async fn cluster_setslot_importing(&self, slot: u16, node_id_str: &str) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+        let source_id = match NodeId::parse(node_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+        if source_id == self.local_id {
+            return Frame::Error("ERR can't import from myself".into());
+        }
+
+        let mut migration = self.migration.lock().await;
+        match migration.start_import(slot, source_id, self.local_id) {
+            Ok(_) => Frame::Simple("OK".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        }
+    }
+
+    /// CLUSTER SETSLOT <slot> MIGRATING <node-id>
+    ///
+    /// Marks a slot as migrating to the given target node. The local node
+    /// must currently own the slot.
+    pub async fn cluster_setslot_migrating(&self, slot: u16, node_id_str: &str) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+        let target_id = match NodeId::parse(node_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+        if target_id == self.local_id {
+            return Frame::Error("ERR can't migrate to myself".into());
+        }
+
+        // verify we own the slot before allowing migration
+        {
+            let state = self.state.read().await;
+            if !state.owns_slot(slot) {
+                return Frame::Error(format!(
+                    "ERR I'm not the owner of hash slot {slot}"
+                ));
+            }
+        }
+
+        let mut migration = self.migration.lock().await;
+        match migration.start_migrate(slot, self.local_id, target_id) {
+            Ok(_) => Frame::Simple("OK".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        }
+    }
+
+    /// CLUSTER SETSLOT <slot> NODE <node-id>
+    ///
+    /// Completes migration by assigning the slot to the given node.
+    /// Cleans up any in-progress migration state.
+    pub async fn cluster_setslot_node(&self, slot: u16, node_id_str: &str) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+        let node_id = match NodeId::parse(node_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+
+        // complete any in-progress migration for this slot
+        {
+            let mut migration = self.migration.lock().await;
+            migration.complete_migration(slot);
+        }
+
+        // assign the slot to the specified node
+        let mut state = self.state.write().await;
+        state.slot_map.assign(slot, node_id);
+
+        // update the node's slot list
+        let new_slots = state.slot_map.slots_for_node(node_id);
+        if let Some(node) = state.nodes.get_mut(&node_id) {
+            node.slots = new_slots;
+        }
+
+        // also update the local node's slot list if it changed
+        if node_id != self.local_id {
+            let local_slots = state.slot_map.slots_for_node(self.local_id);
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.slots = local_slots;
+            }
+        }
+
+        state.update_health();
+        Frame::Simple("OK".into())
+    }
+
+    /// CLUSTER SETSLOT <slot> STABLE
+    ///
+    /// Aborts any in-progress migration for the slot, clearing
+    /// importing/migrating state without changing slot ownership.
+    pub async fn cluster_setslot_stable(&self, slot: u16) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+
+        let mut migration = self.migration.lock().await;
+        migration.abort_migration(slot);
+        Frame::Simple("OK".into())
+    }
+
     // -- slot ownership check --
 
     /// Checks if the local node owns the slot for the given key.
@@ -417,5 +532,177 @@ impl ClusterCoordinator {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a test coordinator with a single node that owns no slots.
+    fn test_coordinator() -> (ClusterCoordinator, mpsc::Receiver<GossipEvent>) {
+        let local_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
+        let config = GossipConfig::default();
+        ClusterCoordinator::new(local_id, addr, config, false)
+    }
+
+    /// Creates a test coordinator bootstrapped with all 16384 slots.
+    fn test_coordinator_bootstrapped() -> (ClusterCoordinator, mpsc::Receiver<GossipEvent>) {
+        let local_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
+        let config = GossipConfig::default();
+        ClusterCoordinator::new(local_id, addr, config, true)
+    }
+
+    #[tokio::test]
+    async fn setslot_importing_valid() {
+        let (coord, _rx) = test_coordinator();
+        let source = NodeId::new();
+        let resp = coord
+            .cluster_setslot_importing(100, &source.0.to_string())
+            .await;
+        assert!(matches!(resp, Frame::Simple(_)));
+    }
+
+    #[tokio::test]
+    async fn setslot_importing_invalid_slot() {
+        let (coord, _rx) = test_coordinator();
+        let source = NodeId::new();
+        let resp = coord
+            .cluster_setslot_importing(16384, &source.0.to_string())
+            .await;
+        assert!(matches!(resp, Frame::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn setslot_importing_self_rejected() {
+        let (coord, _rx) = test_coordinator();
+        let resp = coord
+            .cluster_setslot_importing(100, &coord.local_id.0.to_string())
+            .await;
+        match resp {
+            Frame::Error(msg) => assert!(msg.contains("can't import from myself")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn setslot_importing_duplicate_rejected() {
+        let (coord, _rx) = test_coordinator();
+        let source = NodeId::new();
+        let id_str = source.0.to_string();
+        coord.cluster_setslot_importing(100, &id_str).await;
+        let resp = coord.cluster_setslot_importing(100, &id_str).await;
+        assert!(matches!(resp, Frame::Error(_)));
+    }
+
+    #[tokio::test]
+    async fn setslot_migrating_valid() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let target = NodeId::new();
+        let resp = coord
+            .cluster_setslot_migrating(0, &target.0.to_string())
+            .await;
+        assert!(matches!(resp, Frame::Simple(_)));
+    }
+
+    #[tokio::test]
+    async fn setslot_migrating_not_owner() {
+        let (coord, _rx) = test_coordinator(); // no slots owned
+        let target = NodeId::new();
+        let resp = coord
+            .cluster_setslot_migrating(100, &target.0.to_string())
+            .await;
+        match resp {
+            Frame::Error(msg) => assert!(msg.contains("not the owner")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn setslot_migrating_self_rejected() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let resp = coord
+            .cluster_setslot_migrating(0, &coord.local_id.0.to_string())
+            .await;
+        match resp {
+            Frame::Error(msg) => assert!(msg.contains("can't migrate to myself")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn setslot_node_assigns_slot() {
+        let (coord, _rx) = test_coordinator();
+        let target = NodeId::new();
+
+        // add the target node to cluster state
+        {
+            let mut state = coord.state.write().await;
+            let node = ClusterNode::new_primary(target, "127.0.0.1:6380".parse().unwrap());
+            state.add_node(node);
+        }
+
+        let resp = coord
+            .cluster_setslot_node(100, &target.0.to_string())
+            .await;
+        assert!(matches!(resp, Frame::Simple(_)));
+
+        // verify the slot is now owned by the target
+        let state = coord.state.read().await;
+        assert_eq!(state.slot_map.owner(100), Some(target));
+    }
+
+    #[tokio::test]
+    async fn setslot_node_completes_migration() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let target = NodeId::new();
+
+        // start a migration
+        coord
+            .cluster_setslot_migrating(0, &target.0.to_string())
+            .await;
+
+        // add target to state
+        {
+            let mut state = coord.state.write().await;
+            let node = ClusterNode::new_primary(target, "127.0.0.1:6380".parse().unwrap());
+            state.add_node(node);
+        }
+
+        // complete with NODE — should clean up migration state
+        let resp = coord
+            .cluster_setslot_node(0, &target.0.to_string())
+            .await;
+        assert!(matches!(resp, Frame::Simple(_)));
+
+        // migration should be cleaned up
+        let migration = coord.migration.lock().await;
+        assert!(!migration.is_migrating(0));
+    }
+
+    #[tokio::test]
+    async fn setslot_stable_aborts_migration() {
+        let (coord, _rx) = test_coordinator();
+        let source = NodeId::new();
+        coord
+            .cluster_setslot_importing(100, &source.0.to_string())
+            .await;
+
+        let resp = coord.cluster_setslot_stable(100).await;
+        assert!(matches!(resp, Frame::Simple(_)));
+
+        // migration should be cleaned up
+        let migration = coord.migration.lock().await;
+        assert!(!migration.is_importing(100));
+    }
+
+    #[tokio::test]
+    async fn setslot_stable_noop_when_no_migration() {
+        let (coord, _rx) = test_coordinator();
+        // should succeed even with no active migration
+        let resp = coord.cluster_setslot_stable(100).await;
+        assert!(matches!(resp, Frame::Simple(_)));
     }
 }

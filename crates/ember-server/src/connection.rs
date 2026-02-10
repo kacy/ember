@@ -1490,14 +1490,77 @@ async fn execute(
             None => Frame::Error("ERR This instance has cluster support disabled".into()),
         },
 
-        Command::ClusterSetSlotImporting { .. }
-        | Command::ClusterSetSlotMigrating { .. }
-        | Command::ClusterSetSlotNode { .. }
-        | Command::ClusterSetSlotStable { .. }
-        | Command::ClusterReplicate { .. }
-        | Command::ClusterFailover { .. }
-        | Command::ClusterCountKeysInSlot { .. }
-        | Command::ClusterGetKeysInSlot { .. } => Frame::Error("ERR not yet implemented".into()),
+        Command::ClusterSetSlotImporting { slot, node_id } => match &ctx.cluster {
+            Some(c) => c.cluster_setslot_importing(slot, &node_id).await,
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
+
+        Command::ClusterSetSlotMigrating { slot, node_id } => match &ctx.cluster {
+            Some(c) => c.cluster_setslot_migrating(slot, &node_id).await,
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
+
+        Command::ClusterSetSlotNode { slot, node_id } => match &ctx.cluster {
+            Some(c) => c.cluster_setslot_node(slot, &node_id).await,
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
+
+        Command::ClusterSetSlotStable { slot } => match &ctx.cluster {
+            Some(c) => c.cluster_setslot_stable(slot).await,
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
+
+        Command::ClusterCountKeysInSlot { slot } => {
+            match engine
+                .broadcast(|| ShardRequest::CountKeysInSlot { slot })
+                .await
+            {
+                Ok(responses) => {
+                    let total: usize = responses
+                        .iter()
+                        .map(|r| match r {
+                            ShardResponse::KeyCount(n) => *n,
+                            _ => 0,
+                        })
+                        .sum();
+                    Frame::Integer(total as i64)
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ClusterGetKeysInSlot { slot, count } => {
+            let count = count as usize;
+            match engine
+                .broadcast(|| ShardRequest::GetKeysInSlot { slot, count })
+                .await
+            {
+                Ok(responses) => {
+                    let mut all_keys = Vec::new();
+                    for r in responses {
+                        if let ShardResponse::StringArray(keys) = r {
+                            all_keys.extend(keys);
+                        }
+                    }
+                    all_keys.truncate(count);
+                    Frame::Array(
+                        all_keys
+                            .into_iter()
+                            .map(|k| Frame::Bulk(Bytes::from(k)))
+                            .collect(),
+                    )
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ClusterReplicate { .. } => {
+            Frame::Error("ERR REPLICATE not yet supported".into())
+        }
+
+        Command::ClusterFailover { .. } => {
+            Frame::Error("ERR FAILOVER not yet supported".into())
+        }
 
         Command::Migrate { .. } => Frame::Error("ERR not yet implemented".into()),
 
