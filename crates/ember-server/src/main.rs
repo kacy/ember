@@ -83,6 +83,12 @@ struct Args {
     #[arg(long, env = "EMBER_REQUIREPASS")]
     requirepass: Option<String>,
 
+    /// path to a file containing the password (alternative to --requirepass).
+    /// avoids exposing the password in /proc/cmdline. the file contents are
+    /// trimmed of trailing whitespace.
+    #[arg(long, env = "EMBER_REQUIREPASS_FILE")]
+    requirepass_file: Option<PathBuf>,
+
     // -- TLS options (matching redis) --
     /// port for TLS connections. when set, enables TLS alongside plain TCP
     #[arg(long, env = "EMBER_TLS_PORT")]
@@ -115,7 +121,32 @@ async fn main() {
         )
         .init();
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+
+    // resolve password: --requirepass-file takes the same role as --requirepass
+    if args.requirepass.is_some() && args.requirepass_file.is_some() {
+        eprintln!("error: --requirepass and --requirepass-file are mutually exclusive");
+        std::process::exit(1);
+    }
+    if let Some(ref path) = args.requirepass_file {
+        match std::fs::read_to_string(path) {
+            Ok(contents) => {
+                let password = contents.trim_end().to_string();
+                if password.is_empty() {
+                    eprintln!("error: --requirepass-file is empty: {}", path.display());
+                    std::process::exit(1);
+                }
+                args.requirepass = Some(password);
+            }
+            Err(e) => {
+                eprintln!(
+                    "error: failed to read --requirepass-file '{}': {e}",
+                    path.display()
+                );
+                std::process::exit(1);
+            }
+        }
+    }
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
