@@ -351,6 +351,10 @@ pub enum Command {
     /// PROTO.DESCRIBE `name`. Lists message types in a registered schema.
     ProtoDescribe { name: String },
 
+    /// PROTO.GETFIELD `key` `field_path`. Reads a single field from a
+    /// protobuf value, returning it as a native RESP3 type.
+    ProtoGetField { key: String, field_path: String },
+
     /// AUTH \[username\] password. Authenticate the connection.
     Auth {
         /// Username for ACL-style auth. None for legacy AUTH.
@@ -483,6 +487,7 @@ impl Command {
             Command::ProtoType { .. } => "proto.type",
             Command::ProtoSchemas => "proto.schemas",
             Command::ProtoDescribe { .. } => "proto.describe",
+            Command::ProtoGetField { .. } => "proto.getfield",
             Command::Auth { .. } => "auth",
             Command::Quit => "quit",
             Command::Unknown(_) => "unknown",
@@ -586,6 +591,7 @@ impl Command {
             "PROTO.TYPE" => parse_proto_type(&frames[1..]),
             "PROTO.SCHEMAS" => parse_proto_schemas(&frames[1..]),
             "PROTO.DESCRIBE" => parse_proto_describe(&frames[1..]),
+            "PROTO.GETFIELD" => parse_proto_getfield(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
@@ -1853,6 +1859,15 @@ fn parse_proto_describe(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let name = extract_string(&args[0])?;
     Ok(Command::ProtoDescribe { name })
+}
+
+fn parse_proto_getfield(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("PROTO.GETFIELD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let field_path = extract_string(&args[1])?;
+    Ok(Command::ProtoGetField { key, field_path })
 }
 
 fn parse_auth(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -4236,6 +4251,43 @@ mod tests {
     #[test]
     fn proto_describe_wrong_arity() {
         let err = Command::from_frame(cmd(&["PROTO.DESCRIBE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- proto.getfield ---
+
+    #[test]
+    fn proto_getfield_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.GETFIELD", "user:1", "name"])).unwrap(),
+            Command::ProtoGetField {
+                key: "user:1".into(),
+                field_path: "name".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn proto_getfield_nested_path() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.GETFIELD", "key", "address.city"])).unwrap(),
+            Command::ProtoGetField {
+                key: "key".into(),
+                field_path: "address.city".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn proto_getfield_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.GETFIELD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["PROTO.GETFIELD", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err =
+            Command::from_frame(cmd(&["PROTO.GETFIELD", "key", "field", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }
