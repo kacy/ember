@@ -26,6 +26,7 @@ pub struct ClusterCoordinator {
     gossip: Mutex<GossipEngine>,
     migration: Mutex<MigrationManager>,
     local_id: NodeId,
+    gossip_port_offset: u16,
     /// bound UDP socket for gossip, set after spawn_gossip
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
 }
@@ -51,20 +52,18 @@ impl ClusterCoordinator {
     ) -> (Self, mpsc::Receiver<GossipEvent>) {
         let (event_tx, event_rx) = mpsc::channel(256);
 
-        let gossip_addr = SocketAddr::new(
-            bind_addr.ip(),
-            bind_addr.port() + gossip_config.gossip_port_offset,
-        );
+        let port_offset = gossip_config.gossip_port_offset;
+        let gossip_addr = SocketAddr::new(bind_addr.ip(), bind_addr.port() + port_offset);
 
         let gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
 
         let state = if bootstrap {
-            let mut node = ClusterNode::new_primary(local_id, bind_addr);
+            let mut node = ClusterNode::new_primary_with_offset(local_id, bind_addr, port_offset);
             node.set_myself();
             ClusterState::single_node(node)
         } else {
             let mut cs = ClusterState::new(local_id);
-            let mut node = ClusterNode::new_primary(local_id, bind_addr);
+            let mut node = ClusterNode::new_primary_with_offset(local_id, bind_addr, port_offset);
             node.set_myself();
             cs.add_node(node);
             cs
@@ -75,6 +74,7 @@ impl ClusterCoordinator {
             gossip: Mutex::new(gossip),
             migration: Mutex::new(MigrationManager::new()),
             local_id,
+            gossip_port_offset: port_offset,
             udp_socket: Mutex::new(None),
         };
 
@@ -166,7 +166,7 @@ impl ClusterCoordinator {
 
         // add to cluster state as well
         let mut state = self.state.write().await;
-        let node = ClusterNode::new_primary(new_id, addr);
+        let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
         state.add_node(node);
 
         Frame::Simple("OK".into())
@@ -412,17 +412,8 @@ impl ClusterCoordinator {
         bind_addr: SocketAddr,
         mut event_rx: mpsc::Receiver<GossipEvent>,
     ) {
-        let gossip_addr = {
-            let gossip = self.gossip.lock().await;
-            // gossip engine was initialized with the gossip address
-            // we need to bind to the same port
-            drop(gossip);
-
-            // compute gossip address from bind_addr + offset
-            // the offset was baked into the GossipEngine, but we need
-            // to derive it for the UDP bind
-            SocketAddr::new(bind_addr.ip(), bind_addr.port() + 10000)
-        };
+        let gossip_addr =
+            SocketAddr::new(bind_addr.ip(), bind_addr.port() + self.gossip_port_offset);
 
         let socket = match UdpSocket::bind(gossip_addr).await {
             Ok(s) => Arc::new(s),
@@ -495,7 +486,11 @@ impl ClusterCoordinator {
                     GossipEvent::MemberJoined(id, addr) => {
                         info!("cluster: node {} joined at {}", id, addr);
                         if !state.nodes.contains_key(&id) {
-                            let node = ClusterNode::new_primary(id, addr);
+                            let node = ClusterNode::new_primary_with_offset(
+                                id,
+                                addr,
+                                coordinator.gossip_port_offset,
+                            );
                             state.add_node(node);
                         }
                     }
