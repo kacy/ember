@@ -24,6 +24,10 @@ pub struct EngineConfig {
     /// Optional persistence configuration. When set, each shard gets
     /// its own AOF and snapshot files under this directory.
     pub persistence: Option<ShardPersistenceConfig>,
+    /// Optional schema registry for protobuf value validation.
+    /// When set, enables PROTO.* commands.
+    #[cfg(feature = "protobuf")]
+    pub schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 }
 
 /// The sharded engine. Owns handles to all shard tasks and routes
@@ -34,6 +38,8 @@ pub struct EngineConfig {
 #[derive(Debug, Clone)]
 pub struct Engine {
     shards: Vec<ShardHandle>,
+    #[cfg(feature = "protobuf")]
+    schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 }
 
 impl Engine {
@@ -69,7 +75,11 @@ impl Engine {
             })
             .collect();
 
-        Self { shards }
+        Self {
+            shards,
+            #[cfg(feature = "protobuf")]
+            schema_registry: config.schema_registry,
+        }
     }
 
     /// Creates an engine with one shard per available CPU core.
@@ -86,6 +96,12 @@ impl Engine {
             .map(|n| n.get())
             .unwrap_or(1);
         Self::with_config(cores, config)
+    }
+
+    /// Returns a reference to the schema registry, if protobuf is enabled.
+    #[cfg(feature = "protobuf")]
+    pub fn schema_registry(&self) -> Option<&crate::schema::SharedSchemaRegistry> {
+        self.schema_registry.as_ref()
     }
 
     /// Returns the number of shards.

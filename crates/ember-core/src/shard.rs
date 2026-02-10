@@ -260,6 +260,26 @@ pub enum ShardRequest {
         slot: u16,
         count: usize,
     },
+    /// Stores a validated protobuf value.
+    #[cfg(feature = "protobuf")]
+    ProtoSet {
+        key: String,
+        type_name: String,
+        data: Bytes,
+        expire: Option<Duration>,
+        nx: bool,
+        xx: bool,
+    },
+    /// Retrieves a protobuf value.
+    #[cfg(feature = "protobuf")]
+    ProtoGet {
+        key: String,
+    },
+    /// Returns the protobuf message type name for a key.
+    #[cfg(feature = "protobuf")]
+    ProtoType {
+        key: String,
+    },
 }
 
 /// The shard's response to a request.
@@ -316,6 +336,12 @@ pub enum ShardResponse {
     StringArray(Vec<String>),
     /// HMGET result: array of optional values.
     OptionalArray(Vec<Option<Bytes>>),
+    /// PROTO.GET result: (type_name, data) or None.
+    #[cfg(feature = "protobuf")]
+    ProtoValue(Option<(String, Bytes)>),
+    /// PROTO.TYPE result: message type name or None.
+    #[cfg(feature = "protobuf")]
+    ProtoTypeName(Option<String>),
 }
 
 /// A request bundled with its reply channel.
@@ -418,6 +444,8 @@ async fn run_shard(
                 }
                 RecoveredValue::Hash(map) => Value::Hash(map),
                 RecoveredValue::Set(set) => Value::Set(set),
+                #[cfg(feature = "protobuf")]
+                RecoveredValue::Proto { type_name, data } => Value::Proto { type_name, data },
             };
             keyspace.restore(entry.key, value, entry.ttl);
         }
@@ -817,6 +845,36 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         ShardRequest::GetKeysInSlot { slot, count } => {
             ShardResponse::StringArray(ks.get_keys_in_slot(*slot, *count))
         }
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoSet {
+            key,
+            type_name,
+            data,
+            expire,
+            nx,
+            xx,
+        } => {
+            if *nx && ks.exists(key) {
+                return ShardResponse::Value(None);
+            }
+            if *xx && !ks.exists(key) {
+                return ShardResponse::Value(None);
+            }
+            match ks.proto_set(key.clone(), type_name.clone(), data.clone(), *expire) {
+                SetResult::Ok => ShardResponse::Ok,
+                SetResult::OutOfMemory => ShardResponse::OutOfMemory,
+            }
+        }
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoGet { key } => match ks.proto_get(key) {
+            Ok(val) => ShardResponse::ProtoValue(val),
+            Err(_) => ShardResponse::WrongType,
+        },
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoType { key } => match ks.proto_type(key) {
+            Ok(name) => ShardResponse::ProtoTypeName(name),
+            Err(_) => ShardResponse::WrongType,
+        },
         // snapshot/rewrite/flush_async are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof | ShardRequest::FlushDbAsync => {
             ShardResponse::Ok
@@ -959,6 +1017,26 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 members: members.clone(),
             })
         }
+        // Proto commands
+        #[cfg(feature = "protobuf")]
+        (
+            ShardRequest::ProtoSet {
+                key,
+                type_name,
+                data,
+                expire,
+                ..
+            },
+            ShardResponse::Ok,
+        ) => {
+            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
+            Some(AofRecord::ProtoSet {
+                key: key.clone(),
+                type_name: type_name.clone(),
+                data: data.clone(),
+                expire_ms,
+            })
+        }
         _ => None,
     }
 }
@@ -1064,6 +1142,11 @@ fn write_snapshot(
             }
             Value::Hash(map) => SnapValue::Hash(map.clone()),
             Value::Set(set) => SnapValue::Set(set.clone()),
+            #[cfg(feature = "protobuf")]
+            Value::Proto { type_name, data } => SnapValue::Proto {
+                type_name: type_name.clone(),
+                data: data.clone(),
+            },
         };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),

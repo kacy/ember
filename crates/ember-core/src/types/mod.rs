@@ -36,6 +36,12 @@ pub enum Value {
 
     /// Unordered set of unique string members.
     Set(HashSet<String>),
+
+    /// A protobuf message value. Stores the fully-qualified message type
+    /// name alongside the serialized bytes. Validation happens at the
+    /// server layer before storage.
+    #[cfg(feature = "protobuf")]
+    Proto { type_name: String, data: Bytes },
 }
 
 impl PartialEq for Value {
@@ -51,6 +57,17 @@ impl PartialEq for Value {
             }
             (Value::Hash(a), Value::Hash(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
+            #[cfg(feature = "protobuf")]
+            (
+                Value::Proto {
+                    type_name: t1,
+                    data: d1,
+                },
+                Value::Proto {
+                    type_name: t2,
+                    data: d2,
+                },
+            ) => t1 == t2 && d1 == d2,
             _ => false,
         }
     }
@@ -64,6 +81,8 @@ pub fn type_name(value: &Value) -> &'static str {
         Value::SortedSet(_) => "zset",
         Value::Hash(_) => "hash",
         Value::Set(_) => "set",
+        #[cfg(feature = "protobuf")]
+        Value::Proto { .. } => "proto",
     }
 }
 
