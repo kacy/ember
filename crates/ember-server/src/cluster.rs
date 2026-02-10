@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use ember_cluster::{
     key_slot, ClusterNode, ClusterState, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
-    NodeId, SLOT_COUNT,
+    MigrationManager, NodeId, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
@@ -24,6 +24,7 @@ use tracing::{debug, error, info, warn};
 pub struct ClusterCoordinator {
     state: RwLock<ClusterState>,
     gossip: Mutex<GossipEngine>,
+    migration: Mutex<MigrationManager>,
     local_id: NodeId,
     /// bound UDP socket for gossip, set after spawn_gossip
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
@@ -72,6 +73,7 @@ impl ClusterCoordinator {
         let coordinator = Self {
             state: RwLock::new(state),
             gossip: Mutex::new(gossip),
+            migration: Mutex::new(MigrationManager::new()),
             local_id,
             udp_socket: Mutex::new(None),
         };
@@ -249,6 +251,119 @@ impl ClusterCoordinator {
             Some(_) => Frame::Simple("OK".into()),
             None => Frame::Error("ERR Unknown node ID".into()),
         }
+    }
+
+    // -- slot migration (SETSLOT) commands --
+
+    /// CLUSTER SETSLOT <slot> IMPORTING <node-id>
+    ///
+    /// Marks a slot as importing from the given source node. The local node
+    /// becomes the target of the migration.
+    pub async fn cluster_setslot_importing(&self, slot: u16, node_id_str: &str) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+        let source_id = match NodeId::parse(node_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+        if source_id == self.local_id {
+            return Frame::Error("ERR can't import from myself".into());
+        }
+
+        let mut migration = self.migration.lock().await;
+        match migration.start_import(slot, source_id, self.local_id) {
+            Ok(_) => Frame::Simple("OK".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        }
+    }
+
+    /// CLUSTER SETSLOT <slot> MIGRATING <node-id>
+    ///
+    /// Marks a slot as migrating to the given target node. The local node
+    /// must currently own the slot.
+    pub async fn cluster_setslot_migrating(&self, slot: u16, node_id_str: &str) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+        let target_id = match NodeId::parse(node_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+        if target_id == self.local_id {
+            return Frame::Error("ERR can't migrate to myself".into());
+        }
+
+        // verify we own the slot before allowing migration
+        {
+            let state = self.state.read().await;
+            if !state.owns_slot(slot) {
+                return Frame::Error(format!(
+                    "ERR I'm not the owner of hash slot {slot}"
+                ));
+            }
+        }
+
+        let mut migration = self.migration.lock().await;
+        match migration.start_migrate(slot, self.local_id, target_id) {
+            Ok(_) => Frame::Simple("OK".into()),
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        }
+    }
+
+    /// CLUSTER SETSLOT <slot> NODE <node-id>
+    ///
+    /// Completes migration by assigning the slot to the given node.
+    /// Cleans up any in-progress migration state.
+    pub async fn cluster_setslot_node(&self, slot: u16, node_id_str: &str) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+        let node_id = match NodeId::parse(node_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+
+        // complete any in-progress migration for this slot
+        {
+            let mut migration = self.migration.lock().await;
+            migration.complete_migration(slot);
+        }
+
+        // assign the slot to the specified node
+        let mut state = self.state.write().await;
+        state.slot_map.assign(slot, node_id);
+
+        // update the node's slot list
+        let new_slots = state.slot_map.slots_for_node(node_id);
+        if let Some(node) = state.nodes.get_mut(&node_id) {
+            node.slots = new_slots;
+        }
+
+        // also update the local node's slot list if it changed
+        if node_id != self.local_id {
+            let local_slots = state.slot_map.slots_for_node(self.local_id);
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.slots = local_slots;
+            }
+        }
+
+        state.update_health();
+        Frame::Simple("OK".into())
+    }
+
+    /// CLUSTER SETSLOT <slot> STABLE
+    ///
+    /// Aborts any in-progress migration for the slot, clearing
+    /// importing/migrating state without changing slot ownership.
+    pub async fn cluster_setslot_stable(&self, slot: u16) -> Frame {
+        if slot >= SLOT_COUNT {
+            return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+        }
+
+        let mut migration = self.migration.lock().await;
+        migration.abort_migration(slot);
+        Frame::Simple("OK".into())
     }
 
     // -- slot ownership check --
