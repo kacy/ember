@@ -53,7 +53,10 @@ impl EncryptionKey {
         let data = std::fs::read(path).map_err(|e| {
             FormatError::Io(io::Error::new(
                 e.kind(),
-                format!("failed to read encryption key file '{}': {e}", path.display()),
+                format!(
+                    "failed to read encryption key file '{}': {e}",
+                    path.display()
+                ),
             ))
         })?;
 
@@ -107,16 +110,16 @@ impl EncryptionKey {
 ///
 /// Returns `(nonce, ciphertext)` where ciphertext includes the 16-byte
 /// auth tag appended by AES-GCM.
-pub fn encrypt_record(key: &EncryptionKey, plaintext: &[u8]) -> Result<([u8; NONCE_SIZE], Vec<u8>), FormatError> {
+pub fn encrypt_record(
+    key: &EncryptionKey,
+    plaintext: &[u8],
+) -> Result<([u8; NONCE_SIZE], Vec<u8>), FormatError> {
     let cipher = Aes256Gcm::new(key.as_bytes().into());
     let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
 
-    let ciphertext = cipher.encrypt(&nonce, plaintext).map_err(|e| {
-        FormatError::Io(io::Error::new(
-            io::ErrorKind::Other,
-            format!("encryption failed: {e}"),
-        ))
-    })?;
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|e| FormatError::Io(io::Error::other(format!("encryption failed: {e}"))))?;
 
     let mut nonce_bytes = [0u8; NONCE_SIZE];
     nonce_bytes.copy_from_slice(&nonce);
@@ -128,11 +131,17 @@ pub fn encrypt_record(key: &EncryptionKey, plaintext: &[u8]) -> Result<([u8; NON
 /// The ciphertext must include the 16-byte auth tag (as produced by
 /// [`encrypt_record`]). Returns `DecryptionFailed` if the key is wrong
 /// or the data has been tampered with.
-pub fn decrypt_record(key: &EncryptionKey, nonce: &[u8; NONCE_SIZE], ciphertext: &[u8]) -> Result<Vec<u8>, FormatError> {
+pub fn decrypt_record(
+    key: &EncryptionKey,
+    nonce: &[u8; NONCE_SIZE],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, FormatError> {
     let cipher = Aes256Gcm::new(key.as_bytes().into());
     let nonce = Nonce::from_slice(nonce);
 
-    cipher.decrypt(nonce, ciphertext).map_err(|_| FormatError::DecryptionFailed)
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| FormatError::DecryptionFailed)
 }
 
 #[cfg(test)]

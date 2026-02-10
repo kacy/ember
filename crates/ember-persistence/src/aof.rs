@@ -445,11 +445,22 @@ impl AofWriter {
     /// Opens (or creates) an AOF file. If the file is new, writes the header.
     /// If the file already exists, appends to it.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, FormatError> {
-        Self::open_inner(path.into(), {
+        let path = path.into();
+        let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+
+        let file = open_persistence_file(&path)?;
+        let mut writer = BufWriter::new(file);
+
+        if !exists {
+            format::write_header(&mut writer, format::AOF_MAGIC)?;
+            writer.flush()?;
+        }
+
+        Ok(Self {
+            writer,
+            path,
             #[cfg(feature = "encryption")]
-            { None }
-            #[cfg(not(feature = "encryption"))]
-            { () }
+            encryption_key: None,
         })
     }
 
@@ -463,47 +474,25 @@ impl AofWriter {
         path: impl Into<PathBuf>,
         key: crate::encryption::EncryptionKey,
     ) -> Result<Self, FormatError> {
-        Self::open_inner(path.into(), Some(key))
-    }
-
-    fn open_inner(
-        path: PathBuf,
-        #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
-        #[cfg(not(feature = "encryption"))] _: (),
-    ) -> Result<Self, FormatError> {
+        let path = path.into();
         let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
 
-        let mut opts = OpenOptions::new();
-        opts.create(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
-        let file = opts.open(&path)?;
+        let file = open_persistence_file(&path)?;
         let mut writer = BufWriter::new(file);
 
         if !exists {
-            #[cfg(feature = "encryption")]
-            if encryption_key.is_some() {
-                format::write_header_versioned(
-                    &mut writer,
-                    format::AOF_MAGIC,
-                    format::FORMAT_VERSION_ENCRYPTED,
-                )?;
-            } else {
-                format::write_header(&mut writer, format::AOF_MAGIC)?;
-            }
-            #[cfg(not(feature = "encryption"))]
-            format::write_header(&mut writer, format::AOF_MAGIC)?;
+            format::write_header_versioned(
+                &mut writer,
+                format::AOF_MAGIC,
+                format::FORMAT_VERSION_ENCRYPTED,
+            )?;
             writer.flush()?;
         }
 
         Ok(Self {
             writer,
             path,
-            #[cfg(feature = "encryption")]
-            encryption_key,
+            encryption_key: Some(key),
         })
     }
 
@@ -805,6 +794,18 @@ impl AofReader {
         let stored_crc = format::read_u32(&mut self.reader)?;
         Ok((payload, stored_crc))
     }
+}
+
+/// Opens a persistence file with create+append and restrictive permissions.
+fn open_persistence_file(path: &Path) -> Result<File, FormatError> {
+    let mut opts = OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    Ok(opts.open(path)?)
 }
 
 /// Returns the AOF file path for a given shard in a data directory.

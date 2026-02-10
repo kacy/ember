@@ -1037,7 +1037,9 @@ fn write_snapshot(
     keyspace: &Keyspace,
     path: &std::path::Path,
     shard_id: u16,
-    #[cfg(feature = "encryption")] encryption_key: Option<&ember_persistence::encryption::EncryptionKey>,
+    #[cfg(feature = "encryption")] encryption_key: Option<
+        &ember_persistence::encryption::EncryptionKey,
+    >,
 ) -> Result<u32, ember_persistence::format::FormatError> {
     #[cfg(feature = "encryption")]
     let mut writer = if let Some(key) = encryption_key {

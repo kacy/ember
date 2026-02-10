@@ -84,61 +84,12 @@ impl SnapshotWriter {
     /// Creates a new snapshot writer. The file won't appear at `path`
     /// until [`Self::finish`] is called successfully.
     pub fn create(path: impl Into<PathBuf>, shard_id: u16) -> Result<Self, FormatError> {
-        Self::create_inner(path.into(), shard_id, {
-            #[cfg(feature = "encryption")]
-            { None }
-            #[cfg(not(feature = "encryption"))]
-            { () }
-        })
-    }
+        let final_path = path.into();
+        let (tmp_path, writer) = Self::open_tmp(&final_path)?;
+        let mut writer = BufWriter::new(writer);
 
-    /// Creates a new encrypted snapshot writer.
-    #[cfg(feature = "encryption")]
-    pub fn create_encrypted(
-        path: impl Into<PathBuf>,
-        shard_id: u16,
-        key: crate::encryption::EncryptionKey,
-    ) -> Result<Self, FormatError> {
-        Self::create_inner(path.into(), shard_id, Some(key))
-    }
-
-    fn create_inner(
-        final_path: PathBuf,
-        shard_id: u16,
-        #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
-        #[cfg(not(feature = "encryption"))] _: (),
-    ) -> Result<Self, FormatError> {
-        let tmp_path = final_path.with_extension("snap.tmp");
-
-        let file = {
-            let mut opts = OpenOptions::new();
-            opts.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            opts.open(&tmp_path)?
-        };
-        let mut writer = BufWriter::new(file);
-
-        // write header: magic + version + shard_id + placeholder entry count
-        #[cfg(feature = "encryption")]
-        if encryption_key.is_some() {
-            format::write_header_versioned(
-                &mut writer,
-                format::SNAP_MAGIC,
-                format::FORMAT_VERSION_ENCRYPTED,
-            )?;
-        } else {
-            format::write_header(&mut writer, format::SNAP_MAGIC)?;
-        }
-        #[cfg(not(feature = "encryption"))]
         format::write_header(&mut writer, format::SNAP_MAGIC)?;
-
         format::write_u16(&mut writer, shard_id)?;
-        // entry count — we'll seek back and update, or just write it now
-        // and track. since we're streaming, write 0 and update after.
         format::write_u32(&mut writer, 0)?;
 
         Ok(Self {
@@ -149,8 +100,52 @@ impl SnapshotWriter {
             count: 0,
             finished: false,
             #[cfg(feature = "encryption")]
-            encryption_key,
+            encryption_key: None,
         })
+    }
+
+    /// Creates a new encrypted snapshot writer.
+    #[cfg(feature = "encryption")]
+    pub fn create_encrypted(
+        path: impl Into<PathBuf>,
+        shard_id: u16,
+        key: crate::encryption::EncryptionKey,
+    ) -> Result<Self, FormatError> {
+        let final_path = path.into();
+        let (tmp_path, file) = Self::open_tmp(&final_path)?;
+        let mut writer = BufWriter::new(file);
+
+        format::write_header_versioned(
+            &mut writer,
+            format::SNAP_MAGIC,
+            format::FORMAT_VERSION_ENCRYPTED,
+        )?;
+        format::write_u16(&mut writer, shard_id)?;
+        format::write_u32(&mut writer, 0)?;
+
+        Ok(Self {
+            final_path,
+            tmp_path,
+            writer,
+            hasher: crc32fast::Hasher::new(),
+            count: 0,
+            finished: false,
+            encryption_key: Some(key),
+        })
+    }
+
+    /// Opens the temp file for writing.
+    fn open_tmp(final_path: &Path) -> Result<(PathBuf, File), FormatError> {
+        let tmp_path = final_path.with_extension("snap.tmp");
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts.open(&tmp_path)?;
+        Ok((tmp_path, file))
     }
 
     /// Writes a single entry to the snapshot.
@@ -867,8 +862,7 @@ mod tests {
             ];
 
             {
-                let mut writer =
-                    SnapshotWriter::create_encrypted(&path, 7, key.clone()).unwrap();
+                let mut writer = SnapshotWriter::create_encrypted(&path, 7, key.clone()).unwrap();
                 for entry in &entries {
                     writer.write_entry(entry).unwrap();
                 }
@@ -1003,8 +997,7 @@ mod tests {
             ];
 
             {
-                let mut writer =
-                    SnapshotWriter::create_encrypted(&path, 0, key.clone()).unwrap();
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key.clone()).unwrap();
                 for entry in &entries {
                     writer.write_entry(entry).unwrap();
                 }
