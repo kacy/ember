@@ -4,6 +4,8 @@
 //! and pretty-prints responses. Supports one-shot mode, interactive REPL,
 //! and named subcommands for cluster management and benchmarking.
 
+mod bench_conn;
+mod benchmark;
 mod cluster;
 mod commands;
 mod connection;
@@ -50,7 +52,7 @@ enum Mode {
     },
 
     /// Run a built-in benchmark against the server.
-    Benchmark,
+    Benchmark(benchmark::BenchmarkArgs),
 
     /// One-shot mode: pass a raw command (e.g. `ember-cli SET key value`).
     #[command(external_subcommand)]
@@ -74,12 +76,8 @@ fn main() -> ExitCode {
         Some(Mode::Cluster { cmd }) => {
             cluster::run_cluster(&cmd, &args.host, args.port, args.password.as_deref())
         }
-        Some(Mode::Benchmark) => {
-            eprintln!(
-                "{}",
-                "benchmark is not yet implemented — coming soon".yellow()
-            );
-            ExitCode::FAILURE
+        Some(Mode::Benchmark(bench_args)) => {
+            benchmark::run_benchmark(&bench_args, &args.host, args.port, args.password.as_deref())
         }
         Some(Mode::Raw(raw)) => {
             let tokens: Vec<String> = raw
