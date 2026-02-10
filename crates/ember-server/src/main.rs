@@ -4,6 +4,7 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+mod cluster;
 mod concurrent_handler;
 mod config;
 mod connection;
