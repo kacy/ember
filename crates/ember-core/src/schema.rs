@@ -309,7 +309,11 @@ fn resolve_field_path(
         }
     }
 
-    unreachable!("loop always returns at the leaf segment")
+    // the loop always returns at the leaf segment, but if the segments vec
+    // were somehow empty after validation, return a clear error instead of panicking
+    Err(SchemaError::FieldNotFound(
+        "failed to resolve field path".into(),
+    ))
 }
 
 /// Converts a `prost_reflect::Value` + its field descriptor into a RESP3 frame.
@@ -333,7 +337,13 @@ fn value_to_frame(
         prost_reflect::Value::I32(n) => Ok(Frame::Integer(i64::from(*n))),
         prost_reflect::Value::I64(n) => Ok(Frame::Integer(*n)),
         prost_reflect::Value::U32(n) => Ok(Frame::Integer(i64::from(*n))),
-        prost_reflect::Value::U64(n) => Ok(Frame::Integer(*n as i64)),
+        prost_reflect::Value::U64(n) => {
+            // RESP3 integers are signed 64-bit; large u64 values would wrap
+            match i64::try_from(*n) {
+                Ok(i) => Ok(Frame::Integer(i)),
+                Err(_) => Ok(Frame::Bulk(Bytes::from(n.to_string()))),
+            }
+        }
         prost_reflect::Value::F32(n) => Ok(Frame::Bulk(Bytes::from(format!("{n}")))),
         prost_reflect::Value::F64(n) => Ok(Frame::Bulk(Bytes::from(format!("{n}")))),
         prost_reflect::Value::Bool(b) => Ok(Frame::Integer(if *b { 1 } else { 0 })),
@@ -408,9 +418,10 @@ fn resolve_field_path_mut<'a>(
 
         // ensure the nested message exists (get or init default)
         if !current.has_field_by_name(segment) {
-            let nested_desc = match field_desc.kind() {
-                Kind::Message(m) => m,
-                _ => unreachable!(),
+            let Kind::Message(nested_desc) = field_desc.kind() else {
+                return Err(SchemaError::FieldNotFound(format!(
+                    "'{segment}' is not a message field"
+                )));
             };
             current.set_field_by_name(
                 segment,
@@ -432,7 +443,9 @@ fn resolve_field_path_mut<'a>(
         };
     }
 
-    let leaf = segments.last().expect("at least 2 segments");
+    let leaf = segments
+        .last()
+        .ok_or_else(|| SchemaError::FieldNotFound("failed to resolve field path".into()))?;
     let leaf_desc = current
         .descriptor()
         .get_field_by_name(leaf)
