@@ -124,6 +124,13 @@ struct Args {
     #[arg(long, env = "EMBER_ENCRYPTION_KEY_FILE")]
     encryption_key_file: Option<PathBuf>,
 
+    // -- protobuf support --
+    /// enable protobuf value storage. when set, PROTO.* commands become
+    /// available for schema-validated structured data.
+    #[cfg(feature = "protobuf")]
+    #[arg(long, env = "EMBER_PROTOBUF")]
+    protobuf: bool,
+
     // -- cluster options --
     /// enable cluster mode with gossip-based discovery and slot routing
     #[arg(long, env = "EMBER_CLUSTER_ENABLED")]
@@ -251,7 +258,15 @@ async fn main() {
         None
     };
 
-    let engine_config = build_engine_config(max_memory, eviction_policy, shard_count, persistence);
+    #[allow(unused_mut)]
+    let mut engine_config =
+        build_engine_config(max_memory, eviction_policy, shard_count, persistence);
+
+    #[cfg(feature = "protobuf")]
+    if args.protobuf {
+        engine_config.schema_registry = Some(ember_core::schema::SchemaRegistry::shared());
+        info!("protobuf value storage enabled");
+    }
 
     if let Some(limit) = max_memory {
         info!(
