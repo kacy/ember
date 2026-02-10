@@ -9,6 +9,7 @@ each shard gets its own persistence files (`shard-{id}.aof` and `shard-{id}.snap
 - **aof** — append-only file writer/reader with CRC32 integrity checks. binary TLV format, configurable fsync (always, every-second, OS-managed). gracefully handles truncated records from mid-write crashes
 - **snapshot** — point-in-time serialization of an entire shard's keyspace. writes to a `.tmp` file first, then atomic rename to prevent partial snapshots from corrupting existing data
 - **recovery** — startup sequence: load snapshot, replay AOF tail, skip expired entries. handles corrupt files gracefully (logs warning, starts empty)
+- **encryption** — optional AES-256-GCM encryption for AOF records and snapshot files (enabled with `--features encryption`). accepts a 32-byte key file (raw bytes or hex). existing plaintext files are read transparently and migrated on the next rewrite/snapshot
 - **format** — low-level binary serialization helpers: length-prefixed bytes, integers, floats, checksums, header validation
 
 ## file formats
@@ -18,6 +19,8 @@ each shard gets its own persistence files (`shard-{id}.aof` and `shard-{id}.snap
 supported record types: SET, DEL, EXPIRE, LPUSH, RPUSH, LPOP, RPOP, ZADD, ZREM, HSET, HDEL, HINCRBY, SADD, SREM
 
 **snapshot (v2)** — `[ESNP magic][version][shard_id][entry_count][entries...][footer_crc32]` where entries are type-tagged (string=0, list=1, sorted set=2, hash=3, set=4). v1 snapshots (no type tags) are still readable.
+
+**encrypted formats (v3)** — when an encryption key is configured, AOF records and snapshot entries are wrapped with AES-256-GCM: `[nonce (12 bytes)][ciphertext][auth tag (16 bytes)]`. the file headers and version bytes remain plaintext so the reader can detect encrypted files and select the right decoding path. plaintext v2 files are still readable even with a key configured.
 
 ## usage
 

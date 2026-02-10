@@ -25,6 +25,10 @@ cargo run --release -p ember-server -- --data-dir ./data --appendonly --appendfs
 
 # with prometheus metrics on port 9100
 cargo run --release -p ember-server -- --metrics-port 9100
+
+# with encryption at rest (requires --features encryption)
+cargo run --release -p ember-server --features encryption -- \
+  --data-dir ./data --appendonly --encryption-key-file /path/to/keyfile
 ```
 
 compatible with `redis-cli` and any RESP3 client.

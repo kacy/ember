@@ -34,6 +34,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **memory limits** — per-shard byte-level accounting with configurable limits
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **persistence** — append-only file (AOF) and point-in-time snapshots
+- **encryption at rest** — optional AES-256-GCM encryption for AOF and snapshot files (compile with `--features encryption`)
 - **pipelining** — multiple commands per read for high throughput
 - **interactive CLI** — `ember-cli` with REPL, syntax highlighting, tab-completion, inline hints, cluster subcommands, and built-in benchmark
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
@@ -52,6 +53,10 @@ cargo build --release
 
 # with persistence
 ./target/release/ember-server --data-dir ./data --appendonly
+
+# with encryption at rest (requires --features encryption)
+./target/release/ember-server --data-dir ./data --appendonly \
+  --encryption-key-file /path/to/keyfile
 
 # concurrent mode (experimental, 2x faster for GET/SET)
 ./target/release/ember-server --concurrent
@@ -135,6 +140,7 @@ redis-cli -p 6380 --tls --insecure PING
 | `--tls-key-file` | — | path to server private key (PEM) |
 | `--tls-ca-cert-file` | — | path to CA certificate for client verification |
 | `--tls-auth-clients` | no | require client certificates (`yes` or `no`) |
+| `--encryption-key-file` | — | path to 32-byte key file for AES-256-GCM encryption at rest (requires `--features encryption`) |
 
 ## build & development
 
@@ -235,7 +241,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 85 commands, 886 tests, ~18k lines of code (excluding tests)
+**current**: 85 commands, 906 tests, ~18k lines of code (excluding tests)
 
 ## security
 
@@ -244,7 +250,7 @@ see [SECURITY.md](SECURITY.md) for:
 - security considerations for deployment
 - recommended configuration
 
-**note**: use `--requirepass` to enable authentication. protected mode is active by default when no password is set, rejecting non-loopback connections on public binds.
+**note**: use `--requirepass` to enable authentication. protected mode is active by default when no password is set, rejecting non-loopback connections on public binds. for encryption at rest, see `--encryption-key-file` — key loss means data loss, so back up your key file separately from your data.
 
 ## license
 

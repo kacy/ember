@@ -85,6 +85,19 @@ AOF with `appendfsync everysec` (default):
 
 persistence overhead is minimal with everysec fsync. `appendfsync always` has significant impact (~50% reduction).
 
+### with encryption enabled
+
+AES-256-GCM encryption at rest (AOF and snapshots). requires building with `--features encryption`:
+
+| mode | SET throughput | overhead vs plaintext |
+|------|----------------|----------------------|
+| ember concurrent | — | — |
+| ember sharded | — | — |
+
+*results pending — run `bench/bench-encryption.sh` on a dedicated VM to populate.*
+
+note: encryption only affects persistence writes. GET throughput should be unchanged since reads come from the in-memory keyspace.
+
 ### scaling efficiency
 
 | cores | ember sharded SET | scaling factor |
@@ -118,6 +131,9 @@ ember offers two modes with different tradeoffs:
 # build with jemalloc for best performance
 cargo build --release -p ember-server --features jemalloc
 
+# for encryption benchmarks, also enable the encryption feature
+cargo build --release -p ember-server --features jemalloc,encryption
+
 # quick sanity check (ember only)
 ./bench/bench-quick.sh
 
@@ -126,6 +142,9 @@ cargo build --release -p ember-server --features jemalloc
 
 # memory usage test
 ./bench/bench-memory.sh
+
+# encryption overhead (requires --features encryption)
+./bench/bench-encryption.sh
 
 # comprehensive comparison using redis-benchmark (redis + dragonfly)
 ./bench/compare-redis.sh
@@ -169,6 +188,7 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 | `bench-memory.sh` | memory usage with 1M keys |
 | `compare-redis.sh` | comprehensive comparison using redis-benchmark |
 | `bench-memtier.sh` | comprehensive comparison using memtier_benchmark |
+| `bench-encryption.sh` | encryption at rest overhead (plaintext vs AES-256-GCM) |
 | `setup-vm.sh` | bootstrap dependencies on fresh ubuntu VM |
 
 ## configuration
