@@ -1050,13 +1050,12 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             })
         }
         #[cfg(feature = "protobuf")]
-        (
-            ShardRequest::ProtoRegisterAof { name, descriptor },
-            ShardResponse::Ok,
-        ) => Some(AofRecord::ProtoRegister {
-            name: name.clone(),
-            descriptor: descriptor.clone(),
-        }),
+        (ShardRequest::ProtoRegisterAof { name, descriptor }, ShardResponse::Ok) => {
+            Some(AofRecord::ProtoRegister {
+                name: name.clone(),
+                descriptor: descriptor.clone(),
+            })
+        }
         _ => None,
     }
 }

@@ -1709,10 +1709,9 @@ async fn execute(
             }
             let req = ShardRequest::ProtoGet { key: key.clone() };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some((type_name, data)))) => Frame::Array(vec![
-                    Frame::Bulk(Bytes::from(type_name)),
-                    Frame::Bulk(data),
-                ]),
+                Ok(ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                    Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
+                }
                 Ok(ShardResponse::ProtoValue(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1727,9 +1726,7 @@ async fn execute(
             }
             let req = ShardRequest::ProtoType { key: key.clone() };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoTypeName(Some(name))) => {
-                    Frame::Bulk(Bytes::from(name))
-                }
+                Ok(ShardResponse::ProtoTypeName(Some(name))) => Frame::Bulk(Bytes::from(name)),
                 Ok(ShardResponse::ProtoTypeName(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),

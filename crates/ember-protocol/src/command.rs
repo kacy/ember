@@ -322,7 +322,6 @@ pub enum Command {
     PubSubNumPat,
 
     // --- protobuf commands ---
-
     /// PROTO.REGISTER `name` `descriptor_bytes`. Registers a protobuf schema
     /// (pre-compiled FileDescriptorSet) under the given name.
     ProtoRegister { name: String, descriptor: Bytes },
@@ -4090,8 +4089,7 @@ mod tests {
     #[test]
     fn proto_register_basic() {
         assert_eq!(
-            Command::from_frame(cmd(&["PROTO.REGISTER", "myschema", "descriptor"]))
-                .unwrap(),
+            Command::from_frame(cmd(&["PROTO.REGISTER", "myschema", "descriptor"])).unwrap(),
             Command::ProtoRegister {
                 name: "myschema".into(),
                 descriptor: Bytes::from("descriptor"),
@@ -4115,8 +4113,7 @@ mod tests {
     #[test]
     fn proto_set_basic() {
         assert_eq!(
-            Command::from_frame(cmd(&["PROTO.SET", "key1", "my.Type", "data"]))
-                .unwrap(),
+            Command::from_frame(cmd(&["PROTO.SET", "key1", "my.Type", "data"])).unwrap(),
             Command::ProtoSet {
                 key: "key1".into(),
                 type_name: "my.Type".into(),
@@ -4131,8 +4128,7 @@ mod tests {
     #[test]
     fn proto_set_with_ex() {
         assert_eq!(
-            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "EX", "60"]))
-                .unwrap(),
+            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "EX", "60"])).unwrap(),
             Command::ProtoSet {
                 key: "k".into(),
                 type_name: "t".into(),
@@ -4147,8 +4143,7 @@ mod tests {
     #[test]
     fn proto_set_with_px_and_nx() {
         assert_eq!(
-            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "PX", "5000", "NX"]))
-                .unwrap(),
+            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "PX", "5000", "NX"])).unwrap(),
             Command::ProtoSet {
                 key: "k".into(),
                 type_name: "t".into(),
@@ -4162,8 +4157,7 @@ mod tests {
 
     #[test]
     fn proto_set_nx_xx_conflict() {
-        let err = Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "NX", "XX"]))
-            .unwrap_err();
+        let err = Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "NX", "XX"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
@@ -4175,8 +4169,7 @@ mod tests {
 
     #[test]
     fn proto_set_zero_expiry() {
-        let err =
-            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "EX", "0"])).unwrap_err();
+        let err = Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "EX", "0"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
@@ -4186,9 +4179,7 @@ mod tests {
     fn proto_get_basic() {
         assert_eq!(
             Command::from_frame(cmd(&["PROTO.GET", "key1"])).unwrap(),
-            Command::ProtoGet {
-                key: "key1".into()
-            },
+            Command::ProtoGet { key: "key1".into() },
         );
     }
 
@@ -4204,9 +4195,7 @@ mod tests {
     fn proto_type_basic() {
         assert_eq!(
             Command::from_frame(cmd(&["PROTO.TYPE", "key1"])).unwrap(),
-            Command::ProtoType {
-                key: "key1".into()
-            },
+            Command::ProtoType { key: "key1".into() },
         );
     }
 
