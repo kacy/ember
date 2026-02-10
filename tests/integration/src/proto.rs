@@ -1,4 +1,7 @@
 //! Integration tests for protobuf value storage (PROTO.* commands).
+//!
+//! Core tests run against both sharded and concurrent server modes to
+//! ensure proto commands work through both code paths.
 
 use bytes::Bytes;
 use ember_protocol::Frame;
@@ -46,16 +49,19 @@ fn encode_message(descriptor_bytes: &[u8], type_name: &str, field: &str, value: 
     buf
 }
 
-fn start_proto_server() -> TestServer {
+fn start_proto_server(concurrent: bool) -> TestServer {
     TestServer::start_with(ServerOptions {
         protobuf: true,
+        concurrent,
         ..Default::default()
     })
 }
 
+// ---- sharded mode tests ----
+
 #[tokio::test]
 async fn register_schema_and_describe() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let desc = make_descriptor("test", "User", "name");
@@ -93,7 +99,7 @@ async fn register_schema_and_describe() {
 
 #[tokio::test]
 async fn describe_unknown_schema() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let resp = c.cmd(&["PROTO.DESCRIBE", "nonexistent"]).await;
@@ -102,7 +108,7 @@ async fn describe_unknown_schema() {
 
 #[tokio::test]
 async fn set_get_and_type() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let desc = make_descriptor("test", "User", "name");
@@ -134,7 +140,7 @@ async fn set_get_and_type() {
 
 #[tokio::test]
 async fn get_missing_key_returns_null() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let desc = make_descriptor("test", "User", "name");
@@ -149,7 +155,7 @@ async fn get_missing_key_returns_null() {
 
 #[tokio::test]
 async fn wrong_type_error() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     // set a regular string key
@@ -166,7 +172,7 @@ async fn wrong_type_error() {
 
 #[tokio::test]
 async fn invalid_proto_bytes_rejected() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let desc = make_descriptor("test", "User", "name");
@@ -181,7 +187,7 @@ async fn invalid_proto_bytes_rejected() {
 
 #[tokio::test]
 async fn invalid_descriptor_rejected() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let resp = c
@@ -192,7 +198,7 @@ async fn invalid_descriptor_rejected() {
 
 #[tokio::test]
 async fn set_with_nx_and_xx() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let desc = make_descriptor("test", "User", "name");
@@ -228,7 +234,7 @@ async fn set_with_nx_and_xx() {
 
 #[tokio::test]
 async fn set_with_ttl() {
-    let server = start_proto_server();
+    let server = start_proto_server(false);
     let mut c = server.connect().await;
 
     let desc = make_descriptor("test", "User", "name");
@@ -297,4 +303,137 @@ async fn persistence_recovery() {
     }
 
     drop(data_dir);
+}
+
+// ---- concurrent mode tests ----
+// These mirror the core sharded tests to verify the concurrent handler's
+// proto command routing through the engine fallback path.
+
+#[tokio::test]
+async fn concurrent_register_schema_and_describe() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+
+    let resp = c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+    match resp {
+        Frame::Array(items) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], Frame::Bulk(Bytes::from("test.User")));
+        }
+        other => panic!("expected array, got {other:?}"),
+    }
+
+    let resp = c.cmd(&["PROTO.SCHEMAS"]).await;
+    match resp {
+        Frame::Array(items) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], Frame::Bulk(Bytes::from("users")));
+        }
+        other => panic!("expected array, got {other:?}"),
+    }
+
+    let resp = c.cmd(&["PROTO.DESCRIBE", "users"]).await;
+    match resp {
+        Frame::Array(items) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0], Frame::Bulk(Bytes::from("test.User")));
+        }
+        other => panic!("expected array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn concurrent_set_get_and_type() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let data = encode_message(&desc, "test.User", "name", "alice");
+
+    let resp = c
+        .cmd_raw(&[b"PROTO.SET", b"user:1", b"test.User", &data])
+        .await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GET", "user:1"]).await;
+    match resp {
+        Frame::Array(items) => {
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0], Frame::Bulk(Bytes::from("test.User")));
+            assert_eq!(items[1], Frame::Bulk(Bytes::from(data)));
+        }
+        other => panic!("expected array, got {other:?}"),
+    }
+
+    let resp = c.cmd(&["PROTO.TYPE", "user:1"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("test.User")));
+}
+
+#[tokio::test]
+async fn concurrent_invalid_proto_bytes_rejected() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let resp = c
+        .cmd_raw(&[b"PROTO.SET", b"bad:1", b"test.User", b"not valid proto"])
+        .await;
+    assert!(matches!(resp, Frame::Error(_)));
+}
+
+#[tokio::test]
+async fn concurrent_set_with_nx_and_xx() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let alice = encode_message(&desc, "test.User", "name", "alice");
+    let bob = encode_message(&desc, "test.User", "name", "bob");
+
+    // NX on a new key should succeed
+    let resp = c
+        .cmd_raw(&[b"PROTO.SET", b"user:nx", b"test.User", &alice, b"NX"])
+        .await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    // NX on an existing key should return null
+    let resp = c
+        .cmd_raw(&[b"PROTO.SET", b"user:nx", b"test.User", &bob, b"NX"])
+        .await;
+    assert!(matches!(resp, Frame::Null));
+
+    // XX on a missing key should return null
+    let resp = c
+        .cmd_raw(&[b"PROTO.SET", b"user:xx", b"test.User", &alice, b"XX"])
+        .await;
+    assert!(matches!(resp, Frame::Null));
+
+    // XX on an existing key should succeed
+    let resp = c
+        .cmd_raw(&[b"PROTO.SET", b"user:nx", b"test.User", &bob, b"XX"])
+        .await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+}
+
+#[tokio::test]
+async fn concurrent_get_missing_key_returns_null() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let resp = c.cmd(&["PROTO.GET", "nonexistent"]).await;
+    assert!(matches!(resp, Frame::Null));
+
+    let resp = c.cmd(&["PROTO.TYPE", "nonexistent"]).await;
+    assert!(matches!(resp, Frame::Null));
 }

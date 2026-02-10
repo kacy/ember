@@ -33,6 +33,8 @@ pub struct ServerOptions {
     pub cluster_bootstrap: bool,
     /// Enable protobuf value storage.
     pub protobuf: bool,
+    /// Use concurrent (DashMap) mode instead of sharded channels.
+    pub concurrent: bool,
 }
 
 impl TestServer {
@@ -62,6 +64,10 @@ impl TestServer {
 
         if opts.protobuf {
             cmd.arg("--protobuf");
+        }
+
+        if opts.concurrent {
+            cmd.arg("--concurrent");
         }
 
         if opts.cluster_enabled {
