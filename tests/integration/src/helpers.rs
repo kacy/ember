@@ -27,6 +27,10 @@ pub struct ServerOptions {
     /// Use an existing path without taking ownership.
     /// If both `data_dir` and `data_dir_path` are set, `data_dir_path` wins.
     pub data_dir_path: Option<PathBuf>,
+    /// Start with cluster support enabled.
+    pub cluster_enabled: bool,
+    /// Bootstrap as a single-node cluster owning all 16384 slots.
+    pub cluster_bootstrap: bool,
 }
 
 impl TestServer {
@@ -39,9 +43,9 @@ impl TestServer {
 
     /// Starts a new ember-server with custom options.
     pub fn start_with(opts: ServerOptions) -> Self {
-        let port = find_free_port();
-
         let binary = server_binary();
+
+        let port = find_free_port();
 
         let mut cmd = Command::new(&binary);
         cmd.arg("--port").arg(port.to_string());
@@ -52,6 +56,17 @@ impl TestServer {
 
         if let Some(ref pass) = opts.requirepass {
             cmd.arg("--requirepass").arg(pass);
+        }
+
+        if opts.cluster_enabled {
+            cmd.arg("--cluster-enabled");
+            // use a small offset so the gossip port stays in valid u16 range.
+            // random test ports are often >55000, and the default +10000 would
+            // overflow past 65535.
+            cmd.arg("--cluster-port-offset").arg("1");
+        }
+        if opts.cluster_bootstrap {
+            cmd.arg("--cluster-bootstrap");
         }
 
         let data_dir = if opts.appendonly {
@@ -220,32 +235,42 @@ fn find_free_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
-/// Locates the ember-server binary in the cargo target directory.
-fn server_binary() -> PathBuf {
-    // cargo sets OUT_DIR for build scripts, but for integration tests
-    // we can find the binary relative to the test binary itself
+/// Locates a binary in the cargo target directory.
+fn find_binary(name: &str) -> PathBuf {
     let mut path = std::env::current_exe().unwrap();
     // test binary is in target/debug/deps/ — go up to target/debug/
     path.pop();
     if path.ends_with("deps") {
         path.pop();
     }
-    path.push("ember-server");
+    path.push(name);
     if !path.exists() {
-        // try release
-        let mut release = std::env::current_exe().unwrap();
-        release.pop();
-        if release.ends_with("deps") {
-            release.pop();
-        }
-        release.push("ember-server");
-        if release.exists() {
-            return release;
-        }
         panic!(
-            "ember-server binary not found. run `cargo build` first.\nlooked at: {}",
+            "{name} binary not found. run `cargo build` first.\nlooked at: {}",
             path.display()
         );
     }
     path
+}
+
+/// Locates the ember-server binary in the cargo target directory.
+fn server_binary() -> PathBuf {
+    find_binary("ember-server")
+}
+
+/// Locates the ember-cli binary in the cargo target directory.
+pub fn cli_binary() -> PathBuf {
+    find_binary("ember-cli")
+}
+
+/// Runs the CLI binary with the given args and captures output.
+pub fn run_cli(port: u16, args: &[&str]) -> std::process::Output {
+    Command::new(cli_binary())
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--host")
+        .arg("127.0.0.1")
+        .args(args)
+        .output()
+        .expect("failed to run emberkv-cli")
 }
