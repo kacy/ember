@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.93"
 license = "MIT"
@@ -61,7 +61,7 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 rustls-pemfile = "2"
 
 # internal crates (version required for crates.io publishing)
-emberkv-core = { version = "0.4.0", path = "crates/ember-core" }
-ember-protocol = { version = "0.4.0", path = "crates/ember-protocol" }
-ember-persistence = { version = "0.4.0", path = "crates/ember-persistence" }
-ember-cluster = { version = "0.4.0", path = "crates/ember-cluster" }
+emberkv-core = { version = "0.4.1", path = "crates/ember-core" }
+ember-protocol = { version = "0.4.1", path = "crates/ember-protocol" }
+ember-persistence = { version = "0.4.1", path = "crates/ember-persistence" }
+ember-cluster = { version = "0.4.1", path = "crates/ember-cluster" }
