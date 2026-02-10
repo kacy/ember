@@ -1,17 +1,19 @@
 //! ember-cli: interactive command-line client for ember.
 //!
 //! Connects to an ember server over TCP, sends commands as RESP3 frames,
-//! and pretty-prints responses. Supports both one-shot and interactive
-//! (REPL) modes.
+//! and pretty-prints responses. Supports one-shot mode, interactive REPL,
+//! and named subcommands for cluster management and benchmarking.
 
+mod cluster;
 mod commands;
 mod connection;
 mod format;
 mod repl;
 
+use std::ffi::OsString;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 /// Interactive CLI client for ember.
@@ -34,9 +36,25 @@ struct Args {
     #[arg(long)]
     tls: bool,
 
-    /// Command to execute (one-shot mode). If omitted, starts the REPL.
-    #[arg(trailing_var_arg = true)]
-    command: Vec<String>,
+    #[command(subcommand)]
+    mode: Option<Mode>,
+}
+
+/// How to run the CLI.
+#[derive(Subcommand)]
+enum Mode {
+    /// Cluster management commands.
+    Cluster {
+        #[command(subcommand)]
+        cmd: cluster::ClusterCommand,
+    },
+
+    /// Run a built-in benchmark against the server.
+    Benchmark,
+
+    /// One-shot mode: pass a raw command (e.g. `ember-cli SET key value`).
+    #[command(external_subcommand)]
+    Raw(Vec<OsString>),
 }
 
 fn main() -> ExitCode {
@@ -47,18 +65,29 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if args.command.is_empty() {
-        // interactive REPL mode
-        repl::run_repl(&args.host, args.port, args.password.as_deref(), args.tls);
-        ExitCode::SUCCESS
-    } else {
-        // one-shot mode: send a single command and exit
-        run_oneshot(
-            &args.host,
-            args.port,
-            args.password.as_deref(),
-            &args.command,
-        )
+    match args.mode {
+        None => {
+            // interactive REPL mode
+            repl::run_repl(&args.host, args.port, args.password.as_deref(), args.tls);
+            ExitCode::SUCCESS
+        }
+        Some(Mode::Cluster { cmd }) => {
+            cluster::run_cluster(&cmd, &args.host, args.port, args.password.as_deref())
+        }
+        Some(Mode::Benchmark) => {
+            eprintln!(
+                "{}",
+                "benchmark is not yet implemented — coming soon".yellow()
+            );
+            ExitCode::FAILURE
+        }
+        Some(Mode::Raw(raw)) => {
+            let tokens: Vec<String> = raw
+                .into_iter()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect();
+            run_oneshot(&args.host, args.port, args.password.as_deref(), &tokens)
+        }
     }
 }
 
