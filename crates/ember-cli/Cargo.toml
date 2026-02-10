@@ -19,6 +19,7 @@ tokio = { workspace = true }
 bytes = { workspace = true }
 ember-protocol = { workspace = true }
 thiserror = { workspace = true }
+rand = { workspace = true }
 rustyline = "15"
 colored = "3"
 dirs = "6"
