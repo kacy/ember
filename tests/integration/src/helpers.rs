@@ -62,7 +62,9 @@ impl TestServer {
                 cmd.arg("--data-dir").arg(path);
                 None // caller manages the directory lifetime
             } else {
-                let dir = opts.data_dir.unwrap_or_else(|| tempfile::tempdir().unwrap());
+                let dir = opts
+                    .data_dir
+                    .unwrap_or_else(|| tempfile::tempdir().unwrap());
                 cmd.arg("--data-dir").arg(dir.path());
                 Some(dir)
             }
@@ -74,7 +76,9 @@ impl TestServer {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .unwrap_or_else(|e| panic!("failed to spawn ember-server at {}: {e}", binary.display()));
+            .unwrap_or_else(|e| {
+                panic!("failed to spawn ember-server at {}: {e}", binary.display())
+            });
 
         // wait for the server to be ready
         let deadline = std::time::Instant::now() + Duration::from_secs(5);

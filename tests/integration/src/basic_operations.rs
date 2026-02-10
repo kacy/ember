@@ -223,7 +223,10 @@ async fn strlen_append() {
     c.ok(&["SET", "key", "hello"]).await;
     assert_eq!(c.get_int(&["STRLEN", "key"]).await, 5);
     assert_eq!(c.get_int(&["APPEND", "key", " world"]).await, 11);
-    assert_eq!(c.get_bulk(&["GET", "key"]).await, Some("hello world".into()));
+    assert_eq!(
+        c.get_bulk(&["GET", "key"]).await,
+        Some("hello world".into())
+    );
 }
 
 #[tokio::test]

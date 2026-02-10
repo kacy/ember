@@ -71,9 +71,16 @@ async fn hash_set_get() {
     let server = TestServer::start();
     let mut c = server.connect().await;
 
-    c.get_int(&["HSET", "h", "name", "ember", "version", "0.4"]).await;
-    assert_eq!(c.get_bulk(&["HGET", "h", "name"]).await, Some("ember".into()));
-    assert_eq!(c.get_bulk(&["HGET", "h", "version"]).await, Some("0.4".into()));
+    c.get_int(&["HSET", "h", "name", "ember", "version", "0.4"])
+        .await;
+    assert_eq!(
+        c.get_bulk(&["HGET", "h", "name"]).await,
+        Some("ember".into())
+    );
+    assert_eq!(
+        c.get_bulk(&["HGET", "h", "version"]).await,
+        Some("0.4".into())
+    );
 
     // missing field
     let resp = c.cmd(&["HGET", "h", "missing"]).await;
@@ -101,7 +108,8 @@ async fn hash_del_exists_len() {
     let server = TestServer::start();
     let mut c = server.connect().await;
 
-    c.get_int(&["HSET", "h", "a", "1", "b", "2", "c", "3"]).await;
+    c.get_int(&["HSET", "h", "a", "1", "b", "2", "c", "3"])
+        .await;
     assert_eq!(c.get_int(&["HLEN", "h"]).await, 3);
     assert_eq!(c.get_int(&["HEXISTS", "h", "a"]).await, 1);
 
@@ -193,7 +201,11 @@ async fn zset_add_score_rank() {
     let server = TestServer::start();
     let mut c = server.connect().await;
 
-    assert_eq!(c.get_int(&["ZADD", "z", "1.0", "a", "2.0", "b", "3.0", "c"]).await, 3);
+    assert_eq!(
+        c.get_int(&["ZADD", "z", "1.0", "a", "2.0", "b", "3.0", "c"])
+            .await,
+        3
+    );
     assert_eq!(c.get_int(&["ZCARD", "z"]).await, 3);
 
     let score = c.get_bulk(&["ZSCORE", "z", "b"]).await;
@@ -208,7 +220,8 @@ async fn zset_range() {
     let server = TestServer::start();
     let mut c = server.connect().await;
 
-    c.get_int(&["ZADD", "z", "1", "a", "2", "b", "3", "c"]).await;
+    c.get_int(&["ZADD", "z", "1", "a", "2", "b", "3", "c"])
+        .await;
 
     let resp = c.cmd(&["ZRANGE", "z", "0", "-1"]).await;
     match resp {
