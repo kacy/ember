@@ -64,11 +64,10 @@ impl Connection {
         port: u16,
         tls: Option<&TlsClientConfig>,
     ) -> Result<Self, ConnectionError> {
-        let stream =
-            tokio::time::timeout(CONNECT_TIMEOUT, tls::connect(host, port, tls))
-                .await
-                .map_err(|_| ConnectionError::Timeout)?
-                .map_err(ConnectionError::Io)?;
+        let stream = tokio::time::timeout(CONNECT_TIMEOUT, tls::connect(host, port, tls))
+            .await
+            .map_err(|_| ConnectionError::Timeout)?
+            .map_err(ConnectionError::Io)?;
 
         Ok(Self {
             stream,

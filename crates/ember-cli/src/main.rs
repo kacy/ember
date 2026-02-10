@@ -93,12 +93,21 @@ fn main() -> ExitCode {
     match args.mode {
         None => {
             // interactive REPL mode
-            repl::run_repl(&args.host, args.port, args.password.as_deref(), tls.as_ref());
+            repl::run_repl(
+                &args.host,
+                args.port,
+                args.password.as_deref(),
+                tls.as_ref(),
+            );
             ExitCode::SUCCESS
         }
-        Some(Mode::Cluster { cmd }) => {
-            cluster::run_cluster(&cmd, &args.host, args.port, args.password.as_deref(), tls.as_ref())
-        }
+        Some(Mode::Cluster { cmd }) => cluster::run_cluster(
+            &cmd,
+            &args.host,
+            args.port,
+            args.password.as_deref(),
+            tls.as_ref(),
+        ),
         Some(Mode::Benchmark(bench_args)) => benchmark::run_benchmark(
             &bench_args,
             &args.host,
@@ -111,7 +120,13 @@ fn main() -> ExitCode {
                 .into_iter()
                 .map(|s| s.to_string_lossy().into_owned())
                 .collect();
-            run_oneshot(&args.host, args.port, args.password.as_deref(), tls.as_ref(), &tokens)
+            run_oneshot(
+                &args.host,
+                args.port,
+                args.password.as_deref(),
+                tls.as_ref(),
+                &tokens,
+            )
         }
     }
 }
