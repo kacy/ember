@@ -11,6 +11,7 @@ readme = "README.md"
 
 [features]
 encryption = ["aes-gcm", "rand"]
+protobuf = []
 
 [dependencies]
 thiserror = { workspace = true }

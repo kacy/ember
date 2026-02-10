@@ -61,6 +61,9 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 rustls-pemfile = "2"
 rustls-native-certs = "0.8"
 
+# dynamic protobuf messages
+prost-reflect = "0.14"
+
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.4.2", path = "crates/ember-core" }
 ember-protocol = { version = "0.4.2", path = "crates/ember-protocol" }
