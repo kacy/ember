@@ -22,7 +22,7 @@
 //! v1 entries (no type tag) are still readable for backward compatibility.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -85,7 +85,16 @@ impl SnapshotWriter {
         let final_path = path.into();
         let tmp_path = final_path.with_extension("snap.tmp");
 
-        let file = File::create(&tmp_path)?;
+        let file = {
+            let mut opts = OpenOptions::new();
+            opts.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            opts.open(&tmp_path)?
+        };
         let mut writer = BufWriter::new(file);
 
         // write header: magic + version + shard_id + placeholder entry count
