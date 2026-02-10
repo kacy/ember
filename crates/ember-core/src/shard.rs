@@ -247,6 +247,10 @@ pub enum ShardRequest {
         count: usize,
         pattern: Option<String>,
     },
+    /// Counts keys in this shard that hash to the given cluster slot.
+    CountKeysInSlot { slot: u16 },
+    /// Returns up to `count` keys that hash to the given cluster slot.
+    GetKeysInSlot { slot: u16, count: usize },
 }
 
 /// The shard's response to a request.
@@ -783,6 +787,12 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(count) => ShardResponse::Len(count),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::CountKeysInSlot { slot } => {
+            ShardResponse::KeyCount(ks.count_keys_in_slot(*slot))
+        }
+        ShardRequest::GetKeysInSlot { slot, count } => {
+            ShardResponse::StringArray(ks.get_keys_in_slot(*slot, *count))
+        }
         // snapshot/rewrite/flush_async are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof | ShardRequest::FlushDbAsync => {
             ShardResponse::Ok
