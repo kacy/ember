@@ -321,6 +321,36 @@ pub enum Command {
     /// PUBSUB NUMPAT. Returns the number of active pattern subscriptions.
     PubSubNumPat,
 
+    // --- protobuf commands ---
+    /// PROTO.REGISTER `name` `descriptor_bytes`. Registers a protobuf schema
+    /// (pre-compiled FileDescriptorSet) under the given name.
+    ProtoRegister { name: String, descriptor: Bytes },
+
+    /// PROTO.SET `key` `type_name` `data` \[EX s | PX ms\] \[NX | XX\].
+    /// Stores a validated protobuf value.
+    ProtoSet {
+        key: String,
+        type_name: String,
+        data: Bytes,
+        expire: Option<SetExpire>,
+        /// Only set the key if it does not already exist.
+        nx: bool,
+        /// Only set the key if it already exists.
+        xx: bool,
+    },
+
+    /// PROTO.GET `key`. Returns \[type_name, data\] or nil.
+    ProtoGet { key: String },
+
+    /// PROTO.TYPE `key`. Returns the message type name or nil.
+    ProtoType { key: String },
+
+    /// PROTO.SCHEMAS. Lists all registered schema names.
+    ProtoSchemas,
+
+    /// PROTO.DESCRIBE `name`. Lists message types in a registered schema.
+    ProtoDescribe { name: String },
+
     /// AUTH \[username\] password. Authenticate the connection.
     Auth {
         /// Username for ACL-style auth. None for legacy AUTH.
@@ -447,6 +477,12 @@ impl Command {
             Command::PubSubChannels { .. } => "pubsub",
             Command::PubSubNumSub { .. } => "pubsub",
             Command::PubSubNumPat => "pubsub",
+            Command::ProtoRegister { .. } => "proto.register",
+            Command::ProtoSet { .. } => "proto.set",
+            Command::ProtoGet { .. } => "proto.get",
+            Command::ProtoType { .. } => "proto.type",
+            Command::ProtoSchemas => "proto.schemas",
+            Command::ProtoDescribe { .. } => "proto.describe",
             Command::Auth { .. } => "auth",
             Command::Quit => "quit",
             Command::Unknown(_) => "unknown",
@@ -544,6 +580,12 @@ impl Command {
             "PUNSUBSCRIBE" => parse_punsubscribe(&frames[1..]),
             "PUBLISH" => parse_publish(&frames[1..]),
             "PUBSUB" => parse_pubsub(&frames[1..]),
+            "PROTO.REGISTER" => parse_proto_register(&frames[1..]),
+            "PROTO.SET" => parse_proto_set(&frames[1..]),
+            "PROTO.GET" => parse_proto_get(&frames[1..]),
+            "PROTO.TYPE" => parse_proto_type(&frames[1..]),
+            "PROTO.SCHEMAS" => parse_proto_schemas(&frames[1..]),
+            "PROTO.DESCRIBE" => parse_proto_describe(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
@@ -1692,6 +1734,125 @@ fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
             "unknown PUBSUB subcommand '{other}'"
         ))),
     }
+}
+
+// --- proto command parsers ---
+
+fn parse_proto_register(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("PROTO.REGISTER".into()));
+    }
+    let name = extract_string(&args[0])?;
+    let descriptor = extract_bytes(&args[1])?;
+    Ok(Command::ProtoRegister { name, descriptor })
+}
+
+fn parse_proto_set(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 {
+        return Err(ProtocolError::WrongArity("PROTO.SET".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+    let type_name = extract_string(&args[1])?;
+    let data = extract_bytes(&args[2])?;
+
+    let mut expire = None;
+    let mut nx = false;
+    let mut xx = false;
+    let mut idx = 3;
+
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
+        match flag.as_str() {
+            "NX" => {
+                nx = true;
+                idx += 1;
+            }
+            "XX" => {
+                xx = true;
+                idx += 1;
+            }
+            "EX" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::WrongArity("PROTO.SET".into()));
+                }
+                let amount = parse_u64(&args[idx], "PROTO.SET")?;
+                if amount == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid expire time in 'PROTO.SET' command".into(),
+                    ));
+                }
+                expire = Some(SetExpire::Ex(amount));
+                idx += 1;
+            }
+            "PX" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::WrongArity("PROTO.SET".into()));
+                }
+                let amount = parse_u64(&args[idx], "PROTO.SET")?;
+                if amount == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid expire time in 'PROTO.SET' command".into(),
+                    ));
+                }
+                expire = Some(SetExpire::Px(amount));
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported PROTO.SET option '{flag}'"
+                )));
+            }
+        }
+    }
+
+    if nx && xx {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "XX and NX options at the same time are not compatible".into(),
+        ));
+    }
+
+    Ok(Command::ProtoSet {
+        key,
+        type_name,
+        data,
+        expire,
+        nx,
+        xx,
+    })
+}
+
+fn parse_proto_get(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("PROTO.GET".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::ProtoGet { key })
+}
+
+fn parse_proto_type(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("PROTO.TYPE".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::ProtoType { key })
+}
+
+fn parse_proto_schemas(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(ProtocolError::WrongArity("PROTO.SCHEMAS".into()));
+    }
+    Ok(Command::ProtoSchemas)
+}
+
+fn parse_proto_describe(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("PROTO.DESCRIBE".into()));
+    }
+    let name = extract_string(&args[0])?;
+    Ok(Command::ProtoDescribe { name })
 }
 
 fn parse_auth(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3920,6 +4081,161 @@ mod tests {
     #[test]
     fn quit_wrong_arity() {
         let err = Command::from_frame(cmd(&["QUIT", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- PROTO.REGISTER ---
+
+    #[test]
+    fn proto_register_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.REGISTER", "myschema", "descriptor"])).unwrap(),
+            Command::ProtoRegister {
+                name: "myschema".into(),
+                descriptor: Bytes::from("descriptor"),
+            },
+        );
+    }
+
+    #[test]
+    fn proto_register_case_insensitive() {
+        assert!(Command::from_frame(cmd(&["proto.register", "s", "d"])).is_ok());
+    }
+
+    #[test]
+    fn proto_register_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.REGISTER", "only"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- PROTO.SET ---
+
+    #[test]
+    fn proto_set_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.SET", "key1", "my.Type", "data"])).unwrap(),
+            Command::ProtoSet {
+                key: "key1".into(),
+                type_name: "my.Type".into(),
+                data: Bytes::from("data"),
+                expire: None,
+                nx: false,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn proto_set_with_ex() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "EX", "60"])).unwrap(),
+            Command::ProtoSet {
+                key: "k".into(),
+                type_name: "t".into(),
+                data: Bytes::from("d"),
+                expire: Some(SetExpire::Ex(60)),
+                nx: false,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn proto_set_with_px_and_nx() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "PX", "5000", "NX"])).unwrap(),
+            Command::ProtoSet {
+                key: "k".into(),
+                type_name: "t".into(),
+                data: Bytes::from("d"),
+                expire: Some(SetExpire::Px(5000)),
+                nx: true,
+                xx: false,
+            },
+        );
+    }
+
+    #[test]
+    fn proto_set_nx_xx_conflict() {
+        let err = Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "NX", "XX"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn proto_set_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.SET", "k", "t"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn proto_set_zero_expiry() {
+        let err = Command::from_frame(cmd(&["PROTO.SET", "k", "t", "d", "EX", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- PROTO.GET ---
+
+    #[test]
+    fn proto_get_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.GET", "key1"])).unwrap(),
+            Command::ProtoGet { key: "key1".into() },
+        );
+    }
+
+    #[test]
+    fn proto_get_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.GET"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- PROTO.TYPE ---
+
+    #[test]
+    fn proto_type_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.TYPE", "key1"])).unwrap(),
+            Command::ProtoType { key: "key1".into() },
+        );
+    }
+
+    #[test]
+    fn proto_type_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.TYPE"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- PROTO.SCHEMAS ---
+
+    #[test]
+    fn proto_schemas_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.SCHEMAS"])).unwrap(),
+            Command::ProtoSchemas,
+        );
+    }
+
+    #[test]
+    fn proto_schemas_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.SCHEMAS", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- PROTO.DESCRIBE ---
+
+    #[test]
+    fn proto_describe_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.DESCRIBE", "myschema"])).unwrap(),
+            Command::ProtoDescribe {
+                name: "myschema".into()
+            },
+        );
+    }
+
+    #[test]
+    fn proto_describe_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.DESCRIBE"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }
