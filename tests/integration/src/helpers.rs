@@ -31,6 +31,8 @@ pub struct ServerOptions {
     pub cluster_enabled: bool,
     /// Bootstrap as a single-node cluster owning all 16384 slots.
     pub cluster_bootstrap: bool,
+    /// Enable protobuf value storage.
+    pub protobuf: bool,
 }
 
 impl TestServer {
@@ -56,6 +58,10 @@ impl TestServer {
 
         if let Some(ref pass) = opts.requirepass {
             cmd.arg("--requirepass").arg(pass);
+        }
+
+        if opts.protobuf {
+            cmd.arg("--protobuf");
         }
 
         if opts.cluster_enabled {
@@ -141,6 +147,36 @@ impl TestClient {
         Self {
             stream,
             buf: BytesMut::with_capacity(4096),
+        }
+    }
+
+    /// Sends a command with raw byte arguments and returns the parsed response.
+    /// Useful for binary data like protobuf descriptors.
+    pub async fn cmd_raw(&mut self, args: &[&[u8]]) -> Frame {
+        let parts: Vec<Frame> = args
+            .iter()
+            .map(|a| Frame::Bulk(Bytes::copy_from_slice(a)))
+            .collect();
+        let frame = Frame::Array(parts);
+
+        let mut out = BytesMut::new();
+        frame.serialize(&mut out);
+        self.stream.write_all(&out).await.unwrap();
+
+        loop {
+            match parse_frame(&self.buf) {
+                Ok(Some((frame, consumed))) => {
+                    let _ = self.buf.split_to(consumed);
+                    return frame;
+                }
+                Ok(None) => {
+                    let n = self.stream.read_buf(&mut self.buf).await.unwrap();
+                    if n == 0 {
+                        panic!("server closed connection while waiting for response");
+                    }
+                }
+                Err(e) => panic!("protocol error: {e}"),
+            }
         }
     }
 

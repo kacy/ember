@@ -16,9 +16,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
 #[cfg(feature = "protobuf")]
 use bytes::Bytes;
+use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
@@ -381,9 +381,9 @@ async fn execute_concurrent(
                     Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
                 }
                 Ok(ember_core::ShardResponse::ProtoValue(None)) => Frame::Null,
-                Ok(ember_core::ShardResponse::WrongType) => {
-                    Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
-                }
+                Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+                ),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -400,9 +400,9 @@ async fn execute_concurrent(
                     Frame::Bulk(Bytes::from(name))
                 }
                 Ok(ember_core::ShardResponse::ProtoTypeName(None)) => Frame::Null,
-                Ok(ember_core::ShardResponse::WrongType) => {
-                    Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
-                }
+                Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+                ),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }

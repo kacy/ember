@@ -14,4 +14,5 @@ harness = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 bytes = { workspace = true }
 ember-protocol = { workspace = true }
+prost-reflect = { workspace = true }
 tempfile = "3"
