@@ -280,6 +280,14 @@ pub enum ShardRequest {
     ProtoType {
         key: String,
     },
+    /// Writes a ProtoRegister AOF record (no keyspace mutation).
+    /// Broadcast to all shards after a schema registration so the
+    /// schema is recovered from any shard's AOF on restart.
+    #[cfg(feature = "protobuf")]
+    ProtoRegisterAof {
+        name: String,
+        descriptor: Bytes,
+    },
 }
 
 /// The shard's response to a request.
@@ -875,6 +883,10 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
             Ok(name) => ShardResponse::ProtoTypeName(name),
             Err(_) => ShardResponse::WrongType,
         },
+        // ProtoRegisterAof is a no-op for the keyspace — the AOF record
+        // is written by the to_aof_record path after dispatch returns Ok.
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoRegisterAof { .. } => ShardResponse::Ok,
         // snapshot/rewrite/flush_async are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof | ShardRequest::FlushDbAsync => {
             ShardResponse::Ok
@@ -1037,6 +1049,14 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 expire_ms,
             })
         }
+        #[cfg(feature = "protobuf")]
+        (
+            ShardRequest::ProtoRegisterAof { name, descriptor },
+            ShardResponse::Ok,
+        ) => Some(AofRecord::ProtoRegister {
+            name: name.clone(),
+            descriptor: descriptor.clone(),
+        }),
         _ => None,
     }
 }

@@ -554,7 +554,10 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
         | Command::SRem { ref key, .. }
         | Command::SMembers { ref key }
         | Command::SIsMember { ref key, .. }
-        | Command::SCard { ref key } => cluster.check_slot(key.as_bytes()).await,
+        | Command::SCard { ref key }
+        | Command::ProtoSet { ref key, .. }
+        | Command::ProtoGet { ref key }
+        | Command::ProtoType { ref key } => cluster.check_slot(key.as_bytes()).await,
 
         // multi-key commands — crossslot validation + slot ownership
         Command::Del { ref keys }
@@ -1619,6 +1622,170 @@ async fn execute(
         | Command::PSubscribe { .. }
         | Command::PUnsubscribe { .. } => {
             Frame::Error("ERR subscribe commands should not reach execute".into())
+        }
+
+        // -- protobuf commands --
+        #[cfg(feature = "protobuf")]
+        Command::ProtoRegister { name, descriptor } => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let result = {
+                let mut reg = match registry.write() {
+                    Ok(r) => r,
+                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                };
+                reg.register(name.clone(), descriptor.clone())
+            };
+            match result {
+                Ok(types) => {
+                    // persist the registration to all shards' AOF
+                    let _ = engine
+                        .broadcast(|| ShardRequest::ProtoRegisterAof {
+                            name: name.clone(),
+                            descriptor: descriptor.clone(),
+                        })
+                        .await;
+                    Frame::Array(
+                        types
+                            .into_iter()
+                            .map(|t| Frame::Bulk(Bytes::from(t)))
+                            .collect(),
+                    )
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoSet {
+            key,
+            type_name,
+            data,
+            expire,
+            nx,
+            xx,
+        } => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            // validate the bytes against the schema before storing
+            {
+                let reg = match registry.read() {
+                    Ok(r) => r,
+                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                };
+                if let Err(e) = reg.validate(&type_name, &data) {
+                    return Frame::Error(format!("ERR {e}"));
+                }
+            }
+            let duration = expire.map(|e| match e {
+                SetExpire::Ex(secs) => Duration::from_secs(secs),
+                SetExpire::Px(millis) => Duration::from_millis(millis),
+            });
+            let req = ShardRequest::ProtoSet {
+                key: key.clone(),
+                type_name,
+                data,
+                expire: duration,
+                nx,
+                xx,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoGet { key } => {
+            if engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ShardRequest::ProtoGet { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoValue(Some((type_name, data)))) => Frame::Array(vec![
+                    Frame::Bulk(Bytes::from(type_name)),
+                    Frame::Bulk(data),
+                ]),
+                Ok(ShardResponse::ProtoValue(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoType { key } => {
+            if engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ShardRequest::ProtoType { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoTypeName(Some(name))) => {
+                    Frame::Bulk(Bytes::from(name))
+                }
+                Ok(ShardResponse::ProtoTypeName(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoSchemas => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let reg = match registry.read() {
+                Ok(r) => r,
+                Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+            };
+            let names = reg.schema_names();
+            Frame::Array(
+                names
+                    .into_iter()
+                    .map(|n| Frame::Bulk(Bytes::from(n)))
+                    .collect(),
+            )
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoDescribe { name } => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let reg = match registry.read() {
+                Ok(r) => r,
+                Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+            };
+            match reg.describe(&name) {
+                Some(types) => Frame::Array(
+                    types
+                        .into_iter()
+                        .map(|t| Frame::Bulk(Bytes::from(t)))
+                        .collect(),
+                ),
+                None => Frame::Error(format!("ERR unknown schema '{name}'")),
+            }
+        }
+
+        // when protobuf feature is disabled, proto commands are unknown
+        #[cfg(not(feature = "protobuf"))]
+        Command::ProtoRegister { .. }
+        | Command::ProtoSet { .. }
+        | Command::ProtoGet { .. }
+        | Command::ProtoType { .. }
+        | Command::ProtoSchemas
+        | Command::ProtoDescribe { .. } => {
+            Frame::Error("ERR unknown command (protobuf support not compiled)".into())
         }
 
         // AUTH on an already-authenticated connection (re-auth)
