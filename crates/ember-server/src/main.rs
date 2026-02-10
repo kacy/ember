@@ -115,6 +115,15 @@ struct Args {
     #[arg(long, default_value = "no", env = "EMBER_TLS_AUTH_CLIENTS")]
     tls_auth_clients: String,
 
+    // -- encryption at rest --
+    /// path to a 32-byte key file for encrypting AOF and snapshot files.
+    /// accepts 32 raw bytes or 64 hex characters. when set, new persistence
+    /// files use AES-256-GCM encryption. existing plaintext files are read
+    /// normally and migrated on the next BGREWRITEAOF/BGSAVE.
+    #[cfg(feature = "encryption")]
+    #[arg(long, env = "EMBER_ENCRYPTION_KEY_FILE")]
+    encryption_key_file: Option<PathBuf>,
+
     // -- cluster options --
     /// enable cluster mode with gossip-based discovery and slot routing
     #[arg(long, env = "EMBER_CLUSTER_ENABLED")]
@@ -196,6 +205,26 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // load encryption key if configured
+    #[cfg(feature = "encryption")]
+    let encryption_key = if let Some(ref key_path) = args.encryption_key_file {
+        match ember_persistence::encryption::EncryptionKey::from_file(key_path) {
+            Ok(key) => Some(key),
+            Err(e) => {
+                eprintln!("failed to load encryption key: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    #[cfg(feature = "encryption")]
+    if encryption_key.is_some() && !args.appendonly && args.data_dir.is_none() {
+        eprintln!("--encryption-key-file requires --data-dir and --appendonly");
+        std::process::exit(1);
+    }
+
     // build persistence config if data-dir is set or appendonly is enabled
     let persistence = if args.appendonly || args.data_dir.is_some() {
         let data_dir = args.data_dir.unwrap_or_else(|| {
@@ -215,6 +244,8 @@ async fn main() {
             data_dir,
             append_only: args.appendonly,
             fsync_policy,
+            #[cfg(feature = "encryption")]
+            encryption_key,
         })
     } else {
         None
@@ -237,6 +268,11 @@ async fn main() {
             fsync = ?p.fsync_policy,
             "persistence enabled"
         );
+
+        #[cfg(feature = "encryption")]
+        if p.encryption_key.is_some() {
+            info!("encryption at rest enabled (AES-256-GCM)");
+        }
     }
 
     // install prometheus metrics exporter if --metrics-port is set

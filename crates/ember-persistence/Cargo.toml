@@ -9,11 +9,18 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+encryption = ["aes-gcm", "rand"]
+
 [dependencies]
 thiserror = { workspace = true }
 bytes = { workspace = true }
 crc32fast = { workspace = true }
 tracing = { workspace = true }
+
+# optional: encryption at rest (AES-256-GCM)
+aes-gcm = { version = "0.10", optional = true }
+rand = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
