@@ -194,6 +194,61 @@ impl SchemaRegistry {
         value_to_frame(&value, &field_desc)
     }
 
+    /// Updates a single scalar field in an encoded protobuf message.
+    ///
+    /// Decodes the message, walks the dot-separated `field_path`, parses
+    /// `raw_value` according to the field's type descriptor, sets the field,
+    /// and re-encodes the message. Returns the new encoded bytes.
+    ///
+    /// Only supports scalar fields — repeated, map, and message fields
+    /// return an error directing clients to use `PROTO.SET`.
+    pub fn set_field(
+        &self,
+        type_name: &str,
+        data: &[u8],
+        field_path: &str,
+        raw_value: &str,
+    ) -> Result<Bytes, SchemaError> {
+        let descriptor = self.find_message(type_name)?;
+        let mut msg = DynamicMessage::decode(descriptor, data)
+            .map_err(|e| SchemaError::ValidationFailed(e.to_string()))?;
+
+        let (parent, leaf_name, leaf_desc) = resolve_field_path_mut(&mut msg, field_path)?;
+        let parsed = parse_field_value(raw_value, &leaf_desc)?;
+        parent.set_field_by_name(&leaf_name, parsed);
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf)
+            .map_err(|e| SchemaError::ValidationFailed(format!("re-encode failed: {e}")))?;
+        Ok(Bytes::from(buf))
+    }
+
+    /// Clears a single field in an encoded protobuf message, resetting it
+    /// to its default value.
+    ///
+    /// Decodes the message, walks the dot-separated `field_path`, clears the
+    /// leaf field, and re-encodes. Returns the new encoded bytes.
+    pub fn clear_field(
+        &self,
+        type_name: &str,
+        data: &[u8],
+        field_path: &str,
+    ) -> Result<Bytes, SchemaError> {
+        let descriptor = self.find_message(type_name)?;
+        let mut msg = DynamicMessage::decode(descriptor, data)
+            .map_err(|e| SchemaError::ValidationFailed(e.to_string()))?;
+
+        let (parent, leaf_name, _leaf_desc) = resolve_field_path_mut(&mut msg, field_path)?;
+        parent.clear_field_by_name(&leaf_name);
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf)
+            .map_err(|e| SchemaError::ValidationFailed(format!("re-encode failed: {e}")))?;
+        Ok(Bytes::from(buf))
+    }
+
     /// Looks up a message descriptor by full name across all schemas.
     fn find_message(&self, message_type: &str) -> Result<MessageDescriptor, SchemaError> {
         for schema in self.schemas.values() {
@@ -300,6 +355,164 @@ fn value_to_frame(
         )),
         prost_reflect::Value::Map(_) => Err(SchemaError::ValidationFailed(
             "use PROTO.GET for map fields".into(),
+        )),
+    }
+}
+
+/// Walks a dot-separated field path through a mutable `DynamicMessage`,
+/// returning the parent message (mutably), the leaf field name, and its
+/// descriptor. Used by `set_field` and `clear_field`.
+///
+/// For a simple path like `"name"`, returns `(msg, "name", desc)`.
+/// For a nested path like `"address.city"`, drills into the `address`
+/// message field and returns `(address_msg, "city", city_desc)`.
+fn resolve_field_path_mut<'a>(
+    msg: &'a mut DynamicMessage,
+    path: &str,
+) -> Result<(&'a mut DynamicMessage, String, FieldDescriptor), SchemaError> {
+    if path.is_empty() {
+        return Err(SchemaError::FieldNotFound("empty field path".into()));
+    }
+
+    let segments: Vec<&str> = path.split('.').collect();
+    for seg in &segments {
+        if seg.is_empty() {
+            return Err(SchemaError::FieldNotFound(format!(
+                "invalid field path '{path}': empty segment"
+            )));
+        }
+    }
+
+    // for a single segment, just verify the field exists and return
+    if segments.len() == 1 {
+        let field_desc = msg
+            .descriptor()
+            .get_field_by_name(segments[0])
+            .ok_or_else(|| SchemaError::FieldNotFound(segments[0].to_string()))?;
+        return Ok((msg, segments[0].to_string(), field_desc));
+    }
+
+    // walk intermediate segments mutably, stopping before the leaf
+    let mut current = msg;
+    for segment in &segments[..segments.len() - 1] {
+        let field_desc = current
+            .descriptor()
+            .get_field_by_name(segment)
+            .ok_or_else(|| SchemaError::FieldNotFound(segment.to_string()))?;
+
+        if !matches!(field_desc.kind(), Kind::Message(_)) {
+            return Err(SchemaError::FieldNotFound(format!(
+                "'{segment}' is not a message field, cannot traverse further"
+            )));
+        }
+
+        // ensure the nested message exists (get or init default)
+        if !current.has_field_by_name(segment) {
+            let nested_desc = match field_desc.kind() {
+                Kind::Message(m) => m,
+                _ => unreachable!(),
+            };
+            current.set_field_by_name(
+                segment,
+                prost_reflect::Value::Message(DynamicMessage::new(nested_desc)),
+            );
+        }
+
+        // get mutable reference to the nested message
+        let val = current.get_field_by_name_mut(segment).ok_or_else(|| {
+            SchemaError::FieldNotFound(format!("failed to get mutable reference to '{segment}'"))
+        })?;
+        current = match val {
+            prost_reflect::Value::Message(ref mut nested) => nested,
+            _ => {
+                return Err(SchemaError::FieldNotFound(format!(
+                    "'{segment}' is not a message field"
+                )));
+            }
+        };
+    }
+
+    let leaf = segments.last().expect("at least 2 segments");
+    let leaf_desc = current
+        .descriptor()
+        .get_field_by_name(leaf)
+        .ok_or_else(|| SchemaError::FieldNotFound(leaf.to_string()))?;
+
+    Ok((current, leaf.to_string(), leaf_desc))
+}
+
+/// Parses a raw string value into a `prost_reflect::Value` based on the
+/// field descriptor's type. Only supports scalar types.
+fn parse_field_value(
+    raw: &str,
+    field_desc: &FieldDescriptor,
+) -> Result<prost_reflect::Value, SchemaError> {
+    if field_desc.is_list() || field_desc.is_map() {
+        return Err(SchemaError::ValidationFailed(
+            "use PROTO.SET for repeated/map fields".into(),
+        ));
+    }
+
+    match field_desc.kind() {
+        Kind::String => Ok(prost_reflect::Value::String(raw.to_owned())),
+        Kind::Bytes => Ok(prost_reflect::Value::Bytes(Bytes::from(raw.to_owned()))),
+        Kind::Bool => match raw {
+            "true" | "1" => Ok(prost_reflect::Value::Bool(true)),
+            "false" | "0" => Ok(prost_reflect::Value::Bool(false)),
+            _ => Err(SchemaError::ValidationFailed(format!(
+                "invalid bool value: '{raw}' (expected true/false/1/0)"
+            ))),
+        },
+        Kind::Int32 | Kind::Sint32 | Kind::Sfixed32 => {
+            let n: i32 = raw
+                .parse()
+                .map_err(|e| SchemaError::ValidationFailed(format!("invalid int32 value: {e}")))?;
+            Ok(prost_reflect::Value::I32(n))
+        }
+        Kind::Int64 | Kind::Sint64 | Kind::Sfixed64 => {
+            let n: i64 = raw
+                .parse()
+                .map_err(|e| SchemaError::ValidationFailed(format!("invalid int64 value: {e}")))?;
+            Ok(prost_reflect::Value::I64(n))
+        }
+        Kind::Uint32 | Kind::Fixed32 => {
+            let n: u32 = raw
+                .parse()
+                .map_err(|e| SchemaError::ValidationFailed(format!("invalid uint32 value: {e}")))?;
+            Ok(prost_reflect::Value::U32(n))
+        }
+        Kind::Uint64 | Kind::Fixed64 => {
+            let n: u64 = raw
+                .parse()
+                .map_err(|e| SchemaError::ValidationFailed(format!("invalid uint64 value: {e}")))?;
+            Ok(prost_reflect::Value::U64(n))
+        }
+        Kind::Float => {
+            let n: f32 = raw
+                .parse()
+                .map_err(|e| SchemaError::ValidationFailed(format!("invalid float value: {e}")))?;
+            Ok(prost_reflect::Value::F32(n))
+        }
+        Kind::Double => {
+            let n: f64 = raw
+                .parse()
+                .map_err(|e| SchemaError::ValidationFailed(format!("invalid double value: {e}")))?;
+            Ok(prost_reflect::Value::F64(n))
+        }
+        Kind::Enum(enum_desc) => {
+            // try name lookup first, then parse as number
+            if let Some(val) = enum_desc.get_value_by_name(raw) {
+                return Ok(prost_reflect::Value::EnumNumber(val.number()));
+            }
+            let n: i32 = raw.parse().map_err(|_| {
+                SchemaError::ValidationFailed(format!(
+                    "invalid enum value: '{raw}' (not a valid name or number)"
+                ))
+            })?;
+            Ok(prost_reflect::Value::EnumNumber(n))
+        }
+        Kind::Message(_) => Err(SchemaError::ValidationFailed(
+            "use PROTO.SET for nested message fields".into(),
         )),
     }
 }
@@ -682,5 +895,173 @@ mod tests {
         let data = encode_user(&registry, "alice");
         let err = registry.get_field("test.User", &data, "").unwrap_err();
         assert!(matches!(err, SchemaError::FieldNotFound(_)));
+    }
+
+    // --- set_field / clear_field tests ---
+
+    /// Builds a descriptor with string, int32, and bool fields for mutation testing.
+    fn make_multi_field_descriptor() -> Bytes {
+        use prost_reflect::prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("test.proto".into()),
+                package: Some("test".into()),
+                message_type: vec![DescriptorProto {
+                    name: Some("Profile".into()),
+                    field: vec![
+                        FieldDescriptorProto {
+                            name: Some("name".into()),
+                            number: Some(1),
+                            r#type: Some(9), // TYPE_STRING
+                            label: Some(1),
+                            ..Default::default()
+                        },
+                        FieldDescriptorProto {
+                            name: Some("age".into()),
+                            number: Some(2),
+                            r#type: Some(5), // TYPE_INT32
+                            label: Some(1),
+                            ..Default::default()
+                        },
+                        FieldDescriptorProto {
+                            name: Some("active".into()),
+                            number: Some(3),
+                            r#type: Some(8), // TYPE_BOOL
+                            label: Some(1),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        fds.encode(&mut buf).unwrap();
+        Bytes::from(buf)
+    }
+
+    /// Helper: encode a test.Profile message with initial values.
+    fn encode_profile(registry: &SchemaRegistry, name: &str, age: i32, active: bool) -> Vec<u8> {
+        let pool = &registry.schemas["profiles"].pool;
+        let msg_desc = pool.get_message_by_name("test.Profile").unwrap();
+        let mut msg = DynamicMessage::new(msg_desc);
+        msg.set_field_by_name("name", prost_reflect::Value::String(name.into()));
+        msg.set_field_by_name("age", prost_reflect::Value::I32(age));
+        msg.set_field_by_name("active", prost_reflect::Value::Bool(active));
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+        buf
+    }
+
+    #[test]
+    fn set_field_string() {
+        let desc = make_multi_field_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("profiles".into(), desc).unwrap();
+
+        let data = encode_profile(&registry, "alice", 25, true);
+        let new_data = registry
+            .set_field("test.Profile", &data, "name", "bob")
+            .unwrap();
+
+        // verify the field was updated
+        let frame = registry
+            .get_field("test.Profile", &new_data, "name")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("bob")));
+
+        // verify other fields are preserved
+        let frame = registry
+            .get_field("test.Profile", &new_data, "age")
+            .unwrap();
+        assert_eq!(frame, Frame::Integer(25));
+    }
+
+    #[test]
+    fn set_field_int32() {
+        let desc = make_multi_field_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("profiles".into(), desc).unwrap();
+
+        let data = encode_profile(&registry, "alice", 25, true);
+        let new_data = registry
+            .set_field("test.Profile", &data, "age", "30")
+            .unwrap();
+
+        let frame = registry
+            .get_field("test.Profile", &new_data, "age")
+            .unwrap();
+        assert_eq!(frame, Frame::Integer(30));
+    }
+
+    #[test]
+    fn set_field_bool() {
+        let desc = make_multi_field_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("profiles".into(), desc).unwrap();
+
+        let data = encode_profile(&registry, "alice", 25, true);
+        let new_data = registry
+            .set_field("test.Profile", &data, "active", "false")
+            .unwrap();
+
+        let frame = registry
+            .get_field("test.Profile", &new_data, "active")
+            .unwrap();
+        assert_eq!(frame, Frame::Integer(0));
+    }
+
+    #[test]
+    fn set_field_invalid_int_value() {
+        let desc = make_multi_field_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("profiles".into(), desc).unwrap();
+
+        let data = encode_profile(&registry, "alice", 25, true);
+        let err = registry
+            .set_field("test.Profile", &data, "age", "not_a_number")
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::ValidationFailed(_)));
+    }
+
+    #[test]
+    fn set_field_nonexistent() {
+        let desc = make_multi_field_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("profiles".into(), desc).unwrap();
+
+        let data = encode_profile(&registry, "alice", 25, true);
+        let err = registry
+            .set_field("test.Profile", &data, "nonexistent", "value")
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::FieldNotFound(_)));
+    }
+
+    #[test]
+    fn clear_field_resets_to_default() {
+        let desc = make_multi_field_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("profiles".into(), desc).unwrap();
+
+        let data = encode_profile(&registry, "alice", 25, true);
+        let new_data = registry.clear_field("test.Profile", &data, "name").unwrap();
+
+        // string default is empty
+        let frame = registry
+            .get_field("test.Profile", &new_data, "name")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("")));
+
+        // other fields preserved
+        let frame = registry
+            .get_field("test.Profile", &new_data, "age")
+            .unwrap();
+        assert_eq!(frame, Frame::Integer(25));
     }
 }
