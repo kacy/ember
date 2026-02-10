@@ -628,7 +628,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "ember-cluster"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "openraft",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "ember-integration-tests"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "ember-protocol",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "ember-persistence"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aes-gcm",
  "bytes",
@@ -666,7 +666,7 @@ dependencies = [
 
 [[package]]
 name = "ember-protocol"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "criterion",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "ember-server"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "clap",
@@ -701,7 +701,7 @@ dependencies = [
 
 [[package]]
 name = "emberkv-cli"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "clap",
@@ -720,7 +720,7 @@ dependencies = [
 
 [[package]]
 name = "emberkv-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "bytes",
  "criterion",
