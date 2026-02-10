@@ -503,21 +503,101 @@ async fn process(
     }
 }
 
-/// Checks if the cluster owns the slot for the given key.
+/// Validates cluster slot ownership for the given command.
 ///
-/// Returns `None` if we should proceed (either not in cluster mode, or
-/// we own the slot). Returns `Some(Frame)` with a MOVED/CLUSTERDOWN error
-/// if the command should not be executed locally.
-async fn check_cluster_slot(ctx: &ServerContext, key: &str) -> Option<Frame> {
-    ctx.cluster.as_ref()?.check_slot(key.as_bytes()).await
-}
-
-/// Checks that all keys hash to the same slot when in cluster mode.
-///
-/// Returns `None` if ok. Returns `Some(Frame)` with CROSSSLOT error if not.
-fn check_crossslot(ctx: &ServerContext, keys: &[String]) -> Option<Frame> {
+/// Returns `None` if the command should proceed (not in cluster mode,
+/// or the local node owns the slot). Returns `Some(Frame)` with a MOVED,
+/// CLUSTERDOWN, or CROSSSLOT error if execution should be rejected.
+async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame> {
     let cluster = ctx.cluster.as_ref()?;
-    cluster.check_crossslot(keys).err()
+
+    match cmd {
+        // single-key commands — check slot ownership for the key
+        Command::Get { ref key }
+        | Command::Set { ref key, .. }
+        | Command::Expire { ref key, .. }
+        | Command::Ttl { ref key }
+        | Command::Incr { ref key }
+        | Command::Decr { ref key }
+        | Command::IncrBy { ref key, .. }
+        | Command::DecrBy { ref key, .. }
+        | Command::Append { ref key, .. }
+        | Command::Strlen { ref key }
+        | Command::IncrByFloat { ref key, .. }
+        | Command::Persist { ref key }
+        | Command::Pttl { ref key }
+        | Command::Pexpire { ref key, .. }
+        | Command::Type { ref key }
+        | Command::LPush { ref key, .. }
+        | Command::RPush { ref key, .. }
+        | Command::LPop { ref key }
+        | Command::RPop { ref key }
+        | Command::LRange { ref key, .. }
+        | Command::LLen { ref key }
+        | Command::ZAdd { ref key, .. }
+        | Command::ZRem { ref key, .. }
+        | Command::ZScore { ref key, .. }
+        | Command::ZRank { ref key, .. }
+        | Command::ZRange { ref key, .. }
+        | Command::ZCard { ref key }
+        | Command::HSet { ref key, .. }
+        | Command::HGet { ref key, .. }
+        | Command::HGetAll { ref key }
+        | Command::HDel { ref key, .. }
+        | Command::HExists { ref key, .. }
+        | Command::HLen { ref key }
+        | Command::HIncrBy { ref key, .. }
+        | Command::HKeys { ref key }
+        | Command::HVals { ref key }
+        | Command::HMGet { ref key, .. }
+        | Command::SAdd { ref key, .. }
+        | Command::SRem { ref key, .. }
+        | Command::SMembers { ref key }
+        | Command::SIsMember { ref key, .. }
+        | Command::SCard { ref key } => cluster.check_slot(key.as_bytes()).await,
+
+        // multi-key commands — crossslot validation + slot ownership
+        Command::Del { ref keys }
+        | Command::Unlink { ref keys }
+        | Command::Exists { ref keys }
+        | Command::MGet { ref keys } => {
+            if let Err(err) = cluster.check_crossslot(keys) {
+                return Some(err);
+            }
+            if let Some(first) = keys.first() {
+                return cluster.check_slot(first.as_bytes()).await;
+            }
+            None
+        }
+
+        // rename: crossslot check on both keys
+        Command::Rename {
+            ref key,
+            ref newkey,
+        } => {
+            let pair = [key.clone(), newkey.clone()];
+            if let Err(err) = cluster.check_crossslot(&pair) {
+                return Some(err);
+            }
+            cluster.check_slot(key.as_bytes()).await
+        }
+
+        // mset: extract keys from pairs for crossslot check
+        Command::MSet { ref pairs } => {
+            let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+            if let Err(err) = cluster.check_crossslot(&keys) {
+                return Some(err);
+            }
+            if let Some(first) = keys.first() {
+                return cluster.check_slot(first.as_bytes()).await;
+            }
+            None
+        }
+
+        // everything else (PING, ECHO, INFO, DBSIZE, cluster commands,
+        // pubsub, AUTH, etc.) doesn't need slot routing
+        _ => None,
+    }
 }
 
 /// Executes a parsed command and returns the response frame.
@@ -532,6 +612,11 @@ async fn execute(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
 ) -> Frame {
+    // cluster slot validation — check once before dispatch
+    if let Some(redirect) = cluster_slot_check(ctx, &cmd).await {
+        return redirect;
+    }
+
     match cmd {
         // -- no shard needed --
         Command::Ping(None) => Frame::Simple("PONG".into()),
@@ -540,9 +625,6 @@ async fn execute(
 
         // -- single-key commands --
         Command::Get { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Get { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
@@ -560,9 +642,6 @@ async fn execute(
             nx,
             xx,
         } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let duration = expire.map(|e| match e {
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
@@ -584,9 +663,6 @@ async fn execute(
         }
 
         Command::Expire { key, seconds } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Expire {
                 key: key.clone(),
                 seconds,
@@ -599,9 +675,6 @@ async fn execute(
         }
 
         Command::Ttl { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Ttl { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ttl(TtlResult::Seconds(s))) => Frame::Integer(s as i64),
@@ -613,9 +686,6 @@ async fn execute(
         }
 
         Command::Incr { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Incr { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
@@ -628,9 +698,6 @@ async fn execute(
         }
 
         Command::Decr { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Decr { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
@@ -643,9 +710,6 @@ async fn execute(
         }
 
         Command::IncrBy { key, delta } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::IncrBy {
                 key: key.clone(),
                 delta,
@@ -661,9 +725,6 @@ async fn execute(
         }
 
         Command::DecrBy { key, delta } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::DecrBy {
                 key: key.clone(),
                 delta,
@@ -679,9 +740,6 @@ async fn execute(
         }
 
         Command::Append { key, value } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Append {
                 key: key.clone(),
                 value,
@@ -696,9 +754,6 @@ async fn execute(
         }
 
         Command::Strlen { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Strlen { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
@@ -709,9 +764,6 @@ async fn execute(
         }
 
         Command::IncrByFloat { key, delta } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::IncrByFloat {
                 key: key.clone(),
                 delta,
@@ -727,9 +779,6 @@ async fn execute(
         }
 
         Command::Persist { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Persist { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
@@ -739,9 +788,6 @@ async fn execute(
         }
 
         Command::Pttl { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Pttl { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Ttl(TtlResult::Milliseconds(ms))) => Frame::Integer(ms as i64),
@@ -753,9 +799,6 @@ async fn execute(
         }
 
         Command::Pexpire { key, milliseconds } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Pexpire {
                 key: key.clone(),
                 milliseconds,
@@ -769,50 +812,18 @@ async fn execute(
 
         // -- multi-key fan-out --
         Command::Del { keys } => {
-            if let Some(err) = check_crossslot(ctx, &keys) {
-                return err;
-            }
-            if let Some(first) = keys.first() {
-                if let Some(redirect) = check_cluster_slot(ctx, first).await {
-                    return redirect;
-                }
-            }
             multi_key_bool(engine, &keys, |k| ShardRequest::Del { key: k }).await
         }
 
         Command::Unlink { keys } => {
-            if let Some(err) = check_crossslot(ctx, &keys) {
-                return err;
-            }
-            if let Some(first) = keys.first() {
-                if let Some(redirect) = check_cluster_slot(ctx, first).await {
-                    return redirect;
-                }
-            }
             multi_key_bool(engine, &keys, |k| ShardRequest::Unlink { key: k }).await
         }
 
         Command::Exists { keys } => {
-            if let Some(err) = check_crossslot(ctx, &keys) {
-                return err;
-            }
-            if let Some(first) = keys.first() {
-                if let Some(redirect) = check_cluster_slot(ctx, first).await {
-                    return redirect;
-                }
-            }
             multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
         }
 
         Command::MGet { keys } => {
-            if let Some(err) = check_crossslot(ctx, &keys) {
-                return err;
-            }
-            if let Some(first) = keys.first() {
-                if let Some(redirect) = check_cluster_slot(ctx, first).await {
-                    return redirect;
-                }
-            }
             match engine
                 .route_multi(&keys, |k| ShardRequest::Get { key: k })
                 .await
@@ -835,18 +846,6 @@ async fn execute(
         }
 
         Command::MSet { pairs } => {
-            // crossslot check for cluster mode
-            if ctx.cluster.is_some() {
-                let mset_keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
-                if let Some(err) = check_crossslot(ctx, &mset_keys) {
-                    return err;
-                }
-                if let Some(first) = mset_keys.first() {
-                    if let Some(redirect) = check_cluster_slot(ctx, first).await {
-                        return redirect;
-                    }
-                }
-            }
             // Fan out individual SET requests — MSET always succeeds (or OOMs).
             // We build a HashMap for O(1) value lookups during routing. If there
             // are duplicate keys in pairs, the HashMap keeps the last value, which
@@ -946,14 +945,6 @@ async fn execute(
         }
 
         Command::Rename { key, newkey } => {
-            if ctx.cluster.is_some() {
-                if let Some(err) = check_crossslot(ctx, &[key.clone(), newkey.clone()]) {
-                    return err;
-                }
-                if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                    return redirect;
-                }
-            }
             let req = ShardRequest::Rename {
                 key: key.clone(),
                 newkey,
@@ -1052,9 +1043,6 @@ async fn execute(
 
         // -- list commands --
         Command::LPush { key, values } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::LPush {
                 key: key.clone(),
                 values,
@@ -1069,9 +1057,6 @@ async fn execute(
         }
 
         Command::RPush { key, values } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::RPush {
                 key: key.clone(),
                 values,
@@ -1086,9 +1071,6 @@ async fn execute(
         }
 
         Command::LPop { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::LPop { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
@@ -1100,9 +1082,6 @@ async fn execute(
         }
 
         Command::RPop { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::RPop { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
@@ -1114,9 +1093,6 @@ async fn execute(
         }
 
         Command::LRange { key, start, stop } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::LRange {
                 key: key.clone(),
                 start,
@@ -1134,9 +1110,6 @@ async fn execute(
         }
 
         Command::LLen { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::LLen { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
@@ -1147,9 +1120,6 @@ async fn execute(
         }
 
         Command::Type { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::Type { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::TypeName(name)) => Frame::Simple(name.into()),
@@ -1164,9 +1134,6 @@ async fn execute(
             flags,
             members,
         } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::ZAdd {
                 key: key.clone(),
                 members,
@@ -1186,9 +1153,6 @@ async fn execute(
         }
 
         Command::ZRem { key, members } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::ZRem {
                 key: key.clone(),
                 members,
@@ -1202,9 +1166,6 @@ async fn execute(
         }
 
         Command::ZScore { key, member } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::ZScore {
                 key: key.clone(),
                 member,
@@ -1219,9 +1180,6 @@ async fn execute(
         }
 
         Command::ZRank { key, member } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::ZRank {
                 key: key.clone(),
                 member,
@@ -1241,9 +1199,6 @@ async fn execute(
             stop,
             with_scores,
         } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::ZRange {
                 key: key.clone(),
                 start,
@@ -1268,9 +1223,6 @@ async fn execute(
         }
 
         Command::ZCard { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::ZCard { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
@@ -1282,9 +1234,6 @@ async fn execute(
 
         // --- hash commands ---
         Command::HSet { key, fields } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HSet {
                 key: key.clone(),
                 fields,
@@ -1299,9 +1248,6 @@ async fn execute(
         }
 
         Command::HGet { key, field } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HGet {
                 key: key.clone(),
                 field,
@@ -1316,9 +1262,6 @@ async fn execute(
         }
 
         Command::HGetAll { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HGetAll { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::HashFields(fields)) => {
@@ -1336,9 +1279,6 @@ async fn execute(
         }
 
         Command::HDel { key, fields } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HDel {
                 key: key.clone(),
                 fields,
@@ -1352,9 +1292,6 @@ async fn execute(
         }
 
         Command::HExists { key, field } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HExists {
                 key: key.clone(),
                 field,
@@ -1368,9 +1305,6 @@ async fn execute(
         }
 
         Command::HLen { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HLen { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
@@ -1381,9 +1315,6 @@ async fn execute(
         }
 
         Command::HIncrBy { key, field, delta } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HIncrBy {
                 key: key.clone(),
                 field,
@@ -1400,9 +1331,6 @@ async fn execute(
         }
 
         Command::HKeys { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HKeys { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::StringArray(keys)) => Frame::Array(
@@ -1417,9 +1345,6 @@ async fn execute(
         }
 
         Command::HVals { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HVals { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Array(vals)) => {
@@ -1432,9 +1357,6 @@ async fn execute(
         }
 
         Command::HMGet { key, fields } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::HMGet {
                 key: key.clone(),
                 fields,
@@ -1456,9 +1378,6 @@ async fn execute(
 
         // --- set commands ---
         Command::SAdd { key, members } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::SAdd {
                 key: key.clone(),
                 members,
@@ -1473,9 +1392,6 @@ async fn execute(
         }
 
         Command::SRem { key, members } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::SRem {
                 key: key.clone(),
                 members,
@@ -1489,9 +1405,6 @@ async fn execute(
         }
 
         Command::SMembers { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::SMembers { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
@@ -1507,9 +1420,6 @@ async fn execute(
         }
 
         Command::SIsMember { key, member } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::SIsMember {
                 key: key.clone(),
                 member,
@@ -1523,9 +1433,6 @@ async fn execute(
         }
 
         Command::SCard { key } => {
-            if let Some(redirect) = check_cluster_slot(ctx, &key).await {
-                return redirect;
-            }
             let req = ShardRequest::SCard { key: key.clone() };
             match engine.route(&key, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
@@ -1590,13 +1497,9 @@ async fn execute(
         | Command::ClusterReplicate { .. }
         | Command::ClusterFailover { .. }
         | Command::ClusterCountKeysInSlot { .. }
-        | Command::ClusterGetKeysInSlot { .. } => {
-            Frame::Error("ERR not yet implemented".into())
-        }
+        | Command::ClusterGetKeysInSlot { .. } => Frame::Error("ERR not yet implemented".into()),
 
-        Command::Migrate { .. } => {
-            Frame::Error("ERR not yet implemented".into())
-        }
+        Command::Migrate { .. } => Frame::Error("ERR not yet implemented".into()),
 
         // -- slow log commands --
         Command::SlowLogGet { count } => {
