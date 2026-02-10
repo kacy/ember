@@ -305,6 +305,80 @@ async fn persistence_recovery() {
     drop(data_dir);
 }
 
+// ---- PROTO.GETFIELD sharded tests ----
+
+#[tokio::test]
+async fn getfield_string() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let data = encode_message(&desc, "test.User", "name", "alice");
+    c.cmd_raw(&[b"PROTO.SET", b"user:1", b"test.User", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "user:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("alice")));
+}
+
+#[tokio::test]
+async fn getfield_missing_key() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "nonexistent", "name"]).await;
+    assert!(matches!(resp, Frame::Null));
+}
+
+#[tokio::test]
+async fn getfield_wrong_type() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    c.ok(&["SET", "str:key", "hello"]).await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "str:key", "name"]).await;
+    assert!(matches!(resp, Frame::Error(ref s) if s.starts_with("WRONGTYPE")));
+}
+
+#[tokio::test]
+async fn getfield_nonexistent_field() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let data = encode_message(&desc, "test.User", "name", "alice");
+    c.cmd_raw(&[b"PROTO.SET", b"user:1", b"test.User", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "user:1", "nonexistent"]).await;
+    assert!(matches!(resp, Frame::Error(_)));
+}
+
+#[tokio::test]
+async fn getfield_default_value() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    // encode a message with the field at its default (empty string)
+    let data = encode_message(&desc, "test.User", "name", "");
+    c.cmd_raw(&[b"PROTO.SET", b"user:1", b"test.User", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "user:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("")));
+}
+
 // ---- concurrent mode tests ----
 // These mirror the core sharded tests to verify the concurrent handler's
 // proto command routing through the engine fallback path.
@@ -436,4 +510,20 @@ async fn concurrent_get_missing_key_returns_null() {
 
     let resp = c.cmd(&["PROTO.TYPE", "nonexistent"]).await;
     assert!(matches!(resp, Frame::Null));
+}
+
+#[tokio::test]
+async fn concurrent_getfield_string() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let data = encode_message(&desc, "test.User", "name", "alice");
+    c.cmd_raw(&[b"PROTO.SET", b"user:1", b"test.User", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "user:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("alice")));
 }

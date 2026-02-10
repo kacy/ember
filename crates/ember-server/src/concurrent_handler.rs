@@ -448,13 +448,41 @@ async fn execute_concurrent(
             }
         }
 
+        #[cfg(feature = "protobuf")]
+        Command::ProtoGetField { key, field_path } => {
+            let registry = match _engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
+            match _engine.route(&key, req).await {
+                Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                    let reg = match registry.read() {
+                        Ok(r) => r,
+                        Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                    };
+                    match reg.get_field(&type_name, &data, &field_path) {
+                        Ok(frame) => frame,
+                        Err(e) => Frame::Error(format!("ERR {e}")),
+                    }
+                }
+                Ok(ember_core::ShardResponse::ProtoValue(None)) => Frame::Null,
+                Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+                ),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         #[cfg(not(feature = "protobuf"))]
         Command::ProtoRegister { .. }
         | Command::ProtoSet { .. }
         | Command::ProtoGet { .. }
         | Command::ProtoType { .. }
         | Command::ProtoSchemas
-        | Command::ProtoDescribe { .. } => {
+        | Command::ProtoDescribe { .. }
+        | Command::ProtoGetField { .. } => {
             Frame::Error("ERR unknown command (protobuf support not compiled)".into())
         }
 
