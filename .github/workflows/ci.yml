@@ -37,6 +37,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --workspace
       - name: test
         run: cargo test --workspace
 

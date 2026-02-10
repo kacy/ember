@@ -1554,13 +1554,9 @@ async fn execute(
             }
         }
 
-        Command::ClusterReplicate { .. } => {
-            Frame::Error("ERR REPLICATE not yet supported".into())
-        }
+        Command::ClusterReplicate { .. } => Frame::Error("ERR REPLICATE not yet supported".into()),
 
-        Command::ClusterFailover { .. } => {
-            Frame::Error("ERR FAILOVER not yet supported".into())
-        }
+        Command::ClusterFailover { .. } => Frame::Error("ERR FAILOVER not yet supported".into()),
 
         Command::Migrate { .. } => Frame::Error("ERR not yet implemented".into()),
 

@@ -248,9 +248,14 @@ pub enum ShardRequest {
         pattern: Option<String>,
     },
     /// Counts keys in this shard that hash to the given cluster slot.
-    CountKeysInSlot { slot: u16 },
+    CountKeysInSlot {
+        slot: u16,
+    },
     /// Returns up to `count` keys that hash to the given cluster slot.
-    GetKeysInSlot { slot: u16, count: usize },
+    GetKeysInSlot {
+        slot: u16,
+        count: usize,
+    },
 }
 
 /// The shard's response to a request.

@@ -6,6 +6,7 @@ members = [
     "crates/ember-persistence",
     "crates/ember-cluster",
     "crates/ember-cli",
+    "tests/integration",
 ]
 resolver = "2"
 
