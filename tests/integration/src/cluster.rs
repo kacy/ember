@@ -105,7 +105,7 @@ async fn cluster_keyslot() {
     let mut c = server.connect().await;
 
     let slot = c.get_int(&["CLUSTER", "KEYSLOT", "foo"]).await;
-    assert!(slot >= 0 && slot < 16384, "slot out of range: {slot}");
+    assert!((0..16384).contains(&slot), "slot out of range: {slot}");
 
     // same key should always hash to the same slot
     let slot2 = c.get_int(&["CLUSTER", "KEYSLOT", "foo"]).await;
