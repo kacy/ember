@@ -76,6 +76,8 @@ pub struct SnapshotWriter {
     /// Set to `true` after a successful `finish()`. Used by the `Drop`
     /// impl to clean up incomplete temp files.
     finished: bool,
+    #[cfg(feature = "encryption")]
+    encryption_key: Option<crate::encryption::EncryptionKey>,
 }
 
 impl SnapshotWriter {
@@ -83,25 +85,11 @@ impl SnapshotWriter {
     /// until [`Self::finish`] is called successfully.
     pub fn create(path: impl Into<PathBuf>, shard_id: u16) -> Result<Self, FormatError> {
         let final_path = path.into();
-        let tmp_path = final_path.with_extension("snap.tmp");
+        let (tmp_path, writer) = Self::open_tmp(&final_path)?;
+        let mut writer = BufWriter::new(writer);
 
-        let file = {
-            let mut opts = OpenOptions::new();
-            opts.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
-            opts.open(&tmp_path)?
-        };
-        let mut writer = BufWriter::new(file);
-
-        // write header: magic + version + shard_id + placeholder entry count
         format::write_header(&mut writer, format::SNAP_MAGIC)?;
         format::write_u16(&mut writer, shard_id)?;
-        // entry count — we'll seek back and update, or just write it now
-        // and track. since we're streaming, write 0 and update after.
         format::write_u32(&mut writer, 0)?;
 
         Ok(Self {
@@ -111,10 +99,59 @@ impl SnapshotWriter {
             hasher: crc32fast::Hasher::new(),
             count: 0,
             finished: false,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
         })
     }
 
+    /// Creates a new encrypted snapshot writer.
+    #[cfg(feature = "encryption")]
+    pub fn create_encrypted(
+        path: impl Into<PathBuf>,
+        shard_id: u16,
+        key: crate::encryption::EncryptionKey,
+    ) -> Result<Self, FormatError> {
+        let final_path = path.into();
+        let (tmp_path, file) = Self::open_tmp(&final_path)?;
+        let mut writer = BufWriter::new(file);
+
+        format::write_header_versioned(
+            &mut writer,
+            format::SNAP_MAGIC,
+            format::FORMAT_VERSION_ENCRYPTED,
+        )?;
+        format::write_u16(&mut writer, shard_id)?;
+        format::write_u32(&mut writer, 0)?;
+
+        Ok(Self {
+            final_path,
+            tmp_path,
+            writer,
+            hasher: crc32fast::Hasher::new(),
+            count: 0,
+            finished: false,
+            encryption_key: Some(key),
+        })
+    }
+
+    /// Opens the temp file for writing.
+    fn open_tmp(final_path: &Path) -> Result<(PathBuf, File), FormatError> {
+        let tmp_path = final_path.with_extension("snap.tmp");
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts.open(&tmp_path)?;
+        Ok((tmp_path, file))
+    }
+
     /// Writes a single entry to the snapshot.
+    ///
+    /// When encrypted, each entry is written as `[nonce: 12B][len: 4B][ciphertext]`.
+    /// The footer CRC covers the encrypted bytes (nonce + len + ciphertext).
     pub fn write_entry(&mut self, entry: &SnapEntry) -> Result<(), FormatError> {
         let mut buf = Vec::new();
         format::write_bytes(&mut buf, entry.key.as_bytes())?;
@@ -155,6 +192,21 @@ impl SnapshotWriter {
             }
         }
         format::write_i64(&mut buf, entry.expire_ms)?;
+
+        #[cfg(feature = "encryption")]
+        if let Some(ref key) = self.encryption_key {
+            let (nonce, ciphertext) = crate::encryption::encrypt_record(key, &buf)?;
+            // footer CRC covers the encrypted envelope
+            self.hasher.update(&nonce);
+            let ct_len_bytes = (ciphertext.len() as u32).to_le_bytes();
+            self.hasher.update(&ct_len_bytes);
+            self.hasher.update(&ciphertext);
+            self.writer.write_all(&nonce)?;
+            format::write_u32(&mut self.writer, ciphertext.len() as u32)?;
+            self.writer.write_all(&ciphertext)?;
+            self.count += 1;
+            return Ok(());
+        }
 
         self.hasher.update(&buf);
         self.writer.write_all(&buf)?;
@@ -206,13 +258,47 @@ pub struct SnapshotReader {
     pub entry_count: u32,
     read_so_far: u32,
     hasher: crc32fast::Hasher,
-    /// Format version — v1 has no type tags, v2 has type-tagged entries.
+    /// Format version — v1 has no type tags, v2 has type-tagged entries, v3 is encrypted.
     version: u8,
+    #[cfg(feature = "encryption")]
+    encryption_key: Option<crate::encryption::EncryptionKey>,
 }
 
 impl SnapshotReader {
     /// Opens a snapshot file and reads the header.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FormatError> {
+        let file = File::open(path.as_ref())?;
+        let mut reader = BufReader::new(file);
+
+        let version = format::read_header(&mut reader, format::SNAP_MAGIC)?;
+
+        if version == format::FORMAT_VERSION_ENCRYPTED {
+            return Err(FormatError::EncryptionRequired);
+        }
+
+        let shard_id = format::read_u16(&mut reader)?;
+        let entry_count = format::read_u32(&mut reader)?;
+
+        Ok(Self {
+            reader,
+            shard_id,
+            entry_count,
+            read_so_far: 0,
+            hasher: crc32fast::Hasher::new(),
+            version,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
+        })
+    }
+
+    /// Opens a snapshot file with an encryption key for decrypting v3 entries.
+    ///
+    /// Also handles v1/v2 (plaintext) files — the key is simply unused.
+    #[cfg(feature = "encryption")]
+    pub fn open_encrypted(
+        path: impl AsRef<Path>,
+        key: crate::encryption::EncryptionKey,
+    ) -> Result<Self, FormatError> {
         let file = File::open(path.as_ref())?;
         let mut reader = BufReader::new(file);
 
@@ -227,6 +313,7 @@ impl SnapshotReader {
             read_so_far: 0,
             hasher: crc32fast::Hasher::new(),
             version,
+            encryption_key: Some(key),
         })
     }
 
@@ -236,6 +323,16 @@ impl SnapshotReader {
             return Ok(None);
         }
 
+        #[cfg(feature = "encryption")]
+        if self.version == format::FORMAT_VERSION_ENCRYPTED {
+            return self.read_encrypted_entry();
+        }
+
+        self.read_plaintext_entry()
+    }
+
+    /// Reads a plaintext (v1/v2) entry.
+    fn read_plaintext_entry(&mut self) -> Result<Option<SnapEntry>, FormatError> {
         let mut buf = Vec::new();
 
         let key_bytes = format::read_bytes(&mut self.reader)?;
@@ -342,6 +439,132 @@ impl SnapshotReader {
         self.read_so_far += 1;
         Ok(Some(SnapEntry {
             key,
+            value,
+            expire_ms,
+        }))
+    }
+
+    /// Reads an encrypted (v3) entry: nonce + len + ciphertext.
+    /// Decrypts to get the same bytes as a plaintext entry, then parses.
+    #[cfg(feature = "encryption")]
+    fn read_encrypted_entry(&mut self) -> Result<Option<SnapEntry>, FormatError> {
+        use std::io::Read as _;
+
+        let key = self
+            .encryption_key
+            .as_ref()
+            .ok_or(FormatError::EncryptionRequired)?;
+
+        let mut nonce = [0u8; crate::encryption::NONCE_SIZE];
+        self.reader
+            .read_exact(&mut nonce)
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::UnexpectedEof => FormatError::UnexpectedEof,
+                _ => FormatError::Io(e),
+            })?;
+
+        let ct_len = format::read_u32(&mut self.reader)? as usize;
+        if ct_len > format::MAX_FIELD_LEN {
+            return Err(FormatError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("encrypted entry length {ct_len} exceeds maximum"),
+            )));
+        }
+
+        let mut ciphertext = vec![0u8; ct_len];
+        self.reader
+            .read_exact(&mut ciphertext)
+            .map_err(|e| match e.kind() {
+                io::ErrorKind::UnexpectedEof => FormatError::UnexpectedEof,
+                _ => FormatError::Io(e),
+            })?;
+
+        // footer CRC covers the encrypted envelope
+        self.hasher.update(&nonce);
+        let ct_len_bytes = (ct_len as u32).to_le_bytes();
+        self.hasher.update(&ct_len_bytes);
+        self.hasher.update(&ciphertext);
+
+        let plaintext = crate::encryption::decrypt_record(key, &nonce, &ciphertext)?;
+
+        // parse the decrypted bytes using the same logic as v2
+        let mut cursor = io::Cursor::new(&plaintext);
+        let key_bytes = format::read_bytes(&mut cursor)?;
+        let type_tag = format::read_u8(&mut cursor)?;
+        let value = match type_tag {
+            TYPE_STRING => {
+                let v = format::read_bytes(&mut cursor)?;
+                SnapValue::String(Bytes::from(v))
+            }
+            TYPE_LIST => {
+                let count = format::read_u32(&mut cursor)?;
+                let mut deque = VecDeque::with_capacity(count as usize);
+                for _ in 0..count {
+                    deque.push_back(Bytes::from(format::read_bytes(&mut cursor)?));
+                }
+                SnapValue::List(deque)
+            }
+            TYPE_SORTED_SET => {
+                let count = format::read_u32(&mut cursor)?;
+                let mut members = Vec::with_capacity(count as usize);
+                for _ in 0..count {
+                    let score = format::read_f64(&mut cursor)?;
+                    let member_bytes = format::read_bytes(&mut cursor)?;
+                    let member = String::from_utf8(member_bytes).map_err(|_| {
+                        FormatError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "member is not valid utf-8",
+                        ))
+                    })?;
+                    members.push((score, member));
+                }
+                SnapValue::SortedSet(members)
+            }
+            TYPE_HASH => {
+                let count = format::read_u32(&mut cursor)?;
+                let mut map = HashMap::with_capacity(count as usize);
+                for _ in 0..count {
+                    let field_bytes = format::read_bytes(&mut cursor)?;
+                    let field = String::from_utf8(field_bytes).map_err(|_| {
+                        FormatError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "hash field is not valid utf-8",
+                        ))
+                    })?;
+                    let value_bytes = format::read_bytes(&mut cursor)?;
+                    map.insert(field, Bytes::from(value_bytes));
+                }
+                SnapValue::Hash(map)
+            }
+            TYPE_SET => {
+                let count = format::read_u32(&mut cursor)?;
+                let mut set = HashSet::with_capacity(count as usize);
+                for _ in 0..count {
+                    let member_bytes = format::read_bytes(&mut cursor)?;
+                    let member = String::from_utf8(member_bytes).map_err(|_| {
+                        FormatError::Io(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "set member is not valid utf-8",
+                        ))
+                    })?;
+                    set.insert(member);
+                }
+                SnapValue::Set(set)
+            }
+            _ => return Err(FormatError::UnknownTag(type_tag)),
+        };
+        let expire_ms = format::read_i64(&mut cursor)?;
+
+        let entry_key = String::from_utf8(key_bytes).map_err(|_| {
+            FormatError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "key is not valid utf-8",
+            ))
+        })?;
+
+        self.read_so_far += 1;
+        Ok(Some(SnapEntry {
+            key: entry_key,
             value,
             expire_ms,
         }))
@@ -608,5 +831,186 @@ mod tests {
     fn snapshot_path_format() {
         let p = snapshot_path(Path::new("/data"), 5);
         assert_eq!(p, PathBuf::from("/data/shard-5.snap"));
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use super::*;
+        use crate::encryption::EncryptionKey;
+
+        fn test_key() -> EncryptionKey {
+            EncryptionKey::from_bytes([0x42; 32])
+        }
+
+        #[test]
+        fn encrypted_snapshot_round_trip() {
+            let dir = temp_dir();
+            let path = dir.path().join("enc.snap");
+            let key = test_key();
+
+            let entries = vec![
+                SnapEntry {
+                    key: "hello".into(),
+                    value: SnapValue::String(Bytes::from("world")),
+                    expire_ms: -1,
+                },
+                SnapEntry {
+                    key: "ttl".into(),
+                    value: SnapValue::String(Bytes::from("expiring")),
+                    expire_ms: 5000,
+                },
+            ];
+
+            {
+                let mut writer = SnapshotWriter::create_encrypted(&path, 7, key.clone()).unwrap();
+                for entry in &entries {
+                    writer.write_entry(entry).unwrap();
+                }
+                writer.finish().unwrap();
+            }
+
+            let mut reader = SnapshotReader::open_encrypted(&path, key).unwrap();
+            assert_eq!(reader.shard_id, 7);
+            assert_eq!(reader.entry_count, 2);
+
+            let mut got = Vec::new();
+            while let Some(entry) = reader.read_entry().unwrap() {
+                got.push(entry);
+            }
+            assert_eq!(entries, got);
+            reader.verify_footer().unwrap();
+        }
+
+        #[test]
+        fn encrypted_snapshot_wrong_key_fails() {
+            let dir = temp_dir();
+            let path = dir.path().join("enc_bad.snap");
+            let key = test_key();
+            let wrong_key = EncryptionKey::from_bytes([0xFF; 32]);
+
+            {
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key).unwrap();
+                writer
+                    .write_entry(&SnapEntry {
+                        key: "k".into(),
+                        value: SnapValue::String(Bytes::from("v")),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.finish().unwrap();
+            }
+
+            let mut reader = SnapshotReader::open_encrypted(&path, wrong_key).unwrap();
+            let err = reader.read_entry().unwrap_err();
+            assert!(matches!(err, FormatError::DecryptionFailed));
+        }
+
+        #[test]
+        fn v2_snapshot_readable_with_encryption_key() {
+            let dir = temp_dir();
+            let path = dir.path().join("v2.snap");
+            let key = test_key();
+
+            {
+                let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+                writer
+                    .write_entry(&SnapEntry {
+                        key: "k".into(),
+                        value: SnapValue::String(Bytes::from("v")),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.finish().unwrap();
+            }
+
+            let mut reader = SnapshotReader::open_encrypted(&path, key).unwrap();
+            let entry = reader.read_entry().unwrap().unwrap();
+            assert_eq!(entry.key, "k");
+            reader.verify_footer().unwrap();
+        }
+
+        #[test]
+        fn v3_snapshot_without_key_returns_error() {
+            let dir = temp_dir();
+            let path = dir.path().join("v3_nokey.snap");
+            let key = test_key();
+
+            {
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key).unwrap();
+                writer
+                    .write_entry(&SnapEntry {
+                        key: "k".into(),
+                        value: SnapValue::String(Bytes::from("v")),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.finish().unwrap();
+            }
+
+            let result = SnapshotReader::open(&path);
+            assert!(matches!(result, Err(FormatError::EncryptionRequired)));
+        }
+
+        #[test]
+        fn encrypted_snapshot_with_all_types() {
+            let dir = temp_dir();
+            let path = dir.path().join("enc_types.snap");
+            let key = test_key();
+
+            let mut deque = VecDeque::new();
+            deque.push_back(Bytes::from("a"));
+            deque.push_back(Bytes::from("b"));
+
+            let mut hash = HashMap::new();
+            hash.insert("f1".into(), Bytes::from("v1"));
+
+            let mut set = HashSet::new();
+            set.insert("m1".into());
+            set.insert("m2".into());
+
+            let entries = vec![
+                SnapEntry {
+                    key: "str".into(),
+                    value: SnapValue::String(Bytes::from("val")),
+                    expire_ms: -1,
+                },
+                SnapEntry {
+                    key: "list".into(),
+                    value: SnapValue::List(deque),
+                    expire_ms: 1000,
+                },
+                SnapEntry {
+                    key: "zset".into(),
+                    value: SnapValue::SortedSet(vec![(1.0, "a".into()), (2.0, "b".into())]),
+                    expire_ms: -1,
+                },
+                SnapEntry {
+                    key: "hash".into(),
+                    value: SnapValue::Hash(hash),
+                    expire_ms: -1,
+                },
+                SnapEntry {
+                    key: "set".into(),
+                    value: SnapValue::Set(set),
+                    expire_ms: -1,
+                },
+            ];
+
+            {
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key.clone()).unwrap();
+                for entry in &entries {
+                    writer.write_entry(entry).unwrap();
+                }
+                writer.finish().unwrap();
+            }
+
+            let mut reader = SnapshotReader::open_encrypted(&path, key).unwrap();
+            let mut got = Vec::new();
+            while let Some(entry) = reader.read_entry().unwrap() {
+                got.push(entry);
+            }
+            assert_eq!(entries, got);
+            reader.verify_footer().unwrap();
+        }
     }
 }

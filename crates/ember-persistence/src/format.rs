@@ -14,11 +14,16 @@ pub const AOF_MAGIC: &[u8; 4] = b"EAOF";
 /// Magic bytes for the snapshot file header.
 pub const SNAP_MAGIC: &[u8; 4] = b"ESNP";
 
-/// Current format version for both AOF and snapshot files.
+/// Current unencrypted format version.
 ///
 /// v1: original format (strings only)
-/// v2: type-tagged entries (string, list, sorted set)
+/// v2: type-tagged entries (string, list, sorted set, hash, set)
 pub const FORMAT_VERSION: u8 = 2;
+
+/// Format version for encrypted files.
+///
+/// v3: per-record AES-256-GCM encryption (requires `encryption` feature)
+pub const FORMAT_VERSION_ENCRYPTED: u8 = 3;
 
 /// Errors that can occur when reading or writing persistence formats.
 #[derive(Debug, Error)]
@@ -37,6 +42,12 @@ pub enum FormatError {
 
     #[error("unknown record tag: {0}")]
     UnknownTag(u8),
+
+    #[error("file is encrypted but no encryption key was provided")]
+    EncryptionRequired,
+
+    #[error("decryption failed (wrong key or tampered data)")]
+    DecryptionFailed,
 
     #[error("io error: {0}")]
     Io(#[from] io::Error),
@@ -162,6 +173,21 @@ pub fn write_header(w: &mut impl Write, magic: &[u8; 4]) -> io::Result<()> {
     write_u8(w, FORMAT_VERSION)
 }
 
+/// Writes a file header with an explicit version byte.
+pub fn write_header_versioned(w: &mut impl Write, magic: &[u8; 4], version: u8) -> io::Result<()> {
+    w.write_all(magic)?;
+    write_u8(w, version)
+}
+
+/// The maximum format version this build can read.
+///
+/// When the `encryption` feature is compiled in, v3 (encrypted) files
+/// are supported. Without the feature, only v1 and v2 are accepted.
+#[cfg(feature = "encryption")]
+const MAX_READABLE_VERSION: u8 = FORMAT_VERSION_ENCRYPTED;
+#[cfg(not(feature = "encryption"))]
+const MAX_READABLE_VERSION: u8 = FORMAT_VERSION;
+
 /// Reads and validates a file header. Returns an error if magic doesn't
 /// match or version is unsupported. Returns the format version.
 pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<u8, FormatError> {
@@ -171,7 +197,7 @@ pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<u8, Fo
         return Err(FormatError::InvalidMagic);
     }
     let version = read_u8(r)?;
-    if version == 0 || version > FORMAT_VERSION {
+    if version == 0 || version > MAX_READABLE_VERSION {
         return Err(FormatError::UnsupportedVersion(version));
     }
     Ok(version)

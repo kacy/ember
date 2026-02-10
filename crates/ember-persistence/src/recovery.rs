@@ -18,6 +18,14 @@ use crate::aof::{self, AofReader, AofRecord};
 use crate::format::FormatError;
 use crate::snapshot::{self, SnapValue, SnapshotReader};
 
+/// Type alias for an optional encryption key reference. When the
+/// `encryption` feature is disabled, this is always `Option<&()>` —
+/// always `None` — and all encryption branches compile away.
+#[cfg(feature = "encryption")]
+type EncryptionKeyRef<'a> = &'a crate::encryption::EncryptionKey;
+#[cfg(not(feature = "encryption"))]
+type EncryptionKeyRef<'a> = &'a ();
+
 /// The value of a recovered entry.
 #[derive(Debug, Clone)]
 pub enum RecoveredValue {
@@ -68,6 +76,28 @@ pub struct RecoveryResult {
 /// Returns a list of live entries to restore into the keyspace.
 /// Entries whose TTL expired during downtime are silently skipped.
 pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
+    recover_shard_impl(data_dir, shard_id, None)
+}
+
+/// Recovers a shard's state with an encryption key for decrypting
+/// v3 persistence files. Also handles plaintext v2 files transparently.
+#[cfg(feature = "encryption")]
+pub fn recover_shard_encrypted(
+    data_dir: &Path,
+    shard_id: u16,
+    key: crate::encryption::EncryptionKey,
+) -> RecoveryResult {
+    recover_shard_impl(data_dir, shard_id, Some(&key))
+}
+
+/// Shared implementation. When encryption is not compiled in, the key
+/// parameter is always `None` and all encryption branches are dead code
+/// that the compiler will remove.
+fn recover_shard_impl(
+    data_dir: &Path,
+    shard_id: u16,
+    #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
+) -> RecoveryResult {
     // Track remaining TTL in ms (-1 = no expiry, 0+ = remaining ms)
     let mut map: HashMap<String, (RecoveredValue, i64)> = HashMap::new();
     let mut loaded_snapshot = false;
@@ -76,7 +106,7 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     // step 1: load snapshot
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
     if snap_path.exists() {
-        match load_snapshot(&snap_path) {
+        match load_snapshot(&snap_path, encryption_key) {
             Ok(entries) => {
                 for (key, value, ttl_ms) in entries {
                     map.insert(key, (RecoveredValue::from(value), ttl_ms));
@@ -92,7 +122,7 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     // step 2: replay AOF
     let aof_path = aof::aof_path(data_dir, shard_id);
     if aof_path.exists() {
-        match replay_aof(&aof_path, &mut map) {
+        match replay_aof(&aof_path, &mut map, encryption_key) {
             Ok(count) => {
                 if count > 0 {
                     replayed_aof = true;
@@ -131,8 +161,19 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
 
 /// Loads entries from a snapshot file.
 /// Returns (key, value, ttl_ms) where ttl_ms is -1 for no expiry.
-fn load_snapshot(path: &Path) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
+fn load_snapshot(
+    path: &Path,
+    #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
+) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
+    #[cfg(feature = "encryption")]
+    let mut reader = if let Some(key) = encryption_key {
+        SnapshotReader::open_encrypted(path, key.clone())?
+    } else {
+        SnapshotReader::open(path)?
+    };
+    #[cfg(not(feature = "encryption"))]
     let mut reader = SnapshotReader::open(path)?;
+
     let mut entries = Vec::new();
 
     while let Some(entry) = reader.read_entry()? {
@@ -168,7 +209,15 @@ fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, del
 fn replay_aof(
     path: &Path,
     map: &mut HashMap<String, (RecoveredValue, i64)>,
+    #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
 ) -> Result<usize, FormatError> {
+    #[cfg(feature = "encryption")]
+    let mut reader = if let Some(key) = encryption_key {
+        AofReader::open_encrypted(path, key.clone())?
+    } else {
+        AofReader::open(path)?
+    };
+    #[cfg(not(feature = "encryption"))]
     let mut reader = AofReader::open(path)?;
     let mut count = 0;
 
