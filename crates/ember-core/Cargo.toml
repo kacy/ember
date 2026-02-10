@@ -9,6 +9,9 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+encryption = ["ember-persistence/encryption"]
+
 [lib]
 name = "ember_core"
 

@@ -41,6 +41,10 @@ pub struct ShardPersistenceConfig {
     pub append_only: bool,
     /// When to fsync the AOF file.
     pub fsync_policy: FsyncPolicy,
+    /// Optional encryption key for encrypting data at rest.
+    /// When set, AOF and snapshot files use the v3 encrypted format.
+    #[cfg(feature = "encryption")]
+    pub encryption_key: Option<ember_persistence::encryption::EncryptionKey>,
 }
 
 /// A protocol-agnostic command sent to a shard.
@@ -392,6 +396,13 @@ async fn run_shard(
 
     // -- recovery --
     if let Some(ref pcfg) = persistence {
+        #[cfg(feature = "encryption")]
+        let result = if let Some(ref key) = pcfg.encryption_key {
+            recovery::recover_shard_encrypted(&pcfg.data_dir, shard_id, key.clone())
+        } else {
+            recovery::recover_shard(&pcfg.data_dir, shard_id)
+        };
+        #[cfg(not(feature = "encryption"))]
         let result = recovery::recover_shard(&pcfg.data_dir, shard_id);
         let count = result.entries.len();
         for entry in result.entries {
@@ -425,7 +436,15 @@ async fn run_shard(
     let mut aof_writer: Option<AofWriter> = match &persistence {
         Some(pcfg) if pcfg.append_only => {
             let path = ember_persistence::aof::aof_path(&pcfg.data_dir, shard_id);
-            match AofWriter::open(path) {
+            #[cfg(feature = "encryption")]
+            let result = if let Some(ref key) = pcfg.encryption_key {
+                AofWriter::open_encrypted(path, key.clone())
+            } else {
+                AofWriter::open(path)
+            };
+            #[cfg(not(feature = "encryption"))]
+            let result = AofWriter::open(path);
+            match result {
                 Ok(w) => Some(w),
                 Err(e) => {
                     warn!(shard_id, "failed to open AOF writer: {e}");
@@ -956,7 +975,14 @@ fn handle_snapshot(
     };
 
     let path = snapshot::snapshot_path(&pcfg.data_dir, shard_id);
-    match write_snapshot(keyspace, &path, shard_id) {
+    let result = write_snapshot(
+        keyspace,
+        &path,
+        shard_id,
+        #[cfg(feature = "encryption")]
+        pcfg.encryption_key.as_ref(),
+    );
+    match result {
         Ok(count) => {
             info!(shard_id, entries = count, "snapshot written");
             ShardResponse::Ok
@@ -981,7 +1007,14 @@ fn handle_rewrite(
     };
 
     let path = snapshot::snapshot_path(&pcfg.data_dir, shard_id);
-    match write_snapshot(keyspace, &path, shard_id) {
+    let result = write_snapshot(
+        keyspace,
+        &path,
+        shard_id,
+        #[cfg(feature = "encryption")]
+        pcfg.encryption_key.as_ref(),
+    );
+    match result {
         Ok(count) => {
             // truncate AOF after successful snapshot
             if let Some(ref mut writer) = aof_writer {
@@ -1004,7 +1037,15 @@ fn write_snapshot(
     keyspace: &Keyspace,
     path: &std::path::Path,
     shard_id: u16,
+    #[cfg(feature = "encryption")] encryption_key: Option<&ember_persistence::encryption::EncryptionKey>,
 ) -> Result<u32, ember_persistence::format::FormatError> {
+    #[cfg(feature = "encryption")]
+    let mut writer = if let Some(key) = encryption_key {
+        SnapshotWriter::create_encrypted(path, shard_id, key.clone())?
+    } else {
+        SnapshotWriter::create(path, shard_id)?
+    };
+    #[cfg(not(feature = "encryption"))]
     let mut writer = SnapshotWriter::create(path, shard_id)?;
     let mut count = 0u32;
 
@@ -1234,6 +1275,8 @@ mod tests {
             data_dir: dir.path().to_owned(),
             append_only: true,
             fsync_policy: FsyncPolicy::Always,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
         };
         let config = ShardConfig {
             shard_id: 0,
