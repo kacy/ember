@@ -16,7 +16,7 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
 
-use crate::commands::{command_names, commands_by_group, find_command};
+use crate::commands::{command_names, commands_by_group, find_command, has_subcommands, subcommands};
 use crate::connection::{Connection, ConnectionError};
 use crate::format::format_response;
 
@@ -299,6 +299,9 @@ struct EmberHelper;
 
 impl Helper for EmberHelper {}
 
+/// Local-only commands that the REPL handles without sending to the server.
+const LOCAL_COMMANDS: &[&str] = &["HELP", "QUIT", "EXIT", "CLEAR"];
+
 impl Completer for EmberHelper {
     type Candidate = Pair;
 
@@ -308,14 +311,35 @@ impl Completer for EmberHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Pair>)> {
-        // only complete the first token (command name)
         let prefix = &line[..pos];
-        if prefix.contains(' ') {
+
+        // check if we're completing a subcommand (second token)
+        if let Some(space_idx) = prefix.find(' ') {
+            let first = prefix[..space_idx].trim();
+            if has_subcommands(first) {
+                let rest = &prefix[space_idx + 1..];
+                // don't complete if there's already a second space (third token)
+                if !rest.contains(' ') {
+                    let upper = rest.trim_start().to_uppercase();
+                    let subs = subcommands(first);
+                    let matches: Vec<Pair> = subs
+                        .iter()
+                        .filter(|s| s.starts_with(&upper))
+                        .map(|s| Pair {
+                            display: s.to_string(),
+                            replacement: format!("{s} "),
+                        })
+                        .collect();
+                    let start = space_idx + 1 + rest.len() - rest.trim_start().len();
+                    return Ok((start, matches));
+                }
+            }
             return Ok((pos, vec![]));
         }
 
+        // first token: complete command names + local commands
         let upper = prefix.to_uppercase();
-        let matches: Vec<Pair> = command_names()
+        let mut matches: Vec<Pair> = command_names()
             .into_iter()
             .filter(|name| name.starts_with(&upper))
             .map(|name| Pair {
@@ -324,6 +348,16 @@ impl Completer for EmberHelper {
             })
             .collect();
 
+        // also complete local commands
+        for &local in LOCAL_COMMANDS {
+            if local.starts_with(&upper) {
+                matches.push(Pair {
+                    display: local.to_string(),
+                    replacement: format!("{} ", local.to_lowercase()),
+                });
+            }
+        }
+
         Ok((0, matches))
     }
 }
@@ -331,12 +365,95 @@ impl Completer for EmberHelper {
 impl Hinter for EmberHelper {
     type Hint = String;
 
-    fn hint(&self, _line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        // only show hints when cursor is at the end of the line
+        if pos != line.len() {
+            return None;
+        }
+
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // extract the first token
+        let first_end = trimmed.find(' ').unwrap_or(trimmed.len());
+        let first = &trimmed[..first_end];
+
+        // if still typing the first token (no space yet), no hint
+        if !trimmed.contains(' ') {
+            return None;
+        }
+
+        // for multi-word commands, show subcommand list as hint
+        if has_subcommands(first) {
+            let after_space = &trimmed[first_end + 1..];
+            // only hint if subcommand token is not started or partial
+            if after_space.trim().is_empty() || !after_space.contains(' ') {
+                let subs = subcommands(first);
+                let upper = after_space.trim().to_uppercase();
+                if upper.is_empty() {
+                    return Some(format!(" {}", subs.join("|")));
+                }
+                // show matching subcommand's full name
+                for &sub in subs {
+                    if sub.starts_with(&upper) && sub != upper {
+                        return Some(sub[upper.len()..].to_string());
+                    }
+                }
+            }
+            return None;
+        }
+
+        // show args hint for known commands
+        if let Some(cmd) = find_command(first) {
+            if !cmd.args.is_empty() {
+                let after_space = &trimmed[first_end + 1..];
+                // only show hint if user hasn't typed any arguments yet
+                if after_space.trim().is_empty() {
+                    return Some(cmd.args.to_string());
+                }
+            }
+        }
+
         None
     }
 }
 
 impl Highlighter for EmberHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        if line.is_empty() {
+            return Cow::Borrowed(line);
+        }
+
+        let trimmed_start = line.len() - line.trim_start().len();
+        let trimmed = &line[trimmed_start..];
+        let first_end = trimmed.find(' ').unwrap_or(trimmed.len());
+        let first = &trimmed[..first_end];
+        let rest = &trimmed[first_end..];
+
+        let is_known = find_command(first).is_some()
+            || LOCAL_COMMANDS
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(first));
+
+        let highlighted_cmd = if is_known {
+            format!("\x1b[1;36m{first}\x1b[0m") // bold cyan
+        } else {
+            format!("\x1b[31m{first}\x1b[0m") // red
+        };
+
+        // highlight quoted strings in rest
+        let highlighted_rest = highlight_quotes(rest);
+
+        Cow::Owned(format!(
+            "{}{}{}",
+            &line[..trimmed_start],
+            highlighted_cmd,
+            highlighted_rest,
+        ))
+    }
+
     fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
         &'s self,
         prompt: &'p str,
@@ -344,6 +461,62 @@ impl Highlighter for EmberHelper {
     ) -> Cow<'b, str> {
         Cow::Borrowed(prompt)
     }
+
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Owned(format!("\x1b[2m{hint}\x1b[0m")) // dim
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
+        true // re-highlight on every keystroke
+    }
+}
+
+/// Highlights quoted strings in green within the argument portion.
+fn highlight_quotes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 32);
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                out.push_str("\x1b[32m\""); // green
+                loop {
+                    match chars.next() {
+                        None => break,
+                        Some('"') => {
+                            out.push('"');
+                            break;
+                        }
+                        Some('\\') => {
+                            out.push('\\');
+                            if let Some(esc) = chars.next() {
+                                out.push(esc);
+                            }
+                        }
+                        Some(c) => out.push(c),
+                    }
+                }
+                out.push_str("\x1b[0m"); // reset
+            }
+            '\'' => {
+                out.push_str("\x1b[32m'"); // green
+                loop {
+                    match chars.next() {
+                        None => break,
+                        Some('\'') => {
+                            out.push('\'');
+                            break;
+                        }
+                        Some(c) => out.push(c),
+                    }
+                }
+                out.push_str("\x1b[0m"); // reset
+            }
+            _ => out.push(ch),
+        }
+    }
+
+    out
 }
 
 impl Validator for EmberHelper {}
@@ -437,5 +610,78 @@ mod tests {
     #[test]
     fn tokenize_tabs() {
         assert_eq!(tokenize("GET\tkey").unwrap(), vec!["GET", "key"],);
+    }
+
+    // -- highlighter tests --
+
+    #[test]
+    fn highlight_known_command_bold_cyan() {
+        let h = EmberHelper;
+        let result = h.highlight("SET key val", 0);
+        // known command should be bold cyan
+        assert!(result.contains("\x1b[1;36m"));
+        assert!(result.contains("SET"));
+    }
+
+    #[test]
+    fn highlight_unknown_command_red() {
+        let h = EmberHelper;
+        let result = h.highlight("FOOBAR key", 0);
+        assert!(result.contains("\x1b[31m"));
+        assert!(result.contains("FOOBAR"));
+    }
+
+    #[test]
+    fn highlight_local_command_bold_cyan() {
+        let h = EmberHelper;
+        let result = h.highlight("help SET", 0);
+        assert!(result.contains("\x1b[1;36m"));
+    }
+
+    #[test]
+    fn highlight_empty_line() {
+        let h = EmberHelper;
+        let result = h.highlight("", 0);
+        assert_eq!(result.as_ref(), "");
+    }
+
+    #[test]
+    fn highlight_quoted_strings_green() {
+        let result = highlight_quotes(r#" "hello world""#);
+        assert!(result.contains("\x1b[32m"));
+    }
+
+    // -- hinter tests --
+
+    #[test]
+    fn hint_shows_args_for_known_command() {
+        let h = EmberHelper;
+        let hint = h.hint("SET ", 4, &Context::new(&rustyline::history::DefaultHistory::new()));
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("key"));
+    }
+
+    #[test]
+    fn hint_shows_subcommands_for_cluster() {
+        let h = EmberHelper;
+        let hint = h.hint("CLUSTER ", 8, &Context::new(&rustyline::history::DefaultHistory::new()));
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("INFO"));
+    }
+
+    #[test]
+    fn hint_none_for_unknown_command() {
+        let h = EmberHelper;
+        let hint = h.hint("FOOBAR ", 7, &Context::new(&rustyline::history::DefaultHistory::new()));
+        assert!(hint.is_none());
+    }
+
+    #[test]
+    fn hint_none_when_cursor_not_at_end() {
+        let h = EmberHelper;
+        let hint = h.hint("SET key", 3, &Context::new(&rustyline::history::DefaultHistory::new()));
+        assert!(hint.is_none());
     }
 }

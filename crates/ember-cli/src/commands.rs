@@ -460,6 +460,41 @@ pub fn command_names() -> Vec<&'static str> {
     COMMANDS.iter().map(|c| c.name).collect()
 }
 
+/// Returns subcommand names for multi-word commands (CLUSTER, SLOWLOG, PUBSUB).
+///
+/// Used by the completer and hinter to provide second-token completion.
+pub fn subcommands(parent: &str) -> &'static [&'static str] {
+    match parent.to_uppercase().as_str() {
+        "CLUSTER" => &[
+            "ADDSLOTS",
+            "COUNTKEYSINSLOT",
+            "DELSLOTS",
+            "FAILOVER",
+            "FORGET",
+            "GETKEYSINSLOT",
+            "INFO",
+            "KEYSLOT",
+            "MEET",
+            "MYID",
+            "NODES",
+            "REPLICATE",
+            "SETSLOT",
+            "SLOTS",
+        ],
+        "SLOWLOG" => &["GET", "LEN", "RESET"],
+        "PUBSUB" => &["CHANNELS", "NUMPAT", "NUMSUB"],
+        _ => &[],
+    }
+}
+
+/// Returns true if the command name is a multi-word command with subcommands.
+pub fn has_subcommands(name: &str) -> bool {
+    matches!(
+        name.to_uppercase().as_str(),
+        "CLUSTER" | "SLOWLOG" | "PUBSUB"
+    )
+}
+
 /// Groups commands by their functional group for help display.
 pub fn commands_by_group() -> BTreeMap<&'static str, Vec<&'static CommandInfo>> {
     let mut groups = BTreeMap::new();
@@ -512,6 +547,57 @@ mod tests {
                     "commands in group '{group_name}' not sorted: {} > {}",
                     cmds[i - 1].name,
                     cmds[i].name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn has_subcommands_cluster() {
+        assert!(has_subcommands("CLUSTER"));
+        assert!(has_subcommands("cluster"));
+        assert!(has_subcommands("SLOWLOG"));
+        assert!(has_subcommands("PUBSUB"));
+        assert!(!has_subcommands("SET"));
+        assert!(!has_subcommands("GET"));
+    }
+
+    #[test]
+    fn subcommands_cluster_not_empty() {
+        let subs = subcommands("CLUSTER");
+        assert!(!subs.is_empty());
+        assert!(subs.contains(&"INFO"));
+        assert!(subs.contains(&"NODES"));
+        assert!(subs.contains(&"SETSLOT"));
+    }
+
+    #[test]
+    fn subcommands_slowlog() {
+        let subs = subcommands("SLOWLOG");
+        assert_eq!(subs, &["GET", "LEN", "RESET"]);
+    }
+
+    #[test]
+    fn subcommands_pubsub() {
+        let subs = subcommands("PUBSUB");
+        assert_eq!(subs, &["CHANNELS", "NUMPAT", "NUMSUB"]);
+    }
+
+    #[test]
+    fn subcommands_unknown_returns_empty() {
+        assert!(subcommands("SET").is_empty());
+    }
+
+    #[test]
+    fn subcommands_sorted() {
+        for parent in &["CLUSTER", "SLOWLOG", "PUBSUB"] {
+            let subs = subcommands(parent);
+            for i in 1..subs.len() {
+                assert!(
+                    subs[i - 1] <= subs[i],
+                    "{parent} subcommands not sorted: {} > {}",
+                    subs[i - 1],
+                    subs[i],
                 );
             }
         }
