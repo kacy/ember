@@ -298,9 +298,7 @@ impl ClusterCoordinator {
         {
             let state = self.state.read().await;
             if !state.owns_slot(slot) {
-                return Frame::Error(format!(
-                    "ERR I'm not the owner of hash slot {slot}"
-                ));
+                return Frame::Error(format!("ERR I'm not the owner of hash slot {slot}"));
             }
         }
 
@@ -644,9 +642,7 @@ mod tests {
             state.add_node(node);
         }
 
-        let resp = coord
-            .cluster_setslot_node(100, &target.0.to_string())
-            .await;
+        let resp = coord.cluster_setslot_node(100, &target.0.to_string()).await;
         assert!(matches!(resp, Frame::Simple(_)));
 
         // verify the slot is now owned by the target
@@ -672,9 +668,7 @@ mod tests {
         }
 
         // complete with NODE — should clean up migration state
-        let resp = coord
-            .cluster_setslot_node(0, &target.0.to_string())
-            .await;
+        let resp = coord.cluster_setslot_node(0, &target.0.to_string()).await;
         assert!(matches!(resp, Frame::Simple(_)));
 
         // migration should be cleaned up
