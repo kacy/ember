@@ -107,6 +107,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: ember-server-*
 
       - name: collect binaries
         run: |
