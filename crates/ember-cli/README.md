@@ -23,6 +23,27 @@ ember-cli GET greeting
 ember-cli SET msg "hello world"
 ```
 
+## TLS
+
+connect to a TLS-enabled server:
+
+```bash
+# with system CA trust store
+ember-cli -p 6380 --tls PING
+
+# with a custom CA certificate
+ember-cli -p 6380 --tls --tls-ca-cert /path/to/ca.pem PING
+
+# skip certificate verification (self-signed certs, development only)
+ember-cli -p 6380 --tls --tls-insecure PING
+
+# REPL over TLS
+ember-cli -p 6380 --tls --tls-insecure
+
+# benchmark over TLS
+ember-cli -p 6380 --tls --tls-insecure benchmark -n 10000
+```
+
 ## options
 
 | flag | default | description |
@@ -30,7 +51,9 @@ ember-cli SET msg "hello world"
 | `-H`, `--host` | 127.0.0.1 | server hostname |
 | `-p`, `--port` | 6379 | server port |
 | `-a`, `--password` | — | password for AUTH |
-| `--tls` | — | enable TLS (not yet supported) |
+| `--tls` | — | enable TLS for the connection |
+| `--tls-ca-cert` | — | path to CA certificate (PEM) for server verification |
+| `--tls-insecure` | — | skip server certificate verification |
 
 ## repl features
 

@@ -1,4 +1,4 @@
-//! Lightweight pipelining TCP connection for benchmarks.
+//! Lightweight pipelining connection for benchmarks.
 //!
 //! Optimized for throughput: pre-serializes a command once, then writes
 //! it N times per pipeline batch and reads N responses. Uses a larger
@@ -10,24 +10,36 @@ use bytes::{Bytes, BytesMut};
 use ember_protocol::parse::parse_frame;
 use ember_protocol::types::Frame;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+
+use crate::tls::{self, MaybeTlsStream, TlsClientConfig};
 
 /// Read buffer size for benchmark connections (256 KiB).
 const READ_BUF_SIZE: usize = 256 * 1024;
 
-/// A TCP connection tuned for pipelined benchmark workloads.
+/// A connection tuned for pipelined benchmark workloads.
 pub struct BenchConnection {
-    stream: TcpStream,
+    stream: MaybeTlsStream,
     read_buf: BytesMut,
     /// Pre-serialized command bytes, ready to write N times.
     command_bytes: Bytes,
 }
 
 impl BenchConnection {
-    /// Connects to the server.
-    pub async fn connect(host: &str, port: u16) -> std::io::Result<Self> {
-        let stream = TcpStream::connect((host, port)).await?;
-        stream.set_nodelay(true)?;
+    /// Connects to the server, optionally over TLS.
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        tls: Option<&TlsClientConfig>,
+    ) -> std::io::Result<Self> {
+        let stream = tls::connect(host, port, tls).await?;
+
+        // set TCP_NODELAY on the underlying TCP stream — for plain TCP
+        // we can access it directly; for TLS the inner stream is wrapped
+        // but tokio-rustls sets nodelay through the TLS handshake path.
+        if let MaybeTlsStream::Plain(ref tcp) = stream {
+            tcp.set_nodelay(true)?;
+        }
+
         Ok(Self {
             stream,
             read_buf: BytesMut::with_capacity(READ_BUF_SIZE),

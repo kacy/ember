@@ -21,17 +21,13 @@ use crate::commands::{
 };
 use crate::connection::{Connection, ConnectionError};
 use crate::format::format_response;
+use crate::tls::TlsClientConfig;
 
 /// Runs the interactive REPL loop.
 ///
 /// Blocks the calling thread. Uses `tokio::runtime::Runtime` internally
 /// because rustyline needs the main thread for terminal I/O.
-pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
-    if tls {
-        eprintln!("{}", "tls is not yet supported".yellow());
-        return;
-    }
-
+pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsClientConfig>) {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -41,7 +37,7 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
     };
 
     // connect to server
-    let mut conn = match rt.block_on(Connection::connect(host, port)) {
+    let mut conn = match rt.block_on(Connection::connect(host, port, tls)) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -128,7 +124,7 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: bool) {
                     }
                     Err(ConnectionError::Disconnected) => {
                         eprintln!("{}", "server disconnected, reconnecting...".yellow());
-                        match rt.block_on(reconnect(host, port, password)) {
+                        match rt.block_on(reconnect(host, port, password, tls)) {
                             Ok(new_conn) => {
                                 conn = new_conn;
                                 eprintln!("{}", "reconnected".green());
@@ -172,8 +168,9 @@ async fn reconnect(
     host: &str,
     port: u16,
     password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
 ) -> Result<Connection, ConnectionError> {
-    let mut conn = Connection::connect(host, port).await?;
+    let mut conn = Connection::connect(host, port, tls).await?;
     if let Some(pw) = password {
         conn.authenticate(pw).await?;
     }
