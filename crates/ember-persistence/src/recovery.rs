@@ -68,6 +68,31 @@ pub struct RecoveryResult {
 /// Returns a list of live entries to restore into the keyspace.
 /// Entries whose TTL expired during downtime are silently skipped.
 pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
+    recover_shard_inner(data_dir, shard_id, {
+        #[cfg(feature = "encryption")]
+        { None }
+        #[cfg(not(feature = "encryption"))]
+        { () }
+    })
+}
+
+/// Recovers a shard's state with an encryption key for decrypting
+/// v3 persistence files. Also handles plaintext v2 files transparently.
+#[cfg(feature = "encryption")]
+pub fn recover_shard_encrypted(
+    data_dir: &Path,
+    shard_id: u16,
+    key: crate::encryption::EncryptionKey,
+) -> RecoveryResult {
+    recover_shard_inner(data_dir, shard_id, Some(key))
+}
+
+fn recover_shard_inner(
+    data_dir: &Path,
+    shard_id: u16,
+    #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
+    #[cfg(not(feature = "encryption"))] _: (),
+) -> RecoveryResult {
     // Track remaining TTL in ms (-1 = no expiry, 0+ = remaining ms)
     let mut map: HashMap<String, (RecoveredValue, i64)> = HashMap::new();
     let mut loaded_snapshot = false;
@@ -76,7 +101,17 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     // step 1: load snapshot
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
     if snap_path.exists() {
-        match load_snapshot(&snap_path) {
+        let result = {
+            #[cfg(feature = "encryption")]
+            {
+                load_snapshot(&snap_path, encryption_key.as_ref())
+            }
+            #[cfg(not(feature = "encryption"))]
+            {
+                load_snapshot(&snap_path)
+            }
+        };
+        match result {
             Ok(entries) => {
                 for (key, value, ttl_ms) in entries {
                     map.insert(key, (RecoveredValue::from(value), ttl_ms));
@@ -92,7 +127,17 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
     // step 2: replay AOF
     let aof_path = aof::aof_path(data_dir, shard_id);
     if aof_path.exists() {
-        match replay_aof(&aof_path, &mut map) {
+        let result = {
+            #[cfg(feature = "encryption")]
+            {
+                replay_aof(&aof_path, &mut map, encryption_key.as_ref())
+            }
+            #[cfg(not(feature = "encryption"))]
+            {
+                replay_aof(&aof_path, &mut map)
+            }
+        };
+        match result {
             Ok(count) => {
                 if count > 0 {
                     replayed_aof = true;
@@ -131,8 +176,19 @@ pub fn recover_shard(data_dir: &Path, shard_id: u16) -> RecoveryResult {
 
 /// Loads entries from a snapshot file.
 /// Returns (key, value, ttl_ms) where ttl_ms is -1 for no expiry.
-fn load_snapshot(path: &Path) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
+fn load_snapshot(
+    path: &Path,
+    #[cfg(feature = "encryption")] encryption_key: Option<&crate::encryption::EncryptionKey>,
+) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
+    #[cfg(feature = "encryption")]
+    let mut reader = if let Some(key) = encryption_key {
+        SnapshotReader::open_encrypted(path, key.clone())?
+    } else {
+        SnapshotReader::open(path)?
+    };
+    #[cfg(not(feature = "encryption"))]
     let mut reader = SnapshotReader::open(path)?;
+
     let mut entries = Vec::new();
 
     while let Some(entry) = reader.read_entry()? {
@@ -168,7 +224,15 @@ fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, del
 fn replay_aof(
     path: &Path,
     map: &mut HashMap<String, (RecoveredValue, i64)>,
+    #[cfg(feature = "encryption")] encryption_key: Option<&crate::encryption::EncryptionKey>,
 ) -> Result<usize, FormatError> {
+    #[cfg(feature = "encryption")]
+    let mut reader = if let Some(key) = encryption_key {
+        AofReader::open_encrypted(path, key.clone())?
+    } else {
+        AofReader::open(path)?
+    };
+    #[cfg(not(feature = "encryption"))]
     let mut reader = AofReader::open(path)?;
     let mut count = 0;
 
