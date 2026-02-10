@@ -13,6 +13,7 @@ readme = "README.md"
 default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
 encryption = ["emberkv-core/encryption", "ember-persistence/encryption"]
+protobuf = ["emberkv-core/protobuf", "ember-persistence/protobuf"]
 
 [dependencies]
 bytes = { workspace = true }

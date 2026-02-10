@@ -15,6 +15,9 @@ pub mod shard;
 pub mod time;
 pub mod types;
 
+#[cfg(feature = "protobuf")]
+pub mod schema;
+
 pub use concurrent::ConcurrentKeyspace;
 pub use engine::{Engine, EngineConfig};
 pub use error::ShardError;

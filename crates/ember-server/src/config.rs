@@ -95,6 +95,8 @@ pub fn build_engine_config(
             ..ShardConfig::default()
         },
         persistence,
+        #[cfg(feature = "protobuf")]
+        schema_registry: None,
     }
 }
 
