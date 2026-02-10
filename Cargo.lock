@@ -604,6 +604,7 @@ dependencies = [
  "metrics-exporter-prometheus",
  "rustls",
  "rustls-pemfile",
+ "subtle",
  "thiserror 2.0.18",
  "tikv-jemallocator",
  "tokio",

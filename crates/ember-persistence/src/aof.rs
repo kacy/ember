@@ -443,7 +443,14 @@ impl AofWriter {
         let path = path.into();
         let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
 
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts.open(&path)?;
         let mut writer = BufWriter::new(file);
 
         if !exists {
@@ -488,11 +495,14 @@ impl AofWriter {
         self.writer.flush()?;
 
         // reopen the file with truncation, write fresh header
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&self.path)?;
+        let mut opts = OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts.open(&self.path)?;
         let mut writer = BufWriter::new(file);
         format::write_header(&mut writer, format::AOF_MAGIC)?;
         writer.flush()?;

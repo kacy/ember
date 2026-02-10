@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ember_protocol::types::Frame;
 use ember_protocol::Command;
+use subtle::ConstantTimeEq;
 
 use crate::server::ServerContext;
 
@@ -89,7 +90,7 @@ pub fn try_auth(frame: Frame, ctx: &ServerContext) -> (Frame, bool) {
                         );
                     }
                 }
-                if password == *expected {
+                if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
                     (Frame::Simple("OK".into()), true)
                 } else {
                     (
