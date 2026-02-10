@@ -61,6 +61,10 @@ const TAG_INCRBY: u8 = 19;
 const TAG_DECRBY: u8 = 20;
 const TAG_APPEND: u8 = 21;
 const TAG_RENAME: u8 = 22;
+#[cfg(feature = "protobuf")]
+const TAG_PROTO_SET: u8 = 23;
+#[cfg(feature = "protobuf")]
+const TAG_PROTO_REGISTER: u8 = 24;
 
 /// A single mutation record stored in the AOF.
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +127,17 @@ pub enum AofRecord {
     Append { key: String, value: Bytes },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
+    /// PROTO.SET key type_name data [expire_ms].
+    #[cfg(feature = "protobuf")]
+    ProtoSet {
+        key: String,
+        type_name: String,
+        data: Bytes,
+        expire_ms: i64,
+    },
+    /// PROTO.REGISTER name descriptor_bytes (for schema persistence).
+    #[cfg(feature = "protobuf")]
+    ProtoRegister { name: String, descriptor: Bytes },
 }
 
 impl AofRecord {
@@ -265,6 +280,25 @@ impl AofRecord {
                 format::write_u8(&mut buf, TAG_RENAME)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, newkey.as_bytes())?;
+            }
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoSet {
+                key,
+                type_name,
+                data,
+                expire_ms,
+            } => {
+                format::write_u8(&mut buf, TAG_PROTO_SET)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, type_name.as_bytes())?;
+                format::write_bytes(&mut buf, data)?;
+                format::write_i64(&mut buf, *expire_ms)?;
+            }
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoRegister { name, descriptor } => {
+                format::write_u8(&mut buf, TAG_PROTO_REGISTER)?;
+                format::write_bytes(&mut buf, name.as_bytes())?;
+                format::write_bytes(&mut buf, descriptor)?;
             }
         }
         Ok(buf)
@@ -415,6 +449,28 @@ impl AofRecord {
                 let key = read_string(&mut cursor, "key")?;
                 let newkey = read_string(&mut cursor, "newkey")?;
                 Ok(AofRecord::Rename { key, newkey })
+            }
+            #[cfg(feature = "protobuf")]
+            TAG_PROTO_SET => {
+                let key = read_string(&mut cursor, "key")?;
+                let type_name = read_string(&mut cursor, "type_name")?;
+                let data = format::read_bytes(&mut cursor)?;
+                let expire_ms = format::read_i64(&mut cursor)?;
+                Ok(AofRecord::ProtoSet {
+                    key,
+                    type_name,
+                    data: Bytes::from(data),
+                    expire_ms,
+                })
+            }
+            #[cfg(feature = "protobuf")]
+            TAG_PROTO_REGISTER => {
+                let name = read_string(&mut cursor, "name")?;
+                let descriptor = format::read_bytes(&mut cursor)?;
+                Ok(AofRecord::ProtoRegister {
+                    name,
+                    descriptor: Bytes::from(descriptor),
+                })
             }
             _ => Err(FormatError::UnknownTag(tag)),
         }
@@ -788,6 +844,72 @@ impl AofReader {
             TAG_INCR | TAG_DECR => {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key)?;
+            }
+            TAG_HSET => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let count = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, count)?;
+                for _ in 0..count {
+                    let field = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut payload, &field)?;
+                    let value = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut payload, &value)?;
+                }
+            }
+            TAG_HDEL | TAG_SADD | TAG_SREM => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let count = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, count)?;
+                for _ in 0..count {
+                    let item = format::read_bytes(&mut self.reader)?;
+                    format::write_bytes(&mut payload, &item)?;
+                }
+            }
+            TAG_HINCRBY => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let field = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &field)?;
+                let delta = format::read_i64(&mut self.reader)?;
+                format::write_i64(&mut payload, delta)?;
+            }
+            TAG_INCRBY | TAG_DECRBY => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let delta = format::read_i64(&mut self.reader)?;
+                format::write_i64(&mut payload, delta)?;
+            }
+            TAG_APPEND => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let value = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &value)?;
+            }
+            TAG_RENAME => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let newkey = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &newkey)?;
+            }
+            #[cfg(feature = "protobuf")]
+            TAG_PROTO_SET => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let type_name = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &type_name)?;
+                let data = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &data)?;
+                let expire_ms = format::read_i64(&mut self.reader)?;
+                format::write_i64(&mut payload, expire_ms)?;
+            }
+            #[cfg(feature = "protobuf")]
+            TAG_PROTO_REGISTER => {
+                let name = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &name)?;
+                let descriptor = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &descriptor)?;
             }
             _ => return Err(FormatError::UnknownTag(tag)),
         }

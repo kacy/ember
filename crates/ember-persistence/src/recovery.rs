@@ -423,6 +423,23 @@ fn replay_aof(
                     }
                 }
             }
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoSet {
+                key,
+                type_name,
+                data,
+                expire_ms,
+            } => {
+                map.insert(
+                    key,
+                    (RecoveredValue::Proto { type_name, data }, expire_ms),
+                );
+            }
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoRegister { .. } => {
+                // schema registration is handled separately by the engine,
+                // not in the per-shard recovery map
+            }
         }
         count += 1;
     }
