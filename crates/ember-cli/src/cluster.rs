@@ -11,6 +11,7 @@ use colored::Colorize;
 
 use crate::connection::Connection;
 use crate::format::format_response;
+use crate::tls::TlsClientConfig;
 
 /// Cluster management actions.
 #[derive(Debug, Subcommand)]
@@ -211,6 +212,7 @@ pub fn run_cluster(
     host: &str,
     port: u16,
     password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
 ) -> ExitCode {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
@@ -221,7 +223,7 @@ pub fn run_cluster(
     };
 
     rt.block_on(async {
-        let mut conn = match Connection::connect(host, port).await {
+        let mut conn = match Connection::connect(host, port, tls).await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(

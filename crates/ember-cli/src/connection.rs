@@ -1,4 +1,4 @@
-//! Async TCP connection to an ember server.
+//! Async connection to an ember server (plain TCP or TLS).
 //!
 //! Handles connecting, sending commands as RESP3 arrays,
 //! and reading back parsed frames.
@@ -9,7 +9,8 @@ use bytes::BytesMut;
 use ember_protocol::parse::parse_frame;
 use ember_protocol::types::Frame;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+
+use crate::tls::{self, MaybeTlsStream, TlsClientConfig};
 
 /// Maximum read buffer size (64 KiB). Prevents unbounded memory growth
 /// if the server sends a response that never completes.
@@ -43,9 +44,12 @@ pub enum ConnectionError {
     ResponseTooLarge,
 }
 
-/// A TCP connection to an ember server with read/write buffering.
+/// A connection to an ember server with read/write buffering.
+///
+/// Works transparently over plain TCP or TLS — the underlying stream
+/// type is determined at connect time.
 pub struct Connection {
-    stream: TcpStream,
+    stream: MaybeTlsStream,
     read_buf: BytesMut,
     write_buf: BytesMut,
 }
@@ -53,12 +57,18 @@ pub struct Connection {
 impl Connection {
     /// Connects to an ember server at the given host and port.
     ///
-    /// Times out after 5 seconds if the server is unreachable.
-    pub async fn connect(host: &str, port: u16) -> Result<Self, ConnectionError> {
-        let stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
-            .await
-            .map_err(|_| ConnectionError::Timeout)?
-            .map_err(ConnectionError::Io)?;
+    /// When `tls` is `Some`, the connection is upgraded to TLS after the
+    /// TCP handshake. Times out after 5 seconds if the server is unreachable.
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        tls: Option<&TlsClientConfig>,
+    ) -> Result<Self, ConnectionError> {
+        let stream =
+            tokio::time::timeout(CONNECT_TIMEOUT, tls::connect(host, port, tls))
+                .await
+                .map_err(|_| ConnectionError::Timeout)?
+                .map_err(ConnectionError::Io)?;
 
         Ok(Self {
             stream,
@@ -105,7 +115,7 @@ impl Connection {
 
     /// Gracefully shuts down the connection.
     ///
-    /// Sends a QUIT command to the server and then shuts down the TCP stream.
+    /// Sends a QUIT command to the server and then shuts down the stream.
     /// Errors are intentionally ignored — this is best-effort cleanup.
     pub async fn shutdown(&mut self) {
         // try to send QUIT so the server can clean up
@@ -115,7 +125,8 @@ impl Connection {
         let _ = self.stream.write_all(&self.write_buf).await;
         let _ = self.stream.flush().await;
 
-        // graceful TCP shutdown (sends FIN instead of RST)
+        // graceful shutdown (sends FIN instead of RST for TCP, or
+        // close_notify for TLS)
         let _ = self.stream.shutdown().await;
     }
 
