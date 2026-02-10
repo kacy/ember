@@ -10,7 +10,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::slots::{SlotMap, SlotRange};
+use crate::slots::{SlotMap, SlotRange, SLOT_COUNT};
 use crate::ClusterError;
 
 /// Unique identifier for a cluster node.
@@ -408,8 +408,8 @@ impl ClusterState {
 
     /// Generates the response for CLUSTER INFO command.
     pub fn cluster_info(&self) -> String {
-        let primaries: Vec<_> = self.primaries().collect();
-        let assigned_slots: u16 = primaries.iter().map(|n| n.slot_count()).sum();
+        let assigned_slots = (SLOT_COUNT as usize - self.slot_map.unassigned_count()) as u16;
+        let primaries_count = self.primaries().count();
 
         format!(
             "cluster_state:{}\r\n\
@@ -429,7 +429,7 @@ impl ClusterState {
                 0
             },
             self.nodes.len(),
-            primaries.len(),
+            primaries_count,
             self.config_epoch,
             self.local_node().map(|n| n.config_epoch).unwrap_or(0),
         )
@@ -566,7 +566,7 @@ mod tests {
         let info = state.cluster_info();
 
         assert!(info.contains("cluster_state:ok"));
-        assert!(info.contains("cluster_slots_assigned:0")); // slots in node.slots, not slot_map
+        assert!(info.contains("cluster_slots_assigned:16384"));
         assert!(info.contains("cluster_known_nodes:1"));
     }
 

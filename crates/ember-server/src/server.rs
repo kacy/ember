@@ -15,6 +15,7 @@ use tokio::sync::Semaphore;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
+use crate::cluster::ClusterCoordinator;
 use crate::connection;
 use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
@@ -43,6 +44,8 @@ pub struct ServerContext {
     pub requirepass: Option<String>,
     /// The address the server is bound to (for protected mode checks).
     pub bind_addr: SocketAddr,
+    /// Cluster coordinator, present when --cluster-enabled is set.
+    pub cluster: Option<Arc<ClusterCoordinator>>,
 }
 
 /// Binds to `addr` and runs the accept loop.
@@ -67,6 +70,7 @@ pub async fn run(
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
+    cluster: Option<Arc<ClusterCoordinator>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
@@ -117,6 +121,7 @@ pub async fn run(
         commands_processed: AtomicU64::new(0),
         requirepass,
         bind_addr: addr,
+        cluster,
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
@@ -345,6 +350,7 @@ pub async fn run_concurrent(
         commands_processed: AtomicU64::new(0),
         requirepass,
         bind_addr: addr,
+        cluster: None,
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
