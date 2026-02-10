@@ -177,14 +177,10 @@ impl ClusterCoordinator {
         // validate: all slots must be unassigned
         for &slot in slots {
             if slot >= SLOT_COUNT {
-                return Frame::Error(format!(
-                    "ERR Invalid or out of range slot {slot}"
-                ));
+                return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
             }
             if state.slot_map.owner(slot).is_some() {
-                return Frame::Error(format!(
-                    "ERR Slot {slot} is already busy"
-                ));
+                return Frame::Error(format!("ERR Slot {slot} is already busy"));
             }
         }
 
@@ -210,20 +206,14 @@ impl ClusterCoordinator {
         // validate: all slots must be owned by us
         for &slot in slots {
             if slot >= SLOT_COUNT {
-                return Frame::Error(format!(
-                    "ERR Invalid or out of range slot {slot}"
-                ));
+                return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
             }
             match state.slot_map.owner(slot) {
                 Some(owner) if owner != self.local_id => {
-                    return Frame::Error(format!(
-                        "ERR Slot {slot} is not owned by this node"
-                    ));
+                    return Frame::Error(format!("ERR Slot {slot} is not owned by this node"));
                 }
                 None => {
-                    return Frame::Error(format!(
-                        "ERR Slot {slot} is already unassigned"
-                    ));
+                    return Frame::Error(format!("ERR Slot {slot} is already unassigned"));
                 }
                 _ => {}
             }
@@ -277,13 +267,8 @@ impl ClusterCoordinator {
         }
 
         match state.slot_owner(slot) {
-            Some(owner) => Some(Frame::Error(format!(
-                "MOVED {} {}",
-                slot, owner.addr
-            ))),
-            None => Some(Frame::Error(
-                "CLUSTERDOWN Hash slot not served".into(),
-            )),
+            Some(owner) => Some(Frame::Error(format!("MOVED {} {}", slot, owner.addr))),
+            None => Some(Frame::Error("CLUSTERDOWN Hash slot not served".into())),
         }
     }
 
