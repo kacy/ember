@@ -212,6 +212,23 @@ KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
 | `MEMTIER_REQUESTS` | 10000 | requests per client (480k total) |
 | `MEMTIER_PIPELINE` | 16 | pipeline depth |
 
+## built-in benchmark
+
+ember also ships a built-in benchmark tool that doesn't require external dependencies:
+
+```bash
+# basic benchmark (100k requests, 50 clients)
+ember-cli benchmark
+
+# high-throughput with pipelining
+ember-cli benchmark -n 1000000 -c 50 -P 16
+
+# specific workloads
+ember-cli benchmark -t set,get,ping -d 128
+```
+
+see `ember-cli benchmark --help` for all options.
+
 ## micro-benchmarks
 
 for criterion micro-benchmarks:

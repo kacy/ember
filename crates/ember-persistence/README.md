@@ -41,4 +41,4 @@ for entry in result.entries {
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-server](../ember-server) | TCP server and connection handling |
 | [ember-cluster](../ember-cluster) | distributed coordination |
-| [ember-cli](../ember-cli) | interactive command-line client (planned) |
+| [ember-cli](../ember-cli) | interactive CLI client (REPL, cluster subcommands, benchmark) |
