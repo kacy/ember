@@ -557,7 +557,8 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
         | Command::SCard { ref key }
         | Command::ProtoSet { ref key, .. }
         | Command::ProtoGet { ref key }
-        | Command::ProtoType { ref key } => cluster.check_slot(key.as_bytes()).await,
+        | Command::ProtoType { ref key }
+        | Command::ProtoGetField { ref key, .. } => cluster.check_slot(key.as_bytes()).await,
 
         // multi-key commands — crossslot validation + slot ownership
         Command::Del { ref keys }
@@ -1774,6 +1775,31 @@ async fn execute(
             }
         }
 
+        #[cfg(feature = "protobuf")]
+        Command::ProtoGetField { key, field_path } => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let req = ShardRequest::ProtoGet { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                    let reg = match registry.read() {
+                        Ok(r) => r,
+                        Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                    };
+                    match reg.get_field(&type_name, &data, &field_path) {
+                        Ok(frame) => frame,
+                        Err(e) => Frame::Error(format!("ERR {e}")),
+                    }
+                }
+                Ok(ShardResponse::ProtoValue(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         // when protobuf feature is disabled, proto commands are unknown
         #[cfg(not(feature = "protobuf"))]
         Command::ProtoRegister { .. }
@@ -1781,7 +1807,8 @@ async fn execute(
         | Command::ProtoGet { .. }
         | Command::ProtoType { .. }
         | Command::ProtoSchemas
-        | Command::ProtoDescribe { .. } => {
+        | Command::ProtoDescribe { .. }
+        | Command::ProtoGetField { .. } => {
             Frame::Error("ERR unknown command (protobuf support not compiled)".into())
         }
 
