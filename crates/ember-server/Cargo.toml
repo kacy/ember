@@ -28,6 +28,7 @@ metrics-exporter-prometheus = { workspace = true }
 thiserror = { workspace = true }
 futures = "0.3"
 dashmap = "6"
+subtle = { workspace = true }
 
 # tls
 tokio-rustls = { workspace = true }

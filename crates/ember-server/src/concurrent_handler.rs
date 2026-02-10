@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
@@ -277,7 +278,7 @@ async fn execute_concurrent(
                         );
                     }
                 }
-                if password == *expected {
+                if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
                     Frame::Simple("OK".into())
                 } else {
                     Frame::Error(

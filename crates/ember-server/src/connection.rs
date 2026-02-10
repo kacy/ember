@@ -14,6 +14,7 @@ use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use futures::future::join_all;
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast;
 
@@ -1474,7 +1475,7 @@ async fn execute(
                         );
                     }
                 }
-                if password == *expected {
+                if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
                     Frame::Simple("OK".into())
                 } else {
                     Frame::Error(
