@@ -34,12 +34,84 @@ ember-cli SET msg "hello world"
 
 ## repl features
 
-- **tab completion** — press tab to autocomplete command names
+- **tab completion** — press tab to autocomplete command names and subcommands
+- **syntax highlighting** — known commands in cyan, unknown in red, quoted strings in green
+- **inline hints** — shows argument synopsis and subcommand options as you type
 - **history** — command history persisted to `~/.emberkv_history`
 - **inline help** — type `help` for all commands, `help SET` for details
 - **reconnection** — automatically reconnects if the server disconnects
 - **quoted strings** — double and single quoted arguments with backslash escapes
 - **timeouts** — 5s connect timeout, 10s read timeout to avoid hanging
+
+## cluster subcommands
+
+manage a cluster directly from the CLI without manually typing `CLUSTER` commands:
+
+```bash
+ember-cli cluster info
+ember-cli cluster nodes
+ember-cli cluster slots
+ember-cli cluster keyslot mykey
+ember-cli cluster myid
+ember-cli cluster meet 10.0.0.1 6379
+ember-cli cluster forget <node-id>
+ember-cli cluster addslots 0 1 2 3
+ember-cli cluster delslots 100 200
+ember-cli cluster setslot 42 importing <node-id>
+ember-cli cluster setslot 42 migrating <node-id>
+ember-cli cluster setslot 42 node <node-id>
+ember-cli cluster setslot 42 stable
+ember-cli cluster replicate <node-id>
+ember-cli cluster failover --force
+ember-cli cluster failover --takeover
+ember-cli cluster countkeysinslot 42
+ember-cli cluster getkeysinslot 42 10
+```
+
+## built-in benchmark
+
+run a built-in benchmark with pipelining support and latency percentile reporting:
+
+```bash
+# basic benchmark (100k requests, 50 clients)
+ember-cli benchmark
+
+# high-throughput test with pipelining
+ember-cli benchmark -n 1000000 -c 50 -P 16
+
+# test specific workloads
+ember-cli benchmark -t set,get,ping
+
+# customize data size and keyspace
+ember-cli benchmark -d 128 --keyspace 1000000
+
+# quiet mode — summary lines only
+ember-cli benchmark -q
+```
+
+| flag | default | description |
+|------|---------|-------------|
+| `-n`, `--requests` | 100,000 | total number of requests |
+| `-c`, `--clients` | 50 | concurrent client connections |
+| `-P`, `--pipeline` | 1 | commands per pipeline batch |
+| `-d`, `--data-size` | 64 | value payload size in bytes |
+| `-t`, `--tests` | set,get | comma-separated workloads (`set`, `get`, `ping`) |
+| `--keyspace` | 100,000 | number of unique keys |
+| `-q`, `--quiet` | — | only print summary lines |
+
+output:
+
+```
+=== ember benchmark ===
+server:     127.0.0.1:6379
+requests:   100,000
+clients:    50
+pipeline:   16
+data size:  64 bytes
+
+SET: 523,809 rps    p50: 120us  p99: 410us  p99.9: 1.23ms  max: 4.56ms
+GET: 612,345 rps    p50: 100us  p99: 380us  p99.9: 1.01ms  max: 3.21ms
+```
 
 ## local commands
 

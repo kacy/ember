@@ -35,4 +35,4 @@ let response = engine.route("mykey", ShardRequest::Get {
 | [ember-persistence](../ember-persistence) | AOF, snapshots, and crash recovery |
 | [ember-server](../ember-server) | TCP server and connection handling |
 | [ember-cluster](../ember-cluster) | distributed coordination |
-| [ember-cli](../ember-cli) | interactive command-line client (planned) |
+| [ember-cli](../ember-cli) | interactive CLI client (REPL, cluster subcommands, benchmark) |
