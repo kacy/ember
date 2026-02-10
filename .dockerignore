@@ -2,7 +2,6 @@
 target/
 bench/
 docs/
-tests/
 clients/
 *.md
 !LICENSE*
