@@ -16,7 +16,10 @@
 //! ```
 //! The CRC32 covers the tag + payload bytes.
 
+use std::fmt;
 use std::fs::{self, File, OpenOptions};
+#[cfg(feature = "encryption")]
+use std::io::Read as _;
 use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -434,13 +437,40 @@ pub enum FsyncPolicy {
 pub struct AofWriter {
     writer: BufWriter<File>,
     path: PathBuf,
+    #[cfg(feature = "encryption")]
+    encryption_key: Option<crate::encryption::EncryptionKey>,
 }
 
 impl AofWriter {
     /// Opens (or creates) an AOF file. If the file is new, writes the header.
     /// If the file already exists, appends to it.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, FormatError> {
-        let path = path.into();
+        Self::open_inner(path.into(), {
+            #[cfg(feature = "encryption")]
+            { None }
+            #[cfg(not(feature = "encryption"))]
+            { () }
+        })
+    }
+
+    /// Opens (or creates) an encrypted AOF file using AES-256-GCM.
+    ///
+    /// New files get a v3 header. Existing v2 files can be appended to —
+    /// new records will be written unencrypted (use `BGREWRITEAOF` to
+    /// migrate the full file to v3).
+    #[cfg(feature = "encryption")]
+    pub fn open_encrypted(
+        path: impl Into<PathBuf>,
+        key: crate::encryption::EncryptionKey,
+    ) -> Result<Self, FormatError> {
+        Self::open_inner(path.into(), Some(key))
+    }
+
+    fn open_inner(
+        path: PathBuf,
+        #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
+        #[cfg(not(feature = "encryption"))] _: (),
+    ) -> Result<Self, FormatError> {
         let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
 
         let mut opts = OpenOptions::new();
@@ -454,16 +484,45 @@ impl AofWriter {
         let mut writer = BufWriter::new(file);
 
         if !exists {
+            #[cfg(feature = "encryption")]
+            if encryption_key.is_some() {
+                format::write_header_versioned(
+                    &mut writer,
+                    format::AOF_MAGIC,
+                    format::FORMAT_VERSION_ENCRYPTED,
+                )?;
+            } else {
+                format::write_header(&mut writer, format::AOF_MAGIC)?;
+            }
+            #[cfg(not(feature = "encryption"))]
             format::write_header(&mut writer, format::AOF_MAGIC)?;
             writer.flush()?;
         }
 
-        Ok(Self { writer, path })
+        Ok(Self {
+            writer,
+            path,
+            #[cfg(feature = "encryption")]
+            encryption_key,
+        })
     }
 
-    /// Appends a record to the AOF. Writes tag+payload+crc32.
+    /// Appends a record to the AOF.
+    ///
+    /// When an encryption key is set, writes: `[nonce: 12B][len: 4B][ciphertext]`.
+    /// Otherwise writes the v2 format: `[tag+payload][crc32: 4B]`.
     pub fn write_record(&mut self, record: &AofRecord) -> Result<(), FormatError> {
         let payload = record.to_bytes()?;
+
+        #[cfg(feature = "encryption")]
+        if let Some(ref key) = self.encryption_key {
+            let (nonce, ciphertext) = crate::encryption::encrypt_record(key, &payload)?;
+            self.writer.write_all(&nonce)?;
+            format::write_u32(&mut self.writer, ciphertext.len() as u32)?;
+            self.writer.write_all(&ciphertext)?;
+            return Ok(());
+        }
+
         let checksum = format::crc32(&payload);
         self.writer.write_all(&payload)?;
         format::write_u32(&mut self.writer, checksum)?;
@@ -504,7 +563,20 @@ impl AofWriter {
         }
         let file = opts.open(&self.path)?;
         let mut writer = BufWriter::new(file);
+
+        #[cfg(feature = "encryption")]
+        if self.encryption_key.is_some() {
+            format::write_header_versioned(
+                &mut writer,
+                format::AOF_MAGIC,
+                format::FORMAT_VERSION_ENCRYPTED,
+            )?;
+        } else {
+            format::write_header(&mut writer, format::AOF_MAGIC)?;
+        }
+        #[cfg(not(feature = "encryption"))]
         format::write_header(&mut writer, format::AOF_MAGIC)?;
+
         writer.flush()?;
         // ensure the fresh header is durable before we start appending
         writer.get_ref().sync_all()?;
@@ -514,9 +586,20 @@ impl AofWriter {
 }
 
 /// Reader for iterating over AOF records.
-#[derive(Debug)]
 pub struct AofReader {
     reader: BufReader<File>,
+    /// Format version from the file header. v2 = plaintext, v3 = encrypted.
+    version: u8,
+    #[cfg(feature = "encryption")]
+    encryption_key: Option<crate::encryption::EncryptionKey>,
+}
+
+impl fmt::Debug for AofReader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AofReader")
+            .field("version", &self.version)
+            .finish()
+    }
 }
 
 impl AofReader {
@@ -524,8 +607,38 @@ impl AofReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FormatError> {
         let file = File::open(path.as_ref())?;
         let mut reader = BufReader::new(file);
-        let _version = format::read_header(&mut reader, format::AOF_MAGIC)?;
-        Ok(Self { reader })
+        let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
+
+        if version == format::FORMAT_VERSION_ENCRYPTED {
+            return Err(FormatError::EncryptionRequired);
+        }
+
+        Ok(Self {
+            reader,
+            version,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
+        })
+    }
+
+    /// Opens an AOF file with an encryption key for decrypting v3 records.
+    ///
+    /// Also handles v2 (plaintext) files — the key is simply unused,
+    /// allowing transparent migration.
+    #[cfg(feature = "encryption")]
+    pub fn open_encrypted(
+        path: impl AsRef<Path>,
+        key: crate::encryption::EncryptionKey,
+    ) -> Result<Self, FormatError> {
+        let file = File::open(path.as_ref())?;
+        let mut reader = BufReader::new(file);
+        let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
+
+        Ok(Self {
+            reader,
+            version,
+            encryption_key: Some(key),
+        })
     }
 
     /// Reads the next record from the AOF.
@@ -534,6 +647,16 @@ impl AofReader {
     /// server crashed mid-write), returns `Ok(None)` rather than an error
     /// — this is the expected recovery behavior.
     pub fn read_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
+        #[cfg(feature = "encryption")]
+        if self.version == format::FORMAT_VERSION_ENCRYPTED {
+            return self.read_encrypted_record();
+        }
+
+        self.read_v2_record()
+    }
+
+    /// Reads a v2 (plaintext) record: tag + payload + crc32.
+    fn read_v2_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
         // peek for EOF — try reading the tag byte
         let tag = match format::read_u8(&mut self.reader) {
             Ok(t) => t,
@@ -557,6 +680,51 @@ impl AofReader {
             Err(FormatError::UnexpectedEof) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// Reads a v3 (encrypted) record: nonce + len + ciphertext.
+    #[cfg(feature = "encryption")]
+    fn read_encrypted_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
+        let key = self
+            .encryption_key
+            .as_ref()
+            .ok_or(FormatError::EncryptionRequired)?;
+
+        // read the 12-byte nonce
+        let mut nonce = [0u8; crate::encryption::NONCE_SIZE];
+        if let Err(e) = self.reader.read_exact(&mut nonce) {
+            return if e.kind() == io::ErrorKind::UnexpectedEof {
+                Ok(None)
+            } else {
+                Err(FormatError::Io(e))
+            };
+        }
+
+        // read ciphertext length and ciphertext
+        let ct_len = match format::read_u32(&mut self.reader) {
+            Ok(n) => n as usize,
+            Err(FormatError::UnexpectedEof) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        if ct_len > format::MAX_FIELD_LEN {
+            return Err(FormatError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("encrypted record length {ct_len} exceeds maximum"),
+            )));
+        }
+
+        let mut ciphertext = vec![0u8; ct_len];
+        if let Err(e) = self.reader.read_exact(&mut ciphertext) {
+            return if e.kind() == io::ErrorKind::UnexpectedEof {
+                Ok(None)
+            } else {
+                Err(FormatError::Io(e))
+            };
+        }
+
+        let plaintext = crate::encryption::decrypt_record(key, &nonce, &ciphertext)?;
+        AofRecord::from_bytes(&plaintext).map(Some)
     }
 
     /// Reads the remaining payload bytes (after the tag) and the trailing CRC.
@@ -1120,5 +1288,163 @@ mod tests {
         let bytes = rec.to_bytes().unwrap();
         let decoded = AofRecord::from_bytes(&bytes).unwrap();
         assert_eq!(rec, decoded);
+    }
+
+    #[cfg(feature = "encryption")]
+    mod encrypted {
+        use super::*;
+        use crate::encryption::EncryptionKey;
+
+        fn test_key() -> EncryptionKey {
+            EncryptionKey::from_bytes([0x42; 32])
+        }
+
+        #[test]
+        fn encrypted_writer_reader_round_trip() {
+            let dir = temp_dir();
+            let path = dir.path().join("enc.aof");
+            let key = test_key();
+
+            let records = vec![
+                AofRecord::Set {
+                    key: "a".into(),
+                    value: Bytes::from("1"),
+                    expire_ms: -1,
+                },
+                AofRecord::Del { key: "a".into() },
+                AofRecord::LPush {
+                    key: "list".into(),
+                    values: vec![Bytes::from("x"), Bytes::from("y")],
+                },
+                AofRecord::ZAdd {
+                    key: "zs".into(),
+                    members: vec![(1.0, "m".into())],
+                },
+            ];
+
+            {
+                let mut writer = AofWriter::open_encrypted(&path, key.clone()).unwrap();
+                for rec in &records {
+                    writer.write_record(rec).unwrap();
+                }
+                writer.sync().unwrap();
+            }
+
+            let mut reader = AofReader::open_encrypted(&path, key).unwrap();
+            let mut got = Vec::new();
+            while let Some(rec) = reader.read_record().unwrap() {
+                got.push(rec);
+            }
+            assert_eq!(records, got);
+        }
+
+        #[test]
+        fn encrypted_aof_wrong_key_fails() {
+            let dir = temp_dir();
+            let path = dir.path().join("enc_bad.aof");
+            let key = test_key();
+            let wrong_key = EncryptionKey::from_bytes([0xFF; 32]);
+
+            {
+                let mut writer = AofWriter::open_encrypted(&path, key).unwrap();
+                writer
+                    .write_record(&AofRecord::Set {
+                        key: "k".into(),
+                        value: Bytes::from("v"),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.sync().unwrap();
+            }
+
+            let mut reader = AofReader::open_encrypted(&path, wrong_key).unwrap();
+            let err = reader.read_record().unwrap_err();
+            assert!(matches!(err, FormatError::DecryptionFailed));
+        }
+
+        #[test]
+        fn v2_file_readable_with_encryption_key() {
+            let dir = temp_dir();
+            let path = dir.path().join("v2.aof");
+            let key = test_key();
+
+            // write a plaintext v2 file
+            {
+                let mut writer = AofWriter::open(&path).unwrap();
+                writer
+                    .write_record(&AofRecord::Set {
+                        key: "k".into(),
+                        value: Bytes::from("v"),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.sync().unwrap();
+            }
+
+            // read with encryption key — should work (v2 is plaintext)
+            let mut reader = AofReader::open_encrypted(&path, key).unwrap();
+            let rec = reader.read_record().unwrap().unwrap();
+            assert!(matches!(rec, AofRecord::Set { .. }));
+        }
+
+        #[test]
+        fn v3_file_without_key_returns_error() {
+            let dir = temp_dir();
+            let path = dir.path().join("v3_nokey.aof");
+            let key = test_key();
+
+            // write an encrypted v3 file
+            {
+                let mut writer = AofWriter::open_encrypted(&path, key).unwrap();
+                writer
+                    .write_record(&AofRecord::Set {
+                        key: "k".into(),
+                        value: Bytes::from("v"),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.sync().unwrap();
+            }
+
+            // try to open without a key
+            let err = AofReader::open(&path).unwrap_err();
+            assert!(matches!(err, FormatError::EncryptionRequired));
+        }
+
+        #[test]
+        fn encrypted_truncate_preserves_encryption() {
+            let dir = temp_dir();
+            let path = dir.path().join("enc_trunc.aof");
+            let key = test_key();
+
+            {
+                let mut writer = AofWriter::open_encrypted(&path, key.clone()).unwrap();
+                writer
+                    .write_record(&AofRecord::Set {
+                        key: "old".into(),
+                        value: Bytes::from("data"),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.truncate().unwrap();
+
+                writer
+                    .write_record(&AofRecord::Set {
+                        key: "new".into(),
+                        value: Bytes::from("fresh"),
+                        expire_ms: -1,
+                    })
+                    .unwrap();
+                writer.sync().unwrap();
+            }
+
+            let mut reader = AofReader::open_encrypted(&path, key).unwrap();
+            let rec = reader.read_record().unwrap().unwrap();
+            match rec {
+                AofRecord::Set { key, .. } => assert_eq!(key, "new"),
+                other => panic!("expected Set, got {other:?}"),
+            }
+            assert!(reader.read_record().unwrap().is_none());
+        }
     }
 }
