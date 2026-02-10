@@ -17,6 +17,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
+#[cfg(feature = "protobuf")]
+use bytes::Bytes;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
@@ -289,6 +291,172 @@ async fn execute_concurrent(
                 }
             }
         },
+
+        // -- protobuf commands --
+        #[cfg(feature = "protobuf")]
+        Command::ProtoRegister { name, descriptor } => {
+            let registry = match _engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let result = {
+                let mut reg = match registry.write() {
+                    Ok(r) => r,
+                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                };
+                reg.register(name.clone(), descriptor.clone())
+            };
+            match result {
+                Ok(types) => {
+                    let _ = _engine
+                        .broadcast(|| ember_core::ShardRequest::ProtoRegisterAof {
+                            name: name.clone(),
+                            descriptor: descriptor.clone(),
+                        })
+                        .await;
+                    Frame::Array(
+                        types
+                            .into_iter()
+                            .map(|t| Frame::Bulk(Bytes::from(t)))
+                            .collect(),
+                    )
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoSet {
+            key,
+            type_name,
+            data,
+            expire,
+            nx,
+            xx,
+        } => {
+            let registry = match _engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            {
+                let reg = match registry.read() {
+                    Ok(r) => r,
+                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                };
+                if let Err(e) = reg.validate(&type_name, &data) {
+                    return Frame::Error(format!("ERR {e}"));
+                }
+            }
+            let duration = expire.map(|e| match e {
+                SetExpire::Ex(secs) => Duration::from_secs(secs),
+                SetExpire::Px(millis) => Duration::from_millis(millis),
+            });
+            let req = ember_core::ShardRequest::ProtoSet {
+                key: key.clone(),
+                type_name,
+                data,
+                expire: duration,
+                nx,
+                xx,
+            };
+            match _engine.route(&key, req).await {
+                Ok(ember_core::ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
+                Ok(ember_core::ShardResponse::OutOfMemory) => {
+                    Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
+                }
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoGet { key } => {
+            if _engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
+            match _engine.route(&key, req).await {
+                Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                    Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
+                }
+                Ok(ember_core::ShardResponse::ProtoValue(None)) => Frame::Null,
+                Ok(ember_core::ShardResponse::WrongType) => {
+                    Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
+                }
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoType { key } => {
+            if _engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ember_core::ShardRequest::ProtoType { key: key.clone() };
+            match _engine.route(&key, req).await {
+                Ok(ember_core::ShardResponse::ProtoTypeName(Some(name))) => {
+                    Frame::Bulk(Bytes::from(name))
+                }
+                Ok(ember_core::ShardResponse::ProtoTypeName(None)) => Frame::Null,
+                Ok(ember_core::ShardResponse::WrongType) => {
+                    Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
+                }
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoSchemas => {
+            let registry = match _engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let reg = match registry.read() {
+                Ok(r) => r,
+                Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+            };
+            let names = reg.schema_names();
+            Frame::Array(
+                names
+                    .into_iter()
+                    .map(|n| Frame::Bulk(Bytes::from(n)))
+                    .collect(),
+            )
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoDescribe { name } => {
+            let registry = match _engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            let reg = match registry.read() {
+                Ok(r) => r,
+                Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+            };
+            match reg.describe(&name) {
+                Some(types) => Frame::Array(
+                    types
+                        .into_iter()
+                        .map(|t| Frame::Bulk(Bytes::from(t)))
+                        .collect(),
+                ),
+                None => Frame::Error(format!("ERR unknown schema '{name}'")),
+            }
+        }
+
+        #[cfg(not(feature = "protobuf"))]
+        Command::ProtoRegister { .. }
+        | Command::ProtoSet { .. }
+        | Command::ProtoGet { .. }
+        | Command::ProtoType { .. }
+        | Command::ProtoSchemas
+        | Command::ProtoDescribe { .. } => {
+            Frame::Error("ERR unknown command (protobuf support not compiled)".into())
+        }
 
         Command::Quit => Frame::Simple("OK".into()),
 
