@@ -568,6 +568,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ember-integration-tests"
+version = "0.4.0"
+dependencies = [
+ "bytes",
+ "ember-protocol",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "ember-persistence"
 version = "0.4.0"
 dependencies = [

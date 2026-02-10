@@ -1,0 +1,17 @@
+[package]
+name = "ember-integration-tests"
+version.workspace = true
+edition.workspace = true
+publish = false
+autobins = false
+
+[[test]]
+name = "integration"
+path = "src/main.rs"
+harness = true
+
+[dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+bytes = { workspace = true }
+ember-protocol = { workspace = true }
+tempfile = "3"

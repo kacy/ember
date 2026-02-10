@@ -16,7 +16,9 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
 
-use crate::commands::{command_names, commands_by_group, find_command, has_subcommands, subcommands};
+use crate::commands::{
+    command_names, commands_by_group, find_command, has_subcommands, subcommands,
+};
 use crate::connection::{Connection, ConnectionError};
 use crate::format::format_response;
 
@@ -433,9 +435,7 @@ impl Highlighter for EmberHelper {
         let rest = &trimmed[first_end..];
 
         let is_known = find_command(first).is_some()
-            || LOCAL_COMMANDS
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(first));
+            || LOCAL_COMMANDS.iter().any(|c| c.eq_ignore_ascii_case(first));
 
         let highlighted_cmd = if is_known {
             format!("\x1b[1;36m{first}\x1b[0m") // bold cyan
@@ -466,7 +466,12 @@ impl Highlighter for EmberHelper {
         Cow::Owned(format!("\x1b[2m{hint}\x1b[0m")) // dim
     }
 
-    fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
+    fn highlight_char(
+        &self,
+        _line: &str,
+        _pos: usize,
+        _kind: rustyline::highlight::CmdKind,
+    ) -> bool {
         true // re-highlight on every keystroke
     }
 }
@@ -656,7 +661,11 @@ mod tests {
     #[test]
     fn hint_shows_args_for_known_command() {
         let h = EmberHelper;
-        let hint = h.hint("SET ", 4, &Context::new(&rustyline::history::DefaultHistory::new()));
+        let hint = h.hint(
+            "SET ",
+            4,
+            &Context::new(&rustyline::history::DefaultHistory::new()),
+        );
         assert!(hint.is_some());
         let hint = hint.unwrap();
         assert!(hint.contains("key"));
@@ -665,7 +674,11 @@ mod tests {
     #[test]
     fn hint_shows_subcommands_for_cluster() {
         let h = EmberHelper;
-        let hint = h.hint("CLUSTER ", 8, &Context::new(&rustyline::history::DefaultHistory::new()));
+        let hint = h.hint(
+            "CLUSTER ",
+            8,
+            &Context::new(&rustyline::history::DefaultHistory::new()),
+        );
         assert!(hint.is_some());
         let hint = hint.unwrap();
         assert!(hint.contains("INFO"));
@@ -674,14 +687,22 @@ mod tests {
     #[test]
     fn hint_none_for_unknown_command() {
         let h = EmberHelper;
-        let hint = h.hint("FOOBAR ", 7, &Context::new(&rustyline::history::DefaultHistory::new()));
+        let hint = h.hint(
+            "FOOBAR ",
+            7,
+            &Context::new(&rustyline::history::DefaultHistory::new()),
+        );
         assert!(hint.is_none());
     }
 
     #[test]
     fn hint_none_when_cursor_not_at_end() {
         let h = EmberHelper;
-        let hint = h.hint("SET key", 3, &Context::new(&rustyline::history::DefaultHistory::new()));
+        let hint = h.hint(
+            "SET key",
+            3,
+            &Context::new(&rustyline::history::DefaultHistory::new()),
+        );
         assert!(hint.is_none());
     }
 }
