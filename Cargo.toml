@@ -41,6 +41,9 @@ clap = { version = "4", features = ["derive"] }
 # checksums
 crc32fast = "1"
 
+# constant-time comparison (auth)
+subtle = "2"
+
 # float ordering (used for sorted set scores)
 ordered-float = "5"
 
