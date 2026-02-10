@@ -29,6 +29,14 @@ pub struct ClusterCoordinator {
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
 }
 
+impl std::fmt::Debug for ClusterCoordinator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClusterCoordinator")
+            .field("local_id", &self.local_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ClusterCoordinator {
     /// Creates a new cluster coordinator.
     ///

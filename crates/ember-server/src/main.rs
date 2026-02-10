@@ -17,11 +17,14 @@ mod tls;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
+use ember_cluster::{GossipConfig, NodeId};
 use ember_core::ShardPersistenceConfig;
 use tracing::info;
 
+use crate::cluster::ClusterCoordinator;
 use crate::config::{
     build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy,
 };
@@ -111,6 +114,23 @@ struct Args {
     /// accepts: yes, no. default: no
     #[arg(long, default_value = "no", env = "EMBER_TLS_AUTH_CLIENTS")]
     tls_auth_clients: String,
+
+    // -- cluster options --
+    /// enable cluster mode with gossip-based discovery and slot routing
+    #[arg(long, env = "EMBER_CLUSTER_ENABLED")]
+    cluster_enabled: bool,
+
+    /// bootstrap a new cluster as a single node owning all 16384 slots
+    #[arg(long, env = "EMBER_CLUSTER_BOOTSTRAP")]
+    cluster_bootstrap: bool,
+
+    /// port offset for the cluster gossip bus (data_port + offset)
+    #[arg(long, default_value_t = 10000, env = "EMBER_CLUSTER_PORT_OFFSET")]
+    cluster_port_offset: u16,
+
+    /// node timeout in milliseconds for failure detection
+    #[arg(long, default_value_t = 5000, env = "EMBER_CLUSTER_NODE_TIMEOUT")]
+    cluster_node_timeout: u64,
 }
 
 #[tokio::main]
@@ -289,6 +309,44 @@ async fn main() {
         None
     };
 
+    // validate cluster mode
+    if args.cluster_enabled && args.concurrent {
+        eprintln!("error: --cluster-enabled and --concurrent are mutually exclusive");
+        std::process::exit(1);
+    }
+
+    if args.cluster_bootstrap && !args.cluster_enabled {
+        eprintln!("error: --cluster-bootstrap requires --cluster-enabled");
+        std::process::exit(1);
+    }
+
+    // build cluster coordinator if cluster mode is enabled
+    let cluster: Option<Arc<ClusterCoordinator>> = if args.cluster_enabled {
+        let local_id = NodeId::new();
+        let gossip_config = GossipConfig {
+            gossip_port_offset: args.cluster_port_offset,
+            probe_timeout: std::time::Duration::from_millis(args.cluster_node_timeout / 2),
+            ..GossipConfig::default()
+        };
+
+        let (coordinator, event_rx) =
+            ClusterCoordinator::new(local_id, addr, gossip_config, args.cluster_bootstrap);
+        let coordinator = Arc::new(coordinator);
+
+        // spawn gossip networking tasks
+        coordinator.spawn_gossip(addr, event_rx).await;
+
+        if args.cluster_bootstrap {
+            info!("cluster mode: bootstrapped with all 16384 slots");
+        } else {
+            info!("cluster mode: waiting for CLUSTER MEET");
+        }
+
+        Some(coordinator)
+    } else {
+        None
+    };
+
     let result = if args.concurrent {
         server::run_concurrent(
             addr,
@@ -313,6 +371,7 @@ async fn main() {
             slowlog_config,
             args.requirepass,
             tls_config,
+            cluster,
         )
         .await
     };
