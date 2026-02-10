@@ -13,6 +13,7 @@ readme = "README.md"
 name = "ember_core"
 
 [dependencies]
+ember-cluster = { workspace = true }
 ember-protocol = { workspace = true }
 ember-persistence = { workspace = true }
 thiserror = { workspace = true }

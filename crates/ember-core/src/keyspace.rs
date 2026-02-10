@@ -747,6 +747,30 @@ impl Keyspace {
             .collect()
     }
 
+    /// Counts live keys in this keyspace that hash to the given cluster slot.
+    ///
+    /// O(n) scan over all entries — same cost as KEYS.
+    pub fn count_keys_in_slot(&self, slot: u16) -> usize {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_expired())
+            .filter(|(key, _)| ember_cluster::key_slot(key.as_bytes()) == slot)
+            .count()
+    }
+
+    /// Returns up to `count` live keys that hash to the given cluster slot.
+    ///
+    /// O(n) scan over all entries — same cost as KEYS.
+    pub fn get_keys_in_slot(&self, slot: u16, count: usize) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| !entry.is_expired())
+            .filter(|(key, _)| ember_cluster::key_slot(key.as_bytes()) == slot)
+            .take(count)
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
     /// Renames a key to a new name. Returns an error if the source key
     /// doesn't exist. If the destination key already exists, it is overwritten.
     pub fn rename(&mut self, key: &str, newkey: &str) -> Result<(), RenameError> {
@@ -3956,5 +3980,62 @@ mod tests {
         // same key length, so memory should be the same
         assert_eq!(before, after);
         assert_eq!(ks.stats().key_count, 1);
+    }
+
+    #[test]
+    fn count_keys_in_slot_empty() {
+        let ks = Keyspace::new();
+        assert_eq!(ks.count_keys_in_slot(0), 0);
+    }
+
+    #[test]
+    fn count_keys_in_slot_matches() {
+        let mut ks = Keyspace::new();
+        // insert a few keys and count those in a specific slot
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), None);
+        ks.set("c".into(), Bytes::from("3"), None);
+
+        let slot_a = ember_cluster::key_slot(b"a");
+        let count = ks.count_keys_in_slot(slot_a);
+        // at minimum, "a" should be in its own slot
+        assert!(count >= 1);
+    }
+
+    #[test]
+    fn count_keys_in_slot_skips_expired() {
+        let mut ks = Keyspace::new();
+        let slot = ember_cluster::key_slot(b"temp");
+        ks.set(
+            "temp".into(),
+            Bytes::from("gone"),
+            Some(Duration::from_millis(0)),
+        );
+        // key is expired — should not be counted
+        thread::sleep(Duration::from_millis(5));
+        assert_eq!(ks.count_keys_in_slot(slot), 0);
+    }
+
+    #[test]
+    fn get_keys_in_slot_returns_matching() {
+        let mut ks = Keyspace::new();
+        ks.set("x".into(), Bytes::from("1"), None);
+        ks.set("y".into(), Bytes::from("2"), None);
+
+        let slot_x = ember_cluster::key_slot(b"x");
+        let keys = ks.get_keys_in_slot(slot_x, 100);
+        assert!(keys.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn get_keys_in_slot_respects_count_limit() {
+        let mut ks = Keyspace::new();
+        // insert several keys — some might share a slot
+        for i in 0..100 {
+            ks.set(format!("key:{i}"), Bytes::from("v"), None);
+        }
+        // ask for at most 3 keys from slot 0
+        let keys = ks.get_keys_in_slot(0, 3);
+        assert!(keys.len() <= 3);
     }
 }
