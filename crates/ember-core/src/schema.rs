@@ -44,6 +44,9 @@ struct RegisteredSchema {
 ///
 /// Each schema is identified by a user-chosen name (e.g. "users/v1")
 /// and contains one or more message type definitions.
+///
+/// Debug is implemented manually because `DescriptorPool` doesn't
+/// derive it.
 pub struct SchemaRegistry {
     schemas: HashMap<String, RegisteredSchema>,
 }
@@ -170,6 +173,14 @@ impl SchemaRegistry {
             }
         }
         Err(SchemaError::UnknownMessageType(message_type.to_owned()))
+    }
+}
+
+impl std::fmt::Debug for SchemaRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SchemaRegistry")
+            .field("schema_count", &self.schemas.len())
+            .finish()
     }
 }
 
