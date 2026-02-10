@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(v.len(), 64);
         // all bytes should be lowercase ascii
         for &b in &v {
-            assert!(b >= b'a' && b <= b'z');
+            assert!(b.is_ascii_lowercase());
         }
     }
 

@@ -52,6 +52,26 @@ if using AOF or snapshots:
 - aof files contain all write commands in binary format
 - snapshots contain the full keyspace state
 
+### encryption at rest
+
+ember supports optional AES-256-GCM encryption for AOF and snapshot files. enable it by building with `--features encryption` and passing `--encryption-key-file`:
+
+```bash
+# generate a 32-byte random key
+dd if=/dev/urandom bs=32 count=1 > /path/to/ember.key
+chmod 600 /path/to/ember.key
+
+ember-server --data-dir ./data --appendonly --encryption-key-file /path/to/ember.key
+```
+
+key management considerations:
+
+- **key loss = data loss** — there is no recovery mechanism if the key file is lost. back it up separately from your data directory
+- **use a secrets manager** in production (e.g., HashiCorp Vault, AWS Secrets Manager) rather than storing the key file on the same disk as the data
+- **key file permissions** — restrict to `600` (owner read/write only)
+- **key rotation** — run `BGREWRITEAOF` and `BGSAVE` after swapping the key file to re-encrypt all persistence files with the new key. the old key is no longer needed once rewriting completes
+- **transparent migration** — existing plaintext files are read normally even after enabling encryption. they are migrated to the encrypted format on the next `BGREWRITEAOF` or `BGSAVE`
+
 ## security updates
 
 security fixes are released as patch versions. we recommend staying up to date with the latest release.
