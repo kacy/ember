@@ -196,10 +196,7 @@ impl SnapshotWriter {
                 }
             }
             #[cfg(feature = "protobuf")]
-            SnapValue::Proto {
-                type_name,
-                data,
-            } => {
+            SnapValue::Proto { type_name, data } => {
                 format::write_u8(&mut buf, TYPE_PROTO)?;
                 format::write_bytes(&mut buf, type_name.as_bytes())?;
                 format::write_bytes(&mut buf, data)?;

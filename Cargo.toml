@@ -62,7 +62,7 @@ rustls-pemfile = "2"
 rustls-native-certs = "0.8"
 
 # dynamic protobuf messages
-prost-reflect = "0.14"
+prost-reflect = "0.16"
 
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.4.2", path = "crates/ember-core" }

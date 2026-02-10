@@ -39,7 +39,10 @@ pub enum RecoveredValue {
     Set(HashSet<String>),
     /// A protobuf message: type name + serialized bytes.
     #[cfg(feature = "protobuf")]
-    Proto { type_name: String, data: Bytes },
+    Proto {
+        type_name: String,
+        data: Bytes,
+    },
 }
 
 impl From<SnapValue> for RecoveredValue {
@@ -430,10 +433,7 @@ fn replay_aof(
                 data,
                 expire_ms,
             } => {
-                map.insert(
-                    key,
-                    (RecoveredValue::Proto { type_name, data }, expire_ms),
-                );
+                map.insert(key, (RecoveredValue::Proto { type_name, data }, expire_ms));
             }
             #[cfg(feature = "protobuf")]
             AofRecord::ProtoRegister { .. } => {

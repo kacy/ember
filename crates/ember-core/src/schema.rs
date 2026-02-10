@@ -71,7 +71,11 @@ impl SchemaRegistry {
     ///
     /// Returns the list of message type names defined in the schema.
     /// Fails if the name is already registered or the descriptor is invalid.
-    pub fn register(&mut self, name: String, descriptor_bytes: Bytes) -> Result<Vec<String>, SchemaError> {
+    pub fn register(
+        &mut self,
+        name: String,
+        descriptor_bytes: Bytes,
+    ) -> Result<Vec<String>, SchemaError> {
         if self.schemas.contains_key(&name) {
             return Err(SchemaError::AlreadyExists(name));
         }
@@ -197,10 +201,10 @@ mod tests {
     /// Builds a minimal FileDescriptorSet containing a single message type.
     /// Uses prost-reflect's own encoding rather than shelling out to protoc.
     fn make_descriptor(package: &str, message_name: &str, field_name: &str) -> Bytes {
+        use prost_reflect::prost::Message;
         use prost_reflect::prost_types::{
             DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
         };
-        use prost_reflect::prost::Message;
 
         let fds = FileDescriptorSet {
             file: vec![FileDescriptorProto {
