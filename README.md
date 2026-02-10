@@ -35,7 +35,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
 - **persistence** — append-only file (AOF) and point-in-time snapshots
 - **pipelining** — multiple commands per read for high throughput
-- **interactive CLI** — `ember-cli` with REPL, tab-completion, inline help, and one-shot mode
+- **interactive CLI** — `ember-cli` with REPL, syntax highlighting, tab-completion, inline hints, cluster subcommands, and built-in benchmark
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
 
 ## quickstart
@@ -61,7 +61,7 @@ cargo build --release
   --tls-cert-file cert.pem --tls-key-file key.pem
 ```
 
-ember speaks RESP3, so `redis-cli` works as a drop-in replacement — but `ember-cli` adds tab-completion, inline help, and auto-reconnect.
+ember speaks RESP3, so `redis-cli` works as a drop-in replacement — but `ember-cli` adds syntax highlighting, tab-completion, inline hints, and auto-reconnect.
 
 ```bash
 # ember-cli: interactive REPL with autocomplete and help
@@ -72,6 +72,14 @@ ember-cli -a mypassword         # authenticate
 # one-shot mode
 ember-cli SET hello world       # => OK
 ember-cli GET hello             # => "hello"
+
+# cluster management subcommands
+ember-cli cluster info          # cluster state
+ember-cli cluster nodes         # list nodes
+ember-cli cluster meet 10.0.0.1 6379
+
+# built-in benchmark
+ember-cli benchmark -n 100000 -c 50 -P 16
 
 # redis-cli works too — same protocol, same port
 redis-cli SET hello world       # => OK
@@ -172,7 +180,7 @@ crates/
   ember-protocol/     RESP3 wire protocol
   ember-persistence/  AOF and snapshot durability
   ember-cluster/      raft consensus, gossip, slot management, migration
-  ember-cli/          interactive CLI client (REPL, one-shot, autocomplete)
+  ember-cli/          interactive CLI client (REPL, cluster subcommands, benchmark)
 ```
 
 ## architecture
@@ -227,7 +235,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 85 commands, 753 tests, ~14k lines of code (excluding tests)
+**current**: 85 commands, 861 tests, ~18k lines of code (excluding tests)
 
 ## security
 
