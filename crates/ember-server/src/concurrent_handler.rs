@@ -377,7 +377,7 @@ async fn execute_concurrent(
             }
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
             match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
                 }
                 Ok(ember_core::ShardResponse::ProtoValue(None)) => Frame::Null,
@@ -456,7 +456,7 @@ async fn execute_concurrent(
             };
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
             match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     let reg = match registry.read() {
                         Ok(r) => r,
                         Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
@@ -486,8 +486,8 @@ async fn execute_concurrent(
                 None => return Frame::Error("ERR protobuf support is not enabled".into()),
             };
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data) = match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::ProtoValue(Some(pair))) => pair,
+            let (type_name, data, existing_ttl) = match _engine.route(&key, req).await {
+                Ok(ember_core::ShardResponse::ProtoValue(Some(tuple))) => tuple,
                 Ok(ember_core::ShardResponse::ProtoValue(None)) => return Frame::Null,
                 Ok(ember_core::ShardResponse::WrongType) => {
                     return Frame::Error(
@@ -513,7 +513,7 @@ async fn execute_concurrent(
                 key: key.clone(),
                 type_name,
                 data: new_data,
-                expire: None,
+                expire: existing_ttl,
                 nx: false,
                 xx: true,
             };
@@ -535,8 +535,8 @@ async fn execute_concurrent(
                 None => return Frame::Error("ERR protobuf support is not enabled".into()),
             };
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data) = match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::ProtoValue(Some(pair))) => pair,
+            let (type_name, data, existing_ttl) = match _engine.route(&key, req).await {
+                Ok(ember_core::ShardResponse::ProtoValue(Some(tuple))) => tuple,
                 Ok(ember_core::ShardResponse::ProtoValue(None)) => return Frame::Null,
                 Ok(ember_core::ShardResponse::WrongType) => {
                     return Frame::Error(
@@ -562,7 +562,7 @@ async fn execute_concurrent(
                 key: key.clone(),
                 type_name,
                 data: new_data,
-                expire: None,
+                expire: existing_ttl,
                 nx: false,
                 xx: true,
             };

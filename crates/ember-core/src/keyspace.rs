@@ -1888,18 +1888,32 @@ impl Keyspace {
         SetResult::Ok
     }
 
-    /// Retrieves a proto value, returning `(type_name, data)` or `None`.
+    /// Retrieves a proto value, returning `(type_name, data, remaining_ttl)`
+    /// or `None`.
+    ///
+    /// The remaining TTL is `Some(duration)` if the key has an expiry set,
+    /// or `None` for keys that never expire. This allows callers to preserve
+    /// the TTL across read-modify-write cycles (e.g. SETFIELD/DELFIELD).
     ///
     /// Returns `Err(WrongType)` if the key holds a different value type.
     #[cfg(feature = "protobuf")]
-    pub fn proto_get(&mut self, key: &str) -> Result<Option<(String, Bytes)>, WrongType> {
+    pub fn proto_get(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<(String, Bytes, Option<Duration>)>, WrongType> {
         if self.remove_if_expired(key) {
             return Ok(None);
         }
         match self.entries.get_mut(key) {
             Some(e) => {
                 if let Value::Proto { type_name, data } = &e.value {
-                    let result = (type_name.clone(), data.clone());
+                    let remaining = if e.expires_at_ms == 0 {
+                        None
+                    } else {
+                        let now = time::now_ms();
+                        Some(Duration::from_millis(e.expires_at_ms.saturating_sub(now)))
+                    };
+                    let result = (type_name.clone(), data.clone(), remaining);
                     e.touch();
                     Ok(Some(result))
                 } else {
