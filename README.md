@@ -215,16 +215,6 @@ crates/
   ember-cli/          interactive CLI client (REPL, cluster subcommands, benchmark)
 ```
 
-## architecture
-
-ember uses a shared-nothing, thread-per-core design inspired by [Dragonfly](https://github.com/dragonflydb/dragonfly). each cpu core owns a partition of the keyspace with no cross-thread synchronization on the hot path.
-
-| metric | redis baseline | ember target |
-|--------|---------------|--------------|
-| throughput | ~100k ops/sec/core | 500k+ ops/sec/core |
-| p99 latency | ~1ms | <200µs |
-| memory/key | ~90 bytes overhead | <40 bytes |
-
 ## benchmarks
 
 tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md](bench/README.md) for full results.
@@ -267,7 +257,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 94 commands, 967 tests, ~18k lines of code (excluding tests)
+**current**: 94 commands, 989 tests, ~21k lines of code (excluding tests)
 
 ## security
 
