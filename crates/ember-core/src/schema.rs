@@ -1390,4 +1390,52 @@ mod tests {
         let frame = registry.get_field("test.BigNum", &buf, "val").unwrap();
         assert_eq!(frame, Frame::Integer(42));
     }
+
+    // --- value size limit / schema count limit tests ---
+
+    #[test]
+    fn value_too_large_rejected() {
+        let mut registry = SchemaRegistry::new();
+        let desc = make_descriptor("test", "User", "name");
+        registry.register("users".into(), desc).unwrap();
+
+        let oversized = vec![0u8; MAX_PROTO_VALUE_BYTES + 1];
+        let err = registry.validate("test.User", &oversized).unwrap_err();
+        assert!(matches!(err, SchemaError::ValueTooLarge(_, _)));
+    }
+
+    #[test]
+    fn value_at_limit_allowed() {
+        let mut registry = SchemaRegistry::new();
+        let desc = make_descriptor("test", "User", "name");
+        registry.register("users".into(), desc).unwrap();
+
+        // a value exactly at the limit should pass the size check
+        // (it will fail validation since it's not valid protobuf, but
+        // it should NOT fail with ValueTooLarge)
+        let at_limit = vec![0u8; MAX_PROTO_VALUE_BYTES];
+        let err = registry.validate("test.User", &at_limit).unwrap_err();
+        assert!(
+            !matches!(err, SchemaError::ValueTooLarge(_, _)),
+            "expected validation error, not size limit"
+        );
+    }
+
+    #[test]
+    fn schema_count_limit() {
+        let mut registry = SchemaRegistry::new();
+
+        // register up to the limit
+        for i in 0..MAX_SCHEMAS {
+            let desc = make_descriptor(&format!("pkg{i}"), &format!("Msg{i}"), "val");
+            registry
+                .register(format!("schema-{i}"), desc)
+                .unwrap_or_else(|e| panic!("failed to register schema {i}: {e}"));
+        }
+
+        // the next one should fail
+        let desc = make_descriptor("overflow", "Overflow", "val");
+        let err = registry.register("overflow".into(), desc).unwrap_err();
+        assert!(matches!(err, SchemaError::TooManySchemas(_, _)));
+    }
 }

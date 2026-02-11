@@ -1295,6 +1295,11 @@ fn handle_rewrite(
                         }
                     }
                 }
+
+                // flush so schemas are durable before we report success
+                if let Err(e) = writer.sync() {
+                    warn!(shard_id, "aof sync after rewrite failed: {e}");
+                }
             }
             info!(shard_id, entries = count, "aof rewrite complete");
             ShardResponse::Ok
