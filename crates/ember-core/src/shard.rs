@@ -407,9 +407,17 @@ pub fn spawn_shard(
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
+    #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardHandle {
     let (tx, rx) = mpsc::channel(buffer);
-    tokio::spawn(run_shard(rx, config, persistence, drop_handle));
+    tokio::spawn(run_shard(
+        rx,
+        config,
+        persistence,
+        drop_handle,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    ));
     ShardHandle { tx }
 }
 
@@ -420,6 +428,7 @@ async fn run_shard(
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
+    #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) {
     let shard_id = config.shard_id;
     let mut keyspace = Keyspace::with_config(config);
@@ -465,6 +474,24 @@ async fn run_shard(
                 aof = result.replayed_aof,
                 "recovered shard state"
             );
+        }
+
+        // restore schemas found in the AOF into the shared registry
+        #[cfg(feature = "protobuf")]
+        if let Some(ref registry) = schema_registry {
+            if !result.schemas.is_empty() {
+                if let Ok(mut reg) = registry.write() {
+                    let schema_count = result.schemas.len();
+                    for (name, descriptor) in result.schemas {
+                        reg.restore(name, descriptor);
+                    }
+                    info!(
+                        shard_id,
+                        schemas = schema_count,
+                        "restored schemas from AOF"
+                    );
+                }
+            }
         }
     }
 
@@ -1269,7 +1296,14 @@ mod tests {
 
     #[tokio::test]
     async fn shard_round_trip() {
-        let handle = spawn_shard(16, ShardConfig::default(), None, None);
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
 
         let resp = handle
             .send(ShardRequest::Set {
@@ -1299,7 +1333,14 @@ mod tests {
 
     #[tokio::test]
     async fn expired_key_through_shard() {
-        let handle = spawn_shard(16, ShardConfig::default(), None, None);
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
 
         handle
             .send(ShardRequest::Set {
@@ -1323,7 +1364,14 @@ mod tests {
 
     #[tokio::test]
     async fn active_expiration_cleans_up_without_access() {
-        let handle = spawn_shard(16, ShardConfig::default(), None, None);
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
 
         // set a key with a short TTL
         handle
@@ -1389,7 +1437,14 @@ mod tests {
 
         // write some keys then trigger a snapshot
         {
-            let handle = spawn_shard(16, config.clone(), Some(pcfg.clone()), None);
+            let handle = spawn_shard(
+                16,
+                config.clone(),
+                Some(pcfg.clone()),
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            );
             handle
                 .send(ShardRequest::Set {
                     key: "a".into(),
@@ -1430,7 +1485,14 @@ mod tests {
 
         // start a new shard with the same config — should recover
         {
-            let handle = spawn_shard(16, config, Some(pcfg), None);
+            let handle = spawn_shard(
+                16,
+                config,
+                Some(pcfg),
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            );
             // give it a moment to recover
             tokio::time::sleep(Duration::from_millis(50)).await;
 

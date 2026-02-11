@@ -71,6 +71,8 @@ impl Engine {
                     shard_config,
                     config.persistence.clone(),
                     Some(drop_handle.clone()),
+                    #[cfg(feature = "protobuf")]
+                    config.schema_registry.clone(),
                 )
             })
             .collect();
