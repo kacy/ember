@@ -308,12 +308,15 @@ async fn execute_concurrent(
             };
             match result {
                 Ok(types) => {
-                    let _ = _engine
+                    if let Err(e) = _engine
                         .broadcast(|| ember_core::ShardRequest::ProtoRegisterAof {
                             name: name.clone(),
                             descriptor: descriptor.clone(),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("failed to persist proto registration to AOF: {e}");
+                    }
                     Frame::Array(
                         types
                             .into_iter()

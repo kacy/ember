@@ -1644,12 +1644,15 @@ async fn execute(
             match result {
                 Ok(types) => {
                     // persist the registration to all shards' AOF
-                    let _ = engine
+                    if let Err(e) = engine
                         .broadcast(|| ShardRequest::ProtoRegisterAof {
                             name: name.clone(),
                             descriptor: descriptor.clone(),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("failed to persist proto registration to AOF: {e}");
+                    }
                     Frame::Array(
                         types
                             .into_iter()

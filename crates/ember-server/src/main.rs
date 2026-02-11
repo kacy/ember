@@ -23,6 +23,8 @@ use clap::Parser;
 use ember_cluster::{GossipConfig, NodeId};
 use ember_core::ShardPersistenceConfig;
 use tracing::info;
+#[cfg(feature = "protobuf")]
+use tracing::warn;
 
 use crate::cluster::ClusterCoordinator;
 use crate::config::{
@@ -266,6 +268,13 @@ async fn main() {
     if args.protobuf {
         engine_config.schema_registry = Some(ember_core::schema::SchemaRegistry::shared());
         info!("protobuf value storage enabled");
+
+        if args.concurrent {
+            warn!(
+                "concurrent mode with protobuf: DEL, TTL, EXPIRE, and other generic \
+                 commands do not affect proto keys. use sharded mode for full proto support."
+            );
+        }
     }
 
     if let Some(limit) = max_memory {
