@@ -308,12 +308,15 @@ async fn execute_concurrent(
             };
             match result {
                 Ok(types) => {
-                    let _ = _engine
+                    if let Err(e) = _engine
                         .broadcast(|| ember_core::ShardRequest::ProtoRegisterAof {
                             name: name.clone(),
                             descriptor: descriptor.clone(),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("failed to persist proto registration to AOF: {e}");
+                    }
                     Frame::Array(
                         types
                             .into_iter()
@@ -481,48 +484,26 @@ async fn execute_concurrent(
             field_path,
             value,
         } => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
-            };
-            let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data, existing_ttl) = match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::ProtoValue(Some(tuple))) => tuple,
-                Ok(ember_core::ShardResponse::ProtoValue(None)) => return Frame::Null,
-                Ok(ember_core::ShardResponse::WrongType) => {
-                    return Frame::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
-                    )
-                }
-                Ok(other) => {
-                    return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
-                }
-                Err(e) => return Frame::Error(format!("ERR {e}")),
-            };
-            let new_data = {
-                let reg = match registry.read() {
-                    Ok(r) => r,
-                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
-                };
-                match reg.set_field(&type_name, &data, &field_path, &value) {
-                    Ok(d) => d,
-                    Err(e) => return Frame::Error(format!("ERR {e}")),
-                }
-            };
-            let req = ember_core::ShardRequest::ProtoSet {
+            if _engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ember_core::ShardRequest::ProtoSetField {
                 key: key.clone(),
-                type_name,
-                data: new_data,
-                expire: existing_ttl,
-                nx: false,
-                xx: true,
+                field_path,
+                value,
             };
             match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ember_core::ShardResponse::ProtoFieldUpdated { .. }) => {
+                    Frame::Simple("OK".into())
+                }
                 Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
+                Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+                ),
                 Ok(ember_core::ShardResponse::OutOfMemory) => {
                     Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
                 }
+                Ok(ember_core::ShardResponse::Err(msg)) => Frame::Error(format!("ERR {msg}")),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -530,48 +511,23 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDelField { key, field_path } => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
-            };
-            let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data, existing_ttl) = match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::ProtoValue(Some(tuple))) => tuple,
-                Ok(ember_core::ShardResponse::ProtoValue(None)) => return Frame::Null,
-                Ok(ember_core::ShardResponse::WrongType) => {
-                    return Frame::Error(
-                        "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
-                    )
-                }
-                Ok(other) => {
-                    return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
-                }
-                Err(e) => return Frame::Error(format!("ERR {e}")),
-            };
-            let new_data = {
-                let reg = match registry.read() {
-                    Ok(r) => r,
-                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
-                };
-                match reg.clear_field(&type_name, &data, &field_path) {
-                    Ok(d) => d,
-                    Err(e) => return Frame::Error(format!("ERR {e}")),
-                }
-            };
-            let req = ember_core::ShardRequest::ProtoSet {
+            if _engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ember_core::ShardRequest::ProtoDelField {
                 key: key.clone(),
-                type_name,
-                data: new_data,
-                expire: existing_ttl,
-                nx: false,
-                xx: true,
+                field_path,
             };
             match _engine.route(&key, req).await {
-                Ok(ember_core::ShardResponse::Ok) => Frame::Integer(1),
+                Ok(ember_core::ShardResponse::ProtoFieldUpdated { .. }) => Frame::Integer(1),
                 Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
+                Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
+                    "WRONGTYPE Operation against a key holding the wrong kind of value".into(),
+                ),
                 Ok(ember_core::ShardResponse::OutOfMemory) => {
                     Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
                 }
+                Ok(ember_core::ShardResponse::Err(msg)) => Frame::Error(format!("ERR {msg}")),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }

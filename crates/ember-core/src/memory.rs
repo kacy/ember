@@ -223,9 +223,10 @@ pub fn value_size(value: &Value) -> usize {
             let member_bytes: usize = set.iter().map(|m| m.len() + HASHSET_MEMBER_OVERHEAD).sum();
             HASHSET_BASE_OVERHEAD + member_bytes
         }
-        // type_name String (24 bytes ptr+len+cap on heap) + data Bytes (24 bytes).
+        // type_name: String struct = 24 bytes (ptr+len+cap) on 64-bit.
+        // data: Bytes struct = ~24 bytes (ptr+len+vtable/arc).
         #[cfg(feature = "protobuf")]
-        Value::Proto { type_name, data } => type_name.len() + data.len() + 24,
+        Value::Proto { type_name, data } => type_name.len() + data.len() + 48,
     }
 }
 

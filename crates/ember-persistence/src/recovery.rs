@@ -77,6 +77,10 @@ pub struct RecoveryResult {
     pub loaded_snapshot: bool,
     /// Whether an AOF was replayed.
     pub replayed_aof: bool,
+    /// Schemas found in the AOF, deduplicated by name (last wins).
+    /// Each entry is `(schema_name, descriptor_bytes)`.
+    #[cfg(feature = "protobuf")]
+    pub schemas: Vec<(String, Bytes)>,
 }
 
 /// Recovers a shard's state from snapshot and/or AOF files.
@@ -110,6 +114,8 @@ fn recover_shard_impl(
     let mut map: HashMap<String, (RecoveredValue, i64)> = HashMap::new();
     let mut loaded_snapshot = false;
     let mut replayed_aof = false;
+    #[cfg(feature = "protobuf")]
+    let mut schema_map: HashMap<String, Bytes> = HashMap::new();
 
     // step 1: load snapshot
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
@@ -130,7 +136,13 @@ fn recover_shard_impl(
     // step 2: replay AOF
     let aof_path = aof::aof_path(data_dir, shard_id);
     if aof_path.exists() {
-        match replay_aof(&aof_path, &mut map, encryption_key) {
+        match replay_aof(
+            &aof_path,
+            &mut map,
+            encryption_key,
+            #[cfg(feature = "protobuf")]
+            &mut schema_map,
+        ) {
             Ok(count) => {
                 if count > 0 {
                     replayed_aof = true;
@@ -164,6 +176,8 @@ fn recover_shard_impl(
         entries,
         loaded_snapshot,
         replayed_aof,
+        #[cfg(feature = "protobuf")]
+        schemas: schema_map.into_iter().collect(),
     }
 }
 
@@ -218,6 +232,7 @@ fn replay_aof(
     path: &Path,
     map: &mut HashMap<String, (RecoveredValue, i64)>,
     #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
+    #[cfg(feature = "protobuf")] schema_map: &mut HashMap<String, Bytes>,
 ) -> Result<usize, FormatError> {
     #[cfg(feature = "encryption")]
     let mut reader = if let Some(key) = encryption_key {
@@ -436,9 +451,10 @@ fn replay_aof(
                 map.insert(key, (RecoveredValue::Proto { type_name, data }, expire_ms));
             }
             #[cfg(feature = "protobuf")]
-            AofRecord::ProtoRegister { .. } => {
-                // schema registration is handled separately by the engine,
-                // not in the per-shard recovery map
+            AofRecord::ProtoRegister { name, descriptor } => {
+                // last-wins: if the same schema name appears multiple times
+                // in the AOF, the final registration is the one we keep.
+                schema_map.insert(name, descriptor);
             }
         }
         count += 1;
@@ -868,5 +884,49 @@ mod tests {
         let result = recover_shard(dir.path(), 0);
         assert_eq!(result.entries.len(), 1);
         assert!(result.entries[0].ttl.is_some());
+    }
+
+    #[cfg(feature = "protobuf")]
+    #[test]
+    fn proto_schemas_recovered_from_aof() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::ProtoRegister {
+                    name: "users".into(),
+                    descriptor: Bytes::from("fake-descriptor-a"),
+                })
+                .unwrap();
+            // a proto value that depends on the schema
+            writer
+                .write_record(&AofRecord::ProtoSet {
+                    key: "user:1".into(),
+                    type_name: "test.User".into(),
+                    data: Bytes::from("some-proto-data"),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            // re-registration of same schema (last wins)
+            writer
+                .write_record(&AofRecord::ProtoRegister {
+                    name: "users".into(),
+                    descriptor: Bytes::from("fake-descriptor-b"),
+                })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.replayed_aof);
+        assert_eq!(result.entries.len(), 1);
+
+        // schemas should be collected with last-wins dedup
+        assert_eq!(result.schemas.len(), 1);
+        let (name, desc) = &result.schemas[0];
+        assert_eq!(name, "users");
+        assert_eq!(desc, &Bytes::from("fake-descriptor-b"));
     }
 }

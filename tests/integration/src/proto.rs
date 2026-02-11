@@ -969,6 +969,121 @@ async fn duplicate_registration_returns_error() {
     assert!(matches!(resp, Frame::Error(ref s) if s.contains("already registered")));
 }
 
+// ---- schema recovery tests ----
+
+#[tokio::test]
+async fn schema_recovery_after_restart() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = data_dir.path().to_path_buf();
+
+    let desc = make_multi_field_descriptor();
+    let data = encode_profile(&desc, "alice", 25, true);
+
+    // start server, register schema, set proto value
+    {
+        let server = TestServer::start_with(ServerOptions {
+            protobuf: true,
+            appendonly: true,
+            data_dir_path: Some(path.clone()),
+            ..Default::default()
+        });
+        let mut c = server.connect().await;
+
+        c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+        c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+            .await;
+
+        // wait for fsync
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    // restart — schemas should be recovered from AOF
+    let server = TestServer::start_with(ServerOptions {
+        protobuf: true,
+        appendonly: true,
+        data_dir_path: Some(path),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+
+    // GETFIELD requires the schema to be loaded — this proves recovery works
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("alice")));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "age"]).await;
+    assert_eq!(resp, Frame::Integer(25));
+
+    drop(data_dir);
+}
+
+#[tokio::test]
+async fn schema_survives_aof_rewrite() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = data_dir.path().to_path_buf();
+
+    let desc = make_multi_field_descriptor();
+    let data = encode_profile(&desc, "alice", 30, true);
+
+    // start server, register, set, then trigger AOF rewrite
+    {
+        let server = TestServer::start_with(ServerOptions {
+            protobuf: true,
+            appendonly: true,
+            data_dir_path: Some(path.clone()),
+            ..Default::default()
+        });
+        let mut c = server.connect().await;
+
+        c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+        c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+            .await;
+
+        // trigger AOF rewrite — this truncates the AOF and writes a snapshot
+        let resp = c.cmd(&["BGREWRITEAOF"]).await;
+        assert!(matches!(resp, Frame::Simple(_)));
+        // give the rewrite time to complete
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
+    // restart — schema must survive the rewrite
+    let server = TestServer::start_with(ServerOptions {
+        protobuf: true,
+        appendonly: true,
+        data_dir_path: Some(path),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("alice")));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "age"]).await;
+    assert_eq!(resp, Frame::Integer(30));
+
+    drop(data_dir);
+}
+
+#[tokio::test]
+async fn del_removes_proto_key() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    let data = encode_message(&desc, "test.User", "name", "alice");
+    c.cmd_raw(&[b"PROTO.SET", b"user:del", b"test.User", &data])
+        .await;
+
+    // DEL should remove the proto key
+    let resp = c.get_int(&["DEL", "user:del"]).await;
+    assert_eq!(resp, 1);
+
+    // PROTO.GET should now return null
+    let resp = c.cmd(&["PROTO.GET", "user:del"]).await;
+    assert!(matches!(resp, Frame::Null));
+}
+
 // ---- concurrent mode nested path and misc tests ----
 // note: TTL preservation tests are sharded-only because concurrent mode
 // routes proto commands through engine shards while TTL checks the
@@ -1012,4 +1127,49 @@ async fn concurrent_delfield_nested() {
 
     let resp = c.cmd(&["PROTO.GETFIELD", "o:1", "inner.value"]).await;
     assert_eq!(resp, Frame::Bulk(Bytes::from("")));
+}
+
+// ---- concurrent mode recovery and DEL tests ----
+
+#[tokio::test]
+async fn concurrent_schema_recovery_after_restart() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = data_dir.path().to_path_buf();
+
+    let desc = make_multi_field_descriptor();
+    let data = encode_profile(&desc, "bob", 42, false);
+
+    {
+        let server = TestServer::start_with(ServerOptions {
+            protobuf: true,
+            concurrent: true,
+            appendonly: true,
+            data_dir_path: Some(path.clone()),
+            ..Default::default()
+        });
+        let mut c = server.connect().await;
+
+        c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+        c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    let server = TestServer::start_with(ServerOptions {
+        protobuf: true,
+        concurrent: true,
+        appendonly: true,
+        data_dir_path: Some(path),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("bob")));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "age"]).await;
+    assert_eq!(resp, Frame::Integer(42));
+
+    drop(data_dir);
 }

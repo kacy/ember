@@ -1644,12 +1644,15 @@ async fn execute(
             match result {
                 Ok(types) => {
                     // persist the registration to all shards' AOF
-                    let _ = engine
+                    if let Err(e) = engine
                         .broadcast(|| ShardRequest::ProtoRegisterAof {
                             name: name.clone(),
                             descriptor: descriptor.clone(),
                         })
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("failed to persist proto registration to AOF: {e}");
+                    }
                     Frame::Array(
                         types
                             .into_iter()
@@ -1808,45 +1811,20 @@ async fn execute(
             field_path,
             value,
         } => {
-            let registry = match engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
-            };
-            // step 1: fetch current value
-            let req = ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data, existing_ttl) = match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some(tuple))) => tuple,
-                Ok(ShardResponse::ProtoValue(None)) => return Frame::Null,
-                Ok(ShardResponse::WrongType) => return wrongtype_error(),
-                Ok(other) => {
-                    return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
-                }
-                Err(e) => return Frame::Error(format!("ERR {e}")),
-            };
-            // step 2: decode, mutate, re-encode
-            let new_data = {
-                let reg = match registry.read() {
-                    Ok(r) => r,
-                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
-                };
-                match reg.set_field(&type_name, &data, &field_path, &value) {
-                    Ok(d) => d,
-                    Err(e) => return Frame::Error(format!("ERR {e}")),
-                }
-            };
-            // step 3: store back (XX = only if key still exists), preserving TTL
-            let req = ShardRequest::ProtoSet {
+            if engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ShardRequest::ProtoSetField {
                 key: key.clone(),
-                type_name,
-                data: new_data,
-                expire: existing_ttl,
-                nx: false,
-                xx: true,
+                field_path,
+                value,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::ProtoFieldUpdated { .. }) => Frame::Simple("OK".into()),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(format!("ERR {msg}")),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -1854,45 +1832,19 @@ async fn execute(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDelField { key, field_path } => {
-            let registry = match engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
-            };
-            // step 1: fetch current value
-            let req = ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data, existing_ttl) = match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some(tuple))) => tuple,
-                Ok(ShardResponse::ProtoValue(None)) => return Frame::Null,
-                Ok(ShardResponse::WrongType) => return wrongtype_error(),
-                Ok(other) => {
-                    return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
-                }
-                Err(e) => return Frame::Error(format!("ERR {e}")),
-            };
-            // step 2: decode, clear field, re-encode
-            let new_data = {
-                let reg = match registry.read() {
-                    Ok(r) => r,
-                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
-                };
-                match reg.clear_field(&type_name, &data, &field_path) {
-                    Ok(d) => d,
-                    Err(e) => return Frame::Error(format!("ERR {e}")),
-                }
-            };
-            // step 3: store back (XX = only if key still exists), preserving TTL
-            let req = ShardRequest::ProtoSet {
+            if engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let req = ShardRequest::ProtoDelField {
                 key: key.clone(),
-                type_name,
-                data: new_data,
-                expire: existing_ttl,
-                nx: false,
-                xx: true,
+                field_path,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::Ok) => Frame::Integer(1),
+                Ok(ShardResponse::ProtoFieldUpdated { .. }) => Frame::Integer(1),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(format!("ERR {msg}")),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }

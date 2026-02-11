@@ -288,6 +288,21 @@ pub enum ShardRequest {
         name: String,
         descriptor: Bytes,
     },
+    /// Atomically reads a proto value, sets a field, and writes it back.
+    /// Runs entirely within the shard's single-threaded dispatch.
+    #[cfg(feature = "protobuf")]
+    ProtoSetField {
+        key: String,
+        field_path: String,
+        value: String,
+    },
+    /// Atomically reads a proto value, clears a field, and writes it back.
+    /// Runs entirely within the shard's single-threaded dispatch.
+    #[cfg(feature = "protobuf")]
+    ProtoDelField {
+        key: String,
+        field_path: String,
+    },
 }
 
 /// The shard's response to a request.
@@ -350,6 +365,14 @@ pub enum ShardResponse {
     /// PROTO.TYPE result: message type name or None.
     #[cfg(feature = "protobuf")]
     ProtoTypeName(Option<String>),
+    /// Result of an atomic SETFIELD/DELFIELD: carries the updated value
+    /// for AOF persistence.
+    #[cfg(feature = "protobuf")]
+    ProtoFieldUpdated {
+        type_name: String,
+        data: Bytes,
+        expire: Option<Duration>,
+    },
 }
 
 /// A request bundled with its reply channel.
@@ -407,9 +430,17 @@ pub fn spawn_shard(
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
+    #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardHandle {
     let (tx, rx) = mpsc::channel(buffer);
-    tokio::spawn(run_shard(rx, config, persistence, drop_handle));
+    tokio::spawn(run_shard(
+        rx,
+        config,
+        persistence,
+        drop_handle,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    ));
     ShardHandle { tx }
 }
 
@@ -420,6 +451,7 @@ async fn run_shard(
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
+    #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) {
     let shard_id = config.shard_id;
     let mut keyspace = Keyspace::with_config(config);
@@ -466,6 +498,24 @@ async fn run_shard(
                 "recovered shard state"
             );
         }
+
+        // restore schemas found in the AOF into the shared registry
+        #[cfg(feature = "protobuf")]
+        if let Some(ref registry) = schema_registry {
+            if !result.schemas.is_empty() {
+                if let Ok(mut reg) = registry.write() {
+                    let schema_count = result.schemas.len();
+                    for (name, descriptor) in result.schemas {
+                        reg.restore(name, descriptor);
+                    }
+                    info!(
+                        shard_id,
+                        schemas = schema_count,
+                        "restored schemas from AOF"
+                    );
+                }
+            }
+        }
     }
 
     // -- AOF writer --
@@ -509,7 +559,12 @@ async fn run_shard(
                 match msg {
                     Some(msg) => {
                         let request_kind = describe_request(&msg.request);
-                        let response = dispatch(&mut keyspace, &msg.request);
+                        let response = dispatch(
+                            &mut keyspace,
+                            &msg.request,
+                            #[cfg(feature = "protobuf")]
+                            &schema_registry,
+                        );
 
                         // write AOF record for successful mutations
                         if let Some(ref mut writer) = aof_writer {
@@ -541,6 +596,8 @@ async fn run_shard(
                                     &persistence,
                                     &mut aof_writer,
                                     shard_id,
+                                    #[cfg(feature = "protobuf")]
+                                    &schema_registry,
                                 );
                                 let _ = msg.reply.send(resp);
                                 continue;
@@ -600,7 +657,11 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
 }
 
 /// Executes a single request against the keyspace.
-fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
+fn dispatch(
+    ks: &mut Keyspace,
+    req: &ShardRequest,
+    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
+) -> ShardResponse {
     match req {
         ShardRequest::Get { key } => match ks.get(key) {
             Ok(val) => ShardResponse::Value(val),
@@ -887,11 +948,89 @@ fn dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
         // is written by the to_aof_record path after dispatch returns Ok.
         #[cfg(feature = "protobuf")]
         ShardRequest::ProtoRegisterAof { .. } => ShardResponse::Ok,
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoSetField {
+            key,
+            field_path,
+            value,
+        } => dispatch_proto_field_op(ks, schema_registry, key, |reg, type_name, data, ttl| {
+            let new_data = reg.set_field(type_name, data, field_path, value)?;
+            Ok(ShardResponse::ProtoFieldUpdated {
+                type_name: type_name.to_owned(),
+                data: new_data,
+                expire: ttl,
+            })
+        }),
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoDelField { key, field_path } => {
+            dispatch_proto_field_op(ks, schema_registry, key, |reg, type_name, data, ttl| {
+                let new_data = reg.clear_field(type_name, data, field_path)?;
+                Ok(ShardResponse::ProtoFieldUpdated {
+                    type_name: type_name.to_owned(),
+                    data: new_data,
+                    expire: ttl,
+                })
+            })
+        }
         // snapshot/rewrite/flush_async are handled in the main loop, not here
         ShardRequest::Snapshot | ShardRequest::RewriteAof | ShardRequest::FlushDbAsync => {
             ShardResponse::Ok
         }
     }
+}
+
+/// Shared logic for atomic proto field operations (SETFIELD/DELFIELD).
+///
+/// Reads the proto value, acquires the schema registry, calls the
+/// provided mutation closure, then writes the result back to the keyspace
+/// — all within the single-threaded shard dispatch.
+#[cfg(feature = "protobuf")]
+fn dispatch_proto_field_op<F>(
+    ks: &mut Keyspace,
+    schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
+    key: &str,
+    mutate: F,
+) -> ShardResponse
+where
+    F: FnOnce(
+        &crate::schema::SchemaRegistry,
+        &str,
+        &[u8],
+        Option<Duration>,
+    ) -> Result<ShardResponse, crate::schema::SchemaError>,
+{
+    let registry = match schema_registry {
+        Some(r) => r,
+        None => return ShardResponse::Err("protobuf support is not enabled".into()),
+    };
+
+    let (type_name, data, remaining_ttl) = match ks.proto_get(key) {
+        Ok(Some(tuple)) => tuple,
+        Ok(None) => return ShardResponse::Value(None),
+        Err(_) => return ShardResponse::WrongType,
+    };
+
+    let reg = match registry.read() {
+        Ok(r) => r,
+        Err(_) => return ShardResponse::Err("schema registry lock poisoned".into()),
+    };
+
+    let resp = match mutate(&reg, &type_name, &data, remaining_ttl) {
+        Ok(r) => r,
+        Err(e) => return ShardResponse::Err(e.to_string()),
+    };
+
+    // write the updated value back, preserving the original TTL
+    if let ShardResponse::ProtoFieldUpdated {
+        ref type_name,
+        ref data,
+        expire,
+    } = resp
+    {
+        ks.proto_set(key.to_owned(), type_name.clone(), data.clone(), expire);
+    }
+
+    resp
 }
 
 /// Converts a successful mutation request+response pair into an AOF record.
@@ -1056,6 +1195,24 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 descriptor: descriptor.clone(),
             })
         }
+        // atomic field ops persist as a full ProtoSet (the whole re-encoded value)
+        #[cfg(feature = "protobuf")]
+        (
+            ShardRequest::ProtoSetField { key, .. } | ShardRequest::ProtoDelField { key, .. },
+            ShardResponse::ProtoFieldUpdated {
+                type_name,
+                data,
+                expire,
+            },
+        ) => {
+            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
+            Some(AofRecord::ProtoSet {
+                key: key.clone(),
+                type_name: type_name.clone(),
+                data: data.clone(),
+                expire_ms,
+            })
+        }
         _ => None,
     }
 }
@@ -1092,11 +1249,15 @@ fn handle_snapshot(
 }
 
 /// Writes a snapshot and then truncates the AOF.
+///
+/// When protobuf is enabled, re-persists all registered schemas to the
+/// AOF after truncation so they survive the next restart.
 fn handle_rewrite(
     keyspace: &Keyspace,
     persistence: &Option<ShardPersistenceConfig>,
     aof_writer: &mut Option<AofWriter>,
     shard_id: u16,
+    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardResponse {
     let pcfg = match persistence {
         Some(p) => p,
@@ -1117,6 +1278,27 @@ fn handle_rewrite(
             if let Some(ref mut writer) = aof_writer {
                 if let Err(e) = writer.truncate() {
                     warn!(shard_id, "aof truncate after rewrite failed: {e}");
+                }
+
+                // re-persist schemas so they survive the next recovery
+                #[cfg(feature = "protobuf")]
+                if let Some(ref registry) = schema_registry {
+                    if let Ok(reg) = registry.read() {
+                        for (name, descriptor) in reg.iter_schemas() {
+                            let record = AofRecord::ProtoRegister {
+                                name: name.to_owned(),
+                                descriptor: descriptor.clone(),
+                            };
+                            if let Err(e) = writer.write_record(&record) {
+                                warn!(shard_id, "failed to re-persist schema after rewrite: {e}");
+                            }
+                        }
+                    }
+                }
+
+                // flush so schemas are durable before we report success
+                if let Err(e) = writer.sync() {
+                    warn!(shard_id, "aof sync after rewrite failed: {e}");
                 }
             }
             info!(shard_id, entries = count, "aof rewrite complete");
@@ -1183,11 +1365,21 @@ fn write_snapshot(
 mod tests {
     use super::*;
 
+    /// Test helper: dispatch without a schema registry.
+    fn test_dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
+        dispatch(
+            ks,
+            req,
+            #[cfg(feature = "protobuf")]
+            &None,
+        )
+    }
+
     #[test]
     fn dispatch_set_and_get() {
         let mut ks = Keyspace::new();
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Set {
                 key: "k".into(),
@@ -1199,7 +1391,7 @@ mod tests {
         );
         assert!(matches!(resp, ShardResponse::Ok));
 
-        let resp = dispatch(&mut ks, &ShardRequest::Get { key: "k".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Get { key: "k".into() });
         match resp {
             ShardResponse::Value(Some(Value::String(data))) => {
                 assert_eq!(data, Bytes::from("v"));
@@ -1211,7 +1403,7 @@ mod tests {
     #[test]
     fn dispatch_get_missing() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(&mut ks, &ShardRequest::Get { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Get { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Value(None)));
     }
 
@@ -1220,10 +1412,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("val"), None);
 
-        let resp = dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
 
@@ -1232,10 +1424,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("yes".into(), Bytes::from("here"), None);
 
-        let resp = dispatch(&mut ks, &ShardRequest::Exists { key: "yes".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Exists { key: "yes".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = dispatch(&mut ks, &ShardRequest::Exists { key: "no".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Exists { key: "no".into() });
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
 
@@ -1244,7 +1436,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("val"), None);
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Expire {
                 key: "key".into(),
@@ -1253,7 +1445,7 @@ mod tests {
         );
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
         match resp {
             ShardResponse::Ttl(TtlResult::Seconds(s)) => assert!((58..=60).contains(&s)),
             other => panic!("expected Ttl(Seconds), got {other:?}"),
@@ -1263,13 +1455,20 @@ mod tests {
     #[test]
     fn dispatch_ttl_missing() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(&mut ks, &ShardRequest::Ttl { key: "gone".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "gone".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NotFound)));
     }
 
     #[tokio::test]
     async fn shard_round_trip() {
-        let handle = spawn_shard(16, ShardConfig::default(), None, None);
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
 
         let resp = handle
             .send(ShardRequest::Set {
@@ -1299,7 +1498,14 @@ mod tests {
 
     #[tokio::test]
     async fn expired_key_through_shard() {
-        let handle = spawn_shard(16, ShardConfig::default(), None, None);
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
 
         handle
             .send(ShardRequest::Set {
@@ -1323,7 +1529,14 @@ mod tests {
 
     #[tokio::test]
     async fn active_expiration_cleans_up_without_access() {
-        let handle = spawn_shard(16, ShardConfig::default(), None, None);
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
 
         // set a key with a short TTL
         handle
@@ -1389,7 +1602,14 @@ mod tests {
 
         // write some keys then trigger a snapshot
         {
-            let handle = spawn_shard(16, config.clone(), Some(pcfg.clone()), None);
+            let handle = spawn_shard(
+                16,
+                config.clone(),
+                Some(pcfg.clone()),
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            );
             handle
                 .send(ShardRequest::Set {
                     key: "a".into(),
@@ -1430,7 +1650,14 @@ mod tests {
 
         // start a new shard with the same config — should recover
         {
-            let handle = spawn_shard(16, config, Some(pcfg), None);
+            let handle = spawn_shard(
+                16,
+                config,
+                Some(pcfg),
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            );
             // give it a moment to recover
             tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1515,7 +1742,7 @@ mod tests {
     #[test]
     fn dispatch_incr_new_key() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(&mut ks, &ShardRequest::Incr { key: "c".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Incr { key: "c".into() });
         assert!(matches!(resp, ShardResponse::Integer(1)));
     }
 
@@ -1523,7 +1750,7 @@ mod tests {
     fn dispatch_decr_existing() {
         let mut ks = Keyspace::new();
         ks.set("n".into(), Bytes::from("10"), None);
-        let resp = dispatch(&mut ks, &ShardRequest::Decr { key: "n".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Decr { key: "n".into() });
         assert!(matches!(resp, ShardResponse::Integer(9)));
     }
 
@@ -1531,7 +1758,7 @@ mod tests {
     fn dispatch_incr_non_integer() {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("hello"), None);
-        let resp = dispatch(&mut ks, &ShardRequest::Incr { key: "s".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Incr { key: "s".into() });
         assert!(matches!(resp, ShardResponse::Err(_)));
     }
 
@@ -1539,7 +1766,7 @@ mod tests {
     fn dispatch_incrby() {
         let mut ks = Keyspace::new();
         ks.set("n".into(), Bytes::from("10"), None);
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::IncrBy {
                 key: "n".into(),
@@ -1553,7 +1780,7 @@ mod tests {
     fn dispatch_decrby() {
         let mut ks = Keyspace::new();
         ks.set("n".into(), Bytes::from("10"), None);
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::DecrBy {
                 key: "n".into(),
@@ -1566,7 +1793,7 @@ mod tests {
     #[test]
     fn dispatch_incrby_new_key() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::IncrBy {
                 key: "new".into(),
@@ -1580,7 +1807,7 @@ mod tests {
     fn dispatch_incrbyfloat() {
         let mut ks = Keyspace::new();
         ks.set("n".into(), Bytes::from("10.5"), None);
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::IncrByFloat {
                 key: "n".into(),
@@ -1600,7 +1827,7 @@ mod tests {
     fn dispatch_append() {
         let mut ks = Keyspace::new();
         ks.set("k".into(), Bytes::from("hello"), None);
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Append {
                 key: "k".into(),
@@ -1614,14 +1841,14 @@ mod tests {
     fn dispatch_strlen() {
         let mut ks = Keyspace::new();
         ks.set("k".into(), Bytes::from("hello"), None);
-        let resp = dispatch(&mut ks, &ShardRequest::Strlen { key: "k".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Strlen { key: "k".into() });
         assert!(matches!(resp, ShardResponse::Len(5)));
     }
 
     #[test]
     fn dispatch_strlen_missing() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(&mut ks, &ShardRequest::Strlen { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Strlen { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Len(0)));
     }
 
@@ -1645,7 +1872,7 @@ mod tests {
     #[test]
     fn dispatch_incrbyfloat_new_key() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::IncrByFloat {
                 key: "new".into(),
@@ -1720,17 +1947,17 @@ mod tests {
             Some(Duration::from_secs(60)),
         );
 
-        let resp = dispatch(&mut ks, &ShardRequest::Persist { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Persist { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NoExpiry)));
     }
 
     #[test]
     fn dispatch_persist_missing_key() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(&mut ks, &ShardRequest::Persist { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Persist { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
 
@@ -1743,7 +1970,7 @@ mod tests {
             Some(Duration::from_secs(60)),
         );
 
-        let resp = dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
         match resp {
             ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
                 assert!(ms > 59_000 && ms <= 60_000);
@@ -1755,7 +1982,7 @@ mod tests {
     #[test]
     fn dispatch_pttl_missing() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(&mut ks, &ShardRequest::Pttl { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NotFound)));
     }
 
@@ -1764,7 +1991,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("val"), None);
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Pexpire {
                 key: "key".into(),
@@ -1773,7 +2000,7 @@ mod tests {
         );
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
         match resp {
             ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
                 assert!(ms > 4000 && ms <= 5000);
@@ -1827,7 +2054,7 @@ mod tests {
     #[test]
     fn dispatch_set_nx_when_key_missing() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Set {
                 key: "k".into(),
@@ -1846,7 +2073,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("k".into(), Bytes::from("old"), None);
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Set {
                 key: "k".into(),
@@ -1870,7 +2097,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("k".into(), Bytes::from("old"), None);
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Set {
                 key: "k".into(),
@@ -1890,7 +2117,7 @@ mod tests {
     #[test]
     fn dispatch_set_xx_when_key_missing() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Set {
                 key: "k".into(),
@@ -1927,7 +2154,7 @@ mod tests {
 
         assert_eq!(ks.len(), 2);
 
-        let resp = dispatch(&mut ks, &ShardRequest::FlushDb);
+        let resp = test_dispatch(&mut ks, &ShardRequest::FlushDb);
         assert!(matches!(resp, ShardResponse::Ok));
         assert_eq!(ks.len(), 0);
     }
@@ -1939,7 +2166,7 @@ mod tests {
         ks.set("user:2".into(), Bytes::from("b"), None);
         ks.set("item:1".into(), Bytes::from("c"), None);
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Scan {
                 cursor: 0,
@@ -1964,7 +2191,7 @@ mod tests {
         ks.set("user:2".into(), Bytes::from("b"), None);
         ks.set("item:1".into(), Bytes::from("c"), None);
 
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Scan {
                 cursor: 0,
@@ -2114,7 +2341,7 @@ mod tests {
         ks.set("user:1".into(), Bytes::from("a"), None);
         ks.set("user:2".into(), Bytes::from("b"), None);
         ks.set("item:1".into(), Bytes::from("c"), None);
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Keys {
                 pattern: "user:*".into(),
@@ -2133,7 +2360,7 @@ mod tests {
     fn dispatch_rename() {
         let mut ks = Keyspace::new();
         ks.set("old".into(), Bytes::from("value"), None);
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Rename {
                 key: "old".into(),
@@ -2148,7 +2375,7 @@ mod tests {
     #[test]
     fn dispatch_rename_missing_key() {
         let mut ks = Keyspace::new();
-        let resp = dispatch(
+        let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Rename {
                 key: "missing".into(),
