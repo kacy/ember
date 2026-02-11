@@ -17,6 +17,14 @@ use prost_reflect::{
 };
 use thiserror::Error;
 
+/// Maximum allowed size for a `FileDescriptorSet` in bytes (10 MB).
+/// Prevents a single PROTO.REGISTER from consuming unbounded memory.
+const MAX_DESCRIPTOR_BYTES: usize = 10 * 1024 * 1024;
+
+/// Maximum number of segments in a dot-separated field path.
+/// Deep nesting beyond this is almost certainly a bug or an abuse vector.
+const MAX_FIELD_PATH_DEPTH: usize = 16;
+
 /// Errors that can occur during schema operations.
 #[derive(Debug, Error)]
 pub enum SchemaError {
@@ -34,13 +42,21 @@ pub enum SchemaError {
 
     #[error("field not found: {0}")]
     FieldNotFound(String),
+
+    #[error("descriptor too large: {0} bytes (max {1})")]
+    DescriptorTooLarge(usize, usize),
+
+    #[error("field path too deep: {0} segments (max {1})")]
+    PathTooDeep(usize, usize),
 }
 
 /// A registered schema: the raw descriptor bytes and the parsed pool.
 struct RegisteredSchema {
     /// Raw `FileDescriptorSet` bytes, kept for persistence.
     descriptor_bytes: Bytes,
-    /// Parsed descriptor pool for message lookup and validation.
+    /// Parsed descriptor pool. Used during registration to build the
+    /// message cache, and in tests to construct dynamic messages.
+    #[cfg_attr(not(test), allow(dead_code))]
     pool: DescriptorPool,
     /// All message type full names in this schema.
     message_types: Vec<String>,
@@ -55,6 +71,9 @@ struct RegisteredSchema {
 /// derive it.
 pub struct SchemaRegistry {
     schemas: HashMap<String, RegisteredSchema>,
+    /// Flattened index of message type full name -> descriptor, built from
+    /// all registered schemas. Turns `find_message` from O(schemas) to O(1).
+    message_cache: HashMap<String, MessageDescriptor>,
 }
 
 /// Thread-safe handle to a shared schema registry.
@@ -65,6 +84,7 @@ impl SchemaRegistry {
     pub fn new() -> Self {
         Self {
             schemas: HashMap::new(),
+            message_cache: HashMap::new(),
         }
     }
 
@@ -86,6 +106,13 @@ impl SchemaRegistry {
             return Err(SchemaError::AlreadyExists(name));
         }
 
+        if descriptor_bytes.len() > MAX_DESCRIPTOR_BYTES {
+            return Err(SchemaError::DescriptorTooLarge(
+                descriptor_bytes.len(),
+                MAX_DESCRIPTOR_BYTES,
+            ));
+        }
+
         let pool = DescriptorPool::decode(descriptor_bytes.as_ref())
             .map_err(|e| SchemaError::InvalidDescriptor(e.to_string()))?;
 
@@ -98,6 +125,10 @@ impl SchemaRegistry {
             return Err(SchemaError::InvalidDescriptor(
                 "no message types found in descriptor".into(),
             ));
+        }
+
+        for desc in pool.all_messages() {
+            self.message_cache.insert(desc.full_name().to_owned(), desc);
         }
 
         self.schemas.insert(
@@ -164,6 +195,10 @@ impl SchemaRegistry {
             .all_messages()
             .map(|m| m.full_name().to_owned())
             .collect();
+
+        for desc in pool.all_messages() {
+            self.message_cache.insert(desc.full_name().to_owned(), desc);
+        }
 
         self.schemas.insert(
             name,
@@ -249,14 +284,13 @@ impl SchemaRegistry {
         Ok(Bytes::from(buf))
     }
 
-    /// Looks up a message descriptor by full name across all schemas.
+    /// Looks up a message descriptor by full name. O(1) via the
+    /// flattened `message_cache` built during registration.
     fn find_message(&self, message_type: &str) -> Result<MessageDescriptor, SchemaError> {
-        for schema in self.schemas.values() {
-            if let Some(desc) = schema.pool.get_message_by_name(message_type) {
-                return Ok(desc);
-            }
-        }
-        Err(SchemaError::UnknownMessageType(message_type.to_owned()))
+        self.message_cache
+            .get(message_type)
+            .cloned()
+            .ok_or_else(|| SchemaError::UnknownMessageType(message_type.to_owned()))
     }
 }
 
@@ -281,7 +315,24 @@ fn resolve_field_path(
             )));
         }
     }
+    if segments.len() > MAX_FIELD_PATH_DEPTH {
+        return Err(SchemaError::PathTooDeep(
+            segments.len(),
+            MAX_FIELD_PATH_DEPTH,
+        ));
+    }
 
+    // fast path: single-segment reads can borrow directly without cloning
+    if segments.len() == 1 {
+        let field_desc = msg
+            .descriptor()
+            .get_field_by_name(segments[0])
+            .ok_or_else(|| SchemaError::FieldNotFound(segments[0].to_string()))?;
+        let value = msg.get_field(&field_desc).into_owned();
+        return Ok((value, field_desc));
+    }
+
+    // multi-segment: clone is unavoidable due to prost-reflect API
     let mut current_msg = msg.clone();
 
     for (i, segment) in segments.iter().enumerate() {
@@ -391,6 +442,12 @@ fn resolve_field_path_mut<'a>(
                 "invalid field path '{path}': empty segment"
             )));
         }
+    }
+    if segments.len() > MAX_FIELD_PATH_DEPTH {
+        return Err(SchemaError::PathTooDeep(
+            segments.len(),
+            MAX_FIELD_PATH_DEPTH,
+        ));
     }
 
     // for a single segment, just verify the field exists and return
@@ -534,6 +591,7 @@ impl std::fmt::Debug for SchemaRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SchemaRegistry")
             .field("schema_count", &self.schemas.len())
+            .field("cached_messages", &self.message_cache.len())
             .finish()
     }
 }
@@ -1076,5 +1134,234 @@ mod tests {
             .get_field("test.Profile", &new_data, "age")
             .unwrap();
         assert_eq!(frame, Frame::Integer(25));
+    }
+
+    // --- size / depth limit tests ---
+
+    #[test]
+    fn descriptor_size_limit_exceeded() {
+        let mut registry = SchemaRegistry::new();
+        // craft a payload larger than MAX_DESCRIPTOR_BYTES
+        let oversized = Bytes::from(vec![0u8; MAX_DESCRIPTOR_BYTES + 1]);
+        let err = registry.register("huge".into(), oversized).unwrap_err();
+        assert!(matches!(err, SchemaError::DescriptorTooLarge(_, _)));
+    }
+
+    #[test]
+    fn field_path_depth_limit_exceeded() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let msg = DynamicMessage::new(outer_desc);
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+
+        // 17 segments exceeds the limit of 16
+        let deep_path = (0..17)
+            .map(|i| format!("f{i}"))
+            .collect::<Vec<_>>()
+            .join(".");
+
+        let err = registry
+            .get_field("test.Outer", &buf, &deep_path)
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::PathTooDeep(17, 16)));
+
+        let err = registry
+            .set_field("test.Outer", &buf, &deep_path, "val")
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::PathTooDeep(17, 16)));
+
+        let err = registry
+            .clear_field("test.Outer", &buf, &deep_path)
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::PathTooDeep(17, 16)));
+    }
+
+    #[test]
+    fn double_dot_path_returns_error() {
+        let mut registry = SchemaRegistry::new();
+        let desc = make_descriptor("test", "User", "name");
+        registry.register("users".into(), desc).unwrap();
+
+        let data = encode_user(&registry, "alice");
+        let err = registry.get_field("test.User", &data, "a..b").unwrap_err();
+        match err {
+            SchemaError::FieldNotFound(msg) => assert!(msg.contains("empty segment"), "{msg}"),
+            other => panic!("expected FieldNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_dot_path_returns_error() {
+        let mut registry = SchemaRegistry::new();
+        let desc = make_descriptor("test", "User", "name");
+        registry.register("users".into(), desc).unwrap();
+
+        let data = encode_user(&registry, "alice");
+        let err = registry.get_field("test.User", &data, "name.").unwrap_err();
+        match err {
+            SchemaError::FieldNotFound(msg) => assert!(msg.contains("empty segment"), "{msg}"),
+            other => panic!("expected FieldNotFound, got {other:?}"),
+        }
+    }
+
+    // --- nested set/clear and u64 edge case tests ---
+
+    #[test]
+    fn set_field_nested_path() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let inner_desc = pool.get_message_by_name("test.Inner").unwrap();
+
+        let mut inner = DynamicMessage::new(inner_desc);
+        inner.set_field_by_name("value", prost_reflect::Value::String("hello".into()));
+        let mut outer = DynamicMessage::new(outer_desc);
+        outer.set_field_by_name("inner", prost_reflect::Value::Message(inner));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        outer.encode(&mut buf).unwrap();
+
+        let new_data = registry
+            .set_field("test.Outer", &buf, "inner.value", "world")
+            .unwrap();
+
+        let frame = registry
+            .get_field("test.Outer", &new_data, "inner.value")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("world")));
+    }
+
+    #[test]
+    fn clear_field_nested_path() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let inner_desc = pool.get_message_by_name("test.Inner").unwrap();
+
+        let mut inner = DynamicMessage::new(inner_desc);
+        inner.set_field_by_name("value", prost_reflect::Value::String("hello".into()));
+        let mut outer = DynamicMessage::new(outer_desc);
+        outer.set_field_by_name("inner", prost_reflect::Value::Message(inner));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        outer.encode(&mut buf).unwrap();
+
+        let new_data = registry
+            .clear_field("test.Outer", &buf, "inner.value")
+            .unwrap();
+
+        // cleared string field returns empty default
+        let frame = registry
+            .get_field("test.Outer", &new_data, "inner.value")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("")));
+    }
+
+    #[test]
+    fn set_field_nested_creates_intermediate() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        // create an Outer with no inner field set
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let outer = DynamicMessage::new(outer_desc);
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        outer.encode(&mut buf).unwrap();
+
+        // set_field should auto-init the intermediate Inner message
+        let new_data = registry
+            .set_field("test.Outer", &buf, "inner.value", "auto")
+            .unwrap();
+
+        let frame = registry
+            .get_field("test.Outer", &new_data, "inner.value")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("auto")));
+    }
+
+    /// Builds a descriptor with a single uint64 field.
+    fn make_uint64_descriptor() -> Bytes {
+        use prost_reflect::prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("test.proto".into()),
+                package: Some("test".into()),
+                message_type: vec![DescriptorProto {
+                    name: Some("BigNum".into()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("val".into()),
+                        number: Some(1),
+                        r#type: Some(4), // TYPE_UINT64
+                        label: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        fds.encode(&mut buf).unwrap();
+        Bytes::from(buf)
+    }
+
+    #[test]
+    fn u64_overflow_returns_bulk_string() {
+        let desc = make_uint64_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("bignums".into(), desc).unwrap();
+
+        let pool = &registry.schemas["bignums"].pool;
+        let msg_desc = pool.get_message_by_name("test.BigNum").unwrap();
+        let mut msg = DynamicMessage::new(msg_desc);
+        msg.set_field_by_name("val", prost_reflect::Value::U64(u64::MAX));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+
+        let frame = registry.get_field("test.BigNum", &buf, "val").unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("18446744073709551615")));
+    }
+
+    #[test]
+    fn u64_fits_in_i64_returns_integer() {
+        let desc = make_uint64_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("bignums".into(), desc).unwrap();
+
+        let pool = &registry.schemas["bignums"].pool;
+        let msg_desc = pool.get_message_by_name("test.BigNum").unwrap();
+        let mut msg = DynamicMessage::new(msg_desc);
+        msg.set_field_by_name("val", prost_reflect::Value::U64(42));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+
+        let frame = registry.get_field("test.BigNum", &buf, "val").unwrap();
+        assert_eq!(frame, Frame::Integer(42));
     }
 }

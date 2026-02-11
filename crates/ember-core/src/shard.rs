@@ -344,9 +344,9 @@ pub enum ShardResponse {
     StringArray(Vec<String>),
     /// HMGET result: array of optional values.
     OptionalArray(Vec<Option<Bytes>>),
-    /// PROTO.GET result: (type_name, data) or None.
+    /// PROTO.GET result: (type_name, data, remaining_ttl) or None.
     #[cfg(feature = "protobuf")]
-    ProtoValue(Option<(String, Bytes)>),
+    ProtoValue(Option<(String, Bytes, Option<Duration>)>),
     /// PROTO.TYPE result: message type name or None.
     #[cfg(feature = "protobuf")]
     ProtoTypeName(Option<String>),
