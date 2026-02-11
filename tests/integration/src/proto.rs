@@ -794,3 +794,222 @@ async fn concurrent_delfield_clears_field() {
     let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
     assert_eq!(resp, Frame::Bulk(Bytes::from("")));
 }
+
+// ---- TTL preservation tests ----
+
+#[tokio::test]
+async fn setfield_preserves_ttl() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[
+        b"PROTO.SET",
+        b"p:ttl",
+        b"test.Profile",
+        &data,
+        b"EX",
+        b"120",
+    ])
+    .await;
+
+    // verify TTL is set
+    let ttl_before = c.get_int(&["TTL", "p:ttl"]).await;
+    assert!(ttl_before > 0 && ttl_before <= 120);
+
+    // mutate a field
+    c.cmd(&["PROTO.SETFIELD", "p:ttl", "name", "bob"]).await;
+
+    // TTL should still be set
+    let ttl_after = c.get_int(&["TTL", "p:ttl"]).await;
+    assert!(ttl_after > 0 && ttl_after <= 120);
+}
+
+#[tokio::test]
+async fn delfield_preserves_ttl() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[
+        b"PROTO.SET",
+        b"p:ttl2",
+        b"test.Profile",
+        &data,
+        b"EX",
+        b"120",
+    ])
+    .await;
+
+    let ttl_before = c.get_int(&["TTL", "p:ttl2"]).await;
+    assert!(ttl_before > 0 && ttl_before <= 120);
+
+    c.cmd(&["PROTO.DELFIELD", "p:ttl2", "name"]).await;
+
+    let ttl_after = c.get_int(&["TTL", "p:ttl2"]).await;
+    assert!(ttl_after > 0 && ttl_after <= 120);
+}
+
+// ---- nested path integration tests ----
+
+/// Builds a FileDescriptorSet with Inner { string value = 1; } and
+/// Outer { Inner inner = 1; }.
+fn make_nested_descriptor() -> Vec<u8> {
+    let fds = FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some("test.proto".into()),
+            package: Some("test".into()),
+            message_type: vec![
+                DescriptorProto {
+                    name: Some("Inner".into()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("value".into()),
+                        number: Some(1),
+                        r#type: Some(9), // TYPE_STRING
+                        label: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                DescriptorProto {
+                    name: Some("Outer".into()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("inner".into()),
+                        number: Some(1),
+                        r#type: Some(11), // TYPE_MESSAGE
+                        label: Some(1),
+                        type_name: Some(".test.Inner".into()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    };
+    let mut buf = Vec::new();
+    fds.encode(&mut buf).expect("encode nested descriptor");
+    buf
+}
+
+/// Encodes an Outer message with the given inner value.
+fn encode_outer(descriptor_bytes: &[u8], inner_value: &str) -> Vec<u8> {
+    let pool = DescriptorPool::decode(descriptor_bytes).expect("decode pool");
+    let inner_desc = pool.get_message_by_name("test.Inner").expect("find Inner");
+    let outer_desc = pool.get_message_by_name("test.Outer").expect("find Outer");
+
+    let mut inner = DynamicMessage::new(inner_desc);
+    inner.set_field_by_name("value", prost_reflect::Value::String(inner_value.into()));
+
+    let mut outer = DynamicMessage::new(outer_desc);
+    outer.set_field_by_name("inner", prost_reflect::Value::Message(inner));
+
+    let mut buf = Vec::new();
+    outer.encode(&mut buf).expect("encode outer");
+    buf
+}
+
+#[tokio::test]
+async fn setfield_nested() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_nested_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"nested", &desc]).await;
+
+    let data = encode_outer(&desc, "hello");
+    c.cmd_raw(&[b"PROTO.SET", b"o:1", b"test.Outer", &data])
+        .await;
+
+    let resp = c
+        .cmd(&["PROTO.SETFIELD", "o:1", "inner.value", "world"])
+        .await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "o:1", "inner.value"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("world")));
+}
+
+#[tokio::test]
+async fn delfield_nested() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_nested_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"nested", &desc]).await;
+
+    let data = encode_outer(&desc, "hello");
+    c.cmd_raw(&[b"PROTO.SET", b"o:1", b"test.Outer", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.DELFIELD", "o:1", "inner.value"]).await;
+    assert_eq!(resp, Frame::Integer(1));
+
+    // cleared field should return default (empty string)
+    let resp = c.cmd(&["PROTO.GETFIELD", "o:1", "inner.value"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("")));
+}
+
+#[tokio::test]
+async fn duplicate_registration_returns_error() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_descriptor("test", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+
+    // second registration with same name should fail
+    let resp = c.cmd_raw(&[b"PROTO.REGISTER", b"users", &desc]).await;
+    assert!(matches!(resp, Frame::Error(ref s) if s.contains("already registered")));
+}
+
+// ---- concurrent mode nested path and misc tests ----
+// note: TTL preservation tests are sharded-only because concurrent mode
+// routes proto commands through engine shards while TTL checks the
+// concurrent keyspace — these are separate stores.
+
+#[tokio::test]
+async fn concurrent_setfield_nested() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_nested_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"nested", &desc]).await;
+
+    let data = encode_outer(&desc, "hello");
+    c.cmd_raw(&[b"PROTO.SET", b"o:1", b"test.Outer", &data])
+        .await;
+
+    let resp = c
+        .cmd(&["PROTO.SETFIELD", "o:1", "inner.value", "world"])
+        .await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "o:1", "inner.value"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("world")));
+}
+
+#[tokio::test]
+async fn concurrent_delfield_nested() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_nested_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"nested", &desc]).await;
+
+    let data = encode_outer(&desc, "hello");
+    c.cmd_raw(&[b"PROTO.SET", b"o:1", b"test.Outer", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.DELFIELD", "o:1", "inner.value"]).await;
+    assert_eq!(resp, Frame::Integer(1));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "o:1", "inner.value"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("")));
+}
