@@ -24,6 +24,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
+- **protobuf storage** — schema-validated protobuf values with field-level access (compile with `--features protobuf`)
 - **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms)
 - **tls support** — redis-compatible TLS on a separate port, with optional mTLS for client certificates
 - **protected mode** — rejects non-loopback connections when no password is set on public binds
@@ -117,6 +118,31 @@ DBSIZE                          # => (integer) 6
 # TLS
 ember-cli -p 6380 --tls --tls-insecure PING
 ```
+
+## protobuf storage
+
+ember can store schema-validated protobuf messages and access individual fields server-side. compile with `--features protobuf` to enable.
+
+```bash
+# build with protobuf support
+cargo build --release --features protobuf
+```
+
+**commands**:
+
+| command | description |
+|---------|-------------|
+| `PROTO.REGISTER name <descriptor>` | register a compiled FileDescriptorSet |
+| `PROTO.SET key type_name <data> [EX s] [PX ms] [NX\|XX]` | store a validated protobuf value |
+| `PROTO.GET key` | retrieve the full encoded message |
+| `PROTO.TYPE key` | return the message type name |
+| `PROTO.SCHEMAS` | list all registered schema names |
+| `PROTO.DESCRIBE name` | list message types in a schema |
+| `PROTO.GETFIELD key field_path` | read a single field (dot-separated nested paths) |
+| `PROTO.SETFIELD key field_path value` | update a single scalar field |
+| `PROTO.DELFIELD key field_path` | clear a field to its default value |
+
+field-level operations decode/mutate/re-encode on the server, so clients don't need protobuf libraries for simple reads and writes. nested paths use dot notation (e.g., `address.city`). complex types (repeated, map, nested messages) require `PROTO.GET`/`PROTO.SET` for full replacement.
 
 ## configuration
 
@@ -241,7 +267,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 85 commands, 906 tests, ~18k lines of code (excluding tests)
+**current**: 94 commands, 967 tests, ~18k lines of code (excluding tests)
 
 ## security
 
