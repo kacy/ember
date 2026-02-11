@@ -355,6 +355,17 @@ pub enum Command {
     /// protobuf value, returning it as a native RESP3 type.
     ProtoGetField { key: String, field_path: String },
 
+    /// PROTO.SETFIELD `key` `field_path` `value`. Updates a single scalar
+    /// field in a stored protobuf value.
+    ProtoSetField {
+        key: String,
+        field_path: String,
+        value: String,
+    },
+
+    /// PROTO.DELFIELD `key` `field_path`. Clears a field to its default value.
+    ProtoDelField { key: String, field_path: String },
+
     /// AUTH \[username\] password. Authenticate the connection.
     Auth {
         /// Username for ACL-style auth. None for legacy AUTH.
@@ -488,6 +499,8 @@ impl Command {
             Command::ProtoSchemas => "proto.schemas",
             Command::ProtoDescribe { .. } => "proto.describe",
             Command::ProtoGetField { .. } => "proto.getfield",
+            Command::ProtoSetField { .. } => "proto.setfield",
+            Command::ProtoDelField { .. } => "proto.delfield",
             Command::Auth { .. } => "auth",
             Command::Quit => "quit",
             Command::Unknown(_) => "unknown",
@@ -592,6 +605,8 @@ impl Command {
             "PROTO.SCHEMAS" => parse_proto_schemas(&frames[1..]),
             "PROTO.DESCRIBE" => parse_proto_describe(&frames[1..]),
             "PROTO.GETFIELD" => parse_proto_getfield(&frames[1..]),
+            "PROTO.SETFIELD" => parse_proto_setfield(&frames[1..]),
+            "PROTO.DELFIELD" => parse_proto_delfield(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
@@ -1868,6 +1883,29 @@ fn parse_proto_getfield(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
     let field_path = extract_string(&args[1])?;
     Ok(Command::ProtoGetField { key, field_path })
+}
+
+fn parse_proto_setfield(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(ProtocolError::WrongArity("PROTO.SETFIELD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let field_path = extract_string(&args[1])?;
+    let value = extract_string(&args[2])?;
+    Ok(Command::ProtoSetField {
+        key,
+        field_path,
+        value,
+    })
+}
+
+fn parse_proto_delfield(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("PROTO.DELFIELD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let field_path = extract_string(&args[1])?;
+    Ok(Command::ProtoDelField { key, field_path })
 }
 
 fn parse_auth(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -4288,6 +4326,62 @@ mod tests {
 
         let err =
             Command::from_frame(cmd(&["PROTO.GETFIELD", "key", "field", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- proto.setfield ---
+
+    #[test]
+    fn proto_setfield_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.SETFIELD", "user:1", "name", "bob"])).unwrap(),
+            Command::ProtoSetField {
+                key: "user:1".into(),
+                field_path: "name".into(),
+                value: "bob".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn proto_setfield_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.SETFIELD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["PROTO.SETFIELD", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["PROTO.SETFIELD", "key", "field"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["PROTO.SETFIELD", "key", "field", "value", "extra"]))
+            .unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- proto.delfield ---
+
+    #[test]
+    fn proto_delfield_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["PROTO.DELFIELD", "user:1", "name"])).unwrap(),
+            Command::ProtoDelField {
+                key: "user:1".into(),
+                field_path: "name".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn proto_delfield_wrong_arity() {
+        let err = Command::from_frame(cmd(&["PROTO.DELFIELD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["PROTO.DELFIELD", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err =
+            Command::from_frame(cmd(&["PROTO.DELFIELD", "key", "field", "extra"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

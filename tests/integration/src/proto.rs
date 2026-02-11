@@ -49,6 +49,62 @@ fn encode_message(descriptor_bytes: &[u8], type_name: &str, field: &str, value: 
     buf
 }
 
+/// Builds a FileDescriptorSet with string, int32, and bool fields.
+fn make_multi_field_descriptor() -> Vec<u8> {
+    let fds = FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some("test.proto".into()),
+            package: Some("test".into()),
+            message_type: vec![DescriptorProto {
+                name: Some("Profile".into()),
+                field: vec![
+                    FieldDescriptorProto {
+                        name: Some("name".into()),
+                        number: Some(1),
+                        r#type: Some(9), // TYPE_STRING
+                        label: Some(1),
+                        ..Default::default()
+                    },
+                    FieldDescriptorProto {
+                        name: Some("age".into()),
+                        number: Some(2),
+                        r#type: Some(5), // TYPE_INT32
+                        label: Some(1),
+                        ..Default::default()
+                    },
+                    FieldDescriptorProto {
+                        name: Some("active".into()),
+                        number: Some(3),
+                        r#type: Some(8), // TYPE_BOOL
+                        label: Some(1),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let mut buf = Vec::new();
+    fds.encode(&mut buf).expect("encode descriptor");
+    buf
+}
+
+/// Encodes a Profile message with name, age, and active fields.
+fn encode_profile(descriptor_bytes: &[u8], name: &str, age: i32, active: bool) -> Vec<u8> {
+    let pool = DescriptorPool::decode(descriptor_bytes).expect("decode pool");
+    let msg_desc = pool
+        .get_message_by_name("test.Profile")
+        .expect("find message");
+    let mut msg = DynamicMessage::new(msg_desc);
+    msg.set_field_by_name("name", prost_reflect::Value::String(name.into()));
+    msg.set_field_by_name("age", prost_reflect::Value::I32(age));
+    msg.set_field_by_name("active", prost_reflect::Value::Bool(active));
+    let mut buf = Vec::new();
+    msg.encode(&mut buf).expect("encode message");
+    buf
+}
+
 fn start_proto_server(concurrent: bool) -> TestServer {
     TestServer::start_with(ServerOptions {
         protobuf: true,
@@ -379,6 +435,179 @@ async fn getfield_default_value() {
     assert_eq!(resp, Frame::Bulk(Bytes::from("")));
 }
 
+// ---- PROTO.SETFIELD sharded tests ----
+
+#[tokio::test]
+async fn setfield_string() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.SETFIELD", "p:1", "name", "bob"]).await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("bob")));
+}
+
+#[tokio::test]
+async fn setfield_integer() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.SETFIELD", "p:1", "age", "30"]).await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "age"]).await;
+    assert_eq!(resp, Frame::Integer(30));
+}
+
+#[tokio::test]
+async fn setfield_bool() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.SETFIELD", "p:1", "active", "false"]).await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "active"]).await;
+    assert_eq!(resp, Frame::Integer(0));
+}
+
+#[tokio::test]
+async fn setfield_missing_key() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let resp = c
+        .cmd(&["PROTO.SETFIELD", "nonexistent", "name", "bob"])
+        .await;
+    assert!(matches!(resp, Frame::Null));
+}
+
+#[tokio::test]
+async fn setfield_wrong_type() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    c.ok(&["SET", "str:key", "hello"]).await;
+
+    let resp = c.cmd(&["PROTO.SETFIELD", "str:key", "name", "bob"]).await;
+    assert!(matches!(resp, Frame::Error(ref s) if s.starts_with("WRONGTYPE")));
+}
+
+#[tokio::test]
+async fn setfield_nonexistent_field() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c
+        .cmd(&["PROTO.SETFIELD", "p:1", "nonexistent", "value"])
+        .await;
+    assert!(matches!(resp, Frame::Error(_)));
+}
+
+#[tokio::test]
+async fn setfield_invalid_value() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    // "abc" is not a valid int32
+    let resp = c.cmd(&["PROTO.SETFIELD", "p:1", "age", "abc"]).await;
+    assert!(matches!(resp, Frame::Error(_)));
+}
+
+// ---- PROTO.DELFIELD sharded tests ----
+
+#[tokio::test]
+async fn delfield_clears_field() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.DELFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Integer(1));
+
+    // field should be reset to default (empty string)
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("")));
+
+    // other fields preserved
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "age"]).await;
+    assert_eq!(resp, Frame::Integer(25));
+}
+
+#[tokio::test]
+async fn delfield_missing_key() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let resp = c.cmd(&["PROTO.DELFIELD", "nonexistent", "name"]).await;
+    assert!(matches!(resp, Frame::Null));
+}
+
+#[tokio::test]
+async fn delfield_returns_integer() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.DELFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Integer(1));
+}
+
 // ---- concurrent mode tests ----
 // These mirror the core sharded tests to verify the concurrent handler's
 // proto command routing through the engine fallback path.
@@ -526,4 +755,42 @@ async fn concurrent_getfield_string() {
 
     let resp = c.cmd(&["PROTO.GETFIELD", "user:1", "name"]).await;
     assert_eq!(resp, Frame::Bulk(Bytes::from("alice")));
+}
+
+#[tokio::test]
+async fn concurrent_setfield_string() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.SETFIELD", "p:1", "name", "bob"]).await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "OK"));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("bob")));
+}
+
+#[tokio::test]
+async fn concurrent_delfield_clears_field() {
+    let server = start_proto_server(true);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"p:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c.cmd(&["PROTO.DELFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Integer(1));
+
+    let resp = c.cmd(&["PROTO.GETFIELD", "p:1", "name"]).await;
+    assert_eq!(resp, Frame::Bulk(Bytes::from("")));
 }

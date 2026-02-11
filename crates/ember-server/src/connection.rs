@@ -558,7 +558,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
         | Command::ProtoSet { ref key, .. }
         | Command::ProtoGet { ref key }
         | Command::ProtoType { ref key }
-        | Command::ProtoGetField { ref key, .. } => cluster.check_slot(key.as_bytes()).await,
+        | Command::ProtoGetField { ref key, .. }
+        | Command::ProtoSetField { ref key, .. }
+        | Command::ProtoDelField { ref key, .. } => cluster.check_slot(key.as_bytes()).await,
 
         // multi-key commands — crossslot validation + slot ownership
         Command::Del { ref keys }
@@ -1800,6 +1802,102 @@ async fn execute(
             }
         }
 
+        #[cfg(feature = "protobuf")]
+        Command::ProtoSetField {
+            key,
+            field_path,
+            value,
+        } => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            // step 1: fetch current value
+            let req = ShardRequest::ProtoGet { key: key.clone() };
+            let (type_name, data) = match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoValue(Some(pair))) => pair,
+                Ok(ShardResponse::ProtoValue(None)) => return Frame::Null,
+                Ok(ShardResponse::WrongType) => return wrongtype_error(),
+                Ok(other) => {
+                    return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                }
+                Err(e) => return Frame::Error(format!("ERR {e}")),
+            };
+            // step 2: decode, mutate, re-encode
+            let new_data = {
+                let reg = match registry.read() {
+                    Ok(r) => r,
+                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                };
+                match reg.set_field(&type_name, &data, &field_path, &value) {
+                    Ok(d) => d,
+                    Err(e) => return Frame::Error(format!("ERR {e}")),
+                }
+            };
+            // step 3: store back (XX = only if key still exists)
+            let req = ShardRequest::ProtoSet {
+                key: key.clone(),
+                type_name,
+                data: new_data,
+                expire: None,
+                nx: false,
+                xx: true,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoDelField { key, field_path } => {
+            let registry = match engine.schema_registry() {
+                Some(r) => r,
+                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            };
+            // step 1: fetch current value
+            let req = ShardRequest::ProtoGet { key: key.clone() };
+            let (type_name, data) = match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoValue(Some(pair))) => pair,
+                Ok(ShardResponse::ProtoValue(None)) => return Frame::Null,
+                Ok(ShardResponse::WrongType) => return wrongtype_error(),
+                Ok(other) => {
+                    return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                }
+                Err(e) => return Frame::Error(format!("ERR {e}")),
+            };
+            // step 2: decode, clear field, re-encode
+            let new_data = {
+                let reg = match registry.read() {
+                    Ok(r) => r,
+                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                };
+                match reg.clear_field(&type_name, &data, &field_path) {
+                    Ok(d) => d,
+                    Err(e) => return Frame::Error(format!("ERR {e}")),
+                }
+            };
+            // step 3: store back (XX = only if key still exists)
+            let req = ShardRequest::ProtoSet {
+                key: key.clone(),
+                type_name,
+                data: new_data,
+                expire: None,
+                nx: false,
+                xx: true,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Ok) => Frame::Integer(1),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         // when protobuf feature is disabled, proto commands are unknown
         #[cfg(not(feature = "protobuf"))]
         Command::ProtoRegister { .. }
@@ -1808,7 +1906,9 @@ async fn execute(
         | Command::ProtoType { .. }
         | Command::ProtoSchemas
         | Command::ProtoDescribe { .. }
-        | Command::ProtoGetField { .. } => {
+        | Command::ProtoGetField { .. }
+        | Command::ProtoSetField { .. }
+        | Command::ProtoDelField { .. } => {
             Frame::Error("ERR unknown command (protobuf support not compiled)".into())
         }
 
