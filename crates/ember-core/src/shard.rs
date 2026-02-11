@@ -596,6 +596,8 @@ async fn run_shard(
                                     &persistence,
                                     &mut aof_writer,
                                     shard_id,
+                                    #[cfg(feature = "protobuf")]
+                                    &schema_registry,
                                 );
                                 let _ = msg.reply.send(resp);
                                 continue;
@@ -1247,11 +1249,15 @@ fn handle_snapshot(
 }
 
 /// Writes a snapshot and then truncates the AOF.
+///
+/// When protobuf is enabled, re-persists all registered schemas to the
+/// AOF after truncation so they survive the next restart.
 fn handle_rewrite(
     keyspace: &Keyspace,
     persistence: &Option<ShardPersistenceConfig>,
     aof_writer: &mut Option<AofWriter>,
     shard_id: u16,
+    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardResponse {
     let pcfg = match persistence {
         Some(p) => p,
@@ -1272,6 +1278,22 @@ fn handle_rewrite(
             if let Some(ref mut writer) = aof_writer {
                 if let Err(e) = writer.truncate() {
                     warn!(shard_id, "aof truncate after rewrite failed: {e}");
+                }
+
+                // re-persist schemas so they survive the next recovery
+                #[cfg(feature = "protobuf")]
+                if let Some(ref registry) = schema_registry {
+                    if let Ok(reg) = registry.read() {
+                        for (name, descriptor) in reg.iter_schemas() {
+                            let record = AofRecord::ProtoRegister {
+                                name: name.to_owned(),
+                                descriptor: descriptor.clone(),
+                            };
+                            if let Err(e) = writer.write_record(&record) {
+                                warn!(shard_id, "failed to re-persist schema after rewrite: {e}");
+                            }
+                        }
+                    }
                 }
             }
             info!(shard_id, entries = count, "aof rewrite complete");
