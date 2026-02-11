@@ -17,6 +17,14 @@ use prost_reflect::{
 };
 use thiserror::Error;
 
+/// Maximum allowed size for a `FileDescriptorSet` in bytes (10 MB).
+/// Prevents a single PROTO.REGISTER from consuming unbounded memory.
+const MAX_DESCRIPTOR_BYTES: usize = 10 * 1024 * 1024;
+
+/// Maximum number of segments in a dot-separated field path.
+/// Deep nesting beyond this is almost certainly a bug or an abuse vector.
+const MAX_FIELD_PATH_DEPTH: usize = 16;
+
 /// Errors that can occur during schema operations.
 #[derive(Debug, Error)]
 pub enum SchemaError {
@@ -34,6 +42,12 @@ pub enum SchemaError {
 
     #[error("field not found: {0}")]
     FieldNotFound(String),
+
+    #[error("descriptor too large: {0} bytes (max {1})")]
+    DescriptorTooLarge(usize, usize),
+
+    #[error("field path too deep: {0} segments (max {1})")]
+    PathTooDeep(usize, usize),
 }
 
 /// A registered schema: the raw descriptor bytes and the parsed pool.
@@ -84,6 +98,13 @@ impl SchemaRegistry {
     ) -> Result<Vec<String>, SchemaError> {
         if self.schemas.contains_key(&name) {
             return Err(SchemaError::AlreadyExists(name));
+        }
+
+        if descriptor_bytes.len() > MAX_DESCRIPTOR_BYTES {
+            return Err(SchemaError::DescriptorTooLarge(
+                descriptor_bytes.len(),
+                MAX_DESCRIPTOR_BYTES,
+            ));
         }
 
         let pool = DescriptorPool::decode(descriptor_bytes.as_ref())
@@ -281,6 +302,12 @@ fn resolve_field_path(
             )));
         }
     }
+    if segments.len() > MAX_FIELD_PATH_DEPTH {
+        return Err(SchemaError::PathTooDeep(
+            segments.len(),
+            MAX_FIELD_PATH_DEPTH,
+        ));
+    }
 
     let mut current_msg = msg.clone();
 
@@ -391,6 +418,12 @@ fn resolve_field_path_mut<'a>(
                 "invalid field path '{path}': empty segment"
             )));
         }
+    }
+    if segments.len() > MAX_FIELD_PATH_DEPTH {
+        return Err(SchemaError::PathTooDeep(
+            segments.len(),
+            MAX_FIELD_PATH_DEPTH,
+        ));
     }
 
     // for a single segment, just verify the field exists and return
@@ -1076,5 +1109,79 @@ mod tests {
             .get_field("test.Profile", &new_data, "age")
             .unwrap();
         assert_eq!(frame, Frame::Integer(25));
+    }
+
+    // --- size / depth limit tests ---
+
+    #[test]
+    fn descriptor_size_limit_exceeded() {
+        let mut registry = SchemaRegistry::new();
+        // craft a payload larger than MAX_DESCRIPTOR_BYTES
+        let oversized = Bytes::from(vec![0u8; MAX_DESCRIPTOR_BYTES + 1]);
+        let err = registry.register("huge".into(), oversized).unwrap_err();
+        assert!(matches!(err, SchemaError::DescriptorTooLarge(_, _)));
+    }
+
+    #[test]
+    fn field_path_depth_limit_exceeded() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let msg = DynamicMessage::new(outer_desc);
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+
+        // 17 segments exceeds the limit of 16
+        let deep_path = (0..17)
+            .map(|i| format!("f{i}"))
+            .collect::<Vec<_>>()
+            .join(".");
+
+        let err = registry
+            .get_field("test.Outer", &buf, &deep_path)
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::PathTooDeep(17, 16)));
+
+        let err = registry
+            .set_field("test.Outer", &buf, &deep_path, "val")
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::PathTooDeep(17, 16)));
+
+        let err = registry
+            .clear_field("test.Outer", &buf, &deep_path)
+            .unwrap_err();
+        assert!(matches!(err, SchemaError::PathTooDeep(17, 16)));
+    }
+
+    #[test]
+    fn double_dot_path_returns_error() {
+        let mut registry = SchemaRegistry::new();
+        let desc = make_descriptor("test", "User", "name");
+        registry.register("users".into(), desc).unwrap();
+
+        let data = encode_user(&registry, "alice");
+        let err = registry.get_field("test.User", &data, "a..b").unwrap_err();
+        match err {
+            SchemaError::FieldNotFound(msg) => assert!(msg.contains("empty segment"), "{msg}"),
+            other => panic!("expected FieldNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn trailing_dot_path_returns_error() {
+        let mut registry = SchemaRegistry::new();
+        let desc = make_descriptor("test", "User", "name");
+        registry.register("users".into(), desc).unwrap();
+
+        let data = encode_user(&registry, "alice");
+        let err = registry.get_field("test.User", &data, "name.").unwrap_err();
+        match err {
+            SchemaError::FieldNotFound(msg) => assert!(msg.contains("empty segment"), "{msg}"),
+            other => panic!("expected FieldNotFound, got {other:?}"),
+        }
     }
 }
