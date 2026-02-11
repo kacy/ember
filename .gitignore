@@ -20,6 +20,9 @@ Thumbs.db
 .env
 .env.*
 
+# project instructions
+CLAUDE.md
+
 # profiling / benchmarks
 perf.data
 perf.data.old
