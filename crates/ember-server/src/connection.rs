@@ -1712,7 +1712,7 @@ async fn execute(
             }
             let req = ShardRequest::ProtoGet { key: key.clone() };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                Ok(ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
                 }
                 Ok(ShardResponse::ProtoValue(None)) => Frame::Null,
@@ -1785,7 +1785,7 @@ async fn execute(
             };
             let req = ShardRequest::ProtoGet { key: key.clone() };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some((type_name, data)))) => {
+                Ok(ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     let reg = match registry.read() {
                         Ok(r) => r,
                         Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
@@ -1814,8 +1814,8 @@ async fn execute(
             };
             // step 1: fetch current value
             let req = ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data) = match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some(pair))) => pair,
+            let (type_name, data, existing_ttl) = match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoValue(Some(tuple))) => tuple,
                 Ok(ShardResponse::ProtoValue(None)) => return Frame::Null,
                 Ok(ShardResponse::WrongType) => return wrongtype_error(),
                 Ok(other) => {
@@ -1834,12 +1834,12 @@ async fn execute(
                     Err(e) => return Frame::Error(format!("ERR {e}")),
                 }
             };
-            // step 3: store back (XX = only if key still exists)
+            // step 3: store back (XX = only if key still exists), preserving TTL
             let req = ShardRequest::ProtoSet {
                 key: key.clone(),
                 type_name,
                 data: new_data,
-                expire: None,
+                expire: existing_ttl,
                 nx: false,
                 xx: true,
             };
@@ -1860,8 +1860,8 @@ async fn execute(
             };
             // step 1: fetch current value
             let req = ShardRequest::ProtoGet { key: key.clone() };
-            let (type_name, data) = match engine.route(&key, req).await {
-                Ok(ShardResponse::ProtoValue(Some(pair))) => pair,
+            let (type_name, data, existing_ttl) = match engine.route(&key, req).await {
+                Ok(ShardResponse::ProtoValue(Some(tuple))) => tuple,
                 Ok(ShardResponse::ProtoValue(None)) => return Frame::Null,
                 Ok(ShardResponse::WrongType) => return wrongtype_error(),
                 Ok(other) => {
@@ -1880,12 +1880,12 @@ async fn execute(
                     Err(e) => return Frame::Error(format!("ERR {e}")),
                 }
             };
-            // step 3: store back (XX = only if key still exists)
+            // step 3: store back (XX = only if key still exists), preserving TTL
             let req = ShardRequest::ProtoSet {
                 key: key.clone(),
                 type_name,
                 data: new_data,
-                expire: None,
+                expire: existing_ttl,
                 nx: false,
                 xx: true,
             };
