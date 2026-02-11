@@ -25,6 +25,14 @@ const MAX_DESCRIPTOR_BYTES: usize = 10 * 1024 * 1024;
 /// Deep nesting beyond this is almost certainly a bug or an abuse vector.
 const MAX_FIELD_PATH_DEPTH: usize = 16;
 
+/// Maximum allowed size for a single proto value in bytes (64 MB).
+/// Prevents a single PROTO.SET from exhausting shard memory.
+const MAX_PROTO_VALUE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum number of schemas that can be registered.
+/// Prevents unbounded growth of the schema registry.
+const MAX_SCHEMAS: usize = 1024;
+
 /// Errors that can occur during schema operations.
 #[derive(Debug, Error)]
 pub enum SchemaError {
@@ -48,6 +56,12 @@ pub enum SchemaError {
 
     #[error("field path too deep: {0} segments (max {1})")]
     PathTooDeep(usize, usize),
+
+    #[error("proto value too large: {0} bytes (max {1})")]
+    ValueTooLarge(usize, usize),
+
+    #[error("schema limit reached: {0} schemas (max {1})")]
+    TooManySchemas(usize, usize),
 }
 
 /// A registered schema: the raw descriptor bytes and the parsed pool.
@@ -106,6 +120,10 @@ impl SchemaRegistry {
             return Err(SchemaError::AlreadyExists(name));
         }
 
+        if self.schemas.len() >= MAX_SCHEMAS {
+            return Err(SchemaError::TooManySchemas(self.schemas.len(), MAX_SCHEMAS));
+        }
+
         if descriptor_bytes.len() > MAX_DESCRIPTOR_BYTES {
             return Err(SchemaError::DescriptorTooLarge(
                 descriptor_bytes.len(),
@@ -145,8 +163,16 @@ impl SchemaRegistry {
 
     /// Validates that `data` is a valid encoding of `message_type`.
     ///
+    /// Checks the value size limit before decoding.
     /// Searches all registered schemas for the type name.
     pub fn validate(&self, message_type: &str, data: &[u8]) -> Result<(), SchemaError> {
+        if data.len() > MAX_PROTO_VALUE_BYTES {
+            return Err(SchemaError::ValueTooLarge(
+                data.len(),
+                MAX_PROTO_VALUE_BYTES,
+            ));
+        }
+
         let descriptor = self.find_message(message_type)?;
 
         DynamicMessage::decode(descriptor, data)
