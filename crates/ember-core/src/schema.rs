@@ -1209,4 +1209,159 @@ mod tests {
             other => panic!("expected FieldNotFound, got {other:?}"),
         }
     }
+
+    // --- nested set/clear and u64 edge case tests ---
+
+    #[test]
+    fn set_field_nested_path() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let inner_desc = pool.get_message_by_name("test.Inner").unwrap();
+
+        let mut inner = DynamicMessage::new(inner_desc);
+        inner.set_field_by_name("value", prost_reflect::Value::String("hello".into()));
+        let mut outer = DynamicMessage::new(outer_desc);
+        outer.set_field_by_name("inner", prost_reflect::Value::Message(inner));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        outer.encode(&mut buf).unwrap();
+
+        let new_data = registry
+            .set_field("test.Outer", &buf, "inner.value", "world")
+            .unwrap();
+
+        let frame = registry
+            .get_field("test.Outer", &new_data, "inner.value")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("world")));
+    }
+
+    #[test]
+    fn clear_field_nested_path() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let inner_desc = pool.get_message_by_name("test.Inner").unwrap();
+
+        let mut inner = DynamicMessage::new(inner_desc);
+        inner.set_field_by_name("value", prost_reflect::Value::String("hello".into()));
+        let mut outer = DynamicMessage::new(outer_desc);
+        outer.set_field_by_name("inner", prost_reflect::Value::Message(inner));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        outer.encode(&mut buf).unwrap();
+
+        let new_data = registry
+            .clear_field("test.Outer", &buf, "inner.value")
+            .unwrap();
+
+        // cleared string field returns empty default
+        let frame = registry
+            .get_field("test.Outer", &new_data, "inner.value")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("")));
+    }
+
+    #[test]
+    fn set_field_nested_creates_intermediate() {
+        let desc = make_nested_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("nested".into(), desc).unwrap();
+
+        // create an Outer with no inner field set
+        let pool = &registry.schemas["nested"].pool;
+        let outer_desc = pool.get_message_by_name("test.Outer").unwrap();
+        let outer = DynamicMessage::new(outer_desc);
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        outer.encode(&mut buf).unwrap();
+
+        // set_field should auto-init the intermediate Inner message
+        let new_data = registry
+            .set_field("test.Outer", &buf, "inner.value", "auto")
+            .unwrap();
+
+        let frame = registry
+            .get_field("test.Outer", &new_data, "inner.value")
+            .unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("auto")));
+    }
+
+    /// Builds a descriptor with a single uint64 field.
+    fn make_uint64_descriptor() -> Bytes {
+        use prost_reflect::prost_types::{
+            DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        };
+
+        let fds = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("test.proto".into()),
+                package: Some("test".into()),
+                message_type: vec![DescriptorProto {
+                    name: Some("BigNum".into()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("val".into()),
+                        number: Some(1),
+                        r#type: Some(4), // TYPE_UINT64
+                        label: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        fds.encode(&mut buf).unwrap();
+        Bytes::from(buf)
+    }
+
+    #[test]
+    fn u64_overflow_returns_bulk_string() {
+        let desc = make_uint64_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("bignums".into(), desc).unwrap();
+
+        let pool = &registry.schemas["bignums"].pool;
+        let msg_desc = pool.get_message_by_name("test.BigNum").unwrap();
+        let mut msg = DynamicMessage::new(msg_desc);
+        msg.set_field_by_name("val", prost_reflect::Value::U64(u64::MAX));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+
+        let frame = registry.get_field("test.BigNum", &buf, "val").unwrap();
+        assert_eq!(frame, Frame::Bulk(Bytes::from("18446744073709551615")));
+    }
+
+    #[test]
+    fn u64_fits_in_i64_returns_integer() {
+        let desc = make_uint64_descriptor();
+        let mut registry = SchemaRegistry::new();
+        registry.register("bignums".into(), desc).unwrap();
+
+        let pool = &registry.schemas["bignums"].pool;
+        let msg_desc = pool.get_message_by_name("test.BigNum").unwrap();
+        let mut msg = DynamicMessage::new(msg_desc);
+        msg.set_field_by_name("val", prost_reflect::Value::U64(42));
+
+        let mut buf = Vec::new();
+        use prost_reflect::prost::Message;
+        msg.encode(&mut buf).unwrap();
+
+        let frame = registry.get_field("test.BigNum", &buf, "val").unwrap();
+        assert_eq!(frame, Frame::Integer(42));
+    }
 }
