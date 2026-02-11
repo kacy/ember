@@ -54,7 +54,9 @@ pub enum SchemaError {
 struct RegisteredSchema {
     /// Raw `FileDescriptorSet` bytes, kept for persistence.
     descriptor_bytes: Bytes,
-    /// Parsed descriptor pool for message lookup and validation.
+    /// Parsed descriptor pool. Used during registration to build the
+    /// message cache, and in tests to construct dynamic messages.
+    #[cfg_attr(not(test), allow(dead_code))]
     pool: DescriptorPool,
     /// All message type full names in this schema.
     message_types: Vec<String>,
@@ -69,6 +71,9 @@ struct RegisteredSchema {
 /// derive it.
 pub struct SchemaRegistry {
     schemas: HashMap<String, RegisteredSchema>,
+    /// Flattened index of message type full name -> descriptor, built from
+    /// all registered schemas. Turns `find_message` from O(schemas) to O(1).
+    message_cache: HashMap<String, MessageDescriptor>,
 }
 
 /// Thread-safe handle to a shared schema registry.
@@ -79,6 +84,7 @@ impl SchemaRegistry {
     pub fn new() -> Self {
         Self {
             schemas: HashMap::new(),
+            message_cache: HashMap::new(),
         }
     }
 
@@ -119,6 +125,10 @@ impl SchemaRegistry {
             return Err(SchemaError::InvalidDescriptor(
                 "no message types found in descriptor".into(),
             ));
+        }
+
+        for desc in pool.all_messages() {
+            self.message_cache.insert(desc.full_name().to_owned(), desc);
         }
 
         self.schemas.insert(
@@ -185,6 +195,10 @@ impl SchemaRegistry {
             .all_messages()
             .map(|m| m.full_name().to_owned())
             .collect();
+
+        for desc in pool.all_messages() {
+            self.message_cache.insert(desc.full_name().to_owned(), desc);
+        }
 
         self.schemas.insert(
             name,
@@ -270,14 +284,13 @@ impl SchemaRegistry {
         Ok(Bytes::from(buf))
     }
 
-    /// Looks up a message descriptor by full name across all schemas.
+    /// Looks up a message descriptor by full name. O(1) via the
+    /// flattened `message_cache` built during registration.
     fn find_message(&self, message_type: &str) -> Result<MessageDescriptor, SchemaError> {
-        for schema in self.schemas.values() {
-            if let Some(desc) = schema.pool.get_message_by_name(message_type) {
-                return Ok(desc);
-            }
-        }
-        Err(SchemaError::UnknownMessageType(message_type.to_owned()))
+        self.message_cache
+            .get(message_type)
+            .cloned()
+            .ok_or_else(|| SchemaError::UnknownMessageType(message_type.to_owned()))
     }
 }
 
@@ -567,6 +580,7 @@ impl std::fmt::Debug for SchemaRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SchemaRegistry")
             .field("schema_count", &self.schemas.len())
+            .field("cached_messages", &self.message_cache.len())
             .finish()
     }
 }
