@@ -322,6 +322,17 @@ fn resolve_field_path(
         ));
     }
 
+    // fast path: single-segment reads can borrow directly without cloning
+    if segments.len() == 1 {
+        let field_desc = msg
+            .descriptor()
+            .get_field_by_name(segments[0])
+            .ok_or_else(|| SchemaError::FieldNotFound(segments[0].to_string()))?;
+        let value = msg.get_field(&field_desc).into_owned();
+        return Ok((value, field_desc));
+    }
+
+    // multi-segment: clone is unavoidable due to prost-reflect API
     let mut current_msg = msg.clone();
 
     for (i, segment) in segments.iter().enumerate() {
