@@ -29,6 +29,7 @@ rand = { workspace = true }
 ordered-float = { workspace = true }
 prost-reflect = { workspace = true, optional = true }
 usearch = { workspace = true, optional = true }
+ahash = "0.8"
 dashmap = "6"
 parking_lot = "0.12"
 

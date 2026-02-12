@@ -680,11 +680,17 @@ impl Command {
 }
 
 /// Extracts a UTF-8 string from a Bulk or Simple frame.
+///
+/// Validates UTF-8 in-place on the Bytes buffer to avoid an
+/// intermediate Vec<u8> allocation from `to_vec()`.
 fn extract_string(frame: &Frame) -> Result<String, ProtocolError> {
     match frame {
-        Frame::Bulk(data) => String::from_utf8(data.to_vec()).map_err(|_| {
-            ProtocolError::InvalidCommandFrame("command name is not valid utf-8".into())
-        }),
+        Frame::Bulk(data) => {
+            let s = std::str::from_utf8(data).map_err(|_| {
+                ProtocolError::InvalidCommandFrame("command name is not valid utf-8".into())
+            })?;
+            Ok(s.to_owned())
+        }
         Frame::Simple(s) => Ok(s.clone()),
         _ => Err(ProtocolError::InvalidCommandFrame(
             "expected bulk or simple string for command name".into(),
