@@ -86,14 +86,7 @@ impl SlowLog {
             return;
         }
 
-        let mut inner = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                guard.entries.clear();
-                guard
-            }
-        };
+        let mut inner = self.lock_or_clear();
 
         let id = inner.next_id;
         inner.next_id += 1;
@@ -114,10 +107,7 @@ impl SlowLog {
     ///
     /// If `count` is `None`, returns all entries.
     pub fn get(&self, count: Option<usize>) -> Vec<SlowLogEntry> {
-        let inner = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let inner = self.lock_inner();
         let n = count
             .unwrap_or(inner.entries.len())
             .min(inner.entries.len());
@@ -126,19 +116,34 @@ impl SlowLog {
 
     /// Returns the number of entries currently in the log.
     pub fn len(&self) -> usize {
-        match self.inner.lock() {
-            Ok(guard) => guard.entries.len(),
-            Err(poisoned) => poisoned.into_inner().entries.len(),
-        }
+        self.lock_inner().entries.len()
     }
 
     /// Clears all entries from the log.
     pub fn reset(&self) {
-        let mut inner = match self.inner.lock() {
+        self.lock_inner().entries.clear();
+    }
+
+    /// Acquires the lock, clearing entries on poison. Used by writes
+    /// where we'd rather start fresh than propagate a panic.
+    fn lock_or_clear(&self) -> std::sync::MutexGuard<'_, SlowLogInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.entries.clear();
+                guard
+            }
+        }
+    }
+
+    /// Acquires the lock, recovering silently on poison. Used by reads
+    /// and non-critical writes (reset, len).
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, SlowLogInner> {
+        match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
-        };
-        inner.entries.clear();
+        }
     }
 }
 
