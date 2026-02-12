@@ -216,7 +216,7 @@ impl AofRecord {
             AofRecord::LPush { key, values } => {
                 format::write_u8(&mut buf, TAG_LPUSH)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, values.len() as u32)?;
+                format::write_len(&mut buf, values.len())?;
                 for v in values {
                     format::write_bytes(&mut buf, v)?;
                 }
@@ -224,7 +224,7 @@ impl AofRecord {
             AofRecord::RPush { key, values } => {
                 format::write_u8(&mut buf, TAG_RPUSH)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, values.len() as u32)?;
+                format::write_len(&mut buf, values.len())?;
                 for v in values {
                     format::write_bytes(&mut buf, v)?;
                 }
@@ -240,7 +240,7 @@ impl AofRecord {
             AofRecord::ZAdd { key, members } => {
                 format::write_u8(&mut buf, TAG_ZADD)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, members.len() as u32)?;
+                format::write_len(&mut buf, members.len())?;
                 for (score, member) in members {
                     format::write_f64(&mut buf, *score)?;
                     format::write_bytes(&mut buf, member.as_bytes())?;
@@ -249,7 +249,7 @@ impl AofRecord {
             AofRecord::ZRem { key, members } => {
                 format::write_u8(&mut buf, TAG_ZREM)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, members.len() as u32)?;
+                format::write_len(&mut buf, members.len())?;
                 for member in members {
                     format::write_bytes(&mut buf, member.as_bytes())?;
                 }
@@ -274,7 +274,7 @@ impl AofRecord {
             AofRecord::HSet { key, fields } => {
                 format::write_u8(&mut buf, TAG_HSET)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, fields.len() as u32)?;
+                format::write_len(&mut buf, fields.len())?;
                 for (field, value) in fields {
                     format::write_bytes(&mut buf, field.as_bytes())?;
                     format::write_bytes(&mut buf, value)?;
@@ -283,7 +283,7 @@ impl AofRecord {
             AofRecord::HDel { key, fields } => {
                 format::write_u8(&mut buf, TAG_HDEL)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, fields.len() as u32)?;
+                format::write_len(&mut buf, fields.len())?;
                 for field in fields {
                     format::write_bytes(&mut buf, field.as_bytes())?;
                 }
@@ -297,7 +297,7 @@ impl AofRecord {
             AofRecord::SAdd { key, members } => {
                 format::write_u8(&mut buf, TAG_SADD)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, members.len() as u32)?;
+                format::write_len(&mut buf, members.len())?;
                 for member in members {
                     format::write_bytes(&mut buf, member.as_bytes())?;
                 }
@@ -305,7 +305,7 @@ impl AofRecord {
             AofRecord::SRem { key, members } => {
                 format::write_u8(&mut buf, TAG_SREM)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_u32(&mut buf, members.len() as u32)?;
+                format::write_len(&mut buf, members.len())?;
                 for member in members {
                     format::write_bytes(&mut buf, member.as_bytes())?;
                 }
@@ -343,7 +343,7 @@ impl AofRecord {
                 format::write_u8(&mut buf, TAG_VADD)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, element.as_bytes())?;
-                format::write_u32(&mut buf, vector.len() as u32)?;
+                format::write_len(&mut buf, vector.len())?;
                 for &v in vector {
                     format::write_f32(&mut buf, v)?;
                 }
@@ -653,7 +653,7 @@ impl AofWriter {
         if let Some(ref key) = self.encryption_key {
             let (nonce, ciphertext) = crate::encryption::encrypt_record(key, &payload)?;
             self.writer.write_all(&nonce)?;
-            format::write_u32(&mut self.writer, ciphertext.len() as u32)?;
+            format::write_len(&mut self.writer, ciphertext.len())?;
             self.writer.write_all(&ciphertext)?;
             return Ok(());
         }
