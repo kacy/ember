@@ -209,6 +209,13 @@ pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), FormatError> {
     verify_crc32_values(actual, expected)
 }
 
+/// Caps pre-allocation to avoid huge allocations from corrupt count fields.
+/// The loop will still iterate `count` times — this just limits the
+/// up-front reservation so a bogus u32 can't exhaust memory.
+pub fn capped_capacity(count: u32) -> usize {
+    (count as usize).min(65_536)
+}
+
 /// Verifies that two CRC32 values match.
 pub fn verify_crc32_values(computed: u32, stored: u32) -> Result<(), FormatError> {
     if computed != stored {
