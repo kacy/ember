@@ -361,10 +361,7 @@ async fn main() {
         let tls_addr: SocketAddr = match format!("{}:{}", args.host, tls_port).parse() {
             Ok(a) => a,
             Err(e) => {
-                eprintln!(
-                    "invalid TLS bind address '{}:{tls_port}': {e}",
-                    args.host
-                );
+                eprintln!("invalid TLS bind address '{}:{tls_port}': {e}", args.host);
                 std::process::exit(1);
             }
         };
