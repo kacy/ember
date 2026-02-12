@@ -1885,6 +1885,7 @@ impl Keyspace {
     /// Returns a `VAddResult` with the element name, vector, and whether it
     /// was newly added (for AOF recording).
     #[cfg(feature = "vector")]
+    #[allow(clippy::too_many_arguments)]
     pub fn vadd(
         &mut self,
         key: &str,

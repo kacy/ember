@@ -321,6 +321,48 @@ pub enum Command {
     /// PUBSUB NUMPAT. Returns the number of active pattern subscriptions.
     PubSubNumPat,
 
+    // --- vector commands ---
+    /// VADD key element f32 [f32 ...] [METRIC COSINE|L2|IP] [QUANT F32|F16|I8]
+    /// [M n] [EF n]. Adds a vector to a vector set.
+    VAdd {
+        key: String,
+        element: String,
+        vector: Vec<f32>,
+        /// 0 = cosine (default), 1 = l2, 2 = inner product
+        metric: u8,
+        /// 0 = f32 (default), 1 = f16, 2 = i8
+        quantization: u8,
+        /// HNSW connectivity parameter (default 16)
+        connectivity: u32,
+        /// HNSW construction beam width (default 64)
+        expansion_add: u32,
+    },
+
+    /// VSIM key f32 [f32 ...] COUNT k [EF n] [WITHSCORES].
+    /// Searches for k nearest neighbors.
+    VSim {
+        key: String,
+        query: Vec<f32>,
+        count: usize,
+        ef_search: usize,
+        with_scores: bool,
+    },
+
+    /// VREM key element. Removes a vector from a vector set.
+    VRem { key: String, element: String },
+
+    /// VGET key element. Retrieves the stored vector for an element.
+    VGet { key: String, element: String },
+
+    /// VCARD key. Returns the number of elements in a vector set.
+    VCard { key: String },
+
+    /// VDIM key. Returns the dimensionality of a vector set.
+    VDim { key: String },
+
+    /// VINFO key. Returns metadata about a vector set.
+    VInfo { key: String },
+
     // --- protobuf commands ---
     /// PROTO.REGISTER `name` `descriptor_bytes`. Registers a protobuf schema
     /// (pre-compiled FileDescriptorSet) under the given name.
@@ -492,6 +534,13 @@ impl Command {
             Command::PubSubChannels { .. } => "pubsub",
             Command::PubSubNumSub { .. } => "pubsub",
             Command::PubSubNumPat => "pubsub",
+            Command::VAdd { .. } => "vadd",
+            Command::VSim { .. } => "vsim",
+            Command::VRem { .. } => "vrem",
+            Command::VGet { .. } => "vget",
+            Command::VCard { .. } => "vcard",
+            Command::VDim { .. } => "vdim",
+            Command::VInfo { .. } => "vinfo",
             Command::ProtoRegister { .. } => "proto.register",
             Command::ProtoSet { .. } => "proto.set",
             Command::ProtoGet { .. } => "proto.get",
@@ -598,6 +647,13 @@ impl Command {
             "PUNSUBSCRIBE" => parse_punsubscribe(&frames[1..]),
             "PUBLISH" => parse_publish(&frames[1..]),
             "PUBSUB" => parse_pubsub(&frames[1..]),
+            "VADD" => parse_vadd(&frames[1..]),
+            "VSIM" => parse_vsim(&frames[1..]),
+            "VREM" => parse_vrem(&frames[1..]),
+            "VGET" => parse_vget(&frames[1..]),
+            "VCARD" => parse_vcard(&frames[1..]),
+            "VDIM" => parse_vdim(&frames[1..]),
+            "VINFO" => parse_vinfo(&frames[1..]),
             "PROTO.REGISTER" => parse_proto_register(&frames[1..]),
             "PROTO.SET" => parse_proto_set(&frames[1..]),
             "PROTO.GET" => parse_proto_get(&frames[1..]),
@@ -1755,6 +1811,253 @@ fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
             "unknown PUBSUB subcommand '{other}'"
         ))),
     }
+}
+
+// --- vector command parsers ---
+
+/// VADD key element f32 [f32 ...] [METRIC COSINE|L2|IP] [QUANT F32|F16|I8] [M n] [EF n]
+fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // minimum: key + element + at least one float
+    if args.len() < 3 {
+        return Err(ProtocolError::WrongArity("VADD".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+    let element = extract_string(&args[1])?;
+
+    // parse vector values until we hit a non-numeric argument or end
+    let mut idx = 2;
+    let mut vector = Vec::new();
+    while idx < args.len() {
+        let s = extract_string(&args[idx])?;
+        if let Ok(v) = s.parse::<f32>() {
+            vector.push(v);
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    if vector.is_empty() {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "VADD: at least one vector dimension required".into(),
+        ));
+    }
+
+    // parse optional flags
+    let mut metric: u8 = 0; // cosine default
+    let mut quantization: u8 = 0; // f32 default
+    let mut connectivity: u32 = 16;
+    let mut expansion_add: u32 = 64;
+
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
+        match flag.as_str() {
+            "METRIC" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD: METRIC requires a value".into(),
+                    ));
+                }
+                let val = extract_string(&args[idx])?.to_ascii_uppercase();
+                metric = match val.as_str() {
+                    "COSINE" => 0,
+                    "L2" => 1,
+                    "IP" => 2,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "VADD: unknown metric '{val}'"
+                        )))
+                    }
+                };
+                idx += 1;
+            }
+            "QUANT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD: QUANT requires a value".into(),
+                    ));
+                }
+                let val = extract_string(&args[idx])?.to_ascii_uppercase();
+                quantization = match val.as_str() {
+                    "F32" => 0,
+                    "F16" => 1,
+                    "I8" | "Q8" => 2,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "VADD: unknown quantization '{val}'"
+                        )))
+                    }
+                };
+                idx += 1;
+            }
+            "M" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD: M requires a value".into(),
+                    ));
+                }
+                connectivity = parse_u64(&args[idx], "VADD")? as u32;
+                idx += 1;
+            }
+            "EF" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD: EF requires a value".into(),
+                    ));
+                }
+                expansion_add = parse_u64(&args[idx], "VADD")? as u32;
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "VADD: unexpected argument '{flag}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::VAdd {
+        key,
+        element,
+        vector,
+        metric,
+        quantization,
+        connectivity,
+        expansion_add,
+    })
+}
+
+/// VSIM key f32 [f32 ...] COUNT k [EF n] [WITHSCORES]
+fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // minimum: key + at least one float + COUNT + k
+    if args.len() < 4 {
+        return Err(ProtocolError::WrongArity("VSIM".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+
+    // parse query vector until we hit a non-numeric argument
+    let mut idx = 1;
+    let mut query = Vec::new();
+    while idx < args.len() {
+        let s = extract_string(&args[idx])?;
+        if let Ok(v) = s.parse::<f32>() {
+            query.push(v);
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    if query.is_empty() {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "VSIM: at least one query dimension required".into(),
+        ));
+    }
+
+    // COUNT k is required
+    let mut count: Option<usize> = None;
+    let mut ef_search: usize = 0;
+    let mut with_scores = false;
+
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
+        match flag.as_str() {
+            "COUNT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VSIM: COUNT requires a value".into(),
+                    ));
+                }
+                count = Some(parse_u64(&args[idx], "VSIM")? as usize);
+                idx += 1;
+            }
+            "EF" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VSIM: EF requires a value".into(),
+                    ));
+                }
+                ef_search = parse_u64(&args[idx], "VSIM")? as usize;
+                idx += 1;
+            }
+            "WITHSCORES" => {
+                with_scores = true;
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "VSIM: unexpected argument '{flag}'"
+                )));
+            }
+        }
+    }
+
+    let count = count.ok_or_else(|| {
+        ProtocolError::InvalidCommandFrame("VSIM: COUNT is required".into())
+    })?;
+
+    Ok(Command::VSim {
+        key,
+        query,
+        count,
+        ef_search,
+        with_scores,
+    })
+}
+
+/// VREM key element
+fn parse_vrem(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("VREM".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let element = extract_string(&args[1])?;
+    Ok(Command::VRem { key, element })
+}
+
+/// VGET key element
+fn parse_vget(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(ProtocolError::WrongArity("VGET".into()));
+    }
+    let key = extract_string(&args[0])?;
+    let element = extract_string(&args[1])?;
+    Ok(Command::VGet { key, element })
+}
+
+/// VCARD key
+fn parse_vcard(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("VCARD".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::VCard { key })
+}
+
+/// VDIM key
+fn parse_vdim(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("VDIM".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::VDim { key })
+}
+
+/// VINFO key
+fn parse_vinfo(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(ProtocolError::WrongArity("VINFO".into()));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::VInfo { key })
 }
 
 // --- proto command parsers ---
