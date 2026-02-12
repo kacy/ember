@@ -190,9 +190,106 @@ pub enum AofRecord {
 }
 
 impl AofRecord {
+    /// Estimates the serialized size of this record in bytes.
+    ///
+    /// Used as a capacity hint for `to_bytes()` to avoid intermediate
+    /// reallocations. The estimate includes the tag byte plus all
+    /// length-prefixed fields, erring slightly high to avoid growing.
+    fn estimated_size(&self) -> usize {
+        // overhead per length-prefixed field: 4 bytes for the u32 length
+        const LEN_PREFIX: usize = 4;
+
+        match self {
+            AofRecord::Set {
+                key,
+                value,
+                expire_ms: _,
+            } => 1 + LEN_PREFIX + key.len() + LEN_PREFIX + value.len() + 8,
+            AofRecord::Del { key }
+            | AofRecord::LPop { key }
+            | AofRecord::RPop { key }
+            | AofRecord::Persist { key }
+            | AofRecord::Incr { key }
+            | AofRecord::Decr { key } => 1 + LEN_PREFIX + key.len(),
+            AofRecord::Expire { key, .. } | AofRecord::Pexpire { key, .. } => {
+                1 + LEN_PREFIX + key.len() + 8
+            }
+            AofRecord::LPush { key, values } | AofRecord::RPush { key, values } => {
+                let values_size: usize = values.iter().map(|v| LEN_PREFIX + v.len()).sum();
+                1 + LEN_PREFIX + key.len() + 4 + values_size
+            }
+            AofRecord::ZAdd { key, members } => {
+                let members_size: usize =
+                    members.iter().map(|(_, m)| 8 + LEN_PREFIX + m.len()).sum();
+                1 + LEN_PREFIX + key.len() + 4 + members_size
+            }
+            AofRecord::ZRem { key, members }
+            | AofRecord::SAdd { key, members }
+            | AofRecord::SRem { key, members } => {
+                let members_size: usize = members.iter().map(|m| LEN_PREFIX + m.len()).sum();
+                1 + LEN_PREFIX + key.len() + 4 + members_size
+            }
+            AofRecord::HSet { key, fields } => {
+                let fields_size: usize = fields
+                    .iter()
+                    .map(|(f, v)| LEN_PREFIX + f.len() + LEN_PREFIX + v.len())
+                    .sum();
+                1 + LEN_PREFIX + key.len() + 4 + fields_size
+            }
+            AofRecord::HDel { key, fields } => {
+                let fields_size: usize = fields.iter().map(|f| LEN_PREFIX + f.len()).sum();
+                1 + LEN_PREFIX + key.len() + 4 + fields_size
+            }
+            AofRecord::HIncrBy { key, field, .. } => {
+                1 + LEN_PREFIX + key.len() + LEN_PREFIX + field.len() + 8
+            }
+            AofRecord::IncrBy { key, .. } | AofRecord::DecrBy { key, .. } => {
+                1 + LEN_PREFIX + key.len() + 8
+            }
+            AofRecord::Append { key, value } => {
+                1 + LEN_PREFIX + key.len() + LEN_PREFIX + value.len()
+            }
+            AofRecord::Rename { key, newkey } => {
+                1 + LEN_PREFIX + key.len() + LEN_PREFIX + newkey.len()
+            }
+            #[cfg(feature = "vector")]
+            AofRecord::VAdd {
+                key,
+                element,
+                vector,
+                ..
+            } => {
+                1 + LEN_PREFIX + key.len() + LEN_PREFIX + element.len() + 4 + vector.len() * 4 + 10
+            }
+            #[cfg(feature = "vector")]
+            AofRecord::VRem { key, element } => {
+                1 + LEN_PREFIX + key.len() + LEN_PREFIX + element.len()
+            }
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoSet {
+                key,
+                type_name,
+                data,
+                ..
+            } => {
+                1 + LEN_PREFIX
+                    + key.len()
+                    + LEN_PREFIX
+                    + type_name.len()
+                    + LEN_PREFIX
+                    + data.len()
+                    + 8
+            }
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoRegister { name, descriptor } => {
+                1 + LEN_PREFIX + name.len() + LEN_PREFIX + descriptor.len()
+            }
+        }
+    }
+
     /// Serializes this record into a byte vector (tag + payload, no CRC).
     fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.estimated_size());
         match self {
             AofRecord::Set {
                 key,

@@ -21,6 +21,9 @@ categories = ["caching", "database-implementations"]
 
 [profile.release]
 overflow-checks = true
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
 
 [workspace.dependencies]
 # async runtime

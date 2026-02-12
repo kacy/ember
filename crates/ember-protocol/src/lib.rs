@@ -29,4 +29,5 @@ pub mod types;
 pub use command::{Command, SetExpire, ZAddFlags};
 pub use error::ProtocolError;
 pub use parse::parse_frame;
+pub use types::wire;
 pub use types::Frame;
