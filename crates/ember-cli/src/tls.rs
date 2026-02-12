@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
@@ -128,7 +129,9 @@ fn load_root_certs(ca_cert_path: Option<&str>) -> io::Result<rustls::RootCertSto
                 format!("failed to read CA cert '{path}': {e}"),
             )
         })?;
-        let certs = rustls_pemfile::certs(&mut &pem[..]).collect::<Result<Vec<_>, _>>()?;
+        let certs = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
         if certs.is_empty() {
             return Err(io::Error::new(

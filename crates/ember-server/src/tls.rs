@@ -12,6 +12,7 @@ use std::sync::Arc;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::RootCertStore;
+use rustls_pki_types::pem::PemObject;
 use thiserror::Error;
 use tokio_rustls::TlsAcceptor;
 
@@ -43,6 +44,9 @@ pub enum TlsError {
     #[error("failed to read certificate file: {0}")]
     CertReadError(#[source] std::io::Error),
 
+    #[error("failed to parse PEM certificate: {0}")]
+    PemError(String),
+
     #[error("failed to read private key file: {0}")]
     KeyReadError(#[source] std::io::Error),
 
@@ -51,9 +55,6 @@ pub enum TlsError {
 
     #[error("no certificates found in file: {0}")]
     NoCertsFound(String),
-
-    #[error("no private key found in file: {0}")]
-    NoKeyFound(String),
 
     #[error("failed to build TLS config: {0}")]
     ConfigError(#[from] rustls::Error),
@@ -75,10 +76,10 @@ pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
     }
 
     let cert_file = File::open(cert_path).map_err(TlsError::CertReadError)?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+    let cert_reader = BufReader::new(cert_file);
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_reader_iter(cert_reader)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(TlsError::CertReadError)?;
+        .map_err(|e| TlsError::PemError(e.to_string()))?;
 
     if certs.is_empty() {
         return Err(TlsError::NoCertsFound(config.cert_file.clone()));
@@ -91,10 +92,9 @@ pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
     }
 
     let key_file = File::open(key_path).map_err(TlsError::KeyReadError)?;
-    let mut key_reader = BufReader::new(key_file);
-    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
-        .map_err(TlsError::KeyReadError)?
-        .ok_or_else(|| TlsError::NoKeyFound(config.key_file.clone()))?;
+    let key_reader = BufReader::new(key_file);
+    let key: PrivateKeyDer<'static> = PrivateKeyDer::from_pem_reader(key_reader)
+        .map_err(|e| TlsError::PemError(e.to_string()))?;
 
     // build server config
     let server_config = if let Some(ref ca_path) = config.ca_cert_file {
@@ -105,10 +105,10 @@ pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
         }
 
         let ca_file = File::open(ca_cert_path).map_err(TlsError::CaCertReadError)?;
-        let mut ca_reader = BufReader::new(ca_file);
-        let ca_certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut ca_reader)
+        let ca_reader = BufReader::new(ca_file);
+        let ca_certs: Vec<CertificateDer<'static>> = CertificateDer::pem_reader_iter(ca_reader)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(TlsError::CaCertReadError)?;
+            .map_err(|e| TlsError::PemError(e.to_string()))?;
 
         let mut root_store = RootCertStore::empty();
         for cert in ca_certs {
