@@ -331,7 +331,7 @@ fn handle_sub_command(
                 let rx = pubsub.subscribe(&ch);
                 channel_rxs.insert(ch.clone(), rx);
                 let count = channel_rxs.len() + pattern_rxs.len();
-                serialize_sub_response("subscribe", &ch, count, out);
+                serialize_sub_response(b"subscribe", &ch, count, out);
             }
         }
         Command::Unsubscribe { channels } => {
@@ -342,18 +342,18 @@ fn handle_sub_command(
                     channel_rxs.remove(&ch);
                     pubsub.unsubscribe(&ch);
                     let count = channel_rxs.len() + pattern_rxs.len();
-                    serialize_sub_response("unsubscribe", &ch, count, out);
+                    serialize_sub_response(b"unsubscribe", &ch, count, out);
                 }
                 if channel_rxs.is_empty() && pattern_rxs.is_empty() {
                     // send a final response with count 0 if we had nothing
-                    serialize_sub_response("unsubscribe", "", 0, out);
+                    serialize_sub_response(b"unsubscribe", "", 0, out);
                 }
             } else {
                 for ch in channels {
                     channel_rxs.remove(&ch);
                     pubsub.unsubscribe(&ch);
                     let count = channel_rxs.len() + pattern_rxs.len();
-                    serialize_sub_response("unsubscribe", &ch, count, out);
+                    serialize_sub_response(b"unsubscribe", &ch, count, out);
                 }
             }
         }
@@ -377,7 +377,7 @@ fn handle_sub_command(
                 let rx = pubsub.psubscribe(&pat);
                 pattern_rxs.insert(pat.clone(), rx);
                 let count = channel_rxs.len() + pattern_rxs.len();
-                serialize_sub_response("psubscribe", &pat, count, out);
+                serialize_sub_response(b"psubscribe", &pat, count, out);
             }
         }
         Command::PUnsubscribe { patterns } => {
@@ -387,17 +387,17 @@ fn handle_sub_command(
                     pattern_rxs.remove(&pat);
                     pubsub.punsubscribe(&pat);
                     let count = channel_rxs.len() + pattern_rxs.len();
-                    serialize_sub_response("punsubscribe", &pat, count, out);
+                    serialize_sub_response(b"punsubscribe", &pat, count, out);
                 }
                 if channel_rxs.is_empty() && pattern_rxs.is_empty() {
-                    serialize_sub_response("punsubscribe", "", 0, out);
+                    serialize_sub_response(b"punsubscribe", "", 0, out);
                 }
             } else {
                 for pat in patterns {
                     pattern_rxs.remove(&pat);
                     pubsub.punsubscribe(&pat);
                     let count = channel_rxs.len() + pattern_rxs.len();
-                    serialize_sub_response("punsubscribe", &pat, count, out);
+                    serialize_sub_response(b"punsubscribe", &pat, count, out);
                 }
             }
         }
@@ -462,9 +462,9 @@ async fn recv_any_message(
 }
 
 /// Serializes a subscribe/unsubscribe response: ["type", channel, count]
-fn serialize_sub_response(kind: &str, channel: &str, count: usize, out: &mut BytesMut) {
+fn serialize_sub_response(kind: &'static [u8], channel: &str, count: usize, out: &mut BytesMut) {
     Frame::Array(vec![
-        Frame::Bulk(Bytes::copy_from_slice(kind.as_bytes())),
+        Frame::Bulk(Bytes::from_static(kind)),
         Frame::Bulk(Bytes::copy_from_slice(channel.as_bytes())),
         Frame::Integer(count as i64),
     ])
