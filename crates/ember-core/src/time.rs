@@ -36,21 +36,22 @@ pub fn expiry_from_duration(ttl: Option<std::time::Duration>) -> u64 {
 /// Returns remaining TTL in seconds, or None if no expiry.
 #[inline]
 pub fn remaining_secs(expires_at_ms: u64) -> Option<u64> {
-    if expires_at_ms == NO_EXPIRY {
-        None
-    } else {
-        let now = now_ms();
-        Some(expires_at_ms.saturating_sub(now) / 1000)
-    }
+    remaining(expires_at_ms, 1000)
 }
 
 /// Returns remaining TTL in milliseconds, or None if no expiry.
 #[inline]
 pub fn remaining_ms(expires_at_ms: u64) -> Option<u64> {
+    remaining(expires_at_ms, 1)
+}
+
+/// Shared implementation for remaining TTL with a unit divisor.
+#[inline]
+fn remaining(expires_at_ms: u64, divisor: u64) -> Option<u64> {
     if expires_at_ms == NO_EXPIRY {
         None
     } else {
         let now = now_ms();
-        Some(expires_at_ms.saturating_sub(now))
+        Some(expires_at_ms.saturating_sub(now) / divisor)
     }
 }
