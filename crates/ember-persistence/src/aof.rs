@@ -38,6 +38,17 @@ fn read_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError
     })
 }
 
+/// Reads a count-prefixed list of strings: `[count: u32][string]*`.
+/// Used by SADD, SREM, HDEL, and ZREM deserialization.
+fn read_string_list(r: &mut impl io::Read, field: &str) -> Result<Vec<String>, FormatError> {
+    let count = format::read_u32(r)?;
+    let mut items = Vec::with_capacity(format::capped_capacity(count));
+    for _ in 0..count {
+        items.push(read_string(r, field)?);
+    }
+    Ok(items)
+}
+
 // -- record tags --
 // values are stable and must not change (on-disk format).
 
@@ -377,11 +388,7 @@ impl AofRecord {
             }
             TAG_ZREM => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(format::capped_capacity(count));
-                for _ in 0..count {
-                    members.push(read_string(&mut cursor, "member")?);
-                }
+                let members = read_string_list(&mut cursor, "member")?;
                 Ok(AofRecord::ZRem { key, members })
             }
             TAG_PERSIST => {
@@ -414,11 +421,7 @@ impl AofRecord {
             }
             TAG_HDEL => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut fields = Vec::with_capacity(format::capped_capacity(count));
-                for _ in 0..count {
-                    fields.push(read_string(&mut cursor, "field")?);
-                }
+                let fields = read_string_list(&mut cursor, "field")?;
                 Ok(AofRecord::HDel { key, fields })
             }
             TAG_HINCRBY => {
@@ -429,20 +432,12 @@ impl AofRecord {
             }
             TAG_SADD => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(format::capped_capacity(count));
-                for _ in 0..count {
-                    members.push(read_string(&mut cursor, "member")?);
-                }
+                let members = read_string_list(&mut cursor, "member")?;
                 Ok(AofRecord::SAdd { key, members })
             }
             TAG_SREM => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(format::capped_capacity(count));
-                for _ in 0..count {
-                    members.push(read_string(&mut cursor, "member")?);
-                }
+                let members = read_string_list(&mut cursor, "member")?;
                 Ok(AofRecord::SRem { key, members })
             }
             TAG_INCRBY => {
