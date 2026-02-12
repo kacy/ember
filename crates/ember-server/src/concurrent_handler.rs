@@ -25,8 +25,8 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT,
-    MAX_AUTH_FAILURES, MAX_BUF_SIZE,
+    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
+    MAX_BUF_SIZE,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
