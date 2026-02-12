@@ -219,8 +219,21 @@ where
                 }
             }
 
-            // check for new commands from the client
-            result = stream.read_buf(buf) => {
+            // check for new commands from the client (with idle timeout)
+            result = tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(buf)) => {
+                let result = match result {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        // idle timeout — clean up and close
+                        cleanup_subscriptions(pubsub, &channel_rxs, &pattern_rxs);
+                        return Ok(());
+                    }
+                };
+                // guard against unbounded buffer growth
+                if buf.len() > MAX_BUF_SIZE {
+                    cleanup_subscriptions(pubsub, &channel_rxs, &pattern_rxs);
+                    return Ok(());
+                }
                 match result {
                     Ok(0) => {
                         // client disconnected — clean up subscriptions
