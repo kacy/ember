@@ -712,9 +712,7 @@ fn dispatch(
                 Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
                 Err(e) => ShardResponse::Err(e.to_string()),
             },
-            None => {
-                ShardResponse::Err("ERR increment or decrement would overflow".into())
-            }
+            None => ShardResponse::Err("ERR increment or decrement would overflow".into()),
         },
         ShardRequest::IncrByFloat { key, delta } => match ks.incr_by_float(key, *delta) {
             Ok(val) => ShardResponse::BulkString(val),

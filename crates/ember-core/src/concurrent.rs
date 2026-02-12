@@ -169,8 +169,7 @@ impl ConcurrentKeyspace {
             if entry.is_expired() {
                 return false;
             }
-            entry.expires_at_ms = time::now_ms()
-                .saturating_add(seconds.saturating_mul(1000));
+            entry.expires_at_ms = time::now_ms().saturating_add(seconds.saturating_mul(1000));
             true
         } else {
             false
