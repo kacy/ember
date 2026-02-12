@@ -33,6 +33,8 @@ pub struct ServerOptions {
     pub cluster_bootstrap: bool,
     /// Enable protobuf value storage.
     pub protobuf: bool,
+    /// Number of shards (defaults to 2 for test coverage).
+    pub shards: Option<usize>,
     /// Use concurrent (DashMap) mode instead of sharded channels.
     pub concurrent: bool,
 }
@@ -54,7 +56,7 @@ impl TestServer {
         let mut cmd = Command::new(&binary);
         cmd.arg("--port").arg(port.to_string());
         cmd.arg("--host").arg("127.0.0.1");
-        cmd.arg("--shards").arg("2");
+        cmd.arg("--shards").arg(opts.shards.unwrap_or(2).to_string());
         // suppress tracing output in tests
         cmd.env("RUST_LOG", "error");
 

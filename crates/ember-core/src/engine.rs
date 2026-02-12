@@ -4,8 +4,6 @@
 //! of the key. Each shard is an independent tokio task — no locks on
 //! the hot path.
 
-use std::hash::{Hash, Hasher};
-
 use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::keyspace::ShardConfig;
@@ -197,14 +195,25 @@ impl Engine {
 
 /// Pure function: maps a key to a shard index.
 ///
-/// Uses ahash (AHash) for fast, non-cryptographic hashing. ~3x faster
-/// than SipHash for short keys. Deterministic within a single process —
-/// that's all we need for local sharding. Shard routing is trusted
-/// internal logic so DoS-resistant hashing is unnecessary here.
+/// Uses FNV-1a hashing for deterministic shard routing across restarts.
+/// This is critical for AOF/snapshot recovery — keys must hash to the
+/// same shard on every startup, otherwise recovered data lands in the
+/// wrong shard.
+///
+/// FNV-1a is simple, fast for short keys, and completely deterministic
+/// (no per-process randomization). Shard routing is trusted internal
+/// logic so DoS-resistant hashing is unnecessary here.
 fn shard_index(key: &str, shard_count: usize) -> usize {
-    let mut hasher = ahash::AHasher::default();
-    key.hash(&mut hasher);
-    (hasher.finish() as usize) % shard_count
+    // FNV-1a 64-bit
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET;
+    for byte in key.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    (hash as usize) % shard_count
 }
 
 #[cfg(test)]

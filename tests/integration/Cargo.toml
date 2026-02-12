@@ -14,8 +14,9 @@ harness = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 bytes = { workspace = true }
 ember-protocol = { workspace = true }
+ember-server = { path = "../../crates/ember-server", default-features = false }
 prost-reflect = { workspace = true }
 tempfile = "3"
 
 [features]
-protobuf = []
+protobuf = ["ember-server/protobuf"]
