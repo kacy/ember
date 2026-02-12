@@ -179,6 +179,52 @@ pub struct SnapEntry {
     pub expire_ms: i64,
 }
 
+impl SnapEntry {
+    /// Estimates the serialized byte size for buffer pre-allocation.
+    fn estimated_size(&self) -> usize {
+        const LEN_PREFIX: usize = 4;
+
+        let key_size = LEN_PREFIX + self.key.len();
+        let value_size = match &self.value {
+            SnapValue::String(data) => 1 + LEN_PREFIX + data.len(),
+            SnapValue::List(deque) => {
+                let items: usize = deque.iter().map(|v| LEN_PREFIX + v.len()).sum();
+                1 + 4 + items
+            }
+            SnapValue::SortedSet(members) => {
+                let items: usize = members.iter().map(|(_, m)| 8 + LEN_PREFIX + m.len()).sum();
+                1 + 4 + items
+            }
+            SnapValue::Hash(map) => {
+                let items: usize = map
+                    .iter()
+                    .map(|(f, v)| LEN_PREFIX + f.len() + LEN_PREFIX + v.len())
+                    .sum();
+                1 + 4 + items
+            }
+            SnapValue::Set(set) => {
+                let items: usize = set.iter().map(|m| LEN_PREFIX + m.len()).sum();
+                1 + 4 + items
+            }
+            #[cfg(feature = "vector")]
+            SnapValue::Vector { dim, elements, .. } => {
+                let items: usize = elements
+                    .iter()
+                    .map(|(name, _)| LEN_PREFIX + name.len() + (*dim as usize) * 4)
+                    .sum();
+                // tag + metric + quant + connectivity + expansion + dim + count + items
+                1 + 2 + 4 + 4 + 4 + 4 + items
+            }
+            #[cfg(feature = "protobuf")]
+            SnapValue::Proto { type_name, data } => {
+                1 + LEN_PREFIX + type_name.len() + LEN_PREFIX + data.len()
+            }
+        };
+        // key + value + expire_ms (i64 = 8 bytes)
+        key_size + value_size + 8
+    }
+}
+
 /// Writes a complete snapshot to disk.
 ///
 /// Entries are written to a temporary file first, then atomically
@@ -271,7 +317,7 @@ impl SnapshotWriter {
     /// When encrypted, each entry is written as `[nonce: 12B][len: 4B][ciphertext]`.
     /// The footer CRC covers the encrypted bytes (nonce + len + ciphertext).
     pub fn write_entry(&mut self, entry: &SnapEntry) -> Result<(), FormatError> {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(entry.estimated_size());
         format::write_bytes(&mut buf, entry.key.as_bytes())?;
         match &entry.value {
             SnapValue::String(data) => {

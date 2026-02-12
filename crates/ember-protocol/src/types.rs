@@ -36,6 +36,24 @@ pub enum Frame {
     Map(Vec<(Frame, Frame)>),
 }
 
+/// Pre-computed wire bytes for the most common responses.
+/// Writing these directly to the output buffer avoids per-field
+/// serialization overhead.
+pub mod wire {
+    /// `+OK\r\n`
+    pub const OK: &[u8] = b"+OK\r\n";
+    /// `+PONG\r\n`
+    pub const PONG: &[u8] = b"+PONG\r\n";
+    /// `_\r\n`
+    pub const NULL: &[u8] = b"_\r\n";
+    /// `:0\r\n`
+    pub const ZERO: &[u8] = b":0\r\n";
+    /// `:1\r\n`
+    pub const ONE: &[u8] = b":1\r\n";
+    /// `:-1\r\n`
+    pub const NEG_ONE: &[u8] = b":-1\r\n";
+}
+
 impl Frame {
     /// Returns `true` if this frame is a null value.
     pub fn is_null(&self) -> bool {
