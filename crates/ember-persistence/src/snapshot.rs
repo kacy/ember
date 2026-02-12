@@ -39,11 +39,79 @@ const TYPE_SET: u8 = 4;
 #[cfg(feature = "protobuf")]
 const TYPE_PROTO: u8 = 5;
 
-/// Cap pre-allocation to avoid huge allocations from corrupt count fields.
-/// The loop will still iterate `count` times — this just limits the
-/// up-front reservation so a bogus u32 can't exhaust memory.
-fn capped_capacity(count: u32) -> usize {
-    (count as usize).min(65_536)
+/// Reads a UTF-8 string from a length-prefixed byte field.
+#[cfg(feature = "encryption")]
+fn read_snap_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError> {
+    let bytes = format::read_bytes(r)?;
+    String::from_utf8(bytes).map_err(|_| {
+        FormatError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{field} is not valid utf-8"),
+        ))
+    })
+}
+
+/// Parses a type-tagged SnapValue from a reader (v2+ format).
+///
+/// Used by `read_encrypted_entry` to parse the `[type_tag][payload]`
+/// portion of a decrypted entry. The plaintext path has parallel logic
+/// but interleaves CRC buffer mirroring, so it stays inline.
+#[cfg(feature = "encryption")]
+fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
+    let type_tag = format::read_u8(r)?;
+    match type_tag {
+        TYPE_STRING => {
+            let v = format::read_bytes(r)?;
+            Ok(SnapValue::String(Bytes::from(v)))
+        }
+        TYPE_LIST => {
+            let count = format::read_u32(r)?;
+            let mut deque = VecDeque::with_capacity(format::capped_capacity(count));
+            for _ in 0..count {
+                deque.push_back(Bytes::from(format::read_bytes(r)?));
+            }
+            Ok(SnapValue::List(deque))
+        }
+        TYPE_SORTED_SET => {
+            let count = format::read_u32(r)?;
+            let mut members = Vec::with_capacity(format::capped_capacity(count));
+            for _ in 0..count {
+                let score = format::read_f64(r)?;
+                let member = read_snap_string(r, "member")?;
+                members.push((score, member));
+            }
+            Ok(SnapValue::SortedSet(members))
+        }
+        TYPE_HASH => {
+            let count = format::read_u32(r)?;
+            let mut map = HashMap::with_capacity(format::capped_capacity(count));
+            for _ in 0..count {
+                let field = read_snap_string(r, "hash field")?;
+                let value = format::read_bytes(r)?;
+                map.insert(field, Bytes::from(value));
+            }
+            Ok(SnapValue::Hash(map))
+        }
+        TYPE_SET => {
+            let count = format::read_u32(r)?;
+            let mut set = HashSet::with_capacity(format::capped_capacity(count));
+            for _ in 0..count {
+                let member = read_snap_string(r, "set member")?;
+                set.insert(member);
+            }
+            Ok(SnapValue::Set(set))
+        }
+        #[cfg(feature = "protobuf")]
+        TYPE_PROTO => {
+            let type_name = read_snap_string(r, "proto type_name")?;
+            let data = format::read_bytes(r)?;
+            Ok(SnapValue::Proto {
+                type_name,
+                data: Bytes::from(data),
+            })
+        }
+        _ => Err(FormatError::UnknownTag(type_tag)),
+    }
 }
 
 /// The value stored in a snapshot entry.
@@ -382,7 +450,7 @@ impl SnapshotReader {
                 TYPE_LIST => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut deque = VecDeque::with_capacity(capped_capacity(count));
+                    let mut deque = VecDeque::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
                         let item = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &item)?;
@@ -393,7 +461,7 @@ impl SnapshotReader {
                 TYPE_SORTED_SET => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut members = Vec::with_capacity(capped_capacity(count));
+                    let mut members = Vec::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
                         let score = format::read_f64(&mut self.reader)?;
                         format::write_f64(&mut buf, score)?;
@@ -412,7 +480,7 @@ impl SnapshotReader {
                 TYPE_HASH => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut map = HashMap::with_capacity(capped_capacity(count));
+                    let mut map = HashMap::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
                         let field_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &field_bytes)?;
@@ -431,7 +499,7 @@ impl SnapshotReader {
                 TYPE_SET => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut set = HashSet::with_capacity(capped_capacity(count));
+                    let mut set = HashSet::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
                         let member_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &member_bytes)?;
@@ -530,95 +598,10 @@ impl SnapshotReader {
 
         let plaintext = crate::encryption::decrypt_record(key, &nonce, &ciphertext)?;
 
-        // parse the decrypted bytes using the same logic as v2
         let mut cursor = io::Cursor::new(&plaintext);
-        let key_bytes = format::read_bytes(&mut cursor)?;
-        let type_tag = format::read_u8(&mut cursor)?;
-        let value = match type_tag {
-            TYPE_STRING => {
-                let v = format::read_bytes(&mut cursor)?;
-                SnapValue::String(Bytes::from(v))
-            }
-            TYPE_LIST => {
-                let count = format::read_u32(&mut cursor)?;
-                let mut deque = VecDeque::with_capacity(capped_capacity(count));
-                for _ in 0..count {
-                    deque.push_back(Bytes::from(format::read_bytes(&mut cursor)?));
-                }
-                SnapValue::List(deque)
-            }
-            TYPE_SORTED_SET => {
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(capped_capacity(count));
-                for _ in 0..count {
-                    let score = format::read_f64(&mut cursor)?;
-                    let member_bytes = format::read_bytes(&mut cursor)?;
-                    let member = String::from_utf8(member_bytes).map_err(|_| {
-                        FormatError::Io(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "member is not valid utf-8",
-                        ))
-                    })?;
-                    members.push((score, member));
-                }
-                SnapValue::SortedSet(members)
-            }
-            TYPE_HASH => {
-                let count = format::read_u32(&mut cursor)?;
-                let mut map = HashMap::with_capacity(capped_capacity(count));
-                for _ in 0..count {
-                    let field_bytes = format::read_bytes(&mut cursor)?;
-                    let field = String::from_utf8(field_bytes).map_err(|_| {
-                        FormatError::Io(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "hash field is not valid utf-8",
-                        ))
-                    })?;
-                    let value_bytes = format::read_bytes(&mut cursor)?;
-                    map.insert(field, Bytes::from(value_bytes));
-                }
-                SnapValue::Hash(map)
-            }
-            TYPE_SET => {
-                let count = format::read_u32(&mut cursor)?;
-                let mut set = HashSet::with_capacity(capped_capacity(count));
-                for _ in 0..count {
-                    let member_bytes = format::read_bytes(&mut cursor)?;
-                    let member = String::from_utf8(member_bytes).map_err(|_| {
-                        FormatError::Io(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "set member is not valid utf-8",
-                        ))
-                    })?;
-                    set.insert(member);
-                }
-                SnapValue::Set(set)
-            }
-            #[cfg(feature = "protobuf")]
-            TYPE_PROTO => {
-                let type_name_bytes = format::read_bytes(&mut cursor)?;
-                let type_name = String::from_utf8(type_name_bytes).map_err(|_| {
-                    FormatError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "proto type_name is not valid utf-8",
-                    ))
-                })?;
-                let data = format::read_bytes(&mut cursor)?;
-                SnapValue::Proto {
-                    type_name,
-                    data: Bytes::from(data),
-                }
-            }
-            _ => return Err(FormatError::UnknownTag(type_tag)),
-        };
+        let entry_key = read_snap_string(&mut cursor, "key")?;
+        let value = parse_snap_value(&mut cursor)?;
         let expire_ms = format::read_i64(&mut cursor)?;
-
-        let entry_key = String::from_utf8(key_bytes).map_err(|_| {
-            FormatError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "key is not valid utf-8",
-            ))
-        })?;
 
         self.read_so_far += 1;
         Ok(Some(SnapEntry {

@@ -38,29 +38,55 @@ fn read_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError
     })
 }
 
-/// Record tags for the AOF format.
+/// Reads a count-prefixed list of strings: `[count: u32][string]*`.
+/// Used by SADD, SREM, HDEL, and ZREM deserialization.
+fn read_string_list(r: &mut impl io::Read, field: &str) -> Result<Vec<String>, FormatError> {
+    let count = format::read_u32(r)?;
+    let mut items = Vec::with_capacity(format::capped_capacity(count));
+    for _ in 0..count {
+        items.push(read_string(r, field)?);
+    }
+    Ok(items)
+}
+
+// -- record tags --
+// values are stable and must not change (on-disk format).
+
+// string
 const TAG_SET: u8 = 1;
-const TAG_DEL: u8 = 2;
-const TAG_EXPIRE: u8 = 3;
+const TAG_INCR: u8 = 12;
+const TAG_DECR: u8 = 13;
+const TAG_INCRBY: u8 = 19;
+const TAG_DECRBY: u8 = 20;
+const TAG_APPEND: u8 = 21;
+
+// list
 const TAG_LPUSH: u8 = 4;
 const TAG_RPUSH: u8 = 5;
 const TAG_LPOP: u8 = 6;
 const TAG_RPOP: u8 = 7;
+
+// sorted set
 const TAG_ZADD: u8 = 8;
 const TAG_ZREM: u8 = 9;
-const TAG_PERSIST: u8 = 10;
-const TAG_PEXPIRE: u8 = 11;
-const TAG_INCR: u8 = 12;
-const TAG_DECR: u8 = 13;
+
+// hash
 const TAG_HSET: u8 = 14;
 const TAG_HDEL: u8 = 15;
 const TAG_HINCRBY: u8 = 16;
+
+// set
 const TAG_SADD: u8 = 17;
 const TAG_SREM: u8 = 18;
-const TAG_INCRBY: u8 = 19;
-const TAG_DECRBY: u8 = 20;
-const TAG_APPEND: u8 = 21;
+
+// key lifecycle
+const TAG_DEL: u8 = 2;
+const TAG_EXPIRE: u8 = 3;
+const TAG_PERSIST: u8 = 10;
+const TAG_PEXPIRE: u8 = 11;
 const TAG_RENAME: u8 = 22;
+
+// protobuf
 #[cfg(feature = "protobuf")]
 const TAG_PROTO_SET: u8 = 23;
 #[cfg(feature = "protobuf")]
@@ -304,13 +330,6 @@ impl AofRecord {
         Ok(buf)
     }
 
-    /// Cap pre-allocation to avoid huge allocations from corrupt count fields.
-    /// The loop will still iterate `count` times — this just limits the
-    /// up-front reservation so a bogus u32 can't exhaust memory.
-    fn capped_capacity(count: u32) -> usize {
-        (count as usize).min(65_536)
-    }
-
     /// Deserializes a record from a byte slice (tag + payload, no CRC).
     fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
         let mut cursor = io::Cursor::new(data);
@@ -338,7 +357,7 @@ impl AofRecord {
             TAG_LPUSH | TAG_RPUSH => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut values = Vec::with_capacity(Self::capped_capacity(count));
+                let mut values = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
                     values.push(Bytes::from(format::read_bytes(&mut cursor)?));
                 }
@@ -359,7 +378,7 @@ impl AofRecord {
             TAG_ZADD => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(Self::capped_capacity(count));
+                let mut members = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
                     let score = format::read_f64(&mut cursor)?;
                     let member = read_string(&mut cursor, "member")?;
@@ -369,11 +388,7 @@ impl AofRecord {
             }
             TAG_ZREM => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(Self::capped_capacity(count));
-                for _ in 0..count {
-                    members.push(read_string(&mut cursor, "member")?);
-                }
+                let members = read_string_list(&mut cursor, "member")?;
                 Ok(AofRecord::ZRem { key, members })
             }
             TAG_PERSIST => {
@@ -396,7 +411,7 @@ impl AofRecord {
             TAG_HSET => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut fields = Vec::with_capacity(Self::capped_capacity(count));
+                let mut fields = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
                     let field = read_string(&mut cursor, "field")?;
                     let value = Bytes::from(format::read_bytes(&mut cursor)?);
@@ -406,11 +421,7 @@ impl AofRecord {
             }
             TAG_HDEL => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut fields = Vec::with_capacity(Self::capped_capacity(count));
-                for _ in 0..count {
-                    fields.push(read_string(&mut cursor, "field")?);
-                }
+                let fields = read_string_list(&mut cursor, "field")?;
                 Ok(AofRecord::HDel { key, fields })
             }
             TAG_HINCRBY => {
@@ -421,20 +432,12 @@ impl AofRecord {
             }
             TAG_SADD => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(Self::capped_capacity(count));
-                for _ in 0..count {
-                    members.push(read_string(&mut cursor, "member")?);
-                }
+                let members = read_string_list(&mut cursor, "member")?;
                 Ok(AofRecord::SAdd { key, members })
             }
             TAG_SREM => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(Self::capped_capacity(count));
-                for _ in 0..count {
-                    members.push(read_string(&mut cursor, "member")?);
-                }
+                let members = read_string_list(&mut cursor, "member")?;
                 Ok(AofRecord::SRem { key, members })
             }
             TAG_INCRBY => {
