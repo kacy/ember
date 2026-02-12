@@ -694,6 +694,16 @@ fn extract_bytes(frame: &Frame) -> Result<Bytes, ProtocolError> {
     }
 }
 
+/// Extracts all frames in a slice as UTF-8 strings.
+fn extract_strings(frames: &[Frame]) -> Result<Vec<String>, ProtocolError> {
+    frames.iter().map(extract_string).collect()
+}
+
+/// Extracts all frames in a slice as raw byte buffers.
+fn extract_bytes_vec(frames: &[Frame]) -> Result<Vec<Bytes>, ProtocolError> {
+    frames.iter().map(extract_bytes).collect()
+}
+
 /// Parses a string argument as a positive u64.
 fn parse_u64(frame: &Frame, cmd: &str) -> Result<u64, ProtocolError> {
     let s = extract_string(frame)?;
@@ -893,10 +903,7 @@ fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(ProtocolError::WrongArity("DEL".into()));
     }
-    let keys = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let keys = extract_strings(args)?;
     Ok(Command::Del { keys })
 }
 
@@ -904,10 +911,7 @@ fn parse_exists(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(ProtocolError::WrongArity("EXISTS".into()));
     }
-    let keys = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let keys = extract_strings(args)?;
     Ok(Command::Exists { keys })
 }
 
@@ -915,10 +919,7 @@ fn parse_mget(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(ProtocolError::WrongArity("MGET".into()));
     }
-    let keys = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let keys = extract_strings(args)?;
     Ok(Command::MGet { keys })
 }
 
@@ -1042,10 +1043,7 @@ fn parse_unlink(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(ProtocolError::WrongArity("UNLINK".into()));
     }
-    let keys = args
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let keys = extract_strings(args)?;
     Ok(Command::Unlink { keys })
 }
 
@@ -1107,10 +1105,7 @@ fn parse_lpush(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("LPUSH".into()));
     }
     let key = extract_string(&args[0])?;
-    let values = args[1..]
-        .iter()
-        .map(extract_bytes)
-        .collect::<Result<Vec<_>, _>>()?;
+    let values = extract_bytes_vec(&args[1..])?;
     Ok(Command::LPush { key, values })
 }
 
@@ -1119,10 +1114,7 @@ fn parse_rpush(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("RPUSH".into()));
     }
     let key = extract_string(&args[0])?;
-    let values = args[1..]
-        .iter()
-        .map(extract_bytes)
-        .collect::<Result<Vec<_>, _>>()?;
+    let values = extract_bytes_vec(&args[1..])?;
     Ok(Command::RPush { key, values })
 }
 
@@ -1266,10 +1258,7 @@ fn parse_zrem(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("ZREM".into()));
     }
     let key = extract_string(&args[0])?;
-    let members = args[1..]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let members = extract_strings(&args[1..])?;
     Ok(Command::ZRem { key, members })
 }
 
@@ -1363,10 +1352,7 @@ fn parse_hdel(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("HDEL".into()));
     }
     let key = extract_string(&args[0])?;
-    let fields = args[1..]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let fields = extract_strings(&args[1..])?;
     Ok(Command::HDel { key, fields })
 }
 
@@ -1418,10 +1404,7 @@ fn parse_hmget(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("HMGET".into()));
     }
     let key = extract_string(&args[0])?;
-    let fields = args[1..]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let fields = extract_strings(&args[1..])?;
     Ok(Command::HMGet { key, fields })
 }
 
@@ -1432,10 +1415,7 @@ fn parse_sadd(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("SADD".into()));
     }
     let key = extract_string(&args[0])?;
-    let members = args[1..]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let members = extract_strings(&args[1..])?;
     Ok(Command::SAdd { key, members })
 }
 
@@ -1444,10 +1424,7 @@ fn parse_srem(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::WrongArity("SREM".into()));
     }
     let key = extract_string(&args[0])?;
-    let members = args[1..]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<Vec<_>, _>>()?;
+    let members = extract_strings(&args[1..])?;
     Ok(Command::SRem { key, members })
 }
 
