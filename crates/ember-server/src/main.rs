@@ -151,18 +151,9 @@ struct Args {
     cluster_node_timeout: u64,
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "ember=info".into()),
-        )
-        .init();
-
-    let mut args = Args::parse();
-
-    // resolve password: --requirepass-file takes the same role as --requirepass
+/// Resolves the password from either `--requirepass` or `--requirepass-file`.
+/// The two options are mutually exclusive. Exits on error.
+fn resolve_password(args: &mut Args) {
     if args.requirepass.is_some() && args.requirepass_file.is_some() {
         eprintln!("error: --requirepass and --requirepass-file are mutually exclusive");
         std::process::exit(1);
@@ -186,14 +177,71 @@ async fn main() {
             }
         }
     }
+}
 
-    let addr: SocketAddr = match format!("{}:{}", args.host, args.port).parse() {
+/// Parses a `host:port` pair into a `SocketAddr`. Exits with a message on failure.
+fn parse_bind_addr(host: &str, port: u16, label: &str) -> SocketAddr {
+    match format!("{host}:{port}").parse() {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("invalid bind address '{}:{}': {e}", args.host, args.port);
+            if label.is_empty() {
+                eprintln!("invalid bind address '{host}:{port}': {e}");
+            } else {
+                eprintln!("invalid {label} bind address '{host}:{port}': {e}");
+            }
             std::process::exit(1);
         }
-    };
+    }
+}
+
+/// Builds the persistence config from CLI args. Returns `None` if persistence
+/// is not enabled. Exits on validation errors.
+fn build_persistence_config(
+    args: &mut Args,
+    #[cfg(feature = "encryption")] encryption_key: Option<
+        ember_persistence::encryption::EncryptionKey,
+    >,
+) -> Option<ShardPersistenceConfig> {
+    if !args.appendonly && args.data_dir.is_none() {
+        return None;
+    }
+
+    let data_dir = args.data_dir.take().unwrap_or_else(|| {
+        if args.appendonly {
+            eprintln!("--data-dir is required when --appendonly is set");
+            std::process::exit(1);
+        }
+        PathBuf::from(".")
+    });
+
+    let fsync_policy = parse_fsync_policy(&args.appendfsync).unwrap_or_else(|e| {
+        eprintln!("invalid --appendfsync value: {e}");
+        std::process::exit(1);
+    });
+
+    Some(ShardPersistenceConfig {
+        data_dir,
+        append_only: args.appendonly,
+        fsync_policy,
+        #[cfg(feature = "encryption")]
+        encryption_key,
+    })
+}
+
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "ember=info".into()),
+        )
+        .init();
+
+    let mut args = Args::parse();
+
+    resolve_password(&mut args);
+
+    let addr = parse_bind_addr(&args.host, args.port, "");
 
     let max_memory = args.max_memory.as_deref().map(|s| {
         parse_byte_size(s).unwrap_or_else(|e| {
@@ -238,31 +286,11 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // build persistence config if data-dir is set or appendonly is enabled
-    let persistence = if args.appendonly || args.data_dir.is_some() {
-        let data_dir = args.data_dir.unwrap_or_else(|| {
-            if args.appendonly {
-                eprintln!("--data-dir is required when --appendonly is set");
-                std::process::exit(1);
-            }
-            PathBuf::from(".")
-        });
-
-        let fsync_policy = parse_fsync_policy(&args.appendfsync).unwrap_or_else(|e| {
-            eprintln!("invalid --appendfsync value: {e}");
-            std::process::exit(1);
-        });
-
-        Some(ShardPersistenceConfig {
-            data_dir,
-            append_only: args.appendonly,
-            fsync_policy,
-            #[cfg(feature = "encryption")]
-            encryption_key,
-        })
-    } else {
-        None
-    };
+    let persistence = build_persistence_config(
+        &mut args,
+        #[cfg(feature = "encryption")]
+        encryption_key,
+    );
 
     #[allow(unused_mut)]
     let mut engine_config =
@@ -305,17 +333,7 @@ async fn main() {
 
     // install prometheus metrics exporter if --metrics-port is set
     if let Some(metrics_port) = args.metrics_port {
-        let metrics_addr: std::net::SocketAddr =
-            match format!("{}:{}", args.host, metrics_port).parse() {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!(
-                        "invalid metrics bind address '{}:{metrics_port}': {e}",
-                        args.host
-                    );
-                    std::process::exit(1);
-                }
-            };
+        let metrics_addr = parse_bind_addr(&args.host, metrics_port, "metrics");
         if let Err(e) = metrics::install_exporter(metrics_addr) {
             eprintln!("failed to start metrics exporter: {e}");
             std::process::exit(1);
@@ -358,13 +376,7 @@ async fn main() {
             }
         };
 
-        let tls_addr: SocketAddr = match format!("{}:{}", args.host, tls_port).parse() {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("invalid TLS bind address '{}:{tls_port}': {e}", args.host);
-                std::process::exit(1);
-            }
-        };
+        let tls_addr = parse_bind_addr(&args.host, tls_port, "TLS");
 
         info!(
             tls_port = tls_port,
