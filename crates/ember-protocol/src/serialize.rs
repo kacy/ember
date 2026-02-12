@@ -14,23 +14,35 @@ impl Frame {
     ///
     /// Writes the full RESP3 wire representation, including type prefix
     /// and trailing `\r\n` delimiters.
+    #[inline]
     pub fn serialize(&self, dst: &mut BytesMut) {
+        use crate::types::wire;
+
         match self {
-            Frame::Simple(s) => {
-                dst.put_u8(b'+');
-                dst.put_slice(s.as_bytes());
-                dst.put_slice(b"\r\n");
-            }
+            Frame::Simple(s) => match s.as_str() {
+                "OK" => dst.put_slice(wire::OK),
+                "PONG" => dst.put_slice(wire::PONG),
+                _ => {
+                    dst.put_u8(b'+');
+                    dst.put_slice(s.as_bytes());
+                    dst.put_slice(b"\r\n");
+                }
+            },
             Frame::Error(msg) => {
                 dst.put_u8(b'-');
                 dst.put_slice(msg.as_bytes());
                 dst.put_slice(b"\r\n");
             }
-            Frame::Integer(n) => {
-                dst.put_u8(b':');
-                write_i64(*n, dst);
-                dst.put_slice(b"\r\n");
-            }
+            Frame::Integer(n) => match *n {
+                0 => dst.put_slice(wire::ZERO),
+                1 => dst.put_slice(wire::ONE),
+                -1 => dst.put_slice(wire::NEG_ONE),
+                _ => {
+                    dst.put_u8(b':');
+                    write_i64(*n, dst);
+                    dst.put_slice(b"\r\n");
+                }
+            },
             Frame::Bulk(data) => {
                 dst.put_u8(b'$');
                 write_i64(data.len() as i64, dst);
@@ -47,7 +59,7 @@ impl Frame {
                 }
             }
             Frame::Null => {
-                dst.put_slice(b"_\r\n");
+                dst.put_slice(wire::NULL);
             }
             Frame::Map(pairs) => {
                 dst.put_u8(b'%');
