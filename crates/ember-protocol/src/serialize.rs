@@ -75,6 +75,7 @@ impl Frame {
 }
 
 /// Writes an i64 as its decimal ASCII representation directly into the buffer.
+#[inline]
 fn write_i64(val: i64, dst: &mut BytesMut) {
     let mut buf = itoa::Buffer::new();
     dst.put_slice(buf.format(val).as_bytes());
