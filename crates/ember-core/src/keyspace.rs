@@ -144,6 +144,30 @@ pub struct ZAddResult {
     pub applied: Vec<(f64, String)>,
 }
 
+/// Result of a VADD operation, carrying the applied element for AOF persistence.
+#[cfg(feature = "vector")]
+#[derive(Debug, Clone)]
+pub struct VAddResult {
+    /// The element name that was added or updated.
+    pub element: String,
+    /// The vector that was stored.
+    pub vector: Vec<f32>,
+    /// Whether a new element was added (false = updated existing).
+    pub added: bool,
+}
+
+/// Errors from vector write operations.
+#[cfg(feature = "vector")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VectorWriteError {
+    /// The key holds a different type than expected.
+    WrongType,
+    /// Memory limit reached.
+    OutOfMemory,
+    /// usearch index error (dimension mismatch, capacity, etc).
+    IndexError(String),
+}
+
 /// How the keyspace should handle writes when the memory limit is reached.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EvictionPolicy {
@@ -1848,6 +1872,244 @@ impl Keyspace {
             }
         }
         expired
+    }
+
+    // -- vector operations --
+
+    /// Adds a vector to a vector set, creating the set if it doesn't exist.
+    ///
+    /// On first insert, the set's configuration (dim, metric, quantization,
+    /// connectivity, expansion_add) is locked. Subsequent inserts must match
+    /// the established dimensionality.
+    ///
+    /// Returns a `VAddResult` with the element name, vector, and whether it
+    /// was newly added (for AOF recording).
+    #[cfg(feature = "vector")]
+    pub fn vadd(
+        &mut self,
+        key: &str,
+        element: String,
+        vector: Vec<f32>,
+        metric: crate::types::vector::DistanceMetric,
+        quantization: crate::types::vector::QuantizationType,
+        connectivity: usize,
+        expansion_add: usize,
+    ) -> Result<VAddResult, VectorWriteError> {
+        use crate::types::vector::VectorSet;
+
+        self.remove_if_expired(key);
+
+        let is_new = !self.entries.contains_key(key);
+        if !is_new && !matches!(self.entries[key].value, Value::Vector(_)) {
+            return Err(VectorWriteError::WrongType);
+        }
+
+        // estimate memory for the new vector
+        let dim = vector.len();
+        let per_vector = dim * quantization.bytes_per_element() + connectivity * 2 * 8 + element.len() + 80;
+        let estimated_increase = if is_new {
+            memory::ENTRY_OVERHEAD + key.len() + VectorSet::BASE_OVERHEAD + per_vector
+        } else {
+            per_vector
+        };
+        if !self.enforce_memory_limit(estimated_increase) {
+            return Err(VectorWriteError::OutOfMemory);
+        }
+
+        if is_new {
+            let vs = VectorSet::new(dim, metric, quantization, connectivity, expansion_add)
+                .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
+            let value = Value::Vector(vs);
+            self.memory.add(key, &value);
+            self.entries.insert(key.to_owned(), Entry::new(value, None));
+        }
+
+        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let old_entry_size = memory::entry_size(key, &entry.value);
+
+        let added = if let Value::Vector(ref mut vs) = entry.value {
+            vs.add(element.clone(), &vector)
+                .map_err(|e| VectorWriteError::IndexError(e.to_string()))?
+        } else {
+            unreachable!()
+        };
+        entry.touch();
+
+        let new_entry_size = memory::entry_size(key, &entry.value);
+        self.memory.adjust(old_entry_size, new_entry_size);
+
+        Ok(VAddResult { element, vector, added })
+    }
+
+    /// Searches for the k nearest neighbors in a vector set.
+    #[cfg(feature = "vector")]
+    pub fn vsim(
+        &mut self,
+        key: &str,
+        query: Vec<f32>,
+        count: usize,
+        ef_search: usize,
+    ) -> Result<Vec<crate::types::vector::SearchResult>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(Vec::new());
+        }
+
+        let entry = match self.entries.get_mut(key) {
+            Some(e) => e,
+            None => return Ok(Vec::new()),
+        };
+
+        if !matches!(entry.value, Value::Vector(_)) {
+            return Err(WrongType);
+        }
+
+        entry.touch();
+
+        if let Value::Vector(ref vs) = entry.value {
+            vs.search(&query, count, ef_search)
+                .map_err(|_| WrongType) // simplify — index errors shouldn't happen on valid sets
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Removes an element from a vector set. Returns `true` if the element
+    /// existed. Deletes the key if the set becomes empty.
+    #[cfg(feature = "vector")]
+    pub fn vrem(&mut self, key: &str, element: &str) -> Result<bool, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(false);
+        }
+
+        let entry = match self.entries.get_mut(key) {
+            Some(e) => e,
+            None => return Ok(false),
+        };
+
+        if !matches!(entry.value, Value::Vector(_)) {
+            return Err(WrongType);
+        }
+
+        let old_entry_size = memory::entry_size(key, &entry.value);
+
+        let removed = if let Value::Vector(ref mut vs) = entry.value {
+            vs.remove(element)
+        } else {
+            unreachable!()
+        };
+
+        if removed {
+            entry.touch();
+            let new_entry_size = memory::entry_size(key, &entry.value);
+            self.memory.adjust(old_entry_size, new_entry_size);
+
+            // remove key if set is now empty
+            if let Value::Vector(ref vs) = entry.value {
+                if vs.is_empty() {
+                    self.memory.remove_with_size(new_entry_size);
+                    self.entries.remove(key);
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
+    /// Retrieves the stored vector for an element.
+    #[cfg(feature = "vector")]
+    pub fn vget(&mut self, key: &str, element: &str) -> Result<Option<Vec<f32>>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+
+        let entry = match self.entries.get_mut(key) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        if !matches!(entry.value, Value::Vector(_)) {
+            return Err(WrongType);
+        }
+
+        entry.touch();
+
+        if let Value::Vector(ref vs) = entry.value {
+            Ok(vs.get(element))
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Returns the number of elements in a vector set.
+    #[cfg(feature = "vector")]
+    pub fn vcard(&mut self, key: &str) -> Result<usize, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(0);
+        }
+
+        let entry = match self.entries.get(key) {
+            Some(e) => e,
+            None => return Ok(0),
+        };
+
+        if !matches!(entry.value, Value::Vector(_)) {
+            return Err(WrongType);
+        }
+
+        if let Value::Vector(ref vs) = entry.value {
+            Ok(vs.len())
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Returns the dimensionality of a vector set, or 0 if the key doesn't exist.
+    #[cfg(feature = "vector")]
+    pub fn vdim(&mut self, key: &str) -> Result<usize, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(0);
+        }
+
+        let entry = match self.entries.get(key) {
+            Some(e) => e,
+            None => return Ok(0),
+        };
+
+        if !matches!(entry.value, Value::Vector(_)) {
+            return Err(WrongType);
+        }
+
+        if let Value::Vector(ref vs) = entry.value {
+            Ok(vs.dim())
+        } else {
+            unreachable!()
+        }
+    }
+
+    /// Returns metadata about a vector set.
+    #[cfg(feature = "vector")]
+    pub fn vinfo(
+        &mut self,
+        key: &str,
+    ) -> Result<Option<crate::types::vector::VectorSetInfo>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+
+        let entry = match self.entries.get(key) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+
+        if !matches!(entry.value, Value::Vector(_)) {
+            return Err(WrongType);
+        }
+
+        if let Value::Vector(ref vs) = entry.value {
+            Ok(Some(vs.info()))
+        } else {
+            unreachable!()
+        }
     }
 
     // -- protobuf operations --
