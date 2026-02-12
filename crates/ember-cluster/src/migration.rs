@@ -139,7 +139,7 @@ impl Migration {
             if total == 0 {
                 100
             } else {
-                ((self.keys_migrated * 100) / total).min(100) as u8
+                (self.keys_migrated.saturating_mul(100) / total).min(100) as u8
             }
         })
     }
