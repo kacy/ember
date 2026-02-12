@@ -16,7 +16,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "protobuf")]
 use bytes::Bytes;
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
@@ -231,6 +230,56 @@ async fn execute_concurrent(
             TtlResult::NoExpiry => Frame::Integer(-1),
             TtlResult::NotFound => Frame::Integer(-2),
             TtlResult::Milliseconds(ms) => Frame::Integer((ms / 1000) as i64),
+        },
+
+        Command::Incr { key } => match keyspace.incr(&key) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::Decr { key } => match keyspace.decr(&key) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::IncrBy { key, delta } => match keyspace.incr_by(&key, delta) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::DecrBy { key, delta } => match keyspace.incr_by(&key, -delta) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::IncrByFloat { key, delta } => match keyspace.incr_by_float(&key, delta) {
+            Ok(val) => Frame::Bulk(Bytes::from(val.to_string())),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::Append { key, value } => {
+            let new_len = keyspace.append(&key, &value);
+            Frame::Integer(new_len as i64)
+        }
+
+        Command::Strlen { key } => Frame::Integer(keyspace.strlen(&key) as i64),
+
+        Command::Persist { key } => Frame::Integer(if keyspace.persist(&key) { 1 } else { 0 }),
+
+        Command::Pexpire {
+            key,
+            milliseconds,
+        } => Frame::Integer(if keyspace.pexpire(&key, milliseconds) {
+            1
+        } else {
+            0
+        }),
+
+        Command::Pttl { key } => match keyspace.pttl(&key) {
+            TtlResult::Milliseconds(ms) => Frame::Integer(ms as i64),
+            TtlResult::NoExpiry => Frame::Integer(-1),
+            TtlResult::NotFound => Frame::Integer(-2),
+            TtlResult::Seconds(s) => Frame::Integer(s as i64 * 1000),
         },
 
         Command::Ping(None) => Frame::Simple("PONG".into()),
