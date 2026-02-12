@@ -149,7 +149,7 @@ impl ClusterNode {
     /// Creates a new primary node with a custom bus port offset.
     pub fn new_primary_with_offset(id: NodeId, addr: SocketAddr, bus_port_offset: u16) -> Self {
         let cluster_bus_addr =
-            SocketAddr::new(addr.ip(), addr.port().wrapping_add(bus_port_offset));
+            SocketAddr::new(addr.ip(), addr.port().saturating_add(bus_port_offset));
         Self {
             id,
             addr,
@@ -168,7 +168,7 @@ impl ClusterNode {
 
     /// Creates a new replica node.
     pub fn new_replica(id: NodeId, addr: SocketAddr, primary_id: NodeId) -> Self {
-        let cluster_bus_addr = SocketAddr::new(addr.ip(), addr.port() + 10000);
+        let cluster_bus_addr = SocketAddr::new(addr.ip(), addr.port().saturating_add(10000));
         Self {
             id,
             addr,
