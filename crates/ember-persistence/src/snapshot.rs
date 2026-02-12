@@ -207,9 +207,7 @@ impl SnapEntry {
                 1 + 4 + items
             }
             #[cfg(feature = "vector")]
-            SnapValue::Vector {
-                dim, elements, ..
-            } => {
+            SnapValue::Vector { dim, elements, .. } => {
                 let items: usize = elements
                     .iter()
                     .map(|(name, _)| LEN_PREFIX + name.len() + (*dim as usize) * 4)

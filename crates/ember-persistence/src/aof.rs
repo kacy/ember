@@ -219,7 +219,8 @@ impl AofRecord {
                 1 + LEN_PREFIX + key.len() + 4 + values_size
             }
             AofRecord::ZAdd { key, members } => {
-                let members_size: usize = members.iter().map(|(_, m)| 8 + LEN_PREFIX + m.len()).sum();
+                let members_size: usize =
+                    members.iter().map(|(_, m)| 8 + LEN_PREFIX + m.len()).sum();
                 1 + LEN_PREFIX + key.len() + 4 + members_size
             }
             AofRecord::ZRem { key, members }
@@ -270,7 +271,15 @@ impl AofRecord {
                 type_name,
                 data,
                 ..
-            } => 1 + LEN_PREFIX + key.len() + LEN_PREFIX + type_name.len() + LEN_PREFIX + data.len() + 8,
+            } => {
+                1 + LEN_PREFIX
+                    + key.len()
+                    + LEN_PREFIX
+                    + type_name.len()
+                    + LEN_PREFIX
+                    + data.len()
+                    + 8
+            }
             #[cfg(feature = "protobuf")]
             AofRecord::ProtoRegister { name, descriptor } => {
                 1 + LEN_PREFIX + name.len() + LEN_PREFIX + descriptor.len()
