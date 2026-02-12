@@ -2,7 +2,7 @@
 
 use ember_protocol::Frame;
 
-use crate::helpers::TestServer;
+use crate::helpers::{ServerOptions, TestServer};
 
 #[tokio::test]
 async fn ping_pong() {
@@ -206,7 +206,11 @@ async fn type_command() {
 
 #[tokio::test]
 async fn rename() {
-    let server = TestServer::start();
+    // use a single shard so RENAME doesn't hit cross-shard errors
+    let server = TestServer::start_with(ServerOptions {
+        shards: Some(1),
+        ..Default::default()
+    });
     let mut c = server.connect().await;
 
     c.ok(&["SET", "old", "value"]).await;
