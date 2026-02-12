@@ -682,8 +682,9 @@ async fn execute(
 
         // -- single-key commands --
         Command::Get { key } => {
-            let req = ShardRequest::Get { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Get { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -703,14 +704,15 @@ async fn execute(
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::Set {
-                key: key.clone(),
+                key,
                 value,
                 expire: duration,
                 nx,
                 xx,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -720,11 +722,9 @@ async fn execute(
         }
 
         Command::Expire { key, seconds } => {
-            let req = ShardRequest::Expire {
-                key: key.clone(),
-                seconds,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Expire { key, seconds };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -732,8 +732,9 @@ async fn execute(
         }
 
         Command::Ttl { key } => {
-            let req = ShardRequest::Ttl { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Ttl { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Ttl(TtlResult::Seconds(s))) => Frame::Integer(s as i64),
                 Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
                 Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
@@ -743,8 +744,9 @@ async fn execute(
         }
 
         Command::Incr { key } => {
-            let req = ShardRequest::Incr { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Incr { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -755,8 +757,9 @@ async fn execute(
         }
 
         Command::Decr { key } => {
-            let req = ShardRequest::Decr { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Decr { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -767,11 +770,9 @@ async fn execute(
         }
 
         Command::IncrBy { key, delta } => {
-            let req = ShardRequest::IncrBy {
-                key: key.clone(),
-                delta,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::IncrBy { key, delta };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -782,11 +783,9 @@ async fn execute(
         }
 
         Command::DecrBy { key, delta } => {
-            let req = ShardRequest::DecrBy {
-                key: key.clone(),
-                delta,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::DecrBy { key, delta };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -797,11 +796,9 @@ async fn execute(
         }
 
         Command::Append { key, value } => {
-            let req = ShardRequest::Append {
-                key: key.clone(),
-                value,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Append { key, value };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -811,8 +808,9 @@ async fn execute(
         }
 
         Command::Strlen { key } => {
-            let req = ShardRequest::Strlen { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Strlen { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -821,11 +819,9 @@ async fn execute(
         }
 
         Command::IncrByFloat { key, delta } => {
-            let req = ShardRequest::IncrByFloat {
-                key: key.clone(),
-                delta,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::IncrByFloat { key, delta };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::BulkString(val)) => Frame::Bulk(Bytes::from(val)),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -836,8 +832,9 @@ async fn execute(
         }
 
         Command::Persist { key } => {
-            let req = ShardRequest::Persist { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Persist { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -845,8 +842,9 @@ async fn execute(
         }
 
         Command::Pttl { key } => {
-            let req = ShardRequest::Pttl { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Pttl { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Ttl(TtlResult::Milliseconds(ms))) => Frame::Integer(ms as i64),
                 Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
                 Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
@@ -856,11 +854,9 @@ async fn execute(
         }
 
         Command::Pexpire { key, milliseconds } => {
-            let req = ShardRequest::Pexpire {
-                key: key.clone(),
-                milliseconds,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Pexpire { key, milliseconds };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -1005,11 +1001,9 @@ async fn execute(
             if !engine.same_shard(&key, &newkey) {
                 Frame::Error("ERR source and destination keys must hash to the same shard".into())
             } else {
-                let req = ShardRequest::Rename {
-                    key: key.clone(),
-                    newkey,
-                };
-                match engine.route(&key, req).await {
+                let idx = engine.shard_for_key(&key);
+                let req = ShardRequest::Rename { key, newkey };
+                match engine.send_to_shard(idx, req).await {
                     Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
                     Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
                     Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1104,11 +1098,9 @@ async fn execute(
 
         // -- list commands --
         Command::LPush { key, values } => {
-            let req = ShardRequest::LPush {
-                key: key.clone(),
-                values,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LPush { key, values };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1118,11 +1110,9 @@ async fn execute(
         }
 
         Command::RPush { key, values } => {
-            let req = ShardRequest::RPush {
-                key: key.clone(),
-                values,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::RPush { key, values };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1132,8 +1122,9 @@ async fn execute(
         }
 
         Command::LPop { key } => {
-            let req = ShardRequest::LPop { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LPop { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -1143,8 +1134,9 @@ async fn execute(
         }
 
         Command::RPop { key } => {
-            let req = ShardRequest::RPop { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::RPop { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -1154,12 +1146,9 @@ async fn execute(
         }
 
         Command::LRange { key, start, stop } => {
-            let req = ShardRequest::LRange {
-                key: key.clone(),
-                start,
-                stop,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LRange { key, start, stop };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Array(items)) => {
                     let frames = items.into_iter().map(Frame::Bulk).collect();
                     Frame::Array(frames)
@@ -1171,8 +1160,9 @@ async fn execute(
         }
 
         Command::LLen { key } => {
-            let req = ShardRequest::LLen { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LLen { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1181,8 +1171,9 @@ async fn execute(
         }
 
         Command::Type { key } => {
-            let req = ShardRequest::Type { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Type { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::TypeName(name)) => Frame::Simple(name.into()),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -1195,8 +1186,9 @@ async fn execute(
             flags,
             members,
         } => {
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ZAdd {
-                key: key.clone(),
+                key,
                 members,
                 nx: flags.nx,
                 xx: flags.xx,
@@ -1204,7 +1196,7 @@ async fn execute(
                 lt: flags.lt,
                 ch: flags.ch,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ZAddLen { count, .. }) => Frame::Integer(count as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1214,11 +1206,9 @@ async fn execute(
         }
 
         Command::ZRem { key, members } => {
-            let req = ShardRequest::ZRem {
-                key: key.clone(),
-                members,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRem { key, members };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ZRemLen { count, .. }) => Frame::Integer(count as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1227,11 +1217,9 @@ async fn execute(
         }
 
         Command::ZScore { key, member } => {
-            let req = ShardRequest::ZScore {
-                key: key.clone(),
-                member,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZScore { key, member };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Score(Some(s))) => Frame::Bulk(Bytes::from(format!("{s}"))),
                 Ok(ShardResponse::Score(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -1241,11 +1229,9 @@ async fn execute(
         }
 
         Command::ZRank { key, member } => {
-            let req = ShardRequest::ZRank {
-                key: key.clone(),
-                member,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRank { key, member };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Rank(Some(r))) => Frame::Integer(r as i64),
                 Ok(ShardResponse::Rank(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -1260,13 +1246,14 @@ async fn execute(
             stop,
             with_scores,
         } => {
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ZRange {
-                key: key.clone(),
+                key,
                 start,
                 stop,
                 with_scores,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ScoredArray(items)) => {
                     let mut frames = Vec::new();
                     for (member, score) in items {
@@ -1284,8 +1271,9 @@ async fn execute(
         }
 
         Command::ZCard { key } => {
-            let req = ShardRequest::ZCard { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZCard { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1295,11 +1283,9 @@ async fn execute(
 
         // --- hash commands ---
         Command::HSet { key, fields } => {
-            let req = ShardRequest::HSet {
-                key: key.clone(),
-                fields,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HSet { key, fields };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1309,11 +1295,9 @@ async fn execute(
         }
 
         Command::HGet { key, field } => {
-            let req = ShardRequest::HGet {
-                key: key.clone(),
-                field,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HGet { key, field };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -1323,8 +1307,9 @@ async fn execute(
         }
 
         Command::HGetAll { key } => {
-            let req = ShardRequest::HGetAll { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HGetAll { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::HashFields(fields)) => {
                     let mut frames = Vec::with_capacity(fields.len() * 2);
                     for (field, value) in fields {
@@ -1340,11 +1325,9 @@ async fn execute(
         }
 
         Command::HDel { key, fields } => {
-            let req = ShardRequest::HDel {
-                key: key.clone(),
-                fields,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HDel { key, fields };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::HDelLen { count, .. }) => Frame::Integer(count as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1353,11 +1336,9 @@ async fn execute(
         }
 
         Command::HExists { key, field } => {
-            let req = ShardRequest::HExists {
-                key: key.clone(),
-                field,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HExists { key, field };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Bool(b)) => Frame::Integer(if b { 1 } else { 0 }),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1366,8 +1347,9 @@ async fn execute(
         }
 
         Command::HLen { key } => {
-            let req = ShardRequest::HLen { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HLen { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1376,12 +1358,9 @@ async fn execute(
         }
 
         Command::HIncrBy { key, field, delta } => {
-            let req = ShardRequest::HIncrBy {
-                key: key.clone(),
-                field,
-                delta,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HIncrBy { key, field, delta };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1392,8 +1371,9 @@ async fn execute(
         }
 
         Command::HKeys { key } => {
-            let req = ShardRequest::HKeys { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HKeys { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(keys)) => Frame::Array(
                     keys.into_iter()
                         .map(|k| Frame::Bulk(Bytes::from(k)))
@@ -1406,8 +1386,9 @@ async fn execute(
         }
 
         Command::HVals { key } => {
-            let req = ShardRequest::HVals { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HVals { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Array(vals)) => {
                     Frame::Array(vals.into_iter().map(Frame::Bulk).collect())
                 }
@@ -1418,11 +1399,9 @@ async fn execute(
         }
 
         Command::HMGet { key, fields } => {
-            let req = ShardRequest::HMGet {
-                key: key.clone(),
-                fields,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HMGet { key, fields };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::OptionalArray(vals)) => Frame::Array(
                     vals.into_iter()
                         .map(|v| match v {
@@ -1439,11 +1418,9 @@ async fn execute(
 
         // --- set commands ---
         Command::SAdd { key, members } => {
-            let req = ShardRequest::SAdd {
-                key: key.clone(),
-                members,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SAdd { key, members };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1453,11 +1430,9 @@ async fn execute(
         }
 
         Command::SRem { key, members } => {
-            let req = ShardRequest::SRem {
-                key: key.clone(),
-                members,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SRem { key, members };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1466,8 +1441,9 @@ async fn execute(
         }
 
         Command::SMembers { key } => {
-            let req = ShardRequest::SMembers { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SMembers { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
                     members
                         .into_iter()
@@ -1481,11 +1457,9 @@ async fn execute(
         }
 
         Command::SIsMember { key, member } => {
-            let req = ShardRequest::SIsMember {
-                key: key.clone(),
-                member,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SIsMember { key, member };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Bool(b)) => Frame::Integer(if b { 1 } else { 0 }),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1494,8 +1468,9 @@ async fn execute(
         }
 
         Command::SCard { key } => {
-            let req = ShardRequest::SCard { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SCard { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1693,8 +1668,9 @@ async fn execute(
             connectivity,
             expansion_add,
         } => {
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::VAdd {
-                key: key.clone(),
+                key,
                 element,
                 vector,
                 metric,
@@ -1702,7 +1678,7 @@ async fn execute(
                 connectivity,
                 expansion_add,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::VAddResult { added, .. }) => {
                     Frame::Integer(if added { 1 } else { 0 })
                 }
@@ -1722,13 +1698,14 @@ async fn execute(
             ef_search,
             with_scores,
         } => {
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::VSim {
-                key: key.clone(),
+                key,
                 query,
                 count,
                 ef_search,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::VSimResult(results)) => {
                     let mut frames = Vec::new();
                     for (element, distance) in results {
@@ -1747,11 +1724,9 @@ async fn execute(
 
         #[cfg(feature = "vector")]
         Command::VRem { key, element } => {
-            let req = ShardRequest::VRem {
-                key: key.clone(),
-                element,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::VRem { key, element };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Bool(removed)) => Frame::Integer(if removed { 1 } else { 0 }),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1761,11 +1736,9 @@ async fn execute(
 
         #[cfg(feature = "vector")]
         Command::VGet { key, element } => {
-            let req = ShardRequest::VGet {
-                key: key.clone(),
-                element,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::VGet { key, element };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::VectorData(Some(vector))) => Frame::Array(
                     vector
                         .into_iter()
@@ -1781,8 +1754,9 @@ async fn execute(
 
         #[cfg(feature = "vector")]
         Command::VCard { key } => {
-            let req = ShardRequest::VCard { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::VCard { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(count)) => Frame::Integer(count),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1792,8 +1766,9 @@ async fn execute(
 
         #[cfg(feature = "vector")]
         Command::VDim { key } => {
-            let req = ShardRequest::VDim { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::VDim { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Integer(dim)) => Frame::Integer(dim),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1803,8 +1778,9 @@ async fn execute(
 
         #[cfg(feature = "vector")]
         Command::VInfo { key } => {
-            let req = ShardRequest::VInfo { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::VInfo { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::VectorInfo(Some(fields))) => {
                     let mut frames = Vec::with_capacity(fields.len() * 2);
                     for (k, v) in fields {
@@ -1894,15 +1870,16 @@ async fn execute(
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ProtoSet {
-                key: key.clone(),
+                key,
                 type_name,
                 data,
                 expire: duration,
                 nx,
                 xx,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
@@ -1916,8 +1893,9 @@ async fn execute(
             if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let req = ShardRequest::ProtoGet { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ProtoGet { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
                 }
@@ -1933,8 +1911,9 @@ async fn execute(
             if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let req = ShardRequest::ProtoType { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ProtoType { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ProtoTypeName(Some(name))) => Frame::Bulk(Bytes::from(name)),
                 Ok(ShardResponse::ProtoTypeName(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -1989,8 +1968,9 @@ async fn execute(
                 Some(r) => r,
                 None => return Frame::Error("ERR protobuf support is not enabled".into()),
             };
-            let req = ShardRequest::ProtoGet { key: key.clone() };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ProtoGet { key };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     let reg = match registry.read() {
                         Ok(r) => r,
@@ -2017,12 +1997,13 @@ async fn execute(
             if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
+            let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ProtoSetField {
-                key: key.clone(),
+                key,
                 field_path,
                 value,
             };
-            match engine.route(&key, req).await {
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ProtoFieldUpdated { .. }) => Frame::Simple("OK".into()),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
@@ -2038,11 +2019,9 @@ async fn execute(
             if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let req = ShardRequest::ProtoDelField {
-                key: key.clone(),
-                field_path,
-            };
-            match engine.route(&key, req).await {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ProtoDelField { key, field_path };
+            match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::ProtoFieldUpdated { .. }) => Frame::Integer(1),
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),

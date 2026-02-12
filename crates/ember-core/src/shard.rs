@@ -464,8 +464,9 @@ impl ShardHandle {
 
     /// Sends a request and returns the reply channel without waiting
     /// for the response. Used by `Engine::broadcast` to fan out to
-    /// all shards before collecting results.
-    pub(crate) async fn dispatch(
+    /// all shards before collecting results, and by
+    /// `Engine::dispatch_to_shard` for the dispatch-collect pipeline.
+    pub async fn dispatch(
         &self,
         request: ShardRequest,
     ) -> Result<oneshot::Receiver<ShardResponse>, ShardError> {
