@@ -964,15 +964,23 @@ async fn execute(
         }
 
         Command::Rename { key, newkey } => {
-            let req = ShardRequest::Rename {
-                key: key.clone(),
-                newkey,
-            };
-            match engine.route(&key, req).await {
-                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
-                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-                Err(e) => Frame::Error(format!("ERR {e}")),
+            if !engine.same_shard(&key, &newkey) {
+                Frame::Error(
+                    "ERR source and destination keys must hash to the same shard".into(),
+                )
+            } else {
+                let req = ShardRequest::Rename {
+                    key: key.clone(),
+                    newkey,
+                };
+                match engine.route(&key, req).await {
+                    Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                    Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                    Ok(other) => {
+                        Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                    }
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                }
             }
         }
 
