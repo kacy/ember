@@ -14,6 +14,10 @@ use bytes::Bytes;
 use crate::error::ProtocolError;
 use crate::types::Frame;
 
+/// Maximum nesting depth for arrays and maps. Prevents stack overflow
+/// from malicious or malformed deeply-nested frames.
+const MAX_NESTING_DEPTH: usize = 64;
+
 /// Checks whether `buf` contains a complete RESP3 frame and parses it.
 ///
 /// Returns `Ok(Some(frame))` if a complete frame was parsed,
@@ -26,11 +30,11 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
 
     let mut cursor = Cursor::new(buf);
 
-    match check(&mut cursor) {
+    match check(&mut cursor, 0) {
         Ok(()) => {
             // we know a complete frame exists — reset and parse it
             cursor.set_position(0);
-            let frame = parse(&mut cursor)?;
+            let frame = parse(&mut cursor, 0)?;
             let consumed = cursor.position() as usize;
             Ok(Some((frame, consumed)))
         }
@@ -45,16 +49,16 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
 
 /// Peeks through the buffer to verify a complete frame is present.
 /// Advances the cursor past the frame on success.
-fn check(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
+fn check(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolError> {
     let prefix = read_byte(cursor)?;
 
     match prefix {
         b'+' | b'-' => check_line(cursor),
         b':' => check_line(cursor),
         b'$' => check_bulk(cursor),
-        b'*' => check_array(cursor),
+        b'*' => check_array(cursor, depth),
         b'_' => check_line(cursor),
-        b'%' => check_map(cursor),
+        b'%' => check_map(cursor, depth),
         other => Err(ProtocolError::InvalidPrefix(other)),
     }
 }
@@ -88,27 +92,37 @@ fn check_bulk(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
     Ok(())
 }
 
-fn check_array(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
+fn check_array(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolError> {
+    let next_depth = depth + 1;
+    if next_depth > MAX_NESTING_DEPTH {
+        return Err(ProtocolError::NestingTooDeep(MAX_NESTING_DEPTH));
+    }
+
     let count = read_integer_line(cursor)?;
     if count < 0 {
         return Err(ProtocolError::InvalidFrameLength(count));
     }
 
     for _ in 0..count {
-        check(cursor)?;
+        check(cursor, next_depth)?;
     }
     Ok(())
 }
 
-fn check_map(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
+fn check_map(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolError> {
+    let next_depth = depth + 1;
+    if next_depth > MAX_NESTING_DEPTH {
+        return Err(ProtocolError::NestingTooDeep(MAX_NESTING_DEPTH));
+    }
+
     let count = read_integer_line(cursor)?;
     if count < 0 {
         return Err(ProtocolError::InvalidFrameLength(count));
     }
 
     for _ in 0..count {
-        check(cursor)?; // key
-        check(cursor)?; // value
+        check(cursor, next_depth)?; // key
+        check(cursor, next_depth)?; // value
     }
     Ok(())
 }
@@ -117,7 +131,7 @@ fn check_map(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
 // parse: actually builds Frame values (only called after check succeeds)
 // ---------------------------------------------------------------------------
 
-fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Frame, ProtocolError> {
+fn parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, ProtocolError> {
     let prefix = read_byte(cursor)?;
 
     match prefix {
@@ -147,10 +161,11 @@ fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Frame, ProtocolError> {
             Ok(Frame::Bulk(Bytes::copy_from_slice(data)))
         }
         b'*' => {
+            let next_depth = depth + 1;
             let count = read_integer_line(cursor)? as usize;
             let mut frames = Vec::with_capacity(count);
             for _ in 0..count {
-                frames.push(parse(cursor)?);
+                frames.push(parse(cursor, next_depth)?);
             }
             Ok(Frame::Array(frames))
         }
@@ -160,11 +175,12 @@ fn parse(cursor: &mut Cursor<&[u8]>) -> Result<Frame, ProtocolError> {
             Ok(Frame::Null)
         }
         b'%' => {
+            let next_depth = depth + 1;
             let count = read_integer_line(cursor)? as usize;
             let mut pairs = Vec::with_capacity(count);
             for _ in 0..count {
-                let key = parse(cursor)?;
-                let val = parse(cursor)?;
+                let key = parse(cursor, next_depth)?;
+                let val = parse(cursor, next_depth)?;
                 pairs.push((key, val));
             }
             Ok(Frame::Map(pairs))
@@ -395,5 +411,35 @@ mod tests {
         let (frame, consumed) = parse_frame(buf).unwrap().unwrap();
         assert_eq!(frame, Frame::Simple("OK".into()));
         assert_eq!(consumed, 5);
+    }
+
+    #[test]
+    fn deeply_nested_array_rejected() {
+        // build a frame nested 65 levels deep (exceeds MAX_NESTING_DEPTH of 64)
+        let mut buf = Vec::new();
+        for _ in 0..65 {
+            buf.extend_from_slice(b"*1\r\n");
+        }
+        buf.extend_from_slice(b":1\r\n"); // leaf value
+
+        let err = parse_frame(&buf).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::NestingTooDeep(64)),
+            "expected NestingTooDeep, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn nesting_at_limit_accepted() {
+        // exactly 64 levels deep — should succeed
+        let mut buf = Vec::new();
+        for _ in 0..64 {
+            buf.extend_from_slice(b"*1\r\n");
+        }
+        buf.extend_from_slice(b":1\r\n");
+
+        let result = parse_frame(&buf);
+        assert!(result.is_ok(), "64 levels of nesting should be accepted");
+        assert!(result.unwrap().is_some());
     }
 }

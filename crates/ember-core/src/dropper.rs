@@ -42,16 +42,23 @@ pub struct DropHandle {
 
 impl DropHandle {
     /// Spawns the background drop thread and returns a handle.
+    ///
+    /// If the thread fails to spawn (resource exhaustion), logs a warning
+    /// and returns a handle that drops everything inline. The channel
+    /// disconnects immediately since the receiver is never started, and
+    /// `try_send` gracefully falls back to inline dropping.
     pub fn spawn() -> Self {
         let (tx, rx) = mpsc::sync_channel::<Droppable>(DROP_CHANNEL_CAPACITY);
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("ember-drop".into())
             .spawn(move || {
                 // just drain the channel — dropping each item frees the memory
                 while rx.recv().is_ok() {}
             })
-            .expect("failed to spawn drop thread");
+        {
+            tracing::warn!("failed to spawn drop thread, large values will be freed inline: {e}");
+        }
 
         Self { tx }
     }

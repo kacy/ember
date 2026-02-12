@@ -33,4 +33,8 @@ pub enum ProtocolError {
     /// Command received with the wrong number of arguments.
     #[error("wrong number of arguments for '{0}' command")]
     WrongArity(String),
+
+    /// The frame exceeds the maximum nesting depth.
+    #[error("frame nesting depth exceeds limit of {0}")]
+    NestingTooDeep(usize),
 }

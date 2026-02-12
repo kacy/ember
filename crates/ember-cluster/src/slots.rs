@@ -121,6 +121,26 @@ impl SlotRange {
         Self { start, end }
     }
 
+    /// Creates a new slot range with runtime validation.
+    ///
+    /// Returns an error if `start > end` or `end >= SLOT_COUNT`.
+    /// Use this for untrusted input (e.g. network-decoded data).
+    pub fn try_new(start: u16, end: u16) -> Result<Self, std::io::Error> {
+        if start > end {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("SlotRange requires start <= end, got {start}..{end}"),
+            ));
+        }
+        if end >= SLOT_COUNT {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("slot {end} out of range (max {})", SLOT_COUNT - 1),
+            ));
+        }
+        Ok(Self { start, end })
+    }
+
     /// Creates a range containing a single slot.
     pub fn single(slot: u16) -> Self {
         Self::new(slot, slot)
@@ -389,6 +409,17 @@ mod tests {
         assert_eq!(map.owner(100), None);
         assert!(!map.is_complete());
         assert_eq!(map.unassigned_count(), 1);
+    }
+
+    #[test]
+    fn slot_range_try_new_validates() {
+        assert!(SlotRange::try_new(0, 5460).is_ok());
+        assert!(SlotRange::try_new(100, 100).is_ok());
+        // start > end
+        assert!(SlotRange::try_new(5000, 100).is_err());
+        // end >= SLOT_COUNT
+        assert!(SlotRange::try_new(0, 16384).is_err());
+        assert!(SlotRange::try_new(0, u16::MAX).is_err());
     }
 
     #[test]
