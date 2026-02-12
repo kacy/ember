@@ -84,6 +84,11 @@ pub fn write_i64(w: &mut impl Write, val: i64) -> io::Result<()> {
     w.write_all(&val.to_le_bytes())
 }
 
+/// Writes an `f32` in little-endian.
+pub fn write_f32(w: &mut impl Write, val: f32) -> io::Result<()> {
+    w.write_all(&val.to_le_bytes())
+}
+
 /// Writes an `f64` in little-endian.
 pub fn write_f64(w: &mut impl Write, val: f64) -> io::Result<()> {
     w.write_all(&val.to_le_bytes())
@@ -125,6 +130,13 @@ pub fn read_i64(r: &mut impl Read) -> Result<i64, FormatError> {
     let mut buf = [0u8; 8];
     read_exact(r, &mut buf)?;
     Ok(i64::from_le_bytes(buf))
+}
+
+/// Reads an `f32` in little-endian.
+pub fn read_f32(r: &mut impl Read) -> Result<f32, FormatError> {
+    let mut buf = [0u8; 4];
+    read_exact(r, &mut buf)?;
+    Ok(f32::from_le_bytes(buf))
 }
 
 /// Reads an `f64` in little-endian.
