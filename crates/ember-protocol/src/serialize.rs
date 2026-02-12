@@ -14,6 +14,7 @@ impl Frame {
     ///
     /// Writes the full RESP3 wire representation, including type prefix
     /// and trailing `\r\n` delimiters.
+    #[inline]
     pub fn serialize(&self, dst: &mut BytesMut) {
         match self {
             Frame::Simple(s) => {
@@ -63,6 +64,7 @@ impl Frame {
 }
 
 /// Writes an i64 as its decimal ASCII representation directly into the buffer.
+#[inline]
 fn write_i64(val: i64, dst: &mut BytesMut) {
     let mut buf = itoa::Buffer::new();
     dst.put_slice(buf.format(val).as_bytes());
