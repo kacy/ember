@@ -26,8 +26,11 @@ pub fn is_expired(expires_at_ms: u64) -> bool {
 /// Converts a Duration to an absolute expiry timestamp.
 #[inline]
 pub fn expiry_from_duration(ttl: Option<std::time::Duration>) -> u64 {
-    ttl.map(|d| now_ms() + d.as_millis() as u64)
-        .unwrap_or(NO_EXPIRY)
+    ttl.map(|d| {
+        let ms = d.as_millis().min(u64::MAX as u128) as u64;
+        now_ms().saturating_add(ms)
+    })
+    .unwrap_or(NO_EXPIRY)
 }
 
 /// Returns remaining TTL in seconds, or None if no expiry.

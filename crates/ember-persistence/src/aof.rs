@@ -304,6 +304,13 @@ impl AofRecord {
         Ok(buf)
     }
 
+    /// Cap pre-allocation to avoid huge allocations from corrupt count fields.
+    /// The loop will still iterate `count` times — this just limits the
+    /// up-front reservation so a bogus u32 can't exhaust memory.
+    fn capped_capacity(count: u32) -> usize {
+        (count as usize).min(65_536)
+    }
+
     /// Deserializes a record from a byte slice (tag + payload, no CRC).
     fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
         let mut cursor = io::Cursor::new(data);
@@ -331,7 +338,7 @@ impl AofRecord {
             TAG_LPUSH | TAG_RPUSH => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut values = Vec::with_capacity(count as usize);
+                let mut values = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     values.push(Bytes::from(format::read_bytes(&mut cursor)?));
                 }
@@ -352,7 +359,7 @@ impl AofRecord {
             TAG_ZADD => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(count as usize);
+                let mut members = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     let score = format::read_f64(&mut cursor)?;
                     let member = read_string(&mut cursor, "member")?;
@@ -363,7 +370,7 @@ impl AofRecord {
             TAG_ZREM => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(count as usize);
+                let mut members = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     members.push(read_string(&mut cursor, "member")?);
                 }
@@ -389,7 +396,7 @@ impl AofRecord {
             TAG_HSET => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut fields = Vec::with_capacity(count as usize);
+                let mut fields = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     let field = read_string(&mut cursor, "field")?;
                     let value = Bytes::from(format::read_bytes(&mut cursor)?);
@@ -400,7 +407,7 @@ impl AofRecord {
             TAG_HDEL => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut fields = Vec::with_capacity(count as usize);
+                let mut fields = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     fields.push(read_string(&mut cursor, "field")?);
                 }
@@ -415,7 +422,7 @@ impl AofRecord {
             TAG_SADD => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(count as usize);
+                let mut members = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     members.push(read_string(&mut cursor, "member")?);
                 }
@@ -424,7 +431,7 @@ impl AofRecord {
             TAG_SREM => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(count as usize);
+                let mut members = Vec::with_capacity(Self::capped_capacity(count));
                 for _ in 0..count {
                     members.push(read_string(&mut cursor, "member")?);
                 }

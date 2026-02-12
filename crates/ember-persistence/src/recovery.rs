@@ -361,7 +361,7 @@ fn replay_aof(
                 apply_incr(map, key, delta);
             }
             AofRecord::DecrBy { key, delta } => {
-                apply_incr(map, key, -delta);
+                apply_incr(map, key, delta.saturating_neg());
             }
             AofRecord::Append { key, value } => {
                 let entry = map

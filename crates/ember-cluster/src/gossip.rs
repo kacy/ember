@@ -422,7 +422,7 @@ impl GossipEngine {
                     if *node == self.local_id {
                         // Refute suspicion by incrementing our incarnation
                         if *incarnation >= self.incarnation {
-                            self.incarnation = incarnation + 1;
+                            self.incarnation = incarnation.saturating_add(1);
                             self.queue_update(NodeUpdate::Alive {
                                 node: self.local_id,
                                 addr: self.local_addr,
@@ -447,7 +447,7 @@ impl GossipEngine {
                 NodeUpdate::Dead { node, incarnation } => {
                     if *node == self.local_id {
                         // Refute death claim
-                        self.incarnation = incarnation + 1;
+                        self.incarnation = incarnation.saturating_add(1);
                         self.queue_update(NodeUpdate::Alive {
                             node: self.local_id,
                             addr: self.local_addr,

@@ -39,6 +39,13 @@ const TYPE_SET: u8 = 4;
 #[cfg(feature = "protobuf")]
 const TYPE_PROTO: u8 = 5;
 
+/// Cap pre-allocation to avoid huge allocations from corrupt count fields.
+/// The loop will still iterate `count` times — this just limits the
+/// up-front reservation so a bogus u32 can't exhaust memory.
+fn capped_capacity(count: u32) -> usize {
+    (count as usize).min(65_536)
+}
+
 /// The value stored in a snapshot entry.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SnapValue {
@@ -248,6 +255,14 @@ impl SnapshotWriter {
 
         // atomic rename
         fs::rename(&self.tmp_path, &self.final_path)?;
+
+        // fsync the parent directory so the rename is durable across crashes
+        if let Some(parent) = self.final_path.parent() {
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+
         self.finished = true;
         Ok(())
     }
@@ -367,7 +382,7 @@ impl SnapshotReader {
                 TYPE_LIST => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut deque = VecDeque::with_capacity(count as usize);
+                    let mut deque = VecDeque::with_capacity(capped_capacity(count));
                     for _ in 0..count {
                         let item = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &item)?;
@@ -378,7 +393,7 @@ impl SnapshotReader {
                 TYPE_SORTED_SET => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut members = Vec::with_capacity(count as usize);
+                    let mut members = Vec::with_capacity(capped_capacity(count));
                     for _ in 0..count {
                         let score = format::read_f64(&mut self.reader)?;
                         format::write_f64(&mut buf, score)?;
@@ -397,7 +412,7 @@ impl SnapshotReader {
                 TYPE_HASH => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut map = HashMap::with_capacity(count as usize);
+                    let mut map = HashMap::with_capacity(capped_capacity(count));
                     for _ in 0..count {
                         let field_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &field_bytes)?;
@@ -416,7 +431,7 @@ impl SnapshotReader {
                 TYPE_SET => {
                     let count = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, count)?;
-                    let mut set = HashSet::with_capacity(count as usize);
+                    let mut set = HashSet::with_capacity(capped_capacity(count));
                     for _ in 0..count {
                         let member_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &member_bytes)?;
@@ -526,7 +541,7 @@ impl SnapshotReader {
             }
             TYPE_LIST => {
                 let count = format::read_u32(&mut cursor)?;
-                let mut deque = VecDeque::with_capacity(count as usize);
+                let mut deque = VecDeque::with_capacity(capped_capacity(count));
                 for _ in 0..count {
                     deque.push_back(Bytes::from(format::read_bytes(&mut cursor)?));
                 }
@@ -534,7 +549,7 @@ impl SnapshotReader {
             }
             TYPE_SORTED_SET => {
                 let count = format::read_u32(&mut cursor)?;
-                let mut members = Vec::with_capacity(count as usize);
+                let mut members = Vec::with_capacity(capped_capacity(count));
                 for _ in 0..count {
                     let score = format::read_f64(&mut cursor)?;
                     let member_bytes = format::read_bytes(&mut cursor)?;
@@ -550,7 +565,7 @@ impl SnapshotReader {
             }
             TYPE_HASH => {
                 let count = format::read_u32(&mut cursor)?;
-                let mut map = HashMap::with_capacity(count as usize);
+                let mut map = HashMap::with_capacity(capped_capacity(count));
                 for _ in 0..count {
                     let field_bytes = format::read_bytes(&mut cursor)?;
                     let field = String::from_utf8(field_bytes).map_err(|_| {
@@ -566,7 +581,7 @@ impl SnapshotReader {
             }
             TYPE_SET => {
                 let count = format::read_u32(&mut cursor)?;
-                let mut set = HashSet::with_capacity(count as usize);
+                let mut set = HashSet::with_capacity(capped_capacity(count));
                 for _ in 0..count {
                     let member_bytes = format::read_bytes(&mut cursor)?;
                     let member = String::from_utf8(member_bytes).map_err(|_| {
