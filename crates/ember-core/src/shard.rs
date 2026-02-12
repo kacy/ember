@@ -1334,6 +1334,9 @@ fn write_snapshot(
             }
             Value::Hash(map) => SnapValue::Hash(map.clone()),
             Value::Set(set) => SnapValue::Set(set.clone()),
+            // vector snapshot support added in a later commit
+            #[cfg(feature = "vector")]
+            Value::Vector(_) => continue,
             #[cfg(feature = "protobuf")]
             Value::Proto { type_name, data } => SnapValue::Proto {
                 type_name: type_name.clone(),
