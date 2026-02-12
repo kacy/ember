@@ -4,49 +4,55 @@ performance benchmarks for ember comparing against Redis and Dragonfly.
 
 ## results summary
 
-tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
+tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04, 2.4M total requests per test.
 
 ### throughput (requests/sec)
 
-#### redis-benchmark
+#### redis-benchmark (1M requests, 50 clients, 8 threads)
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (64B, P=16) | **1,897,056** | 911,363 | 1,011,232 | 897,714 |
-| GET (64B, P=16) | **2,580,102** | 992,633 | 1,192,761 | 928,148 |
-| SET (64B, P=1) | **199,600** | **199,600** | 99,800 | 199,600 |
-| GET (64B, P=1) | **200,000** | **200,000** | 99,900 | 200,000 |
+| SET (3B, P=16) | **1,333,333** | 799,360 | 999,000 | 798,722 |
+| GET (3B, P=16) | **1,996,008** | 799,360 | 999,000 | 798,722 |
+| SET (64B, P=16) | **1,331,558** | 798,722 | 799,360 | 797,448 |
+| GET (64B, P=16) | **1,996,008** | 798,722 | 999,000 | 798,084 |
+| SET (1KB, P=16) | **999,000** | 570,125 | 798,722 | 664,893 |
+| GET (1KB, P=16) | **1,333,333** | 798,722 | 798,722 | 332,446 |
+| SET (64B, P=1) | **190,331** | 173,822 | 114,246 | 210,393 |
+| GET (64B, P=1) | **190,403** | 173,761 | 117,605 | 222,172 |
 
-#### memtier_benchmark
+#### memtier_benchmark (4 threads, 12 clients/thread, 50k req/client)
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (64B, P=16) | **1,781,625** | 1,139,899 | 1,121,736 | 1,002,678 |
-| GET (64B, P=16) | **2,111,459** | 1,326,564 | 1,335,645 | 1,073,396 |
-| mixed 1:10 (64B, P=16) | **2,153,732** | 1,298,726 | 1,305,540 | 1,056,071 |
-| mixed 1:1 (64B, P=16) | **1,964,419** | 1,228,596 | 1,238,508 | 1,023,236 |
-| SET (64B, P=1) | **255,763** | 159,418 | 161,217 | 304,207 |
-| GET (64B, P=1) | **264,149** | 498,078 | 262,139 | 186,270 |
+| SET (64B, P=16) | **4,562,538** | 987,530 | 2,022,543 | 694,116 |
+| GET (64B, P=16) | **6,624,838** | 762,401 | 2,225,336 | 1,021,986 |
+| mixed 1:10 (64B, P=16) | **1,727,847** | 1,083,253 | 1,165,414 | 702,866 |
+| mixed 1:1 (64B, P=16) | **1,680,994** | 1,039,764 | 1,035,432 | 959,765 |
+| SET (1KB, P=16) | **933,385** | 764,879 | 626,130 | 896,308 |
+| GET (1KB, P=16) | **903,312** | 724,275 | 593,297 | 337,179 |
+| SET (64B, P=1) | 170,655 | **171,517** | 154,439 | 171,582 |
+| GET (64B, P=1) | **188,114** | 185,528 | 160,935 | 167,916 |
 
 ### vs redis
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **1.9x** | **2.2x** | best for simple GET/SET workloads |
-| ember sharded | 0.9x | 0.8x | channel overhead, but supports all data types |
+| ember concurrent | **2.3x** | **3.0x** | best for simple GET/SET workloads |
+| ember sharded | 0.5x | 0.3x | channel overhead, but supports all data types |
 
 ### vs dragonfly
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **2.0x** | **2.7x** | redis-benchmark, pipelined |
-| ember sharded | 1.0x | 1.1x | comparable throughput |
+| ember concurrent | **6.6x** | **6.5x** | memtier, pipelined |
+| ember sharded | 1.4x | 0.7x | mixed results depending on workload |
 
 **important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
 dragonfly in particular offers features ember simply doesn't have:
 
-- full Redis API compatibility (200+ commands vs ember's ~85)
+- full Redis API compatibility (200+ commands vs ember's ~101)
 - sophisticated memory management (dashtable for ~25% of Redis memory usage)
 - transactional semantics (MULTI/EXEC, Lua scripting)
 - fork-free snapshotting
@@ -55,21 +61,30 @@ dragonfly in particular offers features ember simply doesn't have:
 
 ember's concurrent mode shows higher throughput on simple GET/SET because it's architecturally minimal — essentially a concurrent hashmap with RESP3 parsing. this simplicity is a tradeoff, not an advantage. for anything resembling production use, Redis and Dragonfly are the sensible choices. ember exists primarily as a learning project and for workloads where simplicity matters more than features.
 
-### latency (48 clients, no pipelining, memtier_benchmark)
+### latency (P=16, 48 clients, memtier_benchmark)
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember concurrent | 0.41ms | 0.38ms |
-| ember sharded | 0.56ms | 0.51ms |
-| redis | 0.55ms | 0.54ms |
-| dragonfly | 0.98ms | 0.98ms |
+| ember concurrent | 1.56ms | 1.56ms |
+| ember sharded | 2.29ms | 1.98ms |
+| redis | 1.16ms | 1.19ms |
+| dragonfly | 1.60ms | 1.46ms |
+
+### latency (P=1, 48 clients, memtier_benchmark)
+
+| server | p99 SET | p99 GET |
+|--------|---------|---------|
+| ember concurrent | 0.64ms | 0.61ms |
+| ember sharded | 0.88ms | 0.83ms |
+| redis | 0.58ms | 0.56ms |
+| dragonfly | 1.15ms | 1.14ms |
 
 ### memory usage (~1M keys, 64B values)
 
 | server | memory | per key |
 |--------|--------|---------|
 | ember | 161 MB | ~161 bytes |
-| redis | 105 MB | ~105 bytes |
+| redis | 95 MB | ~95 bytes |
 
 ember uses more memory per key due to storing additional metadata for LRU eviction and expiration tracking.
 
@@ -113,7 +128,7 @@ ember offers two modes with different tradeoffs:
 
 **concurrent mode** (`--concurrent`):
 - uses DashMap for lock-free access
-- 1.9-2.2x faster than redis for GET/SET
+- 2.3-3.0x faster than redis for GET/SET (pipelined)
 - only supports string operations
 - best for simple key-value workloads
 
@@ -121,7 +136,7 @@ ember offers two modes with different tradeoffs:
 - each CPU core owns a keyspace partition
 - requests routed via tokio channels
 - supports all data types (lists, hashes, sets, sorted sets)
-- ~0.9x redis throughput with pipelining, 2x faster without pipelining
+- 1.1-1.2x redis throughput without pipelining, lower with heavy pipelining due to channel overhead
 
 ## running benchmarks
 
