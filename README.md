@@ -24,6 +24,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
+- **vector similarity search** — HNSW-backed approximate nearest neighbor search with cosine, L2, and inner product metrics (compile with `--features vector`)
 - **protobuf storage** — schema-validated protobuf values with field-level access (compile with `--features protobuf`)
 - **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms)
 - **tls support** — redis-compatible TLS on a separate port, with optional mTLS for client certificates
@@ -144,6 +145,46 @@ cargo build --release --features protobuf
 
 field-level operations decode/mutate/re-encode on the server, so clients don't need protobuf libraries for simple reads and writes. nested paths use dot notation (e.g., `address.city`). complex types (repeated, map, nested messages) require `PROTO.GET`/`PROTO.SET` for full replacement.
 
+## vector similarity search
+
+ember supports HNSW-backed approximate nearest neighbor search for building recommendation systems, semantic search, and RAG pipelines. compile with `--features vector` to enable.
+
+```bash
+# build with vector support
+cargo build --release --features vector
+```
+
+**commands**:
+
+| command | description |
+|---------|-------------|
+| `VADD key element f32 [f32 ...] [METRIC COSINE\|L2\|IP] [QUANT F32\|F16\|Q8] [M n] [EF n]` | add a vector to the set |
+| `VSIM key f32 [f32 ...] COUNT k [EF n] [WITHSCORES]` | k nearest neighbors |
+| `VREM key element` | remove a vector |
+| `VGET key element` | retrieve stored vector values |
+| `VCARD key` | number of vectors in the set |
+| `VDIM key` | dimensionality of the vector set |
+| `VINFO key` | metadata: dim, count, metric, quantization, M, ef |
+
+index configuration (METRIC, QUANT, M, EF) is set on the first VADD and locked after that. dimension is inferred from the first vector's length. each key owns its own independent HNSW index.
+
+```bash
+# store some embeddings
+VADD docs doc1 0.1 0.2 0.3 METRIC COSINE
+VADD docs doc2 0.9 0.1 0.0
+VADD docs doc3 0.0 0.8 0.2
+
+# find 2 nearest neighbors
+VSIM docs 0.1 0.3 0.2 COUNT 2 WITHSCORES
+# => 1) "doc1" 2) "0.05" 3) "doc3" 4) "0.12"
+
+VCARD docs                      # => (integer) 3
+VDIM docs                       # => (integer) 3
+VINFO docs                      # => metric, quantization, dim, count, M, ef
+```
+
+distance metrics: **COSINE** (default), **L2** (squared euclidean), **IP** (inner product). quantization: **F32** (default), **F16** (half precision), **Q8** (8-bit integer). lower precision uses less memory at a small accuracy cost.
+
 ## configuration
 
 | flag | default | description |
@@ -257,7 +298,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 94 commands, 989 tests, ~21k lines of code (excluding tests)
+**current**: 101 commands, 796+ tests, ~22k lines of code (excluding tests)
 
 ## security
 
