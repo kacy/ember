@@ -322,6 +322,193 @@ impl ConcurrentKeyspace {
         Ok(new_val)
     }
 
+    /// Appends a value to an existing string key, or creates a new key.
+    /// Returns the new string length.
+    pub fn append(&self, key: &str, suffix: &[u8]) -> usize {
+        self.ops_count.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(mut entry) = self.data.get_mut(key) {
+            if !entry.is_expired() {
+                let mut new_data = Vec::with_capacity(entry.value.len() + suffix.len());
+                new_data.extend_from_slice(&entry.value);
+                new_data.extend_from_slice(suffix);
+                let new_len = new_data.len();
+
+                let key_len = entry.key().len();
+                let old_size = entry.size(key_len);
+                entry.value = Bytes::from(new_data);
+                let new_size = entry.size(key_len);
+                let diff = new_size as isize - old_size as isize;
+                if diff > 0 {
+                    self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
+                } else if diff < 0 {
+                    self.memory_used
+                        .fetch_sub((-diff) as usize, Ordering::Relaxed);
+                }
+                return new_len;
+            }
+            // expired — remove and fall through to create
+            let key_len = entry.key().len();
+            let old_size = entry.size(key_len);
+            drop(entry);
+            if self.data.remove(key).is_some() {
+                self.memory_used.fetch_sub(old_size, Ordering::Relaxed);
+            }
+        }
+
+        // key doesn't exist — create with just the suffix
+        let new_len = suffix.len();
+        self.set(key.to_owned(), Bytes::copy_from_slice(suffix), None);
+        new_len
+    }
+
+    /// Returns the length of the string value stored at key.
+    /// Returns 0 if the key doesn't exist.
+    pub fn strlen(&self, key: &str) -> usize {
+        match self.get(key) {
+            Some(data) => data.len(),
+            None => 0,
+        }
+    }
+
+    /// Removes the expiration from a key.
+    /// Returns true if the timeout was successfully removed.
+    pub fn persist(&self, key: &str) -> bool {
+        self.ops_count.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(mut entry) = self.data.get_mut(key) {
+            if entry.is_expired() {
+                return false;
+            }
+            if entry.expires_at_ms != 0 {
+                entry.expires_at_ms = 0;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Sets expiration in milliseconds on an existing key.
+    pub fn pexpire(&self, key: &str, millis: u64) -> bool {
+        self.ops_count.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(mut entry) = self.data.get_mut(key) {
+            if entry.is_expired() {
+                return false;
+            }
+            entry.expires_at_ms = time::now_ms().saturating_add(millis);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the remaining TTL in milliseconds.
+    pub fn pttl(&self, key: &str) -> TtlResult {
+        match self.data.get(key) {
+            None => TtlResult::NotFound,
+            Some(entry) => {
+                if entry.is_expired() {
+                    TtlResult::NotFound
+                } else {
+                    match time::remaining_ms(entry.expires_at_ms) {
+                        None => TtlResult::NoExpiry,
+                        Some(ms) => TtlResult::Milliseconds(ms),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns all keys matching a glob pattern.
+    pub fn keys(&self, pattern: &str) -> Vec<String> {
+        let len = self.data.len();
+        if len > 10_000 {
+            tracing::warn!(
+                key_count = len,
+                "KEYS on large keyspace, consider SCAN instead"
+            );
+        }
+        self.data
+            .iter()
+            .filter(|entry| !entry.value().is_expired())
+            .filter(|entry| crate::keyspace::glob_match(pattern, entry.key()))
+            .map(|entry| entry.key().to_string())
+            .collect()
+    }
+
+    /// Iterates keys using a cursor. Returns (next_cursor, keys).
+    /// A next_cursor of 0 means the iteration is complete.
+    pub fn scan_keys(
+        &self,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+    ) -> (u64, Vec<String>) {
+        let target_count = if count == 0 { 10 } else { count };
+        let mut keys = Vec::with_capacity(target_count);
+        let mut position = 0u64;
+
+        for entry in self.data.iter() {
+            if entry.value().is_expired() {
+                continue;
+            }
+            if position < cursor {
+                position += 1;
+                continue;
+            }
+            if let Some(pat) = pattern {
+                if !crate::keyspace::glob_match(pat, entry.key()) {
+                    position += 1;
+                    continue;
+                }
+            }
+            keys.push(entry.key().to_string());
+            position += 1;
+            if keys.len() >= target_count {
+                // there may be more keys — return position as next cursor
+                return (position, keys);
+            }
+        }
+
+        // iteration complete
+        (0, keys)
+    }
+
+    /// Renames a key. Returns true if the source key existed.
+    pub fn rename(&self, key: &str, newkey: &str) -> Result<(), &'static str> {
+        self.ops_count.fetch_add(1, Ordering::Relaxed);
+
+        let (_, entry) = self.data.remove(key).ok_or("ERR no such key")?;
+
+        if entry.is_expired() {
+            let size = entry.size(key.len());
+            self.memory_used.fetch_sub(size, Ordering::Relaxed);
+            return Err("ERR no such key");
+        }
+
+        // remove destination if it exists
+        if let Some((k, old_dest)) = self.data.remove(newkey) {
+            self.memory_used
+                .fetch_sub(old_dest.size(k.len()), Ordering::Relaxed);
+        }
+
+        // adjust memory: old key removed, new key added
+        let old_key_len = key.len();
+        let new_key_len = newkey.len();
+        let old_mem = old_key_len + entry.value.len() + 48;
+        let new_mem = new_key_len + entry.value.len() + 48;
+
+        self.memory_used.fetch_sub(old_mem, Ordering::Relaxed);
+        self.memory_used.fetch_add(new_mem, Ordering::Relaxed);
+
+        self.data.insert(newkey.into(), entry);
+        Ok(())
+    }
+
     /// Returns the number of keys.
     pub fn len(&self) -> usize {
         self.data.len()
@@ -506,6 +693,160 @@ mod tests {
             ks.incr_by_float("key", f64::MAX),
             Err(ConcurrentFloatError::NanOrInfinity)
         );
+    }
+
+    #[test]
+    fn append_new_key() {
+        let ks = ConcurrentKeyspace::default();
+        assert_eq!(ks.append("key", b"hello"), 5);
+        assert_eq!(ks.get("key"), Some(Bytes::from("hello")));
+    }
+
+    #[test]
+    fn append_existing_key() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        assert_eq!(ks.append("key", b" world"), 11);
+        assert_eq!(ks.get("key"), Some(Bytes::from("hello world")));
+    }
+
+    #[test]
+    fn strlen_existing() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        assert_eq!(ks.strlen("key"), 5);
+    }
+
+    #[test]
+    fn strlen_missing() {
+        let ks = ConcurrentKeyspace::default();
+        assert_eq!(ks.strlen("missing"), 0);
+    }
+
+    #[test]
+    fn persist_removes_ttl() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        assert!(ks.persist("key"));
+        assert!(matches!(ks.ttl("key"), TtlResult::NoExpiry));
+    }
+
+    #[test]
+    fn persist_no_ttl() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("val"), None);
+        assert!(!ks.persist("key")); // no TTL to remove
+    }
+
+    #[test]
+    fn persist_missing_key() {
+        let ks = ConcurrentKeyspace::default();
+        assert!(!ks.persist("missing"));
+    }
+
+    #[test]
+    fn pexpire_and_pttl() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("val"), None);
+        assert!(ks.pexpire("key", 5000));
+        match ks.pttl("key") {
+            TtlResult::Milliseconds(ms) => assert!(ms > 0 && ms <= 5000),
+            other => panic!("expected Milliseconds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pttl_no_expiry() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("val"), None);
+        assert!(matches!(ks.pttl("key"), TtlResult::NoExpiry));
+    }
+
+    #[test]
+    fn pttl_missing() {
+        let ks = ConcurrentKeyspace::default();
+        assert!(matches!(ks.pttl("missing"), TtlResult::NotFound));
+    }
+
+    #[test]
+    fn keys_match_pattern() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+        let mut result = ks.keys("user:*");
+        result.sort();
+        assert_eq!(result, vec!["user:1", "user:2"]);
+    }
+
+    #[test]
+    fn keys_match_all() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), None);
+        let result = ks.keys("*");
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn scan_basic() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("a".into(), Bytes::from("1"), None);
+        ks.set("b".into(), Bytes::from("2"), None);
+        ks.set("c".into(), Bytes::from("3"), None);
+        let (cursor, keys) = ks.scan_keys(0, 10, None);
+        assert_eq!(cursor, 0); // complete in one pass
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn scan_with_pattern() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("user:1".into(), Bytes::from("a"), None);
+        ks.set("user:2".into(), Bytes::from("b"), None);
+        ks.set("item:1".into(), Bytes::from("c"), None);
+        let (_, keys) = ks.scan_keys(0, 10, Some("user:*"));
+        assert_eq!(keys.len(), 2);
+    }
+
+    #[test]
+    fn scan_with_count() {
+        let ks = ConcurrentKeyspace::default();
+        for i in 0..10 {
+            ks.set(format!("k{i}"), Bytes::from("v"), None);
+        }
+        let (cursor, keys) = ks.scan_keys(0, 3, None);
+        assert!(keys.len() <= 3);
+        // if cursor > 0, there are more keys
+        if cursor > 0 {
+            let (_, keys2) = ks.scan_keys(cursor, 3, None);
+            assert!(!keys2.is_empty());
+        }
+    }
+
+    #[test]
+    fn rename_basic() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("old".into(), Bytes::from("value"), None);
+        ks.rename("old", "new").unwrap();
+        assert_eq!(ks.get("old"), None);
+        assert_eq!(ks.get("new"), Some(Bytes::from("value")));
+    }
+
+    #[test]
+    fn rename_missing_key() {
+        let ks = ConcurrentKeyspace::default();
+        assert!(ks.rename("missing", "new").is_err());
+    }
+
+    #[test]
+    fn rename_overwrites_destination() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("src".into(), Bytes::from("new_val"), None);
+        ks.set("dst".into(), Bytes::from("old_val"), None);
+        ks.rename("src", "dst").unwrap();
+        assert_eq!(ks.get("src"), None);
+        assert_eq!(ks.get("dst"), Some(Bytes::from("new_val")));
     }
 
     #[test]
