@@ -31,6 +31,7 @@ const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 /// Returns `Ok(Some(frame))` if a complete frame was parsed,
 /// `Ok(None)` if the buffer doesn't contain enough data yet,
 /// or `Err(...)` if the data is malformed.
+#[inline]
 pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> {
     if buf.is_empty() {
         return Ok(None);
