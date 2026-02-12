@@ -219,8 +219,21 @@ where
                 }
             }
 
-            // check for new commands from the client
-            result = stream.read_buf(buf) => {
+            // check for new commands from the client (with idle timeout)
+            result = tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(buf)) => {
+                let result = match result {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        // idle timeout — clean up and close
+                        cleanup_subscriptions(pubsub, &channel_rxs, &pattern_rxs);
+                        return Ok(());
+                    }
+                };
+                // guard against unbounded buffer growth
+                if buf.len() > MAX_BUF_SIZE {
+                    cleanup_subscriptions(pubsub, &channel_rxs, &pattern_rxs);
+                    return Ok(());
+                }
                 match result {
                     Ok(0) => {
                         // client disconnected — clean up subscriptions
@@ -951,15 +964,19 @@ async fn execute(
         }
 
         Command::Rename { key, newkey } => {
-            let req = ShardRequest::Rename {
-                key: key.clone(),
-                newkey,
-            };
-            match engine.route(&key, req).await {
-                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
-                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-                Err(e) => Frame::Error(format!("ERR {e}")),
+            if !engine.same_shard(&key, &newkey) {
+                Frame::Error("ERR source and destination keys must hash to the same shard".into())
+            } else {
+                let req = ShardRequest::Rename {
+                    key: key.clone(),
+                    newkey,
+                };
+                match engine.route(&key, req).await {
+                    Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                    Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                    Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                }
             }
         }
 

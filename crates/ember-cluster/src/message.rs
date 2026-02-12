@@ -10,6 +10,33 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::{NodeId, SlotRange};
 
+/// Maximum number of members in a Welcome message or updates in a Ping/Ack.
+/// Prevents allocation bombs from crafted messages.
+const MAX_COLLECTION_COUNT: usize = 1024;
+
+// Safe read helpers that return io::Error instead of panicking on truncated input.
+
+fn safe_get_u8(buf: &mut &[u8]) -> io::Result<u8> {
+    if buf.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "need 1 byte"));
+    }
+    Ok(buf.get_u8())
+}
+
+fn safe_get_u16_le(buf: &mut &[u8]) -> io::Result<u16> {
+    if buf.len() < 2 {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "need 2 bytes"));
+    }
+    Ok(buf.get_u16_le())
+}
+
+fn safe_get_u64_le(buf: &mut &[u8]) -> io::Result<u64> {
+    if buf.len() < 8 {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "need 8 bytes"));
+    }
+    Ok(buf.get_u64_le())
+}
+
 /// Message types for the SWIM gossip protocol.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GossipMessage {
@@ -160,10 +187,10 @@ impl GossipMessage {
             ));
         }
 
-        let msg_type = buf.get_u8();
+        let msg_type = safe_get_u8(&mut buf)?;
         match msg_type {
             MSG_PING => {
-                let seq = buf.get_u64_le();
+                let seq = safe_get_u64_le(&mut buf)?;
                 let sender = decode_node_id(&mut buf)?;
                 let updates = decode_updates(&mut buf)?;
                 Ok(GossipMessage::Ping {
@@ -173,7 +200,7 @@ impl GossipMessage {
                 })
             }
             MSG_PING_REQ => {
-                let seq = buf.get_u64_le();
+                let seq = safe_get_u64_le(&mut buf)?;
                 let sender = decode_node_id(&mut buf)?;
                 let target = decode_node_id(&mut buf)?;
                 let target_addr = decode_socket_addr(&mut buf)?;
@@ -185,7 +212,7 @@ impl GossipMessage {
                 })
             }
             MSG_ACK => {
-                let seq = buf.get_u64_le();
+                let seq = safe_get_u64_le(&mut buf)?;
                 let sender = decode_node_id(&mut buf)?;
                 let updates = decode_updates(&mut buf)?;
                 Ok(GossipMessage::Ack {
@@ -204,7 +231,13 @@ impl GossipMessage {
             }
             MSG_WELCOME => {
                 let sender = decode_node_id(&mut buf)?;
-                let count = buf.get_u16_le() as usize;
+                let count = safe_get_u16_le(&mut buf)? as usize;
+                if count > MAX_COLLECTION_COUNT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("member count {count} exceeds limit"),
+                    ));
+                }
                 let mut members = Vec::with_capacity(count);
                 for _ in 0..count {
                     members.push(decode_member_info(&mut buf)?);
@@ -327,13 +360,13 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
 }
 
 fn decode_updates(buf: &mut &[u8]) -> io::Result<Vec<NodeUpdate>> {
-    if buf.len() < 2 {
+    let count = safe_get_u16_le(buf)? as usize;
+    if count > MAX_COLLECTION_COUNT {
         return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "not enough bytes for update count",
+            io::ErrorKind::InvalidData,
+            format!("update count {count} exceeds limit"),
         ));
     }
-    let count = buf.get_u16_le() as usize;
     let mut updates = Vec::with_capacity(count);
     for _ in 0..count {
         updates.push(decode_update(buf)?);
@@ -342,18 +375,12 @@ fn decode_updates(buf: &mut &[u8]) -> io::Result<Vec<NodeUpdate>> {
 }
 
 fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
-    if buf.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "not enough bytes for update type",
-        ));
-    }
-    let update_type = buf.get_u8();
+    let update_type = safe_get_u8(buf)?;
     match update_type {
         UPDATE_ALIVE => {
             let node = decode_node_id(buf)?;
             let addr = decode_socket_addr(buf)?;
-            let incarnation = buf.get_u64_le();
+            let incarnation = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::Alive {
                 node,
                 addr,
@@ -362,12 +389,12 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         }
         UPDATE_SUSPECT => {
             let node = decode_node_id(buf)?;
-            let incarnation = buf.get_u64_le();
+            let incarnation = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::Suspect { node, incarnation })
         }
         UPDATE_DEAD => {
             let node = decode_node_id(buf)?;
-            let incarnation = buf.get_u64_le();
+            let incarnation = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::Dead { node, incarnation })
         }
         UPDATE_LEFT => {
@@ -396,13 +423,19 @@ fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
 fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
     let id = decode_node_id(buf)?;
     let addr = decode_socket_addr(buf)?;
-    let incarnation = buf.get_u64_le();
-    let is_primary = buf.get_u8() != 0;
-    let slot_count = buf.get_u16_le() as usize;
+    let incarnation = safe_get_u64_le(buf)?;
+    let is_primary = safe_get_u8(buf)? != 0;
+    let slot_count = safe_get_u16_le(buf)? as usize;
+    if slot_count > MAX_COLLECTION_COUNT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("slot range count {slot_count} exceeds limit"),
+        ));
+    }
     let mut slots = Vec::with_capacity(slot_count);
     for _ in 0..slot_count {
-        let start = buf.get_u16_le();
-        let end = buf.get_u16_le();
+        let start = safe_get_u16_le(buf)?;
+        let end = safe_get_u16_le(buf)?;
         slots.push(SlotRange::try_new(start, end)?);
     }
     Ok(MemberInfo {

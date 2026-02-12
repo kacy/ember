@@ -185,6 +185,11 @@ impl Engine {
         Ok(results)
     }
 
+    /// Returns true if both keys are owned by the same shard.
+    pub fn same_shard(&self, key1: &str, key2: &str) -> bool {
+        self.shard_for_key(key1) == self.shard_for_key(key2)
+    }
+
     /// Determines which shard owns a given key.
     fn shard_for_key(&self, key: &str) -> usize {
         shard_index(key, self.shards.len())

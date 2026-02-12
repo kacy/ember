@@ -18,6 +18,14 @@ use crate::types::Frame;
 /// from malicious or malformed deeply-nested frames.
 const MAX_NESTING_DEPTH: usize = 64;
 
+/// Maximum number of elements in an array or map. Prevents memory
+/// amplification attacks where tiny elements (3 bytes each) create
+/// disproportionately large Vec allocations.
+const MAX_ARRAY_ELEMENTS: usize = 1_048_576;
+
+/// Maximum length of a bulk string in bytes (512 MB, matching Redis).
+const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
+
 /// Checks whether `buf` contains a complete RESP3 frame and parses it.
 ///
 /// Returns `Ok(Some(frame))` if a complete frame was parsed,
@@ -73,6 +81,9 @@ fn check_bulk(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
     if len < 0 {
         return Err(ProtocolError::InvalidFrameLength(len));
     }
+    if len > MAX_BULK_LEN {
+        return Err(ProtocolError::BulkStringTooLarge(len as usize));
+    }
     let len = len as usize;
 
     // need `len` bytes of data + \r\n
@@ -102,6 +113,9 @@ fn check_array(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolE
     if count < 0 {
         return Err(ProtocolError::InvalidFrameLength(count));
     }
+    if count as usize > MAX_ARRAY_ELEMENTS {
+        return Err(ProtocolError::TooManyElements(count as usize));
+    }
 
     for _ in 0..count {
         check(cursor, next_depth)?;
@@ -118,6 +132,9 @@ fn check_map(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolErr
     let count = read_integer_line(cursor)?;
     if count < 0 {
         return Err(ProtocolError::InvalidFrameLength(count));
+    }
+    if count as usize > MAX_ARRAY_ELEMENTS {
+        return Err(ProtocolError::TooManyElements(count as usize));
     }
 
     for _ in 0..count {
