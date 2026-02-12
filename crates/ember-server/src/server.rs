@@ -284,7 +284,8 @@ fn on_connection_done(ctx: &ServerContext) {
 /// Waits for all connections to drain with a 30-second timeout.
 async fn drain_connections(semaphore: &Arc<Semaphore>, max_conn: usize) {
     info!("waiting for active connections to close...");
-    let drain = semaphore.acquire_many(max_conn as u32);
+    let max_conn_u32 = u32::try_from(max_conn).unwrap_or(u32::MAX);
+    let drain = semaphore.acquire_many(max_conn_u32);
     match tokio::time::timeout(Duration::from_secs(30), drain).await {
         Ok(_) => info!("all connections drained, shutting down"),
         Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
