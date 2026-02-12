@@ -2000,9 +2000,8 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
     }
 
-    let count = count.ok_or_else(|| {
-        ProtocolError::InvalidCommandFrame("VSIM: COUNT is required".into())
-    })?;
+    let count = count
+        .ok_or_else(|| ProtocolError::InvalidCommandFrame("VSIM: COUNT is required".into()))?;
 
     Ok(Command::VSim {
         key,

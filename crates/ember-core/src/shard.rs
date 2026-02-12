@@ -281,19 +281,31 @@ pub enum ShardRequest {
     },
     /// Removes an element from a vector set.
     #[cfg(feature = "vector")]
-    VRem { key: String, element: String },
+    VRem {
+        key: String,
+        element: String,
+    },
     /// Gets the stored vector for an element.
     #[cfg(feature = "vector")]
-    VGet { key: String, element: String },
+    VGet {
+        key: String,
+        element: String,
+    },
     /// Returns the number of elements in a vector set.
     #[cfg(feature = "vector")]
-    VCard { key: String },
+    VCard {
+        key: String,
+    },
     /// Returns the dimensionality of a vector set.
     #[cfg(feature = "vector")]
-    VDim { key: String },
+    VDim {
+        key: String,
+    },
     /// Returns metadata about a vector set.
     #[cfg(feature = "vector")]
-    VInfo { key: String },
+    VInfo {
+        key: String,
+    },
     /// Stores a validated protobuf value.
     #[cfg(feature = "protobuf")]
     ProtoSet {
@@ -1026,7 +1038,10 @@ fn dispatch(
             ef_search,
         } => match ks.vsim(key, query.clone(), *count, *ef_search) {
             Ok(results) => ShardResponse::VSimResult(
-                results.into_iter().map(|r| (r.element, r.distance)).collect(),
+                results
+                    .into_iter()
+                    .map(|r| (r.element, r.distance))
+                    .collect(),
             ),
             Err(_) => ShardResponse::WrongType,
         },
@@ -1403,12 +1418,10 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             expansion_add: *expansion_add,
         }),
         #[cfg(feature = "vector")]
-        (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => {
-            Some(AofRecord::VRem {
-                key: key.clone(),
-                element: element.clone(),
-            })
-        }
+        (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => Some(AofRecord::VRem {
+            key: key.clone(),
+            element: element.clone(),
+        }),
         _ => None,
     }
 }
@@ -1539,9 +1552,31 @@ fn write_snapshot(
             }
             Value::Hash(map) => SnapValue::Hash(map.clone()),
             Value::Set(set) => SnapValue::Set(set.clone()),
-            // vector snapshot support added in a later commit
             #[cfg(feature = "vector")]
-            Value::Vector(_) => continue,
+            Value::Vector(ref vs) => {
+                let mut elements = Vec::with_capacity(vs.len());
+                for (name, _key) in vs.elements() {
+                    if let Some(vec) = vs.get(name) {
+                        elements.push((name.to_owned(), vec));
+                    }
+                }
+                SnapValue::Vector {
+                    metric: match vs.metric() {
+                        crate::types::vector::DistanceMetric::Cosine => 0,
+                        crate::types::vector::DistanceMetric::L2 => 1,
+                        crate::types::vector::DistanceMetric::InnerProduct => 2,
+                    },
+                    quantization: match vs.quantization() {
+                        crate::types::vector::QuantizationType::F32 => 0,
+                        crate::types::vector::QuantizationType::F16 => 1,
+                        crate::types::vector::QuantizationType::I8 => 2,
+                    },
+                    connectivity: vs.connectivity() as u32,
+                    expansion_add: vs.expansion_add() as u32,
+                    dim: vs.dim() as u32,
+                    elements,
+                }
+            }
             #[cfg(feature = "protobuf")]
             Value::Proto { type_name, data } => SnapValue::Proto {
                 type_name: type_name.clone(),

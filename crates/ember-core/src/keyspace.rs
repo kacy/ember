@@ -1907,7 +1907,8 @@ impl Keyspace {
 
         // estimate memory for the new vector
         let dim = vector.len();
-        let per_vector = dim * quantization.bytes_per_element() + connectivity * 2 * 8 + element.len() + 80;
+        let per_vector =
+            dim * quantization.bytes_per_element() + connectivity * 2 * 8 + element.len() + 80;
         let estimated_increase = if is_new {
             memory::ENTRY_OVERHEAD + key.len() + VectorSet::BASE_OVERHEAD + per_vector
         } else {
@@ -1925,7 +1926,10 @@ impl Keyspace {
             self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self.entries.get_mut(key).expect("just inserted or verified");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let added = if let Value::Vector(ref mut vs) = entry.value {
@@ -1939,7 +1943,11 @@ impl Keyspace {
         let new_entry_size = memory::entry_size(key, &entry.value);
         self.memory.adjust(old_entry_size, new_entry_size);
 
-        Ok(VAddResult { element, vector, added })
+        Ok(VAddResult {
+            element,
+            vector,
+            added,
+        })
     }
 
     /// Searches for the k nearest neighbors in a vector set.
@@ -1967,8 +1975,7 @@ impl Keyspace {
         entry.touch();
 
         if let Value::Vector(ref vs) = entry.value {
-            vs.search(&query, count, ef_search)
-                .map_err(|_| WrongType) // simplify — index errors shouldn't happen on valid sets
+            vs.search(&query, count, ef_search).map_err(|_| WrongType) // simplify — index errors shouldn't happen on valid sets
         } else {
             unreachable!()
         }

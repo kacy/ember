@@ -1653,7 +1653,6 @@ async fn execute(
 
         // -- protobuf commands --
         // --- vector commands ---
-
         #[cfg(feature = "vector")]
         Command::VAdd {
             key,
@@ -1737,14 +1736,12 @@ async fn execute(
                 element,
             };
             match engine.route(&key, req).await {
-                Ok(ShardResponse::VectorData(Some(vector))) => {
-                    Frame::Array(
-                        vector
-                            .into_iter()
-                            .map(|v| Frame::Bulk(Bytes::from(v.to_string())))
-                            .collect(),
-                    )
-                }
+                Ok(ShardResponse::VectorData(Some(vector))) => Frame::Array(
+                    vector
+                        .into_iter()
+                        .map(|v| Frame::Bulk(Bytes::from(v.to_string())))
+                        .collect(),
+                ),
                 Ok(ShardResponse::VectorData(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),

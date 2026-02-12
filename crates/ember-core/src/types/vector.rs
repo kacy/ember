@@ -334,7 +334,9 @@ impl VectorSet {
     /// Used for snapshot serialization — the caller retrieves each vector
     /// via `get()`.
     pub fn elements(&self) -> impl Iterator<Item = (&str, u64)> {
-        self.elements.iter().map(|(name, &key)| (name.as_str(), key))
+        self.elements
+            .iter()
+            .map(|(name, &key)| (name.as_str(), key))
     }
 
     /// Returns the HNSW connectivity parameter.
@@ -575,8 +577,7 @@ mod tests {
 
     #[test]
     fn l2_metric() {
-        let mut vs =
-            VectorSet::new(2, DistanceMetric::L2, QuantizationType::F32, 16, 64).unwrap();
+        let mut vs = VectorSet::new(2, DistanceMetric::L2, QuantizationType::F32, 16, 64).unwrap();
         vs.add("origin".into(), &[0.0, 0.0]).unwrap();
         vs.add("far".into(), &[10.0, 10.0]).unwrap();
 

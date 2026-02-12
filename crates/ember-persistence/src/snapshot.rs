@@ -36,6 +36,8 @@ const TYPE_LIST: u8 = 1;
 const TYPE_SORTED_SET: u8 = 2;
 const TYPE_HASH: u8 = 3;
 const TYPE_SET: u8 = 4;
+#[cfg(feature = "vector")]
+const TYPE_VECTOR: u8 = 6;
 #[cfg(feature = "protobuf")]
 const TYPE_PROTO: u8 = 5;
 
@@ -101,6 +103,32 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
             }
             Ok(SnapValue::Set(set))
         }
+        #[cfg(feature = "vector")]
+        TYPE_VECTOR => {
+            let metric = format::read_u8(r)?;
+            let quantization = format::read_u8(r)?;
+            let connectivity = format::read_u32(r)?;
+            let expansion_add = format::read_u32(r)?;
+            let dim = format::read_u32(r)?;
+            let count = format::read_u32(r)?;
+            let mut elements = Vec::with_capacity(format::capped_capacity(count));
+            for _ in 0..count {
+                let name = read_snap_string(r, "vector element name")?;
+                let mut vector = Vec::with_capacity(format::capped_capacity(dim));
+                for _ in 0..dim {
+                    vector.push(format::read_f32(r)?);
+                }
+                elements.push((name, vector));
+            }
+            Ok(SnapValue::Vector {
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                dim,
+                elements,
+            })
+        }
         #[cfg(feature = "protobuf")]
         TYPE_PROTO => {
             let type_name = read_snap_string(r, "proto type_name")?;
@@ -127,6 +155,16 @@ pub enum SnapValue {
     Hash(HashMap<String, Bytes>),
     /// An unordered set of unique string members.
     Set(HashSet<String>),
+    /// A vector set: index config + all (element, vector) pairs.
+    #[cfg(feature = "vector")]
+    Vector {
+        metric: u8,
+        quantization: u8,
+        connectivity: u32,
+        expansion_add: u32,
+        dim: u32,
+        elements: Vec<(String, Vec<f32>)>,
+    },
     /// A protobuf message: type name + serialized bytes.
     #[cfg(feature = "protobuf")]
     Proto { type_name: String, data: Bytes },
@@ -268,6 +306,29 @@ impl SnapshotWriter {
                 format::write_u32(&mut buf, set.len() as u32)?;
                 for member in set {
                     format::write_bytes(&mut buf, member.as_bytes())?;
+                }
+            }
+            #[cfg(feature = "vector")]
+            SnapValue::Vector {
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                dim,
+                elements,
+            } => {
+                format::write_u8(&mut buf, TYPE_VECTOR)?;
+                format::write_u8(&mut buf, *metric)?;
+                format::write_u8(&mut buf, *quantization)?;
+                format::write_u32(&mut buf, *connectivity)?;
+                format::write_u32(&mut buf, *expansion_add)?;
+                format::write_u32(&mut buf, *dim)?;
+                format::write_u32(&mut buf, elements.len() as u32)?;
+                for (name, vector) in elements {
+                    format::write_bytes(&mut buf, name.as_bytes())?;
+                    for &v in vector {
+                        format::write_f32(&mut buf, v)?;
+                    }
                 }
             }
             #[cfg(feature = "protobuf")]
@@ -512,6 +573,47 @@ impl SnapshotReader {
                         set.insert(member);
                     }
                     SnapValue::Set(set)
+                }
+                #[cfg(feature = "vector")]
+                TYPE_VECTOR => {
+                    let metric = format::read_u8(&mut self.reader)?;
+                    format::write_u8(&mut buf, metric)?;
+                    let quantization = format::read_u8(&mut self.reader)?;
+                    format::write_u8(&mut buf, quantization)?;
+                    let connectivity = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, connectivity)?;
+                    let expansion_add = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, expansion_add)?;
+                    let dim = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, dim)?;
+                    let count = format::read_u32(&mut self.reader)?;
+                    format::write_u32(&mut buf, count)?;
+                    let mut elements = Vec::with_capacity(format::capped_capacity(count));
+                    for _ in 0..count {
+                        let name_bytes = format::read_bytes(&mut self.reader)?;
+                        format::write_bytes(&mut buf, &name_bytes)?;
+                        let name = String::from_utf8(name_bytes).map_err(|_| {
+                            FormatError::Io(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "vector element name is not valid utf-8",
+                            ))
+                        })?;
+                        let mut vector = Vec::with_capacity(format::capped_capacity(dim));
+                        for _ in 0..dim {
+                            let v = format::read_f32(&mut self.reader)?;
+                            format::write_f32(&mut buf, v)?;
+                            vector.push(v);
+                        }
+                        elements.push((name, vector));
+                    }
+                    SnapValue::Vector {
+                        metric,
+                        quantization,
+                        connectivity,
+                        expansion_add,
+                        dim,
+                        elements,
+                    }
                 }
                 #[cfg(feature = "protobuf")]
                 TYPE_PROTO => {

@@ -62,6 +62,21 @@ impl From<SnapValue> for RecoveredValue {
             SnapValue::SortedSet(members) => RecoveredValue::SortedSet(members),
             SnapValue::Hash(map) => RecoveredValue::Hash(map),
             SnapValue::Set(set) => RecoveredValue::Set(set),
+            #[cfg(feature = "vector")]
+            SnapValue::Vector {
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                elements,
+                ..
+            } => RecoveredValue::Vector {
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                elements,
+            },
             #[cfg(feature = "protobuf")]
             SnapValue::Proto { type_name, data } => RecoveredValue::Proto { type_name, data },
         }
@@ -460,20 +475,18 @@ fn replay_aof(
                 connectivity,
                 expansion_add,
             } => {
-                let entry = map
-                    .entry(key)
-                    .or_insert_with(|| {
-                        (
-                            RecoveredValue::Vector {
-                                metric,
-                                quantization,
-                                connectivity,
-                                expansion_add,
-                                elements: Vec::new(),
-                            },
-                            -1, // no expiry for vector sets
-                        )
-                    });
+                let entry = map.entry(key).or_insert_with(|| {
+                    (
+                        RecoveredValue::Vector {
+                            metric,
+                            quantization,
+                            connectivity,
+                            expansion_add,
+                            elements: Vec::new(),
+                        },
+                        -1, // no expiry for vector sets
+                    )
+                });
                 if let RecoveredValue::Vector {
                     ref mut elements, ..
                 } = entry.0
