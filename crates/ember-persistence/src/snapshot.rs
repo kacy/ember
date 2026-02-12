@@ -255,6 +255,14 @@ impl SnapshotWriter {
 
         // atomic rename
         fs::rename(&self.tmp_path, &self.final_path)?;
+
+        // fsync the parent directory so the rename is durable across crashes
+        if let Some(parent) = self.final_path.parent() {
+            if let Ok(dir) = File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+
         self.finished = true;
         Ok(())
     }
