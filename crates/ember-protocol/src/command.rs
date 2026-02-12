@@ -9,6 +9,15 @@ use bytes::Bytes;
 use crate::error::ProtocolError;
 use crate::types::Frame;
 
+/// Maximum number of dimensions in a vector. 65,536 is generous for any
+/// real-world embedding model (OpenAI: 1536, Cohere: 4096) while preventing
+/// memory abuse from absurdly large vectors.
+const MAX_VECTOR_DIMS: usize = 65_536;
+
+/// Maximum value for HNSW connectivity (M) and expansion parameters.
+/// Values above 1024 give no practical benefit and waste memory.
+const MAX_HNSW_PARAM: u64 = 1024;
+
 /// Expiration option for the SET command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetExpire {
@@ -1821,6 +1830,13 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
         ));
     }
 
+    if vector.len() > MAX_VECTOR_DIMS {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "VADD: vector has {} dimensions, max is {MAX_VECTOR_DIMS}",
+            vector.len()
+        )));
+    }
+
     // parse optional flags
     let mut metric: u8 = 0; // cosine default
     let mut quantization: u8 = 0; // f32 default
@@ -1877,7 +1893,13 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
                         "VADD: M requires a value".into(),
                     ));
                 }
-                connectivity = parse_u64(&args[idx], "VADD")? as u32;
+                let m = parse_u64(&args[idx], "VADD")?;
+                if m > MAX_HNSW_PARAM {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VADD: M value {m} exceeds max {MAX_HNSW_PARAM}"
+                    )));
+                }
+                connectivity = m as u32;
                 idx += 1;
             }
             "EF" => {
@@ -1887,7 +1909,13 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
                         "VADD: EF requires a value".into(),
                     ));
                 }
-                expansion_add = parse_u64(&args[idx], "VADD")? as u32;
+                let ef = parse_u64(&args[idx], "VADD")?;
+                if ef > MAX_HNSW_PARAM {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VADD: EF value {ef} exceeds max {MAX_HNSW_PARAM}"
+                    )));
+                }
+                expansion_add = ef as u32;
                 idx += 1;
             }
             _ => {
@@ -1935,6 +1963,13 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::InvalidCommandFrame(
             "VSIM: at least one query dimension required".into(),
         ));
+    }
+
+    if query.len() > MAX_VECTOR_DIMS {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "VSIM: query has {} dimensions, max is {MAX_VECTOR_DIMS}",
+            query.len()
+        )));
     }
 
     // COUNT k is required
