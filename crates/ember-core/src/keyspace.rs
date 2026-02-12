@@ -1472,8 +1472,12 @@ impl Keyspace {
         };
 
         if is_empty {
+            if let Some(removed_entry) = self.entries.remove(key) {
+                if removed_entry.expires_at_ms != 0 {
+                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                }
+            }
             self.memory.remove_with_size(old_entry_size);
-            self.entries.remove(key);
         } else {
             let new_entry_size = memory::entry_size(key, &self.entries[key].value);
             self.memory.adjust(old_entry_size, new_entry_size);
@@ -1733,8 +1737,12 @@ impl Keyspace {
         };
 
         if is_empty {
+            if let Some(removed_entry) = self.entries.remove(key) {
+                if removed_entry.expires_at_ms != 0 {
+                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                }
+            }
             self.memory.remove_with_size(old_entry_size);
-            self.entries.remove(key);
         } else {
             let new_entry_size = memory::entry_size(key, &self.entries[key].value);
             self.memory.adjust(old_entry_size, new_entry_size);
