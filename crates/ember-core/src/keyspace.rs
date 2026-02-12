@@ -19,16 +19,16 @@ use crate::time;
 use crate::types::sorted_set::{SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
+const WRONGTYPE_MSG: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
+const OOM_MSG: &str = "OOM command not allowed when used memory > 'maxmemory'";
+
 /// Error returned when a command is used against a key holding the wrong type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrongType;
 
 impl std::fmt::Display for WrongType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "WRONGTYPE Operation against a key holding the wrong kind of value"
-        )
+        write!(f, "{WRONGTYPE_MSG}")
     }
 }
 
@@ -66,15 +66,10 @@ pub enum IncrError {
 impl std::fmt::Display for IncrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncrError::WrongType => write!(
-                f,
-                "WRONGTYPE Operation against a key holding the wrong kind of value"
-            ),
+            IncrError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
             IncrError::NotAnInteger => write!(f, "ERR value is not an integer or out of range"),
             IncrError::Overflow => write!(f, "ERR increment or decrement would overflow"),
-            IncrError::OutOfMemory => {
-                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
-            }
+            IncrError::OutOfMemory => write!(f, "{OOM_MSG}"),
         }
     }
 }
@@ -97,19 +92,12 @@ pub enum IncrFloatError {
 impl std::fmt::Display for IncrFloatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncrFloatError::WrongType => write!(
-                f,
-                "WRONGTYPE Operation against a key holding the wrong kind of value"
-            ),
-            IncrFloatError::NotAFloat => {
-                write!(f, "ERR value is not a valid float")
-            }
+            IncrFloatError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
+            IncrFloatError::NotAFloat => write!(f, "ERR value is not a valid float"),
             IncrFloatError::NanOrInfinity => {
                 write!(f, "ERR increment would produce NaN or Infinity")
             }
-            IncrFloatError::OutOfMemory => {
-                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
-            }
+            IncrFloatError::OutOfMemory => write!(f, "{OOM_MSG}"),
         }
     }
 }
