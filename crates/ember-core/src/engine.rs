@@ -188,8 +188,22 @@ impl Engine {
     }
 
     /// Determines which shard owns a given key.
-    fn shard_for_key(&self, key: &str) -> usize {
+    pub fn shard_for_key(&self, key: &str) -> usize {
         shard_index(key, self.shards.len())
+    }
+
+    /// Sends a request to a shard and returns the reply channel without
+    /// waiting for the response. Used by the connection handler to
+    /// dispatch commands and collect responses separately.
+    pub async fn dispatch_to_shard(
+        &self,
+        shard_idx: usize,
+        request: ShardRequest,
+    ) -> Result<tokio::sync::oneshot::Receiver<ShardResponse>, ShardError> {
+        if shard_idx >= self.shards.len() {
+            return Err(ShardError::Unavailable);
+        }
+        self.shards[shard_idx].dispatch(request).await
     }
 }
 
