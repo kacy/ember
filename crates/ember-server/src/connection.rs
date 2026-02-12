@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT,
-    MAX_AUTH_FAILURES, MAX_BUF_SIZE,
+    MAX_AUTH_FAILURES, MAX_BUF_SIZE, MAX_PATTERN_LEN, MAX_SUBSCRIPTIONS_PER_CONN,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
@@ -322,6 +322,12 @@ fn handle_sub_command(
     match cmd {
         Command::Subscribe { channels } => {
             for ch in channels {
+                let total = channel_rxs.len() + pattern_rxs.len();
+                if total >= MAX_SUBSCRIPTIONS_PER_CONN {
+                    Frame::Error("ERR max subscriptions per connection reached".into())
+                        .serialize(out);
+                    continue;
+                }
                 let rx = pubsub.subscribe(&ch);
                 channel_rxs.insert(ch.clone(), rx);
                 let count = channel_rxs.len() + pattern_rxs.len();
@@ -353,6 +359,21 @@ fn handle_sub_command(
         }
         Command::PSubscribe { patterns } => {
             for pat in patterns {
+                if pat.len() > MAX_PATTERN_LEN {
+                    Frame::Error(format!(
+                        "ERR pattern too long ({} bytes, max {})",
+                        pat.len(),
+                        MAX_PATTERN_LEN
+                    ))
+                    .serialize(out);
+                    continue;
+                }
+                let total = channel_rxs.len() + pattern_rxs.len();
+                if total >= MAX_SUBSCRIPTIONS_PER_CONN {
+                    Frame::Error("ERR max subscriptions per connection reached".into())
+                        .serialize(out);
+                    continue;
+                }
                 let rx = pubsub.psubscribe(&pat);
                 pattern_rxs.insert(pat.clone(), rx);
                 let count = channel_rxs.len() + pattern_rxs.len();

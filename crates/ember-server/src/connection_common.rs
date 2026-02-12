@@ -31,6 +31,16 @@ pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// Prevents brute-force password guessing. Matches Redis 6.2+ behavior.
 pub const MAX_AUTH_FAILURES: u32 = 10;
 
+/// Maximum number of pub/sub subscriptions a single connection can hold.
+/// Prevents a malicious client from exhausting memory with thousands of
+/// broadcast channels. 10,000 is generous for legitimate use cases.
+pub const MAX_SUBSCRIPTIONS_PER_CONN: usize = 10_000;
+
+/// Maximum length of a PSUBSCRIBE pattern string. Very long patterns can
+/// cause pathological backtracking in glob matching. 256 bytes covers any
+/// reasonable channel naming scheme.
+pub const MAX_PATTERN_LEN: usize = 256;
+
 /// Checks if a raw frame is an AUTH command (before full parsing).
 ///
 /// Peeks at the first bulk element to avoid a full `Command::from_frame`
