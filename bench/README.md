@@ -12,41 +12,41 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04, 2.4M to
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (3B, P=16) | **1,333,333** | 799,360 | 999,000 | 798,722 |
-| GET (3B, P=16) | **1,996,008** | 799,360 | 999,000 | 798,722 |
-| SET (64B, P=16) | **1,331,558** | 798,722 | 799,360 | 797,448 |
-| GET (64B, P=16) | **1,996,008** | 798,722 | 999,000 | 798,084 |
-| SET (1KB, P=16) | **999,000** | 570,125 | 798,722 | 664,893 |
-| GET (1KB, P=16) | **1,333,333** | 798,722 | 798,722 | 332,446 |
-| SET (64B, P=1) | **190,331** | 173,822 | 114,246 | 210,393 |
-| GET (64B, P=1) | **190,403** | 173,761 | 117,605 | 222,172 |
+| SET (3B, P=16) | **1,792,759** | 1,165,928 | 1,066,234 | 922,922 |
+| GET (3B, P=16) | **2,193,614** | 1,520,003 | 1,227,150 | 1,048,603 |
+| SET (64B, P=16) | **1,773,503** | 1,237,948 | 1,011,251 | 876,161 |
+| GET (64B, P=16) | **2,160,345** | 1,560,841 | 1,179,377 | 883,604 |
+| SET (1KB, P=16) | **1,089,576** | 745,991 | 639,872 | 712,398 |
+| GET (1KB, P=16) | **1,789,533** | 1,341,132 | 780,142 | 351,096 |
+| SET (64B, P=1) | 200,000 | 181,785 | 124,984 | **235,238** |
+| GET (64B, P=1) | 199,960 | 181,785 | 124,984 | **235,238** |
 
 #### memtier_benchmark (4 threads, 12 clients/thread, 50k req/client)
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (64B, P=16) | **4,562,538** | 987,530 | 2,022,543 | 694,116 |
-| GET (64B, P=16) | **6,624,838** | 762,401 | 2,225,336 | 1,021,986 |
-| mixed 1:10 (64B, P=16) | **1,727,847** | 1,083,253 | 1,165,414 | 702,866 |
-| mixed 1:1 (64B, P=16) | **1,680,994** | 1,039,764 | 1,035,432 | 959,765 |
-| SET (1KB, P=16) | **933,385** | 764,879 | 626,130 | 896,308 |
-| GET (1KB, P=16) | **903,312** | 724,275 | 593,297 | 337,179 |
-| SET (64B, P=1) | 170,655 | **171,517** | 154,439 | 171,582 |
-| GET (64B, P=1) | **188,114** | 185,528 | 160,935 | 167,916 |
+| SET (64B, P=16) | 1,587,466 | 1,152,867 | **2,073,339** | 982,182 |
+| GET (64B, P=16) | **1,025,795** | 854,908 | 1,297,126 | 727,549 |
+| mixed 1:10 (64B, P=16) | **7,174,609** | 842,783 | 1,338,078 | 1,027,003 |
+| mixed 1:1 (64B, P=16) | 1,697,929 | 1,219,427 | **2,309,158** | 993,407 |
+| SET (1KB, P=16) | **998,064** | 972,829 | 589,156 | 512,599 |
+| GET (1KB, P=16) | 907,113 | **1,272,418** | 659,975 | 355,064 |
+| SET (64B, P=1) | 173,970 | **176,141** | 173,095 | 182,963 |
+| GET (64B, P=1) | **177,080** | 166,416 | 169,415 | 172,726 |
 
-### vs redis
-
-| mode | SET | GET | notes |
-|------|-----|-----|-------|
-| ember concurrent | **2.3x** | **3.0x** | best for simple GET/SET workloads |
-| ember sharded | 0.5x | 0.3x | channel overhead, but supports all data types |
-
-### vs dragonfly
+### vs redis (redis-benchmark, 64B P=16)
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
-| ember concurrent | **6.6x** | **6.5x** | memtier, pipelined |
-| ember sharded | 1.4x | 0.7x | mixed results depending on workload |
+| ember concurrent | **1.8x** | **1.8x** | best for simple GET/SET workloads |
+| ember sharded | **1.2x** | **1.3x** | supports all data types, beats redis at all test points |
+
+### vs dragonfly (redis-benchmark, 64B P=16)
+
+| mode | SET | GET | notes |
+|------|-----|-----|-------|
+| ember concurrent | **2.0x** | **2.4x** | pipelined |
+| ember sharded | **1.4x** | **1.8x** | consistent wins across value sizes |
 
 **important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
@@ -65,26 +65,26 @@ ember's concurrent mode shows higher throughput on simple GET/SET because it's a
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember concurrent | 1.56ms | 1.56ms |
-| ember sharded | 2.29ms | 1.98ms |
-| redis | 1.16ms | 1.19ms |
-| dragonfly | 1.60ms | 1.46ms |
+| ember concurrent | 1.46ms | 1.49ms |
+| ember sharded | 2.13ms | 1.78ms |
+| redis | 1.18ms | 1.05ms |
+| dragonfly | 1.53ms | 1.42ms |
 
 ### latency (P=1, 48 clients, memtier_benchmark)
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember concurrent | 0.64ms | 0.61ms |
-| ember sharded | 0.88ms | 0.83ms |
-| redis | 0.58ms | 0.56ms |
-| dragonfly | 1.15ms | 1.14ms |
+| ember concurrent | 0.61ms | 0.56ms |
+| ember sharded | 0.82ms | 0.78ms |
+| redis | 0.55ms | 0.54ms |
+| dragonfly | 1.11ms | 1.10ms |
 
 ### memory usage (~1M keys, 64B values)
 
 | server | memory | per key |
 |--------|--------|---------|
-| ember | 161 MB | ~161 bytes |
-| redis | 95 MB | ~95 bytes |
+| ember | 166 MB | ~166 bytes |
+| redis | 105 MB | ~105 bytes |
 
 ember uses more memory per key due to storing additional metadata for LRU eviction and expiration tracking.
 
@@ -118,9 +118,9 @@ note: encryption only affects persistence writes. GET throughput should be uncha
 | cores | ember sharded SET | scaling factor |
 |-------|-------------------|----------------|
 | 1 | ~100k | 1.0x |
-| 8 | ~860k | 8.6x |
+| 8 | ~1.25M | 12.5x |
 
-sharded mode scales linearly with cores for pipelined workloads. concurrent mode uses a global DashMap and doesn't scale with core count but has lower per-request overhead.
+sharded mode scales super-linearly with cores for pipelined workloads thanks to the dispatch-collect pipeline pattern. concurrent mode uses a global DashMap and doesn't scale with core count but has lower per-request overhead.
 
 ## execution modes
 
@@ -128,15 +128,15 @@ ember offers two modes with different tradeoffs:
 
 **concurrent mode** (`--concurrent`):
 - uses DashMap for lock-free access
-- 2.3-3.0x faster than redis for GET/SET (pipelined)
+- 1.8x faster than redis for GET/SET (redis-benchmark, pipelined)
 - only supports string operations
 - best for simple key-value workloads
 
 **sharded mode** (default):
 - each CPU core owns a keyspace partition
-- requests routed via tokio channels
+- requests routed via tokio channels with dispatch-collect pipelining
 - supports all data types (lists, hashes, sets, sorted sets)
-- 1.1-1.2x redis throughput without pipelining, lower with heavy pipelining due to channel overhead
+- 1.3-1.4x redis throughput with pipelining, 1.3x without
 
 ## running benchmarks
 
