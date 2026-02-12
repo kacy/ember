@@ -334,6 +334,22 @@ impl Keyspace {
         }
     }
 
+    /// Cleans up after removing an element from a collection (list, sorted
+    /// set, hash, or set). If the collection is now empty, removes the key
+    /// entirely and adjusts memory/expiry tracking. Otherwise just adjusts
+    /// the memory delta.
+    fn cleanup_after_remove(&mut self, key: &str, old_size: usize, is_empty: bool) {
+        if is_empty {
+            if let Some(removed) = self.entries.remove(key) {
+                self.decrement_expiry_if_set(&removed);
+            }
+            self.memory.remove_with_size(old_size);
+        } else {
+            let new_size = memory::entry_size(key, &self.entries[key].value);
+            self.memory.adjust(old_size, new_size);
+        }
+    }
+
     /// Adjusts the expiry count when replacing an entry whose TTL status
     /// may have changed (e.g. SET overwriting an existing key).
     fn adjust_expiry_count(&mut self, had_expiry: bool, has_expiry: bool) {
@@ -1120,19 +1136,8 @@ impl Keyspace {
         };
         entry.touch();
 
-        // check if list is now empty — if so, delete the key entirely
         let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
-        if is_empty {
-            let removed = self.entries.remove(key).expect("verified above");
-            // use remove_with_size since the value was already mutated
-            self.memory.remove_with_size(old_entry_size);
-            if removed.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(popped)
     }
@@ -1251,16 +1256,7 @@ impl Keyspace {
         entry.touch();
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
-        if is_empty {
-            let removed_entry = self.entries.remove(key).expect("verified above");
-            self.memory.remove_with_size(old_entry_size);
-            if removed_entry.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(removed)
     }
@@ -1490,17 +1486,7 @@ impl Keyspace {
             false
         };
 
-        if is_empty {
-            if let Some(removed_entry) = self.entries.remove(key) {
-                if removed_entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
-            }
-            self.memory.remove_with_size(old_entry_size);
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(removed)
     }
@@ -1755,17 +1741,7 @@ impl Keyspace {
             false
         };
 
-        if is_empty {
-            if let Some(removed_entry) = self.entries.remove(key) {
-                if removed_entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
-            }
-            self.memory.remove_with_size(old_entry_size);
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(removed)
     }
