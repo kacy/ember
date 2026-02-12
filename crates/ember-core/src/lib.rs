@@ -18,7 +18,7 @@ pub mod types;
 #[cfg(feature = "protobuf")]
 pub mod schema;
 
-pub use concurrent::ConcurrentKeyspace;
+pub use concurrent::{ConcurrentFloatError, ConcurrentKeyspace, ConcurrentOpError};
 pub use engine::{Engine, EngineConfig};
 pub use error::ShardError;
 pub use keyspace::{

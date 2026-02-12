@@ -9,9 +9,49 @@ use std::time::Duration;
 use bytes::Bytes;
 use dashmap::DashMap;
 
-use crate::keyspace::{EvictionPolicy, TtlResult};
+use crate::keyspace::{format_float, EvictionPolicy, TtlResult};
 use crate::memory;
 use crate::time;
+
+/// Errors from integer/float operations on the concurrent keyspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConcurrentOpError {
+    /// Value cannot be parsed as a number.
+    NotAnInteger,
+    /// Increment or decrement would overflow i64.
+    Overflow,
+}
+
+impl std::fmt::Display for ConcurrentOpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAnInteger => write!(f, "ERR value is not an integer or out of range"),
+            Self::Overflow => write!(f, "ERR increment or decrement would overflow"),
+        }
+    }
+}
+
+impl std::error::Error for ConcurrentOpError {}
+
+/// Errors from float operations on the concurrent keyspace.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConcurrentFloatError {
+    /// Value cannot be parsed as a float.
+    NotAFloat,
+    /// Result would be NaN or Infinity.
+    NanOrInfinity,
+}
+
+impl std::fmt::Display for ConcurrentFloatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAFloat => write!(f, "ERR value is not a valid float"),
+            Self::NanOrInfinity => write!(f, "ERR increment would produce NaN or Infinity"),
+        }
+    }
+}
+
+impl std::error::Error for ConcurrentFloatError {}
 
 /// An entry in the concurrent keyspace.
 /// Optimized for memory: 40 bytes (down from 56).
@@ -176,6 +216,112 @@ impl ConcurrentKeyspace {
         }
     }
 
+    /// Increments the integer value of a key by 1.
+    /// If the key doesn't exist, it's initialized to 0 before incrementing.
+    pub fn incr(&self, key: &str) -> Result<i64, ConcurrentOpError> {
+        self.incr_by(key, 1)
+    }
+
+    /// Decrements the integer value of a key by 1.
+    /// If the key doesn't exist, it's initialized to 0 before decrementing.
+    pub fn decr(&self, key: &str) -> Result<i64, ConcurrentOpError> {
+        self.incr_by(key, -1)
+    }
+
+    /// Adds `delta` to the integer value of a key, creating it if missing.
+    /// Preserves existing TTL when updating.
+    pub fn incr_by(&self, key: &str, delta: i64) -> Result<i64, ConcurrentOpError> {
+        self.ops_count.fetch_add(1, Ordering::Relaxed);
+
+        // try to update in-place via get_mut
+        if let Some(mut entry) = self.data.get_mut(key) {
+            if entry.is_expired() {
+                let key_len = entry.key().len();
+                let old_size = entry.size(key_len);
+                drop(entry);
+                if self.data.remove(key).is_some() {
+                    self.memory_used.fetch_sub(old_size, Ordering::Relaxed);
+                }
+                // treat as missing — fall through to insert below
+            } else {
+                let s = std::str::from_utf8(&entry.value)
+                    .map_err(|_| ConcurrentOpError::NotAnInteger)?;
+                let current: i64 = s.parse().map_err(|_| ConcurrentOpError::NotAnInteger)?;
+                let new_val = current
+                    .checked_add(delta)
+                    .ok_or(ConcurrentOpError::Overflow)?;
+                let new_bytes = Bytes::from(new_val.to_string());
+
+                let key_len = entry.key().len();
+                let old_size = entry.size(key_len);
+                entry.value = new_bytes;
+                let new_size = entry.size(key_len);
+                let diff = new_size as isize - old_size as isize;
+                if diff > 0 {
+                    self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
+                } else if diff < 0 {
+                    self.memory_used
+                        .fetch_sub((-diff) as usize, Ordering::Relaxed);
+                }
+                return Ok(new_val);
+            }
+        }
+
+        // key doesn't exist — treat as 0
+        let new_val = (0i64)
+            .checked_add(delta)
+            .ok_or(ConcurrentOpError::Overflow)?;
+        self.set(key.to_owned(), Bytes::from(new_val.to_string()), None);
+        Ok(new_val)
+    }
+
+    /// Adds `delta` to the float value of a key, creating it if missing.
+    /// Preserves existing TTL when updating.
+    pub fn incr_by_float(&self, key: &str, delta: f64) -> Result<f64, ConcurrentFloatError> {
+        self.ops_count.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(mut entry) = self.data.get_mut(key) {
+            if entry.is_expired() {
+                let key_len = entry.key().len();
+                let old_size = entry.size(key_len);
+                drop(entry);
+                if self.data.remove(key).is_some() {
+                    self.memory_used.fetch_sub(old_size, Ordering::Relaxed);
+                }
+            } else {
+                let s = std::str::from_utf8(&entry.value)
+                    .map_err(|_| ConcurrentFloatError::NotAFloat)?;
+                let current: f64 = s.parse().map_err(|_| ConcurrentFloatError::NotAFloat)?;
+                let new_val = current + delta;
+                if new_val.is_nan() || new_val.is_infinite() {
+                    return Err(ConcurrentFloatError::NanOrInfinity);
+                }
+                let new_bytes = Bytes::from(format_float(new_val));
+
+                let key_len = entry.key().len();
+                let old_size = entry.size(key_len);
+                entry.value = new_bytes;
+                let new_size = entry.size(key_len);
+                let diff = new_size as isize - old_size as isize;
+                if diff > 0 {
+                    self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
+                } else if diff < 0 {
+                    self.memory_used
+                        .fetch_sub((-diff) as usize, Ordering::Relaxed);
+                }
+                return Ok(new_val);
+            }
+        }
+
+        // key doesn't exist — treat as 0.0
+        let new_val = delta;
+        if new_val.is_nan() || new_val.is_infinite() {
+            return Err(ConcurrentFloatError::NanOrInfinity);
+        }
+        self.set(key.to_owned(), Bytes::from(format_float(new_val)), None);
+        Ok(new_val)
+    }
+
     /// Returns the number of keys.
     pub fn len(&self) -> usize {
         self.data.len()
@@ -283,6 +429,83 @@ mod tests {
         assert!(matches!(ks.ttl("key"), TtlResult::Seconds(_)));
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(ks.get("key"), None);
+    }
+
+    #[test]
+    fn incr_new_key() {
+        let ks = ConcurrentKeyspace::default();
+        assert_eq!(ks.incr("counter").unwrap(), 1);
+        assert_eq!(ks.get("counter"), Some(Bytes::from("1")));
+    }
+
+    #[test]
+    fn incr_existing_key() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("counter".into(), Bytes::from("10"), None);
+        assert_eq!(ks.incr("counter").unwrap(), 11);
+    }
+
+    #[test]
+    fn decr_below_zero() {
+        let ks = ConcurrentKeyspace::default();
+        assert_eq!(ks.decr("counter").unwrap(), -1);
+        assert_eq!(ks.decr("counter").unwrap(), -2);
+    }
+
+    #[test]
+    fn incr_by_delta() {
+        let ks = ConcurrentKeyspace::default();
+        assert_eq!(ks.incr_by("counter", 5).unwrap(), 5);
+        assert_eq!(ks.incr_by("counter", -3).unwrap(), 2);
+    }
+
+    #[test]
+    fn incr_non_integer_value() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("not_a_number"), None);
+        assert_eq!(ks.incr("key"), Err(ConcurrentOpError::NotAnInteger));
+    }
+
+    #[test]
+    fn incr_overflow() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from(i64::MAX.to_string()), None);
+        assert_eq!(ks.incr("key"), Err(ConcurrentOpError::Overflow));
+    }
+
+    #[test]
+    fn incr_by_float_new_key() {
+        let ks = ConcurrentKeyspace::default();
+        let val = ks.incr_by_float("key", 2.5).unwrap();
+        assert!((val - 2.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn incr_by_float_existing() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("10.5"), None);
+        let val = ks.incr_by_float("key", 1.5).unwrap();
+        assert!((val - 12.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn incr_by_float_not_a_float() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from("hello"), None);
+        assert_eq!(
+            ks.incr_by_float("key", 1.0),
+            Err(ConcurrentFloatError::NotAFloat)
+        );
+    }
+
+    #[test]
+    fn incr_by_float_infinity() {
+        let ks = ConcurrentKeyspace::default();
+        ks.set("key".into(), Bytes::from(f64::MAX.to_string()), None);
+        assert_eq!(
+            ks.incr_by_float("key", f64::MAX),
+            Err(ConcurrentFloatError::NanOrInfinity)
+        );
     }
 
     #[test]

@@ -2184,7 +2184,7 @@ impl Default for Keyspace {
 ///
 /// Uses up to 17 significant digits and strips unnecessary trailing zeros,
 /// but always keeps at least one decimal place for non-integer results.
-fn format_float(val: f64) -> String {
+pub(crate) fn format_float(val: f64) -> String {
     if val == 0.0 {
         return "0".into();
     }
@@ -2212,7 +2212,7 @@ fn format_float(val: f64) -> String {
 ///
 /// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
 /// worst-case performance, where n is pattern length and m is text length.
-fn glob_match(pattern: &str, text: &str) -> bool {
+pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     let pat: Vec<char> = pattern.chars().collect();
     let txt: Vec<char> = text.chars().collect();
 
