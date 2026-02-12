@@ -38,29 +38,44 @@ fn read_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError
     })
 }
 
-/// Record tags for the AOF format.
+// -- record tags --
+// values are stable and must not change (on-disk format).
+
+// string
 const TAG_SET: u8 = 1;
-const TAG_DEL: u8 = 2;
-const TAG_EXPIRE: u8 = 3;
+const TAG_INCR: u8 = 12;
+const TAG_DECR: u8 = 13;
+const TAG_INCRBY: u8 = 19;
+const TAG_DECRBY: u8 = 20;
+const TAG_APPEND: u8 = 21;
+
+// list
 const TAG_LPUSH: u8 = 4;
 const TAG_RPUSH: u8 = 5;
 const TAG_LPOP: u8 = 6;
 const TAG_RPOP: u8 = 7;
+
+// sorted set
 const TAG_ZADD: u8 = 8;
 const TAG_ZREM: u8 = 9;
-const TAG_PERSIST: u8 = 10;
-const TAG_PEXPIRE: u8 = 11;
-const TAG_INCR: u8 = 12;
-const TAG_DECR: u8 = 13;
+
+// hash
 const TAG_HSET: u8 = 14;
 const TAG_HDEL: u8 = 15;
 const TAG_HINCRBY: u8 = 16;
+
+// set
 const TAG_SADD: u8 = 17;
 const TAG_SREM: u8 = 18;
-const TAG_INCRBY: u8 = 19;
-const TAG_DECRBY: u8 = 20;
-const TAG_APPEND: u8 = 21;
+
+// key lifecycle
+const TAG_DEL: u8 = 2;
+const TAG_EXPIRE: u8 = 3;
+const TAG_PERSIST: u8 = 10;
+const TAG_PEXPIRE: u8 = 11;
 const TAG_RENAME: u8 = 22;
+
+// protobuf
 #[cfg(feature = "protobuf")]
 const TAG_PROTO_SET: u8 = 23;
 #[cfg(feature = "protobuf")]
