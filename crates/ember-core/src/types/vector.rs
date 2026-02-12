@@ -42,6 +42,28 @@ impl fmt::Display for DistanceMetric {
     }
 }
 
+impl From<DistanceMetric> for u8 {
+    fn from(m: DistanceMetric) -> u8 {
+        match m {
+            DistanceMetric::Cosine => 0,
+            DistanceMetric::L2 => 1,
+            DistanceMetric::InnerProduct => 2,
+        }
+    }
+}
+
+impl DistanceMetric {
+    /// Converts a wire-format byte to a distance metric.
+    /// Defaults to `Cosine` for unknown values (forward compatibility).
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => DistanceMetric::L2,
+            2 => DistanceMetric::InnerProduct,
+            _ => DistanceMetric::Cosine,
+        }
+    }
+}
+
 /// Quantization type for stored vectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuantizationType {
@@ -81,6 +103,28 @@ impl QuantizationType {
 impl fmt::Display for QuantizationType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl From<QuantizationType> for u8 {
+    fn from(q: QuantizationType) -> u8 {
+        match q {
+            QuantizationType::F32 => 0,
+            QuantizationType::F16 => 1,
+            QuantizationType::I8 => 2,
+        }
+    }
+}
+
+impl QuantizationType {
+    /// Converts a wire-format byte to a quantization type.
+    /// Defaults to `F32` for unknown values (forward compatibility).
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => QuantizationType::F16,
+            2 => QuantizationType::I8,
+            _ => QuantizationType::F32,
+        }
     }
 }
 
@@ -329,14 +373,12 @@ impl VectorSet {
         }
     }
 
-    /// Returns an iterator over all (element_name, usearch_key) pairs.
+    /// Returns an iterator over all element names.
     ///
     /// Used for snapshot serialization — the caller retrieves each vector
     /// via `get()`.
-    pub fn elements(&self) -> impl Iterator<Item = (&str, u64)> {
-        self.elements
-            .iter()
-            .map(|(name, &key)| (name.as_str(), key))
+    pub fn elements(&self) -> impl Iterator<Item = &str> {
+        self.elements.keys().map(String::as_str)
     }
 
     /// Returns the HNSW connectivity parameter.

@@ -555,18 +555,14 @@ async fn run_shard(
                     elements,
                 } => {
                     use crate::types::vector::{DistanceMetric, QuantizationType, VectorSet};
-                    let m = match metric {
-                        1 => DistanceMetric::L2,
-                        2 => DistanceMetric::InnerProduct,
-                        _ => DistanceMetric::Cosine,
-                    };
-                    let q = match quantization {
-                        1 => QuantizationType::F16,
-                        2 => QuantizationType::I8,
-                        _ => QuantizationType::F32,
-                    };
                     let dim = elements.first().map(|(_, v)| v.len()).unwrap_or(0);
-                    match VectorSet::new(dim, m, q, connectivity as usize, expansion_add as usize) {
+                    match VectorSet::new(
+                        dim,
+                        DistanceMetric::from_u8(metric),
+                        QuantizationType::from_u8(quantization),
+                        connectivity as usize,
+                        expansion_add as usize,
+                    ) {
                         Ok(mut vs) => {
                             for (element, vector) in elements {
                                 if let Err(e) = vs.add(element, &vector) {
@@ -999,22 +995,12 @@ fn dispatch(
             expansion_add,
         } => {
             use crate::types::vector::{DistanceMetric, QuantizationType};
-            let m = match metric {
-                1 => DistanceMetric::L2,
-                2 => DistanceMetric::InnerProduct,
-                _ => DistanceMetric::Cosine,
-            };
-            let q = match quantization {
-                1 => QuantizationType::F16,
-                2 => QuantizationType::I8,
-                _ => QuantizationType::F32,
-            };
             match ks.vadd(
                 key,
                 element.clone(),
                 vector.clone(),
-                m,
-                q,
+                DistanceMetric::from_u8(*metric),
+                QuantizationType::from_u8(*quantization),
                 *connectivity as usize,
                 *expansion_add as usize,
             ) {
@@ -1036,7 +1022,7 @@ fn dispatch(
             query,
             count,
             ef_search,
-        } => match ks.vsim(key, query.clone(), *count, *ef_search) {
+        } => match ks.vsim(key, query, *count, *ef_search) {
             Ok(results) => ShardResponse::VSimResult(
                 results
                     .into_iter()
@@ -1555,22 +1541,14 @@ fn write_snapshot(
             #[cfg(feature = "vector")]
             Value::Vector(ref vs) => {
                 let mut elements = Vec::with_capacity(vs.len());
-                for (name, _key) in vs.elements() {
+                for name in vs.elements() {
                     if let Some(vec) = vs.get(name) {
                         elements.push((name.to_owned(), vec));
                     }
                 }
                 SnapValue::Vector {
-                    metric: match vs.metric() {
-                        crate::types::vector::DistanceMetric::Cosine => 0,
-                        crate::types::vector::DistanceMetric::L2 => 1,
-                        crate::types::vector::DistanceMetric::InnerProduct => 2,
-                    },
-                    quantization: match vs.quantization() {
-                        crate::types::vector::QuantizationType::F32 => 0,
-                        crate::types::vector::QuantizationType::F16 => 1,
-                        crate::types::vector::QuantizationType::I8 => 2,
-                    },
+                    metric: vs.metric().into(),
+                    quantization: vs.quantization().into(),
                     connectivity: vs.connectivity() as u32,
                     expansion_add: vs.expansion_add() as u32,
                     dim: vs.dim() as u32,

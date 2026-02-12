@@ -1651,7 +1651,6 @@ async fn execute(
             Frame::Error("ERR subscribe commands should not reach execute".into())
         }
 
-        // -- protobuf commands --
         // --- vector commands ---
         #[cfg(feature = "vector")]
         Command::VAdd {

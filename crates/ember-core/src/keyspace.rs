@@ -1932,11 +1932,11 @@ impl Keyspace {
             .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
-        let added = if let Value::Vector(ref mut vs) = entry.value {
-            vs.add(element.clone(), &vector)
-                .map_err(|e| VectorWriteError::IndexError(e.to_string()))?
-        } else {
-            unreachable!()
+        let added = match entry.value {
+            Value::Vector(ref mut vs) => vs
+                .add(element.clone(), &vector)
+                .map_err(|e| VectorWriteError::IndexError(e.to_string()))?,
+            _ => unreachable!(),
         };
         entry.touch();
 
@@ -1955,7 +1955,7 @@ impl Keyspace {
     pub fn vsim(
         &mut self,
         key: &str,
-        query: Vec<f32>,
+        query: &[f32],
         count: usize,
         ef_search: usize,
     ) -> Result<Vec<crate::types::vector::SearchResult>, WrongType> {
@@ -1968,16 +1968,11 @@ impl Keyspace {
             None => return Ok(Vec::new()),
         };
 
-        if !matches!(entry.value, Value::Vector(_)) {
-            return Err(WrongType);
-        }
-
         entry.touch();
 
-        if let Value::Vector(ref vs) = entry.value {
-            vs.search(&query, count, ef_search).map_err(|_| WrongType) // simplify — index errors shouldn't happen on valid sets
-        } else {
-            unreachable!()
+        match entry.value {
+            Value::Vector(ref vs) => vs.search(query, count, ef_search).map_err(|_| WrongType),
+            _ => Err(WrongType),
         }
     }
 
@@ -1998,25 +1993,22 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_size = memory::entry_size(key, &entry.value);
 
-        let removed = if let Value::Vector(ref mut vs) = entry.value {
-            vs.remove(element)
-        } else {
-            unreachable!()
+        let removed = match entry.value {
+            Value::Vector(ref mut vs) => vs.remove(element),
+            _ => unreachable!(),
         };
 
         if removed {
             entry.touch();
-            let new_entry_size = memory::entry_size(key, &entry.value);
-            self.memory.adjust(old_entry_size, new_entry_size);
+            let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
+            let new_size = memory::entry_size(key, &entry.value);
+            self.memory.adjust(old_size, new_size);
 
-            // remove key if set is now empty
-            if let Value::Vector(ref vs) = entry.value {
-                if vs.is_empty() {
-                    self.memory.remove_with_size(new_entry_size);
-                    self.entries.remove(key);
-                }
+            if is_empty {
+                self.memory.remove_with_size(new_size);
+                self.entries.remove(key);
             }
         }
 
@@ -2035,16 +2027,11 @@ impl Keyspace {
             None => return Ok(None),
         };
 
-        if !matches!(entry.value, Value::Vector(_)) {
-            return Err(WrongType);
-        }
-
         entry.touch();
 
-        if let Value::Vector(ref vs) = entry.value {
-            Ok(vs.get(element))
-        } else {
-            unreachable!()
+        match entry.value {
+            Value::Vector(ref vs) => Ok(vs.get(element)),
+            _ => Err(WrongType),
         }
     }
 
@@ -2055,19 +2042,12 @@ impl Keyspace {
             return Ok(0);
         }
 
-        let entry = match self.entries.get(key) {
-            Some(e) => e,
-            None => return Ok(0),
-        };
-
-        if !matches!(entry.value, Value::Vector(_)) {
-            return Err(WrongType);
-        }
-
-        if let Value::Vector(ref vs) = entry.value {
-            Ok(vs.len())
-        } else {
-            unreachable!()
+        match self.entries.get(key) {
+            None => Ok(0),
+            Some(e) => match e.value {
+                Value::Vector(ref vs) => Ok(vs.len()),
+                _ => Err(WrongType),
+            },
         }
     }
 
@@ -2078,19 +2058,12 @@ impl Keyspace {
             return Ok(0);
         }
 
-        let entry = match self.entries.get(key) {
-            Some(e) => e,
-            None => return Ok(0),
-        };
-
-        if !matches!(entry.value, Value::Vector(_)) {
-            return Err(WrongType);
-        }
-
-        if let Value::Vector(ref vs) = entry.value {
-            Ok(vs.dim())
-        } else {
-            unreachable!()
+        match self.entries.get(key) {
+            None => Ok(0),
+            Some(e) => match e.value {
+                Value::Vector(ref vs) => Ok(vs.dim()),
+                _ => Err(WrongType),
+            },
         }
     }
 
@@ -2104,19 +2077,12 @@ impl Keyspace {
             return Ok(None);
         }
 
-        let entry = match self.entries.get(key) {
-            Some(e) => e,
-            None => return Ok(None),
-        };
-
-        if !matches!(entry.value, Value::Vector(_)) {
-            return Err(WrongType);
-        }
-
-        if let Value::Vector(ref vs) = entry.value {
-            Ok(Some(vs.info()))
-        } else {
-            unreachable!()
+        match self.entries.get(key) {
+            None => Ok(None),
+            Some(e) => match e.value {
+                Value::Vector(ref vs) => Ok(Some(vs.info())),
+                _ => Err(WrongType),
+            },
         }
     }
 
