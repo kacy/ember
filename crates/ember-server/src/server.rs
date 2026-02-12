@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
 use tokio::io::AsyncWriteExt;
@@ -246,15 +246,22 @@ pub async fn run(
                 let pubsub = Arc::clone(&pubsub);
 
                 tokio::spawn(async move {
-                    // perform TLS handshake
-                    match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
+                    // perform TLS handshake with timeout to prevent slowloris
+                    let handshake = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        acceptor.accept(stream),
+                    );
+                    match handshake.await {
+                        Ok(Ok(tls_stream)) => {
                             if let Err(e) = connection::handle(tls_stream, engine, &ctx, &slow_log, &pubsub).await {
                                 error!("TLS connection error from {peer}: {e}");
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("TLS handshake failed from {peer}: {e}");
+                        }
+                        Err(_) => {
+                            warn!("TLS handshake timed out from {peer}");
                         }
                     }
                     ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
@@ -473,16 +480,23 @@ pub async fn run_concurrent(
                 let pubsub = Arc::clone(&pubsub);
 
                 tokio::spawn(async move {
-                    match acceptor.accept(stream).await {
-                        Ok(tls_stream) => {
+                    let handshake = tokio::time::timeout(
+                        Duration::from_secs(10),
+                        acceptor.accept(stream),
+                    );
+                    match handshake.await {
+                        Ok(Ok(tls_stream)) => {
                             if let Err(e) = crate::concurrent_handler::handle(
                                 tls_stream, keyspace, engine, &ctx, &slow_log, &pubsub
                             ).await {
                                 error!("TLS connection error from {peer}: {e}");
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             warn!("TLS handshake failed from {peer}: {e}");
+                        }
+                        Err(_) => {
+                            warn!("TLS handshake timed out from {peer}");
                         }
                     }
                     ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
