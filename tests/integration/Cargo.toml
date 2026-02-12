@@ -16,3 +16,6 @@ bytes = { workspace = true }
 ember-protocol = { workspace = true }
 prost-reflect = { workspace = true }
 tempfile = "3"
+
+[features]
+protobuf = []

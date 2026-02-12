@@ -13,7 +13,7 @@ release:
 	cargo build --release
 
 test:
-	cargo test --workspace
+	cargo test --workspace --features protobuf
 
 fmt:
 	cargo fmt --all
@@ -22,7 +22,7 @@ fmt-check:
 	cargo fmt --all --check
 
 clippy:
-	cargo clippy --workspace -- -D warnings
+	cargo clippy --workspace --features protobuf -- -D warnings
 
 check: fmt-check clippy test
 
