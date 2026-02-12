@@ -37,4 +37,12 @@ pub enum ProtocolError {
     /// The frame exceeds the maximum nesting depth.
     #[error("frame nesting depth exceeds limit of {0}")]
     NestingTooDeep(usize),
+
+    /// An array or map declares more elements than the allowed maximum.
+    #[error("array/map element count {0} exceeds limit")]
+    TooManyElements(usize),
+
+    /// A bulk string exceeds the maximum allowed length.
+    #[error("bulk string length {0} exceeds limit")]
+    BulkStringTooLarge(usize),
 }
