@@ -23,9 +23,9 @@ jobs:
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --features protobuf -- -D warnings
       - name: check
-        run: cargo check --workspace
+        run: cargo check --workspace --features protobuf
 
   test:
     name: test
@@ -38,9 +38,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: build
-        run: cargo build --workspace
+        run: cargo build --workspace --features protobuf
       - name: test
-        run: cargo test --workspace
+        run: cargo test --workspace --features protobuf
 
   build:
     name: build
