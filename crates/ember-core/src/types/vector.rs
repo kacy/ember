@@ -152,6 +152,9 @@ pub enum VectorError {
     #[error("dimension mismatch: index has {expected}, got {got}")]
     DimensionMismatch { expected: usize, got: usize },
 
+    #[error("vector contains non-finite value (NaN or infinity)")]
+    NonFinite,
+
     #[error("usearch error: {0}")]
     Index(String),
 }
@@ -227,13 +230,17 @@ impl VectorSet {
     /// Adds or replaces a vector for the given element name.
     ///
     /// Returns `true` if a new element was added, `false` if an existing
-    /// element was updated.
+    /// element was updated. Rejects vectors containing NaN or infinity.
     pub fn add(&mut self, element: String, vector: &[f32]) -> Result<bool, VectorError> {
         if vector.len() != self.dim {
             return Err(VectorError::DimensionMismatch {
                 expected: self.dim,
                 got: vector.len(),
             });
+        }
+
+        if vector.iter().any(|v| !v.is_finite()) {
+            return Err(VectorError::NonFinite);
         }
 
         // ensure capacity (double when full, amortized O(1))
@@ -253,7 +260,7 @@ impl VectorSet {
             false
         } else {
             let key = self.next_key;
-            self.next_key += 1;
+            self.next_key = self.next_key.wrapping_add(1);
             self.index
                 .add(key, vector)
                 .map_err(|e| VectorError::Index(e.to_string()))?;
@@ -280,10 +287,13 @@ impl VectorSet {
         }
     }
 
+    /// Default search beam width. Used when the caller doesn't specify one.
+    const DEFAULT_EF_SEARCH: usize = 64;
+
     /// Searches for the k nearest neighbors of the given query vector.
     ///
     /// `ef_search` controls the search beam width (higher = more accurate,
-    /// slower). Pass 0 to use usearch's default.
+    /// slower). Pass 0 to use the default (64).
     pub fn search(
         &self,
         query: &[f32],
@@ -297,14 +307,22 @@ impl VectorSet {
             });
         }
 
+        if query.iter().any(|v| !v.is_finite()) {
+            return Err(VectorError::NonFinite);
+        }
+
         if self.elements.is_empty() {
             return Ok(Vec::new());
         }
 
-        // temporarily adjust search expansion if requested
-        if ef_search > 0 {
-            self.index.change_expansion_search(ef_search);
-        }
+        // always set expansion_search explicitly so a previous call's value
+        // doesn't leak into this search
+        let ef = if ef_search > 0 {
+            ef_search
+        } else {
+            Self::DEFAULT_EF_SEARCH
+        };
+        self.index.change_expansion_search(ef);
 
         let matches = self
             .index
@@ -427,26 +445,53 @@ impl fmt::Debug for VectorSet {
     }
 }
 
-impl Clone for VectorSet {
-    fn clone(&self) -> Self {
-        // rebuild the index from scratch — usearch Index doesn't implement Clone
+impl VectorSet {
+    /// Fallible clone — rebuilds the HNSW index from scratch.
+    ///
+    /// Usearch's `Index` doesn't implement Clone, so we create a new index
+    /// with the same config and re-insert every vector. Returns an error
+    /// if the index can't be created or a vector fails to insert.
+    pub fn try_clone(&self) -> Result<Self, VectorError> {
         let mut new = Self::new(
             self.dim,
             self.metric,
             self.quantization,
             self.connectivity,
             self.expansion_add,
-        )
-        .expect("clone: failed to create index with same config");
+        )?;
 
         for (name, &key) in &self.elements {
             let mut buffer = vec![0.0f32; self.dim];
             if self.index.get(key, &mut buffer).is_ok() {
-                let _ = new.add(name.clone(), &buffer);
+                new.add(name.clone(), &buffer)?;
             }
         }
 
-        new
+        Ok(new)
+    }
+}
+
+impl Clone for VectorSet {
+    fn clone(&self) -> Self {
+        // try_clone rebuilds the index from scratch. if it fails (e.g. OOM
+        // inside usearch), return an empty set with the same config rather
+        // than panicking. data loss is preferable to a server crash.
+        self.try_clone().unwrap_or_else(|_| {
+            Self::new(
+                self.dim,
+                self.metric,
+                self.quantization,
+                self.connectivity,
+                self.expansion_add,
+            )
+            .unwrap_or_else(|_| {
+                // if we can't even create an empty index with the same
+                // config, fall back to the smallest possible valid set.
+                // this only happens under extreme memory pressure.
+                Self::new(self.dim, self.metric, self.quantization, 2, 2)
+                    .expect("failed to allocate even a minimal index — system is out of memory")
+            })
+        })
     }
 }
 
@@ -638,5 +683,80 @@ mod tests {
         // we can still get the vector back (with possible precision loss)
         let vec = vs.get("a").unwrap();
         assert!((vec[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn reject_nan_in_add() {
+        let mut vs = make_set(3);
+        let err = vs.add("bad".into(), &[1.0, f32::NAN, 0.0]).unwrap_err();
+        assert!(matches!(err, VectorError::NonFinite));
+        assert_eq!(vs.len(), 0);
+    }
+
+    #[test]
+    fn reject_infinity_in_add() {
+        let mut vs = make_set(3);
+        let err = vs
+            .add("bad".into(), &[f32::INFINITY, 0.0, 0.0])
+            .unwrap_err();
+        assert!(matches!(err, VectorError::NonFinite));
+    }
+
+    #[test]
+    fn reject_nan_in_search() {
+        let mut vs = make_set(3);
+        vs.add("a".into(), &[1.0, 0.0, 0.0]).unwrap();
+        let err = vs.search(&[f32::NAN, 0.0, 0.0], 1, 0).unwrap_err();
+        assert!(matches!(err, VectorError::NonFinite));
+    }
+
+    #[test]
+    fn search_ef_does_not_leak_between_calls() {
+        let mut vs = make_set(3);
+        vs.add("a".into(), &[1.0, 0.0, 0.0]).unwrap();
+        vs.add("b".into(), &[0.0, 1.0, 0.0]).unwrap();
+
+        // first search with high ef
+        let r1 = vs.search(&[0.9, 0.1, 0.0], 1, 200).unwrap();
+        assert_eq!(r1.len(), 1);
+
+        // second search with default ef should still work correctly
+        let r2 = vs.search(&[0.9, 0.1, 0.0], 1, 0).unwrap();
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].element, r1[0].element);
+    }
+
+    #[test]
+    fn try_clone_returns_ok() {
+        let mut vs = make_set(3);
+        vs.add("a".into(), &[1.0, 2.0, 3.0]).unwrap();
+
+        let cloned = vs.try_clone().unwrap();
+        assert_eq!(cloned.len(), 1);
+        assert_eq!(cloned.get("a").unwrap(), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn u8_round_trip_metric() {
+        for metric in [
+            DistanceMetric::Cosine,
+            DistanceMetric::L2,
+            DistanceMetric::InnerProduct,
+        ] {
+            let byte: u8 = metric.into();
+            assert_eq!(DistanceMetric::from_u8(byte), metric);
+        }
+    }
+
+    #[test]
+    fn u8_round_trip_quantization() {
+        for quant in [
+            QuantizationType::F32,
+            QuantizationType::F16,
+            QuantizationType::I8,
+        ] {
+            let byte: u8 = quant.into();
+            assert_eq!(QuantizationType::from_u8(byte), quant);
+        }
     }
 }

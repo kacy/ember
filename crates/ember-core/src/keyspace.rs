@@ -1926,17 +1926,17 @@ impl Keyspace {
             self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("just inserted or verified");
+        let entry = match self.entries.get_mut(key) {
+            Some(e) => e,
+            None => return Err(VectorWriteError::IndexError("entry missing".into())),
+        };
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let added = match entry.value {
             Value::Vector(ref mut vs) => vs
                 .add(element.clone(), &vector)
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?,
-            _ => unreachable!(),
+            _ => return Err(VectorWriteError::WrongType),
         };
         entry.touch();
 
