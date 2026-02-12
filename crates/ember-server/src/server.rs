@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
@@ -159,36 +159,15 @@ pub async fn run(
             result = listener.accept() => {
                 let (stream, peer) = result?;
 
-                // disable Nagle's algorithm — cache servers need low-latency writes.
-                // done here before passing to handler so TLS streams also benefit.
-                if let Err(e) = stream.set_nodelay(true) {
-                    warn!("failed to set TCP_NODELAY: {e}");
-                }
-
-                // protected mode: reject non-loopback connections when no
-                // password is set and the server is bound to a public address
                 if is_protected_mode_violation(&ctx, &peer) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
 
-                let permit = match semaphore.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        warn!("connection limit reached, dropping connection from {peer}");
-                        if metrics_enabled {
-                            crate::metrics::on_connection_rejected();
-                        }
-                        drop(stream);
-                        continue;
-                    }
+                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                    Some(p) => p,
+                    None => continue,
                 };
-
-                if metrics_enabled {
-                    crate::metrics::on_connection_accepted();
-                }
-                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
-                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
 
                 let engine = engine.clone();
                 let ctx = Arc::clone(&ctx);
@@ -199,11 +178,7 @@ pub async fn run(
                     if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log, &pubsub).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
-                    if ctx.metrics_enabled {
-                        crate::metrics::on_connection_closed();
-                    }
-                    // permit is dropped here, releasing the slot
+                    on_connection_done(&ctx);
                     drop(permit);
                 });
             }
@@ -212,33 +187,15 @@ pub async fn run(
             result = tls_accept() => {
                 let (stream, peer, acceptor) = result?;
 
-                if let Err(e) = stream.set_nodelay(true) {
-                    warn!("failed to set TCP_NODELAY: {e}");
-                }
-
-                // protected mode check on TLS connections too
                 if is_protected_mode_violation(&ctx, &peer) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
 
-                let permit = match semaphore.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        warn!("connection limit reached, dropping TLS connection from {peer}");
-                        if metrics_enabled {
-                            crate::metrics::on_connection_rejected();
-                        }
-                        drop(stream);
-                        continue;
-                    }
+                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                    Some(p) => p,
+                    None => continue,
                 };
-
-                if metrics_enabled {
-                    crate::metrics::on_connection_accepted();
-                }
-                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
-                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
 
                 let engine = engine.clone();
                 let ctx = Arc::clone(&ctx);
@@ -246,47 +203,96 @@ pub async fn run(
                 let pubsub = Arc::clone(&pubsub);
 
                 tokio::spawn(async move {
-                    // perform TLS handshake with timeout to prevent slowloris
-                    let handshake = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        acceptor.accept(stream),
-                    );
-                    match handshake.await {
-                        Ok(Ok(tls_stream)) => {
-                            if let Err(e) = connection::handle(tls_stream, engine, &ctx, &slow_log, &pubsub).await {
-                                error!("TLS connection error from {peer}: {e}");
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            warn!("TLS handshake failed from {peer}: {e}");
-                        }
-                        Err(_) => {
-                            warn!("TLS handshake timed out from {peer}");
+                    if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
+                        if let Err(e) = connection::handle(tls_stream, engine, &ctx, &slow_log, &pubsub).await {
+                            error!("TLS connection error from {peer}: {e}");
                         }
                     }
-                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
-                    if ctx.metrics_enabled {
-                        crate::metrics::on_connection_closed();
-                    }
+                    on_connection_done(&ctx);
                     drop(permit);
                 });
             }
         }
     }
 
-    // wait for all connection handlers to finish, with a timeout
-    info!("waiting for active connections to close...");
-    let drain = semaphore.acquire_many(max_conn as u32);
-    match tokio::time::timeout(std::time::Duration::from_secs(30), drain).await {
-        Ok(_) => info!("all connections drained, shutting down"),
-        Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
-    }
-
+    drain_connections(&semaphore, max_conn).await;
     Ok(())
 }
 
+/// Sets nodelay, acquires a semaphore permit, and updates connection metrics.
+/// Returns `None` if the connection limit was reached — the caller should
+/// `continue`. Protected mode must be checked by the caller before this.
+fn accept_connection(
+    stream: &TcpStream,
+    peer: SocketAddr,
+    ctx: &Arc<ServerContext>,
+    semaphore: &Arc<Semaphore>,
+) -> Option<OwnedSemaphorePermit> {
+    if let Err(e) = stream.set_nodelay(true) {
+        warn!("failed to set TCP_NODELAY: {e}");
+    }
+
+    let permit = match semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            warn!("connection limit reached, dropping connection from {peer}");
+            if ctx.metrics_enabled {
+                crate::metrics::on_connection_rejected();
+            }
+            return None;
+        }
+    };
+
+    if ctx.metrics_enabled {
+        crate::metrics::on_connection_accepted();
+    }
+    ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
+    ctx.connections_active.fetch_add(1, Ordering::Relaxed);
+
+    Some(permit)
+}
+
+/// Performs TLS handshake with a 10-second timeout to prevent slowloris attacks.
+/// Returns `None` on handshake failure or timeout.
+async fn tls_handshake(
+    acceptor: TlsAcceptor,
+    stream: TcpStream,
+    peer: SocketAddr,
+) -> Option<tokio_rustls::server::TlsStream<TcpStream>> {
+    let handshake = tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream));
+    match handshake.await {
+        Ok(Ok(tls_stream)) => Some(tls_stream),
+        Ok(Err(e)) => {
+            warn!("TLS handshake failed from {peer}: {e}");
+            None
+        }
+        Err(_) => {
+            warn!("TLS handshake timed out from {peer}");
+            None
+        }
+    }
+}
+
+/// Decrements active connection count and records the close metric.
+fn on_connection_done(ctx: &ServerContext) {
+    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
+    if ctx.metrics_enabled {
+        crate::metrics::on_connection_closed();
+    }
+}
+
+/// Waits for all connections to drain with a 30-second timeout.
+async fn drain_connections(semaphore: &Arc<Semaphore>, max_conn: usize) {
+    info!("waiting for active connections to close...");
+    let drain = semaphore.acquire_many(max_conn as u32);
+    match tokio::time::timeout(Duration::from_secs(30), drain).await {
+        Ok(_) => info!("all connections drained, shutting down"),
+        Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
+    }
+}
+
 /// Sends the protected mode rejection message and closes the connection.
-async fn reject_protected_mode(mut stream: tokio::net::TcpStream) {
+async fn reject_protected_mode(mut stream: TcpStream) {
     let msg = "-DENIED Ember is running in protected mode \
                because no password is set. In this mode \
                connections are only accepted from the loopback \
@@ -395,32 +401,15 @@ pub async fn run_concurrent(
             result = listener.accept() => {
                 let (stream, peer) = result?;
 
-                if let Err(e) = stream.set_nodelay(true) {
-                    warn!("failed to set TCP_NODELAY: {e}");
-                }
-
                 if is_protected_mode_violation(&ctx, &peer) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
 
-                let permit = match semaphore.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        warn!("connection limit reached, dropping connection from {peer}");
-                        if metrics_enabled {
-                            crate::metrics::on_connection_rejected();
-                        }
-                        drop(stream);
-                        continue;
-                    }
+                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                    Some(p) => p,
+                    None => continue,
                 };
-
-                if metrics_enabled {
-                    crate::metrics::on_connection_accepted();
-                }
-                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
-                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
 
                 let keyspace = Arc::clone(&keyspace);
                 let engine = engine.clone();
@@ -434,10 +423,7 @@ pub async fn run_concurrent(
                     ).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
-                    if ctx.metrics_enabled {
-                        crate::metrics::on_connection_closed();
-                    }
+                    on_connection_done(&ctx);
                     drop(permit);
                 });
             }
@@ -446,32 +432,15 @@ pub async fn run_concurrent(
             result = tls_accept() => {
                 let (stream, peer, acceptor) = result?;
 
-                if let Err(e) = stream.set_nodelay(true) {
-                    warn!("failed to set TCP_NODELAY: {e}");
-                }
-
                 if is_protected_mode_violation(&ctx, &peer) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
 
-                let permit = match semaphore.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        warn!("connection limit reached, dropping TLS connection from {peer}");
-                        if metrics_enabled {
-                            crate::metrics::on_connection_rejected();
-                        }
-                        drop(stream);
-                        continue;
-                    }
+                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                    Some(p) => p,
+                    None => continue,
                 };
-
-                if metrics_enabled {
-                    crate::metrics::on_connection_accepted();
-                }
-                ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
-                ctx.connections_active.fetch_add(1, Ordering::Relaxed);
 
                 let keyspace = Arc::clone(&keyspace);
                 let engine = engine.clone();
@@ -480,42 +449,21 @@ pub async fn run_concurrent(
                 let pubsub = Arc::clone(&pubsub);
 
                 tokio::spawn(async move {
-                    let handshake = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        acceptor.accept(stream),
-                    );
-                    match handshake.await {
-                        Ok(Ok(tls_stream)) => {
-                            if let Err(e) = crate::concurrent_handler::handle(
-                                tls_stream, keyspace, engine, &ctx, &slow_log, &pubsub
-                            ).await {
-                                error!("TLS connection error from {peer}: {e}");
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            warn!("TLS handshake failed from {peer}: {e}");
-                        }
-                        Err(_) => {
-                            warn!("TLS handshake timed out from {peer}");
+                    if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
+                        if let Err(e) = crate::concurrent_handler::handle(
+                            tls_stream, keyspace, engine, &ctx, &slow_log, &pubsub
+                        ).await {
+                            error!("TLS connection error from {peer}: {e}");
                         }
                     }
-                    ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
-                    if ctx.metrics_enabled {
-                        crate::metrics::on_connection_closed();
-                    }
+                    on_connection_done(&ctx);
                     drop(permit);
                 });
             }
         }
     }
 
-    info!("waiting for active connections to close...");
-    let drain = semaphore.acquire_many(max_conn as u32);
-    match tokio::time::timeout(std::time::Duration::from_secs(30), drain).await {
-        Ok(_) => info!("all connections drained, shutting down"),
-        Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
-    }
-
+    drain_connections(&semaphore, max_conn).await;
     Ok(())
 }
 

@@ -54,12 +54,7 @@ impl PubSubManager {
     /// Subscribe to an exact channel. Returns a receiver for messages
     /// on that channel.
     pub fn subscribe(&self, channel: &str) -> broadcast::Receiver<PubMessage> {
-        let entry = self.channels.entry(channel.to_string()).or_insert_with(|| {
-            let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-            tx
-        });
-        self.subscription_count.fetch_add(1, Ordering::Relaxed);
-        entry.subscribe()
+        self.subscribe_to(&self.channels, channel)
     }
 
     /// Unsubscribe from an exact channel. Returns true if the channel
@@ -68,23 +63,28 @@ impl PubSubManager {
     /// Note: the actual receiver is dropped by the caller. This just
     /// cleans up empty channels and adjusts the subscription count.
     pub fn unsubscribe(&self, channel: &str) -> bool {
-        if let Some(entry) = self.channels.get(channel) {
-            self.subscription_count.fetch_sub(1, Ordering::Relaxed);
-            // if no receivers left, remove the channel entirely
-            if entry.receiver_count() <= 1 {
-                drop(entry);
-                self.channels.remove(channel);
-            }
-            true
-        } else {
-            false
-        }
+        self.unsubscribe_from(&self.channels, channel)
     }
 
     /// Subscribe to a glob pattern. Returns a receiver for messages
     /// matching the pattern.
     pub fn psubscribe(&self, pattern: &str) -> broadcast::Receiver<PubMessage> {
-        let entry = self.patterns.entry(pattern.to_string()).or_insert_with(|| {
+        self.subscribe_to(&self.patterns, pattern)
+    }
+
+    /// Unsubscribe from a pattern. Returns true if the pattern existed
+    /// in the registry.
+    pub fn punsubscribe(&self, pattern: &str) -> bool {
+        self.unsubscribe_from(&self.patterns, pattern)
+    }
+
+    /// Subscribes to a key in the given map (channels or patterns).
+    fn subscribe_to(
+        &self,
+        map: &DashMap<String, broadcast::Sender<PubMessage>>,
+        key: &str,
+    ) -> broadcast::Receiver<PubMessage> {
+        let entry = map.entry(key.to_string()).or_insert_with(|| {
             let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
             tx
         });
@@ -92,14 +92,18 @@ impl PubSubManager {
         entry.subscribe()
     }
 
-    /// Unsubscribe from a pattern. Returns true if the pattern existed
-    /// in the registry.
-    pub fn punsubscribe(&self, pattern: &str) -> bool {
-        if let Some(entry) = self.patterns.get(pattern) {
+    /// Unsubscribes from a key in the given map. Returns true if the
+    /// key existed. Removes the entry when no receivers remain.
+    fn unsubscribe_from(
+        &self,
+        map: &DashMap<String, broadcast::Sender<PubMessage>>,
+        key: &str,
+    ) -> bool {
+        if let Some(entry) = map.get(key) {
             self.subscription_count.fetch_sub(1, Ordering::Relaxed);
             if entry.receiver_count() <= 1 {
                 drop(entry);
-                self.patterns.remove(pattern);
+                map.remove(key);
             }
             true
         } else {
