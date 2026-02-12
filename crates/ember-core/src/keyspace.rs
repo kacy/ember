@@ -369,6 +369,27 @@ impl Keyspace {
         }
     }
 
+    /// Retrieves the raw `Bytes` for a string key, avoiding the `Value`
+    /// enum wrapper. `Bytes::clone()` is a cheap refcount increment.
+    ///
+    /// Returns `Err(WrongType)` if the key holds a non-string value.
+    pub fn get_string(&mut self, key: &str) -> Result<Option<Bytes>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+        match self.entries.get_mut(key) {
+            Some(e) => match &e.value {
+                Value::String(b) => {
+                    let data = b.clone(); // Bytes::clone is a refcount bump
+                    e.touch();
+                    Ok(Some(data))
+                }
+                _ => Err(WrongType),
+            },
+            None => Ok(None),
+        }
+    }
+
     /// Returns the type name of the value at `key`, or "none" if missing.
     pub fn value_type(&mut self, key: &str) -> &'static str {
         if self.remove_if_expired(key) {

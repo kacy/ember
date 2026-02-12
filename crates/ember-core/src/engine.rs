@@ -4,7 +4,6 @@
 //! of the key. Each shard is an independent tokio task — no locks on
 //! the hot path.
 
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::dropper::DropHandle;
@@ -198,11 +197,12 @@ impl Engine {
 
 /// Pure function: maps a key to a shard index.
 ///
-/// Uses `DefaultHasher` (SipHash) and modulo. Deterministic within a
-/// single process — that's all we need for local sharding. CRC16 will
-/// replace this when cluster-level slot assignment arrives.
+/// Uses ahash (AHash) for fast, non-cryptographic hashing. ~3x faster
+/// than SipHash for short keys. Deterministic within a single process —
+/// that's all we need for local sharding. Shard routing is trusted
+/// internal logic so DoS-resistant hashing is unnecessary here.
 fn shard_index(key: &str, shard_count: usize) -> usize {
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = ahash::AHasher::default();
     key.hash(&mut hasher);
     (hasher.finish() as usize) % shard_count
 }
