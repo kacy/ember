@@ -1531,6 +1531,52 @@ mod tests {
         assert_eq!(rec, decoded);
     }
 
+    #[cfg(feature = "vector")]
+    #[test]
+    fn record_round_trip_vadd() {
+        let rec = AofRecord::VAdd {
+            key: "embeddings".into(),
+            element: "doc1".into(),
+            vector: vec![0.1, 0.2, 0.3],
+            metric: 0,       // cosine
+            quantization: 0, // f32
+            connectivity: 16,
+            expansion_add: 64,
+        };
+        let bytes = rec.to_bytes().unwrap();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn record_round_trip_vadd_high_dim() {
+        let rec = AofRecord::VAdd {
+            key: "vecs".into(),
+            element: "e".into(),
+            vector: vec![0.0; 1536], // typical embedding dimension
+            metric: 1,               // l2
+            quantization: 1,         // f16
+            connectivity: 32,
+            expansion_add: 128,
+        };
+        let bytes = rec.to_bytes().unwrap();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn record_round_trip_vrem() {
+        let rec = AofRecord::VRem {
+            key: "embeddings".into(),
+            element: "doc1".into(),
+        };
+        let bytes = rec.to_bytes().unwrap();
+        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        assert_eq!(rec, decoded);
+    }
+
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;

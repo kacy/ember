@@ -1021,6 +1021,78 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "vector")]
+    #[test]
+    fn vector_entries_round_trip() {
+        let dir = temp_dir();
+        let path = dir.path().join("vec.snap");
+
+        let entries = vec![SnapEntry {
+            key: "embeddings".into(),
+            value: SnapValue::Vector {
+                metric: 0,
+                quantization: 0,
+                connectivity: 16,
+                expansion_add: 64,
+                dim: 3,
+                elements: vec![
+                    ("doc1".into(), vec![0.1, 0.2, 0.3]),
+                    ("doc2".into(), vec![0.4, 0.5, 0.6]),
+                ],
+            },
+            expire_ms: -1,
+        }];
+
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            for entry in &entries {
+                writer.write_entry(entry).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut got = Vec::new();
+        while let Some(entry) = reader.read_entry().unwrap() {
+            got.push(entry);
+        }
+        assert_eq!(entries, got);
+        reader.verify_footer().unwrap();
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn vector_empty_set_round_trip() {
+        let dir = temp_dir();
+        let path = dir.path().join("vec_empty.snap");
+
+        let entries = vec![SnapEntry {
+            key: "empty_vecs".into(),
+            value: SnapValue::Vector {
+                metric: 2, // inner product
+                quantization: 2,
+                connectivity: 8,
+                expansion_add: 32,
+                dim: 128,
+                elements: vec![],
+            },
+            expire_ms: 5000,
+        }];
+
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            for entry in &entries {
+                writer.write_entry(entry).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+
+        let mut reader = SnapshotReader::open(&path).unwrap();
+        let got = reader.read_entry().unwrap().unwrap();
+        assert_eq!(entries[0], got);
+        reader.verify_footer().unwrap();
+    }
+
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;
