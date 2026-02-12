@@ -16,7 +16,6 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "protobuf")]
 use bytes::Bytes;
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
@@ -233,6 +232,56 @@ async fn execute_concurrent(
             TtlResult::Milliseconds(ms) => Frame::Integer((ms / 1000) as i64),
         },
 
+        Command::Incr { key } => match keyspace.incr(&key) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::Decr { key } => match keyspace.decr(&key) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::IncrBy { key, delta } => match keyspace.incr_by(&key, delta) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::DecrBy { key, delta } => match keyspace.incr_by(&key, -delta) {
+            Ok(val) => Frame::Integer(val),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::IncrByFloat { key, delta } => match keyspace.incr_by_float(&key, delta) {
+            Ok(val) => Frame::Bulk(Bytes::from(val.to_string())),
+            Err(e) => Frame::Error(e.to_string()),
+        },
+
+        Command::Append { key, value } => {
+            let new_len = keyspace.append(&key, &value);
+            Frame::Integer(new_len as i64)
+        }
+
+        Command::Strlen { key } => Frame::Integer(keyspace.strlen(&key) as i64),
+
+        Command::Persist { key } => Frame::Integer(if keyspace.persist(&key) { 1 } else { 0 }),
+
+        Command::Pexpire {
+            key,
+            milliseconds,
+        } => Frame::Integer(if keyspace.pexpire(&key, milliseconds) {
+            1
+        } else {
+            0
+        }),
+
+        Command::Pttl { key } => match keyspace.pttl(&key) {
+            TtlResult::Milliseconds(ms) => Frame::Integer(ms as i64),
+            TtlResult::NoExpiry => Frame::Integer(-1),
+            TtlResult::NotFound => Frame::Integer(-2),
+            TtlResult::Seconds(s) => Frame::Integer(s as i64 * 1000),
+        },
+
         Command::Ping(None) => Frame::Simple("PONG".into()),
         Command::Ping(Some(msg)) => Frame::Bulk(msg),
         Command::Echo(msg) => Frame::Bulk(msg),
@@ -242,6 +291,68 @@ async fn execute_concurrent(
         Command::FlushDb { .. } => {
             keyspace.clear();
             Frame::Simple("OK".into())
+        }
+
+        Command::MGet { keys } => {
+            let mut frames = Vec::with_capacity(keys.len());
+            for key in keys {
+                match keyspace.get(&key) {
+                    Some(data) => frames.push(Frame::Bulk(data)),
+                    None => frames.push(Frame::Null),
+                }
+            }
+            Frame::Array(frames)
+        }
+
+        Command::MSet { pairs } => {
+            for (key, value) in pairs {
+                keyspace.set(key, value, None);
+            }
+            Frame::Simple("OK".into())
+        }
+
+        Command::Type { key } => {
+            if keyspace.exists(&key) {
+                Frame::Simple("string".into())
+            } else {
+                Frame::Simple("none".into())
+            }
+        }
+
+        Command::Keys { pattern } => {
+            let matched = keyspace.keys(&pattern);
+            Frame::Array(
+                matched
+                    .into_iter()
+                    .map(|k| Frame::Bulk(Bytes::from(k)))
+                    .collect(),
+            )
+        }
+
+        Command::Scan {
+            cursor,
+            pattern,
+            count,
+        } => {
+            let (next_cursor, keys) =
+                keyspace.scan_keys(cursor, count.unwrap_or(10), pattern.as_deref());
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from(next_cursor.to_string())),
+                Frame::Array(
+                    keys.into_iter()
+                        .map(|k| Frame::Bulk(Bytes::from(k)))
+                        .collect(),
+                ),
+            ])
+        }
+
+        Command::Rename { key, newkey } => match keyspace.rename(&key, &newkey) {
+            Ok(()) => Frame::Simple("OK".into()),
+            Err(msg) => Frame::Error(msg.into()),
+        },
+
+        Command::Info { section } => {
+            render_concurrent_info(keyspace, ctx, section.as_deref())
         }
 
         // -- pub/sub --
@@ -565,4 +676,76 @@ async fn execute_concurrent(
 
         _ => Frame::Error("ERR command not supported in concurrent mode".into()),
     }
+}
+
+/// Renders INFO output for the concurrent keyspace.
+fn render_concurrent_info(
+    keyspace: &ConcurrentKeyspace,
+    ctx: &ServerContext,
+    section: Option<&str>,
+) -> Frame {
+    let section_upper = section.map(|s| s.to_ascii_uppercase());
+    let want_all = section_upper.is_none();
+    let want = |name: &str| want_all || section_upper.as_deref() == Some(name);
+
+    let mut out = String::with_capacity(512);
+
+    if want("SERVER") {
+        let uptime = ctx.start_time.elapsed().as_secs();
+        out.push_str("# Server\r\n");
+        out.push_str(&format!("ember_version:{}\r\n", ctx.version));
+        out.push_str(&format!("process_id:{}\r\n", std::process::id()));
+        out.push_str(&format!("uptime_in_seconds:{uptime}\r\n"));
+        out.push_str("mode:concurrent\r\n");
+        out.push_str("\r\n");
+    }
+
+    if want("CLIENTS") {
+        let connected = ctx.connections_active.load(Ordering::Relaxed);
+        out.push_str("# Clients\r\n");
+        out.push_str(&format!("connected_clients:{connected}\r\n"));
+        out.push_str(&format!("max_clients:{}\r\n", ctx.max_connections));
+        out.push_str("\r\n");
+    }
+
+    if want("MEMORY") {
+        let used = keyspace.memory_used();
+        out.push_str("# Memory\r\n");
+        out.push_str(&format!("used_memory:{used}\r\n"));
+        if let Some(max) = ctx.max_memory {
+            out.push_str(&format!("max_memory:{max}\r\n"));
+        } else {
+            out.push_str("max_memory:0\r\n");
+        }
+        out.push_str("\r\n");
+    }
+
+    if want("STATS") {
+        let total_cmds = ctx.commands_processed.load(Ordering::Relaxed);
+        let total_conns = ctx.connections_accepted.load(Ordering::Relaxed);
+        out.push_str("# Stats\r\n");
+        out.push_str(&format!("total_connections_received:{total_conns}\r\n"));
+        out.push_str(&format!("total_commands_processed:{total_cmds}\r\n"));
+        out.push_str("\r\n");
+    }
+
+    if want("KEYSPACE") {
+        let key_count = keyspace.len();
+        out.push_str("# Keyspace\r\n");
+        if key_count > 0 {
+            out.push_str(&format!(
+                "db0:keys={},used_bytes={}\r\n",
+                key_count,
+                keyspace.memory_used()
+            ));
+        }
+        out.push_str("\r\n");
+    }
+
+    // trim trailing blank line
+    if out.ends_with("\r\n\r\n") {
+        out.truncate(out.len() - 2);
+    }
+
+    Frame::Bulk(Bytes::from(out))
 }
