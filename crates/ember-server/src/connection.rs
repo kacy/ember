@@ -19,7 +19,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE,
+    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT,
+    MAX_AUTH_FAILURES, MAX_BUF_SIZE,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
@@ -45,6 +46,7 @@ where
 {
     // per-connection auth state. auto-authenticated when no password is set.
     let mut authenticated = ctx.requirepass.is_none();
+    let mut auth_failures: u32 = 0;
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -98,6 +100,14 @@ where
                     response.serialize(&mut out);
                     if success {
                         authenticated = true;
+                    } else {
+                        auth_failures += 1;
+                        if auth_failures >= MAX_AUTH_FAILURES {
+                            Frame::Error("ERR too many AUTH failures, closing connection".into())
+                                .serialize(&mut out);
+                            let _ = stream.write_all(&out).await;
+                            return Ok(());
+                        }
                     }
                 } else if is_allowed_before_auth(&frame) {
                     let response = process(frame, &engine, ctx, slow_log, pubsub).await;
@@ -1602,9 +1612,9 @@ async fn execute(
                         .unwrap_or_default()
                         .as_secs();
                     Frame::Array(vec![
-                        Frame::Integer(e.id as i64),
-                        Frame::Integer(ts as i64),
-                        Frame::Integer(e.duration.as_micros() as i64),
+                        Frame::Integer(e.id.min(i64::MAX as u64) as i64),
+                        Frame::Integer(ts.min(i64::MAX as u64) as i64),
+                        Frame::Integer(e.duration.as_micros().min(i64::MAX as u128) as i64),
                         Frame::Array(vec![Frame::Bulk(Bytes::from(e.command))]),
                     ])
                 })

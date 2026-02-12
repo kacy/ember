@@ -25,7 +25,8 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_BUF_SIZE,
+    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT,
+    MAX_AUTH_FAILURES, MAX_BUF_SIZE,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
@@ -47,6 +48,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut authenticated = ctx.requirepass.is_none();
+    let mut auth_failures: u32 = 0;
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -79,6 +81,16 @@ where
                             response.serialize(&mut out);
                             if success {
                                 authenticated = true;
+                            } else {
+                                auth_failures += 1;
+                                if auth_failures >= MAX_AUTH_FAILURES {
+                                    Frame::Error(
+                                        "ERR too many AUTH failures, closing connection".into(),
+                                    )
+                                    .serialize(&mut out);
+                                    let _ = stream.write_all(&out).await;
+                                    return Ok(());
+                                }
                             }
                         } else if is_allowed_before_auth(&frame) {
                             let response =

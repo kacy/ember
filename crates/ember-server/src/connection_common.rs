@@ -27,6 +27,10 @@ pub const MAX_BUF_SIZE: usize = 64 * 1024 * 1024;
 /// 5 minutes matches Redis default behavior.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Maximum number of failed AUTH attempts before the connection is closed.
+/// Prevents brute-force password guessing. Matches Redis 6.2+ behavior.
+pub const MAX_AUTH_FAILURES: u32 = 10;
+
 /// Checks if a raw frame is an AUTH command (before full parsing).
 ///
 /// Peeks at the first bulk element to avoid a full `Command::from_frame`
