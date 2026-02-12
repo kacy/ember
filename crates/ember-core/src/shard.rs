@@ -656,6 +656,25 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
     }
 }
 
+/// Converts an `IncrError` result into a `ShardResponse::Integer`.
+fn incr_result(result: Result<i64, IncrError>) -> ShardResponse {
+    match result {
+        Ok(val) => ShardResponse::Integer(val),
+        Err(IncrError::WrongType) => ShardResponse::WrongType,
+        Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
+        Err(e) => ShardResponse::Err(e.to_string()),
+    }
+}
+
+/// Converts a `WriteError` result into a `ShardResponse::Len`.
+fn write_result_len(result: Result<usize, WriteError>) -> ShardResponse {
+    match result {
+        Ok(len) => ShardResponse::Len(len),
+        Err(WriteError::WrongType) => ShardResponse::WrongType,
+        Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+    }
+}
+
 /// Executes a single request against the keyspace.
 fn dispatch(
     ks: &mut Keyspace,
@@ -687,31 +706,11 @@ fn dispatch(
                 SetResult::OutOfMemory => ShardResponse::OutOfMemory,
             }
         }
-        ShardRequest::Incr { key } => match ks.incr(key) {
-            Ok(val) => ShardResponse::Integer(val),
-            Err(IncrError::WrongType) => ShardResponse::WrongType,
-            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
-            Err(e) => ShardResponse::Err(e.to_string()),
-        },
-        ShardRequest::Decr { key } => match ks.decr(key) {
-            Ok(val) => ShardResponse::Integer(val),
-            Err(IncrError::WrongType) => ShardResponse::WrongType,
-            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
-            Err(e) => ShardResponse::Err(e.to_string()),
-        },
-        ShardRequest::IncrBy { key, delta } => match ks.incr_by(key, *delta) {
-            Ok(val) => ShardResponse::Integer(val),
-            Err(IncrError::WrongType) => ShardResponse::WrongType,
-            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
-            Err(e) => ShardResponse::Err(e.to_string()),
-        },
+        ShardRequest::Incr { key } => incr_result(ks.incr(key)),
+        ShardRequest::Decr { key } => incr_result(ks.decr(key)),
+        ShardRequest::IncrBy { key, delta } => incr_result(ks.incr_by(key, *delta)),
         ShardRequest::DecrBy { key, delta } => match delta.checked_neg() {
-            Some(neg) => match ks.incr_by(key, neg) {
-                Ok(val) => ShardResponse::Integer(val),
-                Err(IncrError::WrongType) => ShardResponse::WrongType,
-                Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
-                Err(e) => ShardResponse::Err(e.to_string()),
-            },
+            Some(neg) => incr_result(ks.incr_by(key, neg)),
             None => ShardResponse::Err("ERR increment or decrement would overflow".into()),
         },
         ShardRequest::IncrByFloat { key, delta } => match ks.incr_by_float(key, *delta) {
@@ -720,11 +719,7 @@ fn dispatch(
             Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
             Err(e) => ShardResponse::Err(e.to_string()),
         },
-        ShardRequest::Append { key, value } => match ks.append(key, value) {
-            Ok(len) => ShardResponse::Len(len),
-            Err(WriteError::WrongType) => ShardResponse::WrongType,
-            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
-        },
+        ShardRequest::Append { key, value } => write_result_len(ks.append(key, value)),
         ShardRequest::Strlen { key } => match ks.strlen(key) {
             Ok(len) => ShardResponse::Len(len),
             Err(_) => ShardResponse::WrongType,
@@ -750,16 +745,8 @@ fn dispatch(
         ShardRequest::Pexpire { key, milliseconds } => {
             ShardResponse::Bool(ks.pexpire(key, *milliseconds))
         }
-        ShardRequest::LPush { key, values } => match ks.lpush(key, values) {
-            Ok(len) => ShardResponse::Len(len),
-            Err(WriteError::WrongType) => ShardResponse::WrongType,
-            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
-        },
-        ShardRequest::RPush { key, values } => match ks.rpush(key, values) {
-            Ok(len) => ShardResponse::Len(len),
-            Err(WriteError::WrongType) => ShardResponse::WrongType,
-            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
-        },
+        ShardRequest::LPush { key, values } => write_result_len(ks.lpush(key, values)),
+        ShardRequest::RPush { key, values } => write_result_len(ks.rpush(key, values)),
         ShardRequest::LPop { key } => match ks.lpop(key) {
             Ok(val) => ShardResponse::Value(val.map(Value::String)),
             Err(_) => ShardResponse::WrongType,
@@ -844,11 +831,7 @@ fn dispatch(
                 keys,
             }
         }
-        ShardRequest::HSet { key, fields } => match ks.hset(key, fields) {
-            Ok(count) => ShardResponse::Len(count),
-            Err(WriteError::WrongType) => ShardResponse::WrongType,
-            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
-        },
+        ShardRequest::HSet { key, fields } => write_result_len(ks.hset(key, fields)),
         ShardRequest::HGet { key, field } => match ks.hget(key, field) {
             Ok(val) => ShardResponse::Value(val.map(Value::String)),
             Err(_) => ShardResponse::WrongType,
@@ -872,12 +855,7 @@ fn dispatch(
             Ok(len) => ShardResponse::Len(len),
             Err(_) => ShardResponse::WrongType,
         },
-        ShardRequest::HIncrBy { key, field, delta } => match ks.hincrby(key, field, *delta) {
-            Ok(val) => ShardResponse::Integer(val),
-            Err(IncrError::WrongType) => ShardResponse::WrongType,
-            Err(IncrError::OutOfMemory) => ShardResponse::OutOfMemory,
-            Err(e) => ShardResponse::Err(e.to_string()),
-        },
+        ShardRequest::HIncrBy { key, field, delta } => incr_result(ks.hincrby(key, field, *delta)),
         ShardRequest::HKeys { key } => match ks.hkeys(key) {
             Ok(keys) => ShardResponse::StringArray(keys),
             Err(_) => ShardResponse::WrongType,
@@ -890,11 +868,7 @@ fn dispatch(
             Ok(vals) => ShardResponse::OptionalArray(vals),
             Err(_) => ShardResponse::WrongType,
         },
-        ShardRequest::SAdd { key, members } => match ks.sadd(key, members) {
-            Ok(count) => ShardResponse::Len(count),
-            Err(WriteError::WrongType) => ShardResponse::WrongType,
-            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
-        },
+        ShardRequest::SAdd { key, members } => write_result_len(ks.sadd(key, members)),
         ShardRequest::SRem { key, members } => match ks.srem(key, members) {
             Ok(count) => ShardResponse::Len(count),
             Err(_) => ShardResponse::WrongType,
