@@ -958,6 +958,137 @@ mod tests {
         assert!(result.entries[0].ttl.is_some());
     }
 
+    #[cfg(feature = "vector")]
+    #[test]
+    fn vector_snapshot_recovery() {
+        let dir = temp_dir();
+        let path = snapshot::snapshot_path(dir.path(), 0);
+
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            writer
+                .write_entry(&SnapEntry {
+                    key: "embeddings".into(),
+                    value: SnapValue::Vector {
+                        metric: 0,
+                        quantization: 0,
+                        connectivity: 16,
+                        expansion_add: 64,
+                        dim: 3,
+                        elements: vec![
+                            ("doc1".into(), vec![1.0, 0.0, 0.0]),
+                            ("doc2".into(), vec![0.0, 1.0, 0.0]),
+                        ],
+                    },
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer.finish().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.loaded_snapshot);
+        assert_eq!(result.entries.len(), 1);
+        match &result.entries[0].value {
+            RecoveredValue::Vector {
+                metric,
+                quantization,
+                elements,
+                ..
+            } => {
+                assert_eq!(*metric, 0);
+                assert_eq!(*quantization, 0);
+                assert_eq!(elements.len(), 2);
+                // dim is inferred from the vector length
+                assert_eq!(elements[0].1.len(), 3);
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn vector_aof_replay() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::VAdd {
+                    key: "vecs".into(),
+                    element: "a".into(),
+                    vector: vec![1.0, 0.0, 0.0],
+                    metric: 0,
+                    quantization: 0,
+                    connectivity: 16,
+                    expansion_add: 64,
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::VAdd {
+                    key: "vecs".into(),
+                    element: "b".into(),
+                    vector: vec![0.0, 1.0, 0.0],
+                    metric: 0,
+                    quantization: 0,
+                    connectivity: 16,
+                    expansion_add: 64,
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::VRem {
+                    key: "vecs".into(),
+                    element: "a".into(),
+                })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.replayed_aof);
+        assert_eq!(result.entries.len(), 1);
+        match &result.entries[0].value {
+            RecoveredValue::Vector { elements, .. } => {
+                assert_eq!(elements.len(), 1);
+                assert_eq!(elements[0].0, "b");
+            }
+            other => panic!("expected Vector, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn vector_vrem_auto_deletes_empty() {
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+
+        {
+            let mut writer = AofWriter::open(&path).unwrap();
+            writer
+                .write_record(&AofRecord::VAdd {
+                    key: "vecs".into(),
+                    element: "only".into(),
+                    vector: vec![1.0, 2.0],
+                    metric: 0,
+                    quantization: 0,
+                    connectivity: 16,
+                    expansion_add: 64,
+                })
+                .unwrap();
+            writer
+                .write_record(&AofRecord::VRem {
+                    key: "vecs".into(),
+                    element: "only".into(),
+                })
+                .unwrap();
+            writer.sync().unwrap();
+        }
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.entries.is_empty());
+    }
+
     #[cfg(feature = "protobuf")]
     #[test]
     fn proto_schemas_recovered_from_aof() {
