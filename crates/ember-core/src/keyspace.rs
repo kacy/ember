@@ -327,6 +327,23 @@ impl Keyspace {
         self.drop_handle = Some(handle);
     }
 
+    /// Decrements the expiry count if the entry had a TTL set.
+    fn decrement_expiry_if_set(&mut self, entry: &Entry) {
+        if entry.expires_at_ms != 0 {
+            self.expiry_count = self.expiry_count.saturating_sub(1);
+        }
+    }
+
+    /// Adjusts the expiry count when replacing an entry whose TTL status
+    /// may have changed (e.g. SET overwriting an existing key).
+    fn adjust_expiry_count(&mut self, had_expiry: bool, has_expiry: bool) {
+        match (had_expiry, has_expiry) {
+            (false, true) => self.expiry_count += 1,
+            (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
+            _ => {}
+        }
+    }
+
     /// Retrieves the string value for `key`, or `None` if missing/expired.
     ///
     /// Returns `Err(WrongType)` if the key holds a non-string value.
@@ -386,13 +403,7 @@ impl Keyspace {
 
         if let Some(old_entry) = self.entries.get(&key) {
             self.memory.replace(&key, &old_entry.value, &new_value);
-            // adjust expiry count if the TTL status changed
-            let had_expiry = old_entry.expires_at_ms != 0;
-            match (had_expiry, has_expiry) {
-                (false, true) => self.expiry_count += 1,
-                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
-                _ => {}
-            }
+            self.adjust_expiry_count(old_entry.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &new_value);
             if has_expiry {
@@ -428,9 +439,7 @@ impl Keyspace {
         if let Some(key) = victim {
             if let Some(entry) = self.entries.remove(&key) {
                 self.memory.remove(&key, &entry.value);
-                if entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
+                self.decrement_expiry_if_set(&entry);
                 self.evicted_total += 1;
                 self.defer_drop(entry.value);
                 return true;
@@ -474,9 +483,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
-            if entry.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
+            self.decrement_expiry_if_set(&entry);
             self.defer_drop(entry.value);
             true
         } else {
@@ -495,9 +502,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
-            if entry.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
+            self.decrement_expiry_if_set(&entry);
             // always defer for UNLINK, regardless of value size
             if let Some(ref handle) = self.drop_handle {
                 handle.defer_value(entry.value);
@@ -808,16 +813,12 @@ impl Keyspace {
 
         // update memory tracking for old key removal
         self.memory.remove(key, &entry.value);
-        if entry.expires_at_ms != 0 {
-            self.expiry_count = self.expiry_count.saturating_sub(1);
-        }
+        self.decrement_expiry_if_set(&entry);
 
         // remove destination if it exists
         if let Some(old_dest) = self.entries.remove(newkey) {
             self.memory.remove(newkey, &old_dest.value);
-            if old_dest.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
+            self.decrement_expiry_if_set(&old_dest);
         }
 
         // re-insert with the new key name, preserving value and expiry
@@ -933,12 +934,7 @@ impl Keyspace {
         // if replacing an existing entry, adjust memory tracking
         if let Some(old) = self.entries.get(&key) {
             self.memory.replace(&key, &old.value, &value);
-            let had_expiry = old.expires_at_ms != 0;
-            match (had_expiry, has_expiry) {
-                (false, true) => self.expiry_count += 1,
-                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
-                _ => {}
-            }
+            self.adjust_expiry_count(old.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &value);
             if has_expiry {
@@ -1864,9 +1860,7 @@ impl Keyspace {
         if expired {
             if let Some(entry) = self.entries.remove(key) {
                 self.memory.remove(key, &entry.value);
-                if entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
+                self.decrement_expiry_if_set(&entry);
                 self.expired_total += 1;
                 self.defer_drop(entry.value);
             }
