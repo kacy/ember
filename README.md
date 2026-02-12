@@ -262,15 +262,15 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 
 | mode | vs redis | vs dragonfly | best for |
 |------|----------|--------------|----------|
-| concurrent | **1.9-2.2x faster** | **2.0-2.7x faster**\* | simple GET/SET workloads |
-| sharded | ~0.9x (channel overhead) | ~1.0-1.1x | all data types |
+| concurrent | **2.3-3.0x faster** | **6.5-6.6x faster**\* | simple GET/SET workloads |
+| sharded | ~1.1x (P=1), ~0.5x (P=16) | ~1.0-1.4x | all data types |
 
 \*take these comparisons with a grain of salt. ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
 
 **highlights**:
-- concurrent mode: 1.90M SET/sec, 2.58M GET/sec (simple GET/SET only)
-- p99 latency: 0.4ms (same as redis)
-- memory: ~161 bytes/key (redis: ~105 bytes/key)
+- concurrent mode: 4.56M SET/sec, 6.62M GET/sec (memtier, P=16)
+- p99 latency: 0.6ms SET, 0.6ms GET (P=1, concurrent mode)
+- memory: ~161 bytes/key (redis: ~95 bytes/key)
 
 ```bash
 ./bench/bench-quick.sh       # quick sanity check
@@ -284,7 +284,7 @@ ember offers two execution modes:
 
 **sharded mode** (default): thread-per-core with channel-based routing. supports all data types (lists, hashes, sets, sorted sets). has channel overhead but enables atomic multi-key operations.
 
-**concurrent mode** (`--concurrent`): lock-free DashMap access. 2x faster than sharded mode but only supports string operations.
+**concurrent mode** (`--concurrent`): lock-free DashMap access. 2-3x faster than Redis but only supports string operations.
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
