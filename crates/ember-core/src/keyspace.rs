@@ -513,7 +513,8 @@ impl Keyspace {
                 if entry.expires_at_ms == 0 {
                     self.expiry_count += 1;
                 }
-                entry.expires_at_ms = time::now_ms() + seconds * 1000;
+                entry.expires_at_ms = time::now_ms()
+                    .saturating_add(seconds.saturating_mul(1000));
                 true
             }
             None => false,
@@ -589,7 +590,7 @@ impl Keyspace {
                 if entry.expires_at_ms == 0 {
                     self.expiry_count += 1;
                 }
-                entry.expires_at_ms = time::now_ms() + millis;
+                entry.expires_at_ms = time::now_ms().saturating_add(millis);
                 true
             }
             None => false,
