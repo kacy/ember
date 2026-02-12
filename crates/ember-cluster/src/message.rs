@@ -403,7 +403,7 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
     for _ in 0..slot_count {
         let start = buf.get_u16_le();
         let end = buf.get_u16_le();
-        slots.push(SlotRange::new(start, end));
+        slots.push(SlotRange::try_new(start, end)?);
     }
     Ok(MemberInfo {
         id,
@@ -578,5 +578,43 @@ mod tests {
     fn unknown_message_type_error() {
         let result = GossipMessage::decode(&[255]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_slot_range_in_welcome_rejected() {
+        // craft a Welcome message with an invalid slot range (start > end)
+        let mut buf = BytesMut::new();
+        buf.put_u8(MSG_WELCOME);
+        encode_node_id(&mut buf, &NodeId::new());
+        buf.put_u16_le(1); // 1 member
+        encode_node_id(&mut buf, &NodeId::new());
+        encode_socket_addr(&mut buf, &test_addr());
+        buf.put_u64_le(1); // incarnation
+        buf.put_u8(1); // is_primary
+        buf.put_u16_le(1); // 1 slot range
+        buf.put_u16_le(5000); // start
+        buf.put_u16_le(100); // end < start — invalid
+
+        let result = GossipMessage::decode(&buf);
+        assert!(result.is_err(), "should reject inverted slot range");
+    }
+
+    #[test]
+    fn out_of_range_slot_in_welcome_rejected() {
+        // craft a Welcome message with a slot >= 16384
+        let mut buf = BytesMut::new();
+        buf.put_u8(MSG_WELCOME);
+        encode_node_id(&mut buf, &NodeId::new());
+        buf.put_u16_le(1);
+        encode_node_id(&mut buf, &NodeId::new());
+        encode_socket_addr(&mut buf, &test_addr());
+        buf.put_u64_le(1);
+        buf.put_u8(1);
+        buf.put_u16_le(1); // 1 slot range
+        buf.put_u16_le(0);
+        buf.put_u16_le(16384); // out of range
+
+        let result = GossipMessage::decode(&buf);
+        assert!(result.is_err(), "should reject slot >= 16384");
     }
 }

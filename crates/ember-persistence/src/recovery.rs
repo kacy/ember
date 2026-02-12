@@ -259,7 +259,7 @@ fn replay_aof(
             }
             AofRecord::Expire { key, seconds } => {
                 if let Some(entry) = map.get_mut(&key) {
-                    entry.1 = (seconds * 1000) as i64;
+                    entry.1 = seconds.saturating_mul(1000).min(i64::MAX as u64) as i64;
                 }
             }
             AofRecord::LPush { key, values } => {
@@ -348,7 +348,7 @@ fn replay_aof(
             }
             AofRecord::Pexpire { key, milliseconds } => {
                 if let Some(entry) = map.get_mut(&key) {
-                    entry.1 = milliseconds as i64;
+                    entry.1 = milliseconds.min(i64::MAX as u64) as i64;
                 }
             }
             AofRecord::Incr { key } => {
