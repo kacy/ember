@@ -876,6 +876,51 @@ mod tests {
         assert_eq!(p, PathBuf::from("/data/shard-5.snap"));
     }
 
+    #[test]
+    fn truncated_snapshot_detected() {
+        let dir = temp_dir();
+        let path = dir.path().join("truncated.snap");
+
+        // write a valid 2-entry snapshot
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            writer
+                .write_entry(&SnapEntry {
+                    key: "a".into(),
+                    value: SnapValue::String(Bytes::from("1")),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer
+                .write_entry(&SnapEntry {
+                    key: "b".into(),
+                    value: SnapValue::String(Bytes::from("2")),
+                    expire_ms: 5000,
+                })
+                .unwrap();
+            writer.finish().unwrap();
+        }
+
+        // truncate the file mid-way through the second entry
+        let data = fs::read(&path).unwrap();
+        let truncated = &data[..data.len() - 20];
+        fs::write(&path, truncated).unwrap();
+
+        let mut reader = SnapshotReader::open(&path).unwrap();
+        assert_eq!(reader.entry_count, 2);
+
+        // first entry should still be readable
+        let first = reader.read_entry().unwrap();
+        assert!(first.is_some());
+
+        // second entry should fail with an EOF-related error
+        let err = reader.read_entry().unwrap_err();
+        assert!(
+            matches!(err, FormatError::UnexpectedEof | FormatError::Io(_)),
+            "expected EOF error, got {err:?}"
+        );
+    }
+
     #[cfg(feature = "encryption")]
     mod encrypted {
         use super::*;

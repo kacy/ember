@@ -187,9 +187,13 @@ async fn main() {
         }
     }
 
-    let addr: SocketAddr = format!("{}:{}", args.host, args.port)
-        .parse()
-        .expect("invalid bind address");
+    let addr: SocketAddr = match format!("{}:{}", args.host, args.port).parse() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("invalid bind address '{}:{}': {e}", args.host, args.port);
+            std::process::exit(1);
+        }
+    };
 
     let max_memory = args.max_memory.as_deref().map(|s| {
         parse_byte_size(s).unwrap_or_else(|e| {
@@ -301,9 +305,17 @@ async fn main() {
 
     // install prometheus metrics exporter if --metrics-port is set
     if let Some(metrics_port) = args.metrics_port {
-        let metrics_addr: std::net::SocketAddr = format!("{}:{}", args.host, metrics_port)
-            .parse()
-            .expect("invalid metrics bind address");
+        let metrics_addr: std::net::SocketAddr =
+            match format!("{}:{}", args.host, metrics_port).parse() {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!(
+                        "invalid metrics bind address '{}:{metrics_port}': {e}",
+                        args.host
+                    );
+                    std::process::exit(1);
+                }
+            };
         if let Err(e) = metrics::install_exporter(metrics_addr) {
             eprintln!("failed to start metrics exporter: {e}");
             std::process::exit(1);
@@ -346,9 +358,16 @@ async fn main() {
             }
         };
 
-        let tls_addr: SocketAddr = format!("{}:{}", args.host, tls_port)
-            .parse()
-            .expect("invalid TLS bind address");
+        let tls_addr: SocketAddr = match format!("{}:{}", args.host, tls_port).parse() {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!(
+                    "invalid TLS bind address '{}:{tls_port}': {e}",
+                    args.host
+                );
+                std::process::exit(1);
+            }
+        };
 
         info!(
             tls_port = tls_port,
@@ -382,6 +401,14 @@ async fn main() {
 
     // build cluster coordinator if cluster mode is enabled
     let cluster: Option<Arc<ClusterCoordinator>> = if args.cluster_enabled {
+        if args.port.checked_add(args.cluster_port_offset).is_none() {
+            eprintln!(
+                "error: port {} + cluster-port-offset {} exceeds u16 range",
+                args.port, args.cluster_port_offset
+            );
+            std::process::exit(1);
+        }
+
         let local_id = NodeId::new();
         let gossip_config = GossipConfig {
             gossip_port_offset: args.cluster_port_offset,

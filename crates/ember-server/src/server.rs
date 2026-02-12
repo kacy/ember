@@ -267,10 +267,13 @@ pub async fn run(
         }
     }
 
-    // wait for all connection handlers to finish by acquiring all permits
+    // wait for all connection handlers to finish, with a timeout
     info!("waiting for active connections to close...");
-    let _ = semaphore.acquire_many(max_conn as u32).await;
-    info!("all connections drained, shutting down");
+    let drain = semaphore.acquire_many(max_conn as u32);
+    match tokio::time::timeout(std::time::Duration::from_secs(30), drain).await {
+        Ok(_) => info!("all connections drained, shutting down"),
+        Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
+    }
 
     Ok(())
 }
@@ -493,8 +496,11 @@ pub async fn run_concurrent(
     }
 
     info!("waiting for active connections to close...");
-    let _ = semaphore.acquire_many(max_conn as u32).await;
-    info!("all connections drained, shutting down");
+    let drain = semaphore.acquire_many(max_conn as u32);
+    match tokio::time::timeout(std::time::Duration::from_secs(30), drain).await {
+        Ok(_) => info!("all connections drained, shutting down"),
+        Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
+    }
 
     Ok(())
 }

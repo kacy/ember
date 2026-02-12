@@ -1033,6 +1033,20 @@ where
     resp
 }
 
+/// Clamps a duration's millisecond value to fit in i64.
+///
+/// `Duration::as_millis()` returns u128 which silently wraps when cast
+/// to i64 for TTLs longer than ~292 million years. This caps at i64::MAX
+/// instead, preserving "very long TTL" semantics without sign corruption.
+fn duration_to_expire_ms(d: Duration) -> i64 {
+    let ms = d.as_millis();
+    if ms > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        ms as i64
+    }
+}
+
 /// Converts a successful mutation request+response pair into an AOF record.
 /// Returns None for non-mutation requests or failed mutations.
 fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> {
@@ -1043,7 +1057,7 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             },
             ShardResponse::Ok,
         ) => {
-            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
+            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
             Some(AofRecord::Set {
                 key: key.clone(),
                 value: value.clone(),
@@ -1180,7 +1194,7 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
             },
             ShardResponse::Ok,
         ) => {
-            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
+            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
             Some(AofRecord::ProtoSet {
                 key: key.clone(),
                 type_name: type_name.clone(),
@@ -1205,7 +1219,7 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 expire,
             },
         ) => {
-            let expire_ms = expire.map(|d| d.as_millis() as i64).unwrap_or(-1);
+            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
             Some(AofRecord::ProtoSet {
                 key: key.clone(),
                 type_name: type_name.clone(),
