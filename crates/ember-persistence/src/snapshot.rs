@@ -280,14 +280,14 @@ impl SnapshotWriter {
             }
             SnapValue::List(deque) => {
                 format::write_u8(&mut buf, TYPE_LIST)?;
-                format::write_u32(&mut buf, deque.len() as u32)?;
+                format::write_len(&mut buf, deque.len())?;
                 for item in deque {
                     format::write_bytes(&mut buf, item)?;
                 }
             }
             SnapValue::SortedSet(members) => {
                 format::write_u8(&mut buf, TYPE_SORTED_SET)?;
-                format::write_u32(&mut buf, members.len() as u32)?;
+                format::write_len(&mut buf, members.len())?;
                 for (score, member) in members {
                     format::write_f64(&mut buf, *score)?;
                     format::write_bytes(&mut buf, member.as_bytes())?;
@@ -295,7 +295,7 @@ impl SnapshotWriter {
             }
             SnapValue::Hash(map) => {
                 format::write_u8(&mut buf, TYPE_HASH)?;
-                format::write_u32(&mut buf, map.len() as u32)?;
+                format::write_len(&mut buf, map.len())?;
                 for (field, value) in map {
                     format::write_bytes(&mut buf, field.as_bytes())?;
                     format::write_bytes(&mut buf, value)?;
@@ -303,7 +303,7 @@ impl SnapshotWriter {
             }
             SnapValue::Set(set) => {
                 format::write_u8(&mut buf, TYPE_SET)?;
-                format::write_u32(&mut buf, set.len() as u32)?;
+                format::write_len(&mut buf, set.len())?;
                 for member in set {
                     format::write_bytes(&mut buf, member.as_bytes())?;
                 }
@@ -323,7 +323,7 @@ impl SnapshotWriter {
                 format::write_u32(&mut buf, *connectivity)?;
                 format::write_u32(&mut buf, *expansion_add)?;
                 format::write_u32(&mut buf, *dim)?;
-                format::write_u32(&mut buf, elements.len() as u32)?;
+                format::write_len(&mut buf, elements.len())?;
                 for (name, vector) in elements {
                     format::write_bytes(&mut buf, name.as_bytes())?;
                     for &v in vector {
@@ -343,13 +343,19 @@ impl SnapshotWriter {
         #[cfg(feature = "encryption")]
         if let Some(ref key) = self.encryption_key {
             let (nonce, ciphertext) = crate::encryption::encrypt_record(key, &buf)?;
+            let ct_len = u32::try_from(ciphertext.len()).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "encrypted record exceeds u32::MAX bytes",
+                )
+            })?;
             // footer CRC covers the encrypted envelope
             self.hasher.update(&nonce);
-            let ct_len_bytes = (ciphertext.len() as u32).to_le_bytes();
+            let ct_len_bytes = ct_len.to_le_bytes();
             self.hasher.update(&ct_len_bytes);
             self.hasher.update(&ciphertext);
             self.writer.write_all(&nonce)?;
-            format::write_u32(&mut self.writer, ciphertext.len() as u32)?;
+            format::write_u32(&mut self.writer, ct_len)?;
             self.writer.write_all(&ciphertext)?;
             self.count += 1;
             return Ok(());

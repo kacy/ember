@@ -94,9 +94,28 @@ pub fn write_f64(w: &mut impl Write, val: f64) -> io::Result<()> {
     w.write_all(&val.to_le_bytes())
 }
 
+/// Writes a collection length as u32, returning an error if it exceeds `u32::MAX`.
+pub fn write_len(w: &mut impl Write, len: usize) -> io::Result<()> {
+    let len = u32::try_from(len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("collection length {len} exceeds u32::MAX"),
+        )
+    })?;
+    write_u32(w, len)
+}
+
 /// Writes a length-prefixed byte slice: `[len: u32][data]`.
+///
+/// Returns an error if the data length exceeds `u32::MAX`.
 pub fn write_bytes(w: &mut impl Write, data: &[u8]) -> io::Result<()> {
-    write_u32(w, data.len() as u32)?;
+    let len = u32::try_from(data.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("data length {} exceeds u32::MAX", data.len()),
+        )
+    })?;
+    write_u32(w, len)?;
     w.write_all(data)
 }
 
