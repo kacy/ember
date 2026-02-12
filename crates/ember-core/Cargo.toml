@@ -12,6 +12,7 @@ readme = "README.md"
 [features]
 encryption = ["ember-persistence/encryption"]
 protobuf = ["prost-reflect", "ember-persistence/protobuf"]
+vector = ["usearch", "ember-persistence/vector"]
 
 [lib]
 name = "ember_core"
@@ -27,6 +28,7 @@ tracing = { workspace = true }
 rand = { workspace = true }
 ordered-float = { workspace = true }
 prost-reflect = { workspace = true, optional = true }
+usearch = { workspace = true, optional = true }
 dashmap = "6"
 parking_lot = "0.12"
 

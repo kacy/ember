@@ -4,6 +4,8 @@
 //! sets, hashes, and sets are supported.
 
 pub mod sorted_set;
+#[cfg(feature = "vector")]
+pub mod vector;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 

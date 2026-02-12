@@ -64,6 +64,9 @@ rustls-native-certs = "0.8"
 # dynamic protobuf messages
 prost-reflect = "0.16"
 
+# HNSW vector similarity search
+usearch = "2.23"
+
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.4.3", path = "crates/ember-core" }
 ember-protocol = { version = "0.4.3", path = "crates/ember-protocol" }
