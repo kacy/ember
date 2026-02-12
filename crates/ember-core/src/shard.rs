@@ -651,63 +651,35 @@ async fn run_shard(
             msg = rx.recv() => {
                 match msg {
                     Some(msg) => {
-                        let request_kind = describe_request(&msg.request);
-                        let response = dispatch(
+                        process_message(
+                            msg,
                             &mut keyspace,
-                            &msg.request,
+                            &mut aof_writer,
+                            fsync_policy,
+                            &persistence,
+                            &drop_handle,
+                            shard_id,
                             #[cfg(feature = "protobuf")]
                             &schema_registry,
                         );
 
-                        // write AOF record for successful mutations
-                        if let Some(ref mut writer) = aof_writer {
-                            if let Some(record) = to_aof_record(&msg.request, &response) {
-                                if let Err(e) = writer.write_record(&record) {
-                                    warn!(shard_id, "aof write failed: {e}");
-                                }
-                                if fsync_policy == FsyncPolicy::Always {
-                                    if let Err(e) = writer.sync() {
-                                        warn!(shard_id, "aof sync failed: {e}");
-                                    }
-                                }
-                            }
+                        // drain any pending messages without re-entering select!.
+                        // this amortizes the select! overhead across bursts of
+                        // pipelined commands that arrived while we processed the
+                        // first message.
+                        while let Ok(msg) = rx.try_recv() {
+                            process_message(
+                                msg,
+                                &mut keyspace,
+                                &mut aof_writer,
+                                fsync_policy,
+                                &persistence,
+                                &drop_handle,
+                                shard_id,
+                                #[cfg(feature = "protobuf")]
+                                &schema_registry,
+                            );
                         }
-
-                        // handle snapshot/rewrite (these need mutable access
-                        // to both keyspace and aof_writer)
-                        match request_kind {
-                            RequestKind::Snapshot => {
-                                let resp = handle_snapshot(
-                                    &keyspace, &persistence, shard_id,
-                                );
-                                let _ = msg.reply.send(resp);
-                                continue;
-                            }
-                            RequestKind::RewriteAof => {
-                                let resp = handle_rewrite(
-                                    &keyspace,
-                                    &persistence,
-                                    &mut aof_writer,
-                                    shard_id,
-                                    #[cfg(feature = "protobuf")]
-                                    &schema_registry,
-                                );
-                                let _ = msg.reply.send(resp);
-                                continue;
-                            }
-                            RequestKind::FlushDbAsync => {
-                                let old_entries = keyspace.flush_async();
-                                if let Some(ref handle) = drop_handle {
-                                    handle.defer_entries(old_entries);
-                                }
-                                // else: old_entries drops inline here
-                                let _ = msg.reply.send(ShardResponse::Ok);
-                                continue;
-                            }
-                            RequestKind::Other => {}
-                        }
-
-                        let _ = msg.reply.send(response);
                     }
                     None => break, // channel closed, shard shutting down
                 }
@@ -729,6 +701,77 @@ async fn run_shard(
     if let Some(ref mut writer) = aof_writer {
         let _ = writer.sync();
     }
+}
+
+/// Processes a single shard message: dispatches the command, writes
+/// the AOF record, handles special requests, and sends the reply.
+///
+/// Extracted from the main loop so it can be called for both the
+/// initial `recv()` and the `try_recv()` drain loop.
+#[allow(clippy::too_many_arguments)]
+fn process_message(
+    msg: ShardMessage,
+    keyspace: &mut Keyspace,
+    aof_writer: &mut Option<AofWriter>,
+    fsync_policy: FsyncPolicy,
+    persistence: &Option<ShardPersistenceConfig>,
+    drop_handle: &Option<DropHandle>,
+    shard_id: u16,
+    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
+) {
+    let request_kind = describe_request(&msg.request);
+    let response = dispatch(
+        keyspace,
+        &msg.request,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    );
+
+    // write AOF record for successful mutations
+    if let Some(ref mut writer) = aof_writer {
+        if let Some(record) = to_aof_record(&msg.request, &response) {
+            if let Err(e) = writer.write_record(&record) {
+                warn!(shard_id, "aof write failed: {e}");
+            }
+            if fsync_policy == FsyncPolicy::Always {
+                if let Err(e) = writer.sync() {
+                    warn!(shard_id, "aof sync failed: {e}");
+                }
+            }
+        }
+    }
+
+    // handle special requests that need access to persistence state
+    match request_kind {
+        RequestKind::Snapshot => {
+            let resp = handle_snapshot(keyspace, persistence, shard_id);
+            let _ = msg.reply.send(resp);
+            return;
+        }
+        RequestKind::RewriteAof => {
+            let resp = handle_rewrite(
+                keyspace,
+                persistence,
+                aof_writer,
+                shard_id,
+                #[cfg(feature = "protobuf")]
+                schema_registry,
+            );
+            let _ = msg.reply.send(resp);
+            return;
+        }
+        RequestKind::FlushDbAsync => {
+            let old_entries = keyspace.flush_async();
+            if let Some(ref handle) = drop_handle {
+                handle.defer_entries(old_entries);
+            }
+            let _ = msg.reply.send(ShardResponse::Ok);
+            return;
+        }
+        RequestKind::Other => {}
+    }
+
+    let _ = msg.reply.send(response);
 }
 
 /// Lightweight tag so we can identify requests that need special
