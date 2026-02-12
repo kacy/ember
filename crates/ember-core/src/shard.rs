@@ -775,8 +775,8 @@ fn dispatch(
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardResponse {
     match req {
-        ShardRequest::Get { key } => match ks.get(key) {
-            Ok(val) => ShardResponse::Value(val),
+        ShardRequest::Get { key } => match ks.get_string(key) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::Set {
