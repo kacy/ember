@@ -260,6 +260,52 @@ pub enum ShardRequest {
         slot: u16,
         count: usize,
     },
+    /// Adds a vector to a vector set.
+    #[cfg(feature = "vector")]
+    VAdd {
+        key: String,
+        element: String,
+        vector: Vec<f32>,
+        metric: u8,
+        quantization: u8,
+        connectivity: u32,
+        expansion_add: u32,
+    },
+    /// Searches for nearest neighbors in a vector set.
+    #[cfg(feature = "vector")]
+    VSim {
+        key: String,
+        query: Vec<f32>,
+        count: usize,
+        ef_search: usize,
+    },
+    /// Removes an element from a vector set.
+    #[cfg(feature = "vector")]
+    VRem {
+        key: String,
+        element: String,
+    },
+    /// Gets the stored vector for an element.
+    #[cfg(feature = "vector")]
+    VGet {
+        key: String,
+        element: String,
+    },
+    /// Returns the number of elements in a vector set.
+    #[cfg(feature = "vector")]
+    VCard {
+        key: String,
+    },
+    /// Returns the dimensionality of a vector set.
+    #[cfg(feature = "vector")]
+    VDim {
+        key: String,
+    },
+    /// Returns metadata about a vector set.
+    #[cfg(feature = "vector")]
+    VInfo {
+        key: String,
+    },
     /// Stores a validated protobuf value.
     #[cfg(feature = "protobuf")]
     ProtoSet {
@@ -359,6 +405,22 @@ pub enum ShardResponse {
     StringArray(Vec<String>),
     /// HMGET result: array of optional values.
     OptionalArray(Vec<Option<Bytes>>),
+    /// VADD result: element, vector, and whether it was newly added.
+    #[cfg(feature = "vector")]
+    VAddResult {
+        element: String,
+        vector: Vec<f32>,
+        added: bool,
+    },
+    /// VSIM result: nearest neighbors with distances.
+    #[cfg(feature = "vector")]
+    VSimResult(Vec<(String, f32)>),
+    /// VGET result: stored vector or None.
+    #[cfg(feature = "vector")]
+    VectorData(Option<Vec<f32>>),
+    /// VINFO result: vector set metadata.
+    #[cfg(feature = "vector")]
+    VectorInfo(Option<Vec<(String, String)>>),
     /// PROTO.GET result: (type_name, data, remaining_ttl) or None.
     #[cfg(feature = "protobuf")]
     ProtoValue(Option<(String, Bytes, Option<Duration>)>),
@@ -484,6 +546,37 @@ async fn run_shard(
                 }
                 RecoveredValue::Hash(map) => Value::Hash(map),
                 RecoveredValue::Set(set) => Value::Set(set),
+                #[cfg(feature = "vector")]
+                RecoveredValue::Vector {
+                    metric,
+                    quantization,
+                    connectivity,
+                    expansion_add,
+                    elements,
+                } => {
+                    use crate::types::vector::{DistanceMetric, QuantizationType, VectorSet};
+                    let dim = elements.first().map(|(_, v)| v.len()).unwrap_or(0);
+                    match VectorSet::new(
+                        dim,
+                        DistanceMetric::from_u8(metric),
+                        QuantizationType::from_u8(quantization),
+                        connectivity as usize,
+                        expansion_add as usize,
+                    ) {
+                        Ok(mut vs) => {
+                            for (element, vector) in elements {
+                                if let Err(e) = vs.add(element, &vector) {
+                                    warn!("vector recovery: failed to add element: {e}");
+                                }
+                            }
+                            Value::Vector(vs)
+                        }
+                        Err(e) => {
+                            warn!("vector recovery: failed to create index: {e}");
+                            continue;
+                        }
+                    }
+                }
                 #[cfg(feature = "protobuf")]
                 RecoveredValue::Proto { type_name, data } => Value::Proto { type_name, data },
             };
@@ -891,6 +984,89 @@ fn dispatch(
         ShardRequest::GetKeysInSlot { slot, count } => {
             ShardResponse::StringArray(ks.get_keys_in_slot(*slot, *count))
         }
+        #[cfg(feature = "vector")]
+        ShardRequest::VAdd {
+            key,
+            element,
+            vector,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => {
+            use crate::types::vector::{DistanceMetric, QuantizationType};
+            match ks.vadd(
+                key,
+                element.clone(),
+                vector.clone(),
+                DistanceMetric::from_u8(*metric),
+                QuantizationType::from_u8(*quantization),
+                *connectivity as usize,
+                *expansion_add as usize,
+            ) {
+                Ok(result) => ShardResponse::VAddResult {
+                    element: result.element,
+                    vector: result.vector,
+                    added: result.added,
+                },
+                Err(crate::keyspace::VectorWriteError::WrongType) => ShardResponse::WrongType,
+                Err(crate::keyspace::VectorWriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+                Err(crate::keyspace::VectorWriteError::IndexError(e)) => {
+                    ShardResponse::Err(format!("ERR vector index: {e}"))
+                }
+            }
+        }
+        #[cfg(feature = "vector")]
+        ShardRequest::VSim {
+            key,
+            query,
+            count,
+            ef_search,
+        } => match ks.vsim(key, query, *count, *ef_search) {
+            Ok(results) => ShardResponse::VSimResult(
+                results
+                    .into_iter()
+                    .map(|r| (r.element, r.distance))
+                    .collect(),
+            ),
+            Err(_) => ShardResponse::WrongType,
+        },
+        #[cfg(feature = "vector")]
+        ShardRequest::VRem { key, element } => match ks.vrem(key, element) {
+            Ok(removed) => ShardResponse::Bool(removed),
+            Err(_) => ShardResponse::WrongType,
+        },
+        #[cfg(feature = "vector")]
+        ShardRequest::VGet { key, element } => match ks.vget(key, element) {
+            Ok(data) => ShardResponse::VectorData(data),
+            Err(_) => ShardResponse::WrongType,
+        },
+        #[cfg(feature = "vector")]
+        ShardRequest::VCard { key } => match ks.vcard(key) {
+            Ok(count) => ShardResponse::Integer(count as i64),
+            Err(_) => ShardResponse::WrongType,
+        },
+        #[cfg(feature = "vector")]
+        ShardRequest::VDim { key } => match ks.vdim(key) {
+            Ok(dim) => ShardResponse::Integer(dim as i64),
+            Err(_) => ShardResponse::WrongType,
+        },
+        #[cfg(feature = "vector")]
+        ShardRequest::VInfo { key } => match ks.vinfo(key) {
+            Ok(Some(info)) => {
+                let fields = vec![
+                    ("dim".to_owned(), info.dim.to_string()),
+                    ("count".to_owned(), info.count.to_string()),
+                    ("metric".to_owned(), info.metric.to_string()),
+                    ("quantization".to_owned(), info.quantization.to_string()),
+                    ("connectivity".to_owned(), info.connectivity.to_string()),
+                    ("expansion_add".to_owned(), info.expansion_add.to_string()),
+                ];
+                ShardResponse::VectorInfo(Some(fields))
+            }
+            Ok(None) => ShardResponse::VectorInfo(None),
+            Err(_) => ShardResponse::WrongType,
+        },
         #[cfg(feature = "protobuf")]
         ShardRequest::ProtoSet {
             key,
@@ -1204,6 +1380,34 @@ fn to_aof_record(req: &ShardRequest, resp: &ShardResponse) -> Option<AofRecord> 
                 expire_ms,
             })
         }
+        // Vector commands
+        #[cfg(feature = "vector")]
+        (
+            ShardRequest::VAdd {
+                key,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                ..
+            },
+            ShardResponse::VAddResult {
+                element, vector, ..
+            },
+        ) => Some(AofRecord::VAdd {
+            key: key.clone(),
+            element: element.clone(),
+            vector: vector.clone(),
+            metric: *metric,
+            quantization: *quantization,
+            connectivity: *connectivity,
+            expansion_add: *expansion_add,
+        }),
+        #[cfg(feature = "vector")]
+        (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => Some(AofRecord::VRem {
+            key: key.clone(),
+            element: element.clone(),
+        }),
         _ => None,
     }
 }
@@ -1334,6 +1538,23 @@ fn write_snapshot(
             }
             Value::Hash(map) => SnapValue::Hash(map.clone()),
             Value::Set(set) => SnapValue::Set(set.clone()),
+            #[cfg(feature = "vector")]
+            Value::Vector(ref vs) => {
+                let mut elements = Vec::with_capacity(vs.len());
+                for name in vs.elements() {
+                    if let Some(vec) = vs.get(name) {
+                        elements.push((name.to_owned(), vec));
+                    }
+                }
+                SnapValue::Vector {
+                    metric: vs.metric().into(),
+                    quantization: vs.quantization().into(),
+                    connectivity: vs.connectivity() as u32,
+                    expansion_add: vs.expansion_add() as u32,
+                    dim: vs.dim() as u32,
+                    elements,
+                }
+            }
             #[cfg(feature = "protobuf")]
             Value::Proto { type_name, data } => SnapValue::Proto {
                 type_name: type_name.clone(),

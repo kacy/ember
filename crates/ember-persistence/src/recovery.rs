@@ -37,6 +37,15 @@ pub enum RecoveredValue {
     Hash(HashMap<String, Bytes>),
     /// Unordered set of unique string members.
     Set(HashSet<String>),
+    /// A vector set: index config + accumulated (element, vector) pairs.
+    #[cfg(feature = "vector")]
+    Vector {
+        metric: u8,
+        quantization: u8,
+        connectivity: u32,
+        expansion_add: u32,
+        elements: Vec<(String, Vec<f32>)>,
+    },
     /// A protobuf message: type name + serialized bytes.
     #[cfg(feature = "protobuf")]
     Proto {
@@ -53,6 +62,21 @@ impl From<SnapValue> for RecoveredValue {
             SnapValue::SortedSet(members) => RecoveredValue::SortedSet(members),
             SnapValue::Hash(map) => RecoveredValue::Hash(map),
             SnapValue::Set(set) => RecoveredValue::Set(set),
+            #[cfg(feature = "vector")]
+            SnapValue::Vector {
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                elements,
+                ..
+            } => RecoveredValue::Vector {
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+                elements,
+            },
             #[cfg(feature = "protobuf")]
             SnapValue::Proto { type_name, data } => RecoveredValue::Proto { type_name, data },
         }
@@ -437,6 +461,54 @@ fn replay_aof(
                             map.remove(&key);
                             count += 1;
                             continue;
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "vector")]
+            AofRecord::VAdd {
+                key,
+                element,
+                vector,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+            } => {
+                let entry = map.entry(key).or_insert_with(|| {
+                    (
+                        RecoveredValue::Vector {
+                            metric,
+                            quantization,
+                            connectivity,
+                            expansion_add,
+                            elements: Vec::new(),
+                        },
+                        -1, // no expiry for vector sets
+                    )
+                });
+                if let RecoveredValue::Vector {
+                    ref mut elements, ..
+                } = entry.0
+                {
+                    // replace existing element or add new
+                    if let Some(pos) = elements.iter().position(|(e, _)| *e == element) {
+                        elements[pos].1 = vector;
+                    } else {
+                        elements.push((element, vector));
+                    }
+                }
+            }
+            #[cfg(feature = "vector")]
+            AofRecord::VRem { key, element } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::Vector {
+                        ref mut elements, ..
+                    } = entry.0
+                    {
+                        elements.retain(|(e, _)| *e != element);
+                        if elements.is_empty() {
+                            map.remove(&key);
                         }
                     }
                 }

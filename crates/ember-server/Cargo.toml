@@ -14,6 +14,7 @@ default = ["jemalloc"]
 jemalloc = ["tikv-jemallocator"]
 encryption = ["emberkv-core/encryption", "ember-persistence/encryption"]
 protobuf = ["emberkv-core/protobuf", "ember-persistence/protobuf"]
+vector = ["emberkv-core/vector", "ember-persistence/vector"]
 
 [dependencies]
 bytes = { workspace = true }

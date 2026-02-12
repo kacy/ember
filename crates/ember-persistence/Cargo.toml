@@ -12,6 +12,7 @@ readme = "README.md"
 [features]
 encryption = ["aes-gcm", "rand"]
 protobuf = []
+vector = []
 
 [dependencies]
 thiserror = { workspace = true }

@@ -86,6 +86,12 @@ const TAG_PERSIST: u8 = 10;
 const TAG_PEXPIRE: u8 = 11;
 const TAG_RENAME: u8 = 22;
 
+// vector
+#[cfg(feature = "vector")]
+const TAG_VADD: u8 = 25;
+#[cfg(feature = "vector")]
+const TAG_VREM: u8 = 26;
+
 // protobuf
 #[cfg(feature = "protobuf")]
 const TAG_PROTO_SET: u8 = 23;
@@ -153,6 +159,23 @@ pub enum AofRecord {
     Append { key: String, value: Bytes },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
+    /// VADD key element vector [metric quant connectivity expansion_add].
+    /// Stores the full index config so recovery can recreate the set.
+    #[cfg(feature = "vector")]
+    VAdd {
+        key: String,
+        element: String,
+        vector: Vec<f32>,
+        /// 0 = cosine, 1 = l2, 2 = inner product
+        metric: u8,
+        /// 0 = f32, 1 = f16, 2 = i8
+        quantization: u8,
+        connectivity: u32,
+        expansion_add: u32,
+    },
+    /// VREM key element.
+    #[cfg(feature = "vector")]
+    VRem { key: String, element: String },
     /// PROTO.SET key type_name data [expire_ms].
     #[cfg(feature = "protobuf")]
     ProtoSet {
@@ -307,6 +330,34 @@ impl AofRecord {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, newkey.as_bytes())?;
             }
+            #[cfg(feature = "vector")]
+            AofRecord::VAdd {
+                key,
+                element,
+                vector,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+            } => {
+                format::write_u8(&mut buf, TAG_VADD)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, element.as_bytes())?;
+                format::write_u32(&mut buf, vector.len() as u32)?;
+                for &v in vector {
+                    format::write_f32(&mut buf, v)?;
+                }
+                format::write_u8(&mut buf, *metric)?;
+                format::write_u8(&mut buf, *quantization)?;
+                format::write_u32(&mut buf, *connectivity)?;
+                format::write_u32(&mut buf, *expansion_add)?;
+            }
+            #[cfg(feature = "vector")]
+            AofRecord::VRem { key, element } => {
+                format::write_u8(&mut buf, TAG_VREM)?;
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, element.as_bytes())?;
+            }
             #[cfg(feature = "protobuf")]
             AofRecord::ProtoSet {
                 key,
@@ -459,6 +510,35 @@ impl AofRecord {
                 let key = read_string(&mut cursor, "key")?;
                 let newkey = read_string(&mut cursor, "newkey")?;
                 Ok(AofRecord::Rename { key, newkey })
+            }
+            #[cfg(feature = "vector")]
+            TAG_VADD => {
+                let key = read_string(&mut cursor, "key")?;
+                let element = read_string(&mut cursor, "element")?;
+                let dim = format::read_u32(&mut cursor)?;
+                let mut vector = Vec::with_capacity(format::capped_capacity(dim));
+                for _ in 0..dim {
+                    vector.push(format::read_f32(&mut cursor)?);
+                }
+                let metric = format::read_u8(&mut cursor)?;
+                let quantization = format::read_u8(&mut cursor)?;
+                let connectivity = format::read_u32(&mut cursor)?;
+                let expansion_add = format::read_u32(&mut cursor)?;
+                Ok(AofRecord::VAdd {
+                    key,
+                    element,
+                    vector,
+                    metric,
+                    quantization,
+                    connectivity,
+                    expansion_add,
+                })
+            }
+            #[cfg(feature = "vector")]
+            TAG_VREM => {
+                let key = read_string(&mut cursor, "key")?;
+                let element = read_string(&mut cursor, "element")?;
+                Ok(AofRecord::VRem { key, element })
             }
             #[cfg(feature = "protobuf")]
             TAG_PROTO_SET => {
@@ -902,6 +982,34 @@ impl AofReader {
                 format::write_bytes(&mut payload, &key)?;
                 let newkey = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &newkey)?;
+            }
+            #[cfg(feature = "vector")]
+            TAG_VADD => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let element = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &element)?;
+                let dim = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, dim)?;
+                for _ in 0..dim {
+                    let v = format::read_f32(&mut self.reader)?;
+                    format::write_f32(&mut payload, v)?;
+                }
+                let metric = format::read_u8(&mut self.reader)?;
+                format::write_u8(&mut payload, metric)?;
+                let quantization = format::read_u8(&mut self.reader)?;
+                format::write_u8(&mut payload, quantization)?;
+                let connectivity = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, connectivity)?;
+                let expansion_add = format::read_u32(&mut self.reader)?;
+                format::write_u32(&mut payload, expansion_add)?;
+            }
+            #[cfg(feature = "vector")]
+            TAG_VREM => {
+                let key = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &key)?;
+                let element = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &element)?;
             }
             #[cfg(feature = "protobuf")]
             TAG_PROTO_SET => {

@@ -573,7 +573,14 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
         | Command::ProtoType { ref key }
         | Command::ProtoGetField { ref key, .. }
         | Command::ProtoSetField { ref key, .. }
-        | Command::ProtoDelField { ref key, .. } => cluster.check_slot(key.as_bytes()).await,
+        | Command::ProtoDelField { ref key, .. }
+        | Command::VAdd { ref key, .. }
+        | Command::VSim { ref key, .. }
+        | Command::VRem { ref key, .. }
+        | Command::VGet { ref key, .. }
+        | Command::VCard { ref key }
+        | Command::VDim { ref key }
+        | Command::VInfo { ref key } => cluster.check_slot(key.as_bytes()).await,
 
         // multi-key commands — crossslot validation + slot ownership
         Command::Del { ref keys }
@@ -1644,7 +1651,155 @@ async fn execute(
             Frame::Error("ERR subscribe commands should not reach execute".into())
         }
 
-        // -- protobuf commands --
+        // --- vector commands ---
+        #[cfg(feature = "vector")]
+        Command::VAdd {
+            key,
+            element,
+            vector,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => {
+            let req = ShardRequest::VAdd {
+                key: key.clone(),
+                element,
+                vector,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::VAddResult { added, .. }) => {
+                    Frame::Integer(if added { 1 } else { 0 })
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(format!("ERR {msg}")),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
+        Command::VSim {
+            key,
+            query,
+            count,
+            ef_search,
+            with_scores,
+        } => {
+            let req = ShardRequest::VSim {
+                key: key.clone(),
+                query,
+                count,
+                ef_search,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::VSimResult(results)) => {
+                    let mut frames = Vec::new();
+                    for (element, distance) in results {
+                        frames.push(Frame::Bulk(Bytes::from(element)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(distance.to_string())));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
+        Command::VRem { key, element } => {
+            let req = ShardRequest::VRem {
+                key: key.clone(),
+                element,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Bool(removed)) => Frame::Integer(if removed { 1 } else { 0 }),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
+        Command::VGet { key, element } => {
+            let req = ShardRequest::VGet {
+                key: key.clone(),
+                element,
+            };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::VectorData(Some(vector))) => Frame::Array(
+                    vector
+                        .into_iter()
+                        .map(|v| Frame::Bulk(Bytes::from(v.to_string())))
+                        .collect(),
+                ),
+                Ok(ShardResponse::VectorData(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
+        Command::VCard { key } => {
+            let req = ShardRequest::VCard { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Integer(count)) => Frame::Integer(count),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
+        Command::VDim { key } => {
+            let req = ShardRequest::VDim { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::Integer(dim)) => Frame::Integer(dim),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
+        Command::VInfo { key } => {
+            let req = ShardRequest::VInfo { key: key.clone() };
+            match engine.route(&key, req).await {
+                Ok(ShardResponse::VectorInfo(Some(fields))) => {
+                    let mut frames = Vec::with_capacity(fields.len() * 2);
+                    for (k, v) in fields {
+                        frames.push(Frame::Bulk(Bytes::from(k)));
+                        frames.push(Frame::Bulk(Bytes::from(v)));
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::VectorInfo(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(not(feature = "vector"))]
+        Command::VAdd { .. }
+        | Command::VSim { .. }
+        | Command::VRem { .. }
+        | Command::VGet { .. }
+        | Command::VCard { .. }
+        | Command::VDim { .. }
+        | Command::VInfo { .. } => {
+            Frame::Error("ERR unknown command (vector support not compiled)".into())
+        }
+
         #[cfg(feature = "protobuf")]
         Command::ProtoRegister { name, descriptor } => {
             let registry = match engine.schema_registry() {

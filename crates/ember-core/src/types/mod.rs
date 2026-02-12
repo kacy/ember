@@ -4,6 +4,8 @@
 //! sets, hashes, and sets are supported.
 
 pub mod sorted_set;
+#[cfg(feature = "vector")]
+pub mod vector;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -37,6 +39,11 @@ pub enum Value {
     /// Unordered set of unique string members.
     Set(HashSet<String>),
 
+    /// HNSW-backed vector set for similarity search. Each element is a
+    /// named string mapped to a dense float vector.
+    #[cfg(feature = "vector")]
+    Vector(vector::VectorSet),
+
     /// A protobuf message value. Stores the fully-qualified message type
     /// name alongside the serialized bytes. Validation happens at the
     /// server layer before storage.
@@ -57,6 +64,8 @@ impl PartialEq for Value {
             }
             (Value::Hash(a), Value::Hash(b)) => a == b,
             (Value::Set(a), Value::Set(b)) => a == b,
+            #[cfg(feature = "vector")]
+            (Value::Vector(a), Value::Vector(b)) => a == b,
             #[cfg(feature = "protobuf")]
             (
                 Value::Proto {
@@ -81,6 +90,8 @@ pub fn type_name(value: &Value) -> &'static str {
         Value::SortedSet(_) => "zset",
         Value::Hash(_) => "hash",
         Value::Set(_) => "set",
+        #[cfg(feature = "vector")]
+        Value::Vector(_) => "vectorset",
         #[cfg(feature = "protobuf")]
         Value::Proto { .. } => "proto",
     }
