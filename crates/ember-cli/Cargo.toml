@@ -22,7 +22,7 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 rustls-native-certs = { workspace = true }
 rustyline = "15"
 colored = "3"
