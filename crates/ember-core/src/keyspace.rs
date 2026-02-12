@@ -19,16 +19,16 @@ use crate::time;
 use crate::types::sorted_set::{SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
+const WRONGTYPE_MSG: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
+const OOM_MSG: &str = "OOM command not allowed when used memory > 'maxmemory'";
+
 /// Error returned when a command is used against a key holding the wrong type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrongType;
 
 impl std::fmt::Display for WrongType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "WRONGTYPE Operation against a key holding the wrong kind of value"
-        )
+        write!(f, "{WRONGTYPE_MSG}")
     }
 }
 
@@ -66,15 +66,10 @@ pub enum IncrError {
 impl std::fmt::Display for IncrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncrError::WrongType => write!(
-                f,
-                "WRONGTYPE Operation against a key holding the wrong kind of value"
-            ),
+            IncrError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
             IncrError::NotAnInteger => write!(f, "ERR value is not an integer or out of range"),
             IncrError::Overflow => write!(f, "ERR increment or decrement would overflow"),
-            IncrError::OutOfMemory => {
-                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
-            }
+            IncrError::OutOfMemory => write!(f, "{OOM_MSG}"),
         }
     }
 }
@@ -97,19 +92,12 @@ pub enum IncrFloatError {
 impl std::fmt::Display for IncrFloatError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IncrFloatError::WrongType => write!(
-                f,
-                "WRONGTYPE Operation against a key holding the wrong kind of value"
-            ),
-            IncrFloatError::NotAFloat => {
-                write!(f, "ERR value is not a valid float")
-            }
+            IncrFloatError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
+            IncrFloatError::NotAFloat => write!(f, "ERR value is not a valid float"),
             IncrFloatError::NanOrInfinity => {
                 write!(f, "ERR increment would produce NaN or Infinity")
             }
-            IncrFloatError::OutOfMemory => {
-                write!(f, "OOM command not allowed when used memory > 'maxmemory'")
-            }
+            IncrFloatError::OutOfMemory => write!(f, "{OOM_MSG}"),
         }
     }
 }
@@ -327,6 +315,39 @@ impl Keyspace {
         self.drop_handle = Some(handle);
     }
 
+    /// Decrements the expiry count if the entry had a TTL set.
+    fn decrement_expiry_if_set(&mut self, entry: &Entry) {
+        if entry.expires_at_ms != 0 {
+            self.expiry_count = self.expiry_count.saturating_sub(1);
+        }
+    }
+
+    /// Cleans up after removing an element from a collection (list, sorted
+    /// set, hash, or set). If the collection is now empty, removes the key
+    /// entirely and adjusts memory/expiry tracking. Otherwise just adjusts
+    /// the memory delta.
+    fn cleanup_after_remove(&mut self, key: &str, old_size: usize, is_empty: bool) {
+        if is_empty {
+            if let Some(removed) = self.entries.remove(key) {
+                self.decrement_expiry_if_set(&removed);
+            }
+            self.memory.remove_with_size(old_size);
+        } else {
+            let new_size = memory::entry_size(key, &self.entries[key].value);
+            self.memory.adjust(old_size, new_size);
+        }
+    }
+
+    /// Adjusts the expiry count when replacing an entry whose TTL status
+    /// may have changed (e.g. SET overwriting an existing key).
+    fn adjust_expiry_count(&mut self, had_expiry: bool, has_expiry: bool) {
+        match (had_expiry, has_expiry) {
+            (false, true) => self.expiry_count += 1,
+            (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
+            _ => {}
+        }
+    }
+
     /// Retrieves the string value for `key`, or `None` if missing/expired.
     ///
     /// Returns `Err(WrongType)` if the key holds a non-string value.
@@ -386,13 +407,7 @@ impl Keyspace {
 
         if let Some(old_entry) = self.entries.get(&key) {
             self.memory.replace(&key, &old_entry.value, &new_value);
-            // adjust expiry count if the TTL status changed
-            let had_expiry = old_entry.expires_at_ms != 0;
-            match (had_expiry, has_expiry) {
-                (false, true) => self.expiry_count += 1,
-                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
-                _ => {}
-            }
+            self.adjust_expiry_count(old_entry.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &new_value);
             if has_expiry {
@@ -428,9 +443,7 @@ impl Keyspace {
         if let Some(key) = victim {
             if let Some(entry) = self.entries.remove(&key) {
                 self.memory.remove(&key, &entry.value);
-                if entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
+                self.decrement_expiry_if_set(&entry);
                 self.evicted_total += 1;
                 self.defer_drop(entry.value);
                 return true;
@@ -474,9 +487,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
-            if entry.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
+            self.decrement_expiry_if_set(&entry);
             self.defer_drop(entry.value);
             true
         } else {
@@ -495,9 +506,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
-            if entry.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
+            self.decrement_expiry_if_set(&entry);
             // always defer for UNLINK, regardless of value size
             if let Some(ref handle) = self.drop_handle {
                 handle.defer_value(entry.value);
@@ -808,16 +817,12 @@ impl Keyspace {
 
         // update memory tracking for old key removal
         self.memory.remove(key, &entry.value);
-        if entry.expires_at_ms != 0 {
-            self.expiry_count = self.expiry_count.saturating_sub(1);
-        }
+        self.decrement_expiry_if_set(&entry);
 
         // remove destination if it exists
         if let Some(old_dest) = self.entries.remove(newkey) {
             self.memory.remove(newkey, &old_dest.value);
-            if old_dest.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
+            self.decrement_expiry_if_set(&old_dest);
         }
 
         // re-insert with the new key name, preserving value and expiry
@@ -933,12 +938,7 @@ impl Keyspace {
         // if replacing an existing entry, adjust memory tracking
         if let Some(old) = self.entries.get(&key) {
             self.memory.replace(&key, &old.value, &value);
-            let had_expiry = old.expires_at_ms != 0;
-            match (had_expiry, has_expiry) {
-                (false, true) => self.expiry_count += 1,
-                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
-                _ => {}
-            }
+            self.adjust_expiry_count(old.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &value);
             if has_expiry {
@@ -1124,19 +1124,8 @@ impl Keyspace {
         };
         entry.touch();
 
-        // check if list is now empty — if so, delete the key entirely
         let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
-        if is_empty {
-            let removed = self.entries.remove(key).expect("verified above");
-            // use remove_with_size since the value was already mutated
-            self.memory.remove_with_size(old_entry_size);
-            if removed.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(popped)
     }
@@ -1255,16 +1244,7 @@ impl Keyspace {
         entry.touch();
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
-        if is_empty {
-            let removed_entry = self.entries.remove(key).expect("verified above");
-            self.memory.remove_with_size(old_entry_size);
-            if removed_entry.expires_at_ms != 0 {
-                self.expiry_count = self.expiry_count.saturating_sub(1);
-            }
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(removed)
     }
@@ -1494,17 +1474,7 @@ impl Keyspace {
             false
         };
 
-        if is_empty {
-            if let Some(removed_entry) = self.entries.remove(key) {
-                if removed_entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
-            }
-            self.memory.remove_with_size(old_entry_size);
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(removed)
     }
@@ -1759,17 +1729,7 @@ impl Keyspace {
             false
         };
 
-        if is_empty {
-            if let Some(removed_entry) = self.entries.remove(key) {
-                if removed_entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
-            }
-            self.memory.remove_with_size(old_entry_size);
-        } else {
-            let new_entry_size = memory::entry_size(key, &self.entries[key].value);
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
+        self.cleanup_after_remove(key, old_entry_size, is_empty);
 
         Ok(removed)
     }
@@ -1864,9 +1824,7 @@ impl Keyspace {
         if expired {
             if let Some(entry) = self.entries.remove(key) {
                 self.memory.remove(key, &entry.value);
-                if entry.expires_at_ms != 0 {
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
-                }
+                self.decrement_expiry_if_set(&entry);
                 self.expired_total += 1;
                 self.defer_drop(entry.value);
             }
