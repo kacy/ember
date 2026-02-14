@@ -1,7 +1,7 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build docker-run \
        release-patch release-minor release-major github-release \
        publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick \
-       helm-lint helm-template proto-gen proto-go
+       helm-lint helm-template proto-gen proto-go proto-py
 
 # extract the workspace version from the root Cargo.toml
 VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -137,6 +137,9 @@ proto-gen:
 
 proto-go:
 	cd clients/ember-go && $(MAKE) proto-gen
+
+proto-py:
+	cd clients/ember-py && $(MAKE) proto-gen
 
 # --- helm ---
 
