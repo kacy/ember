@@ -42,6 +42,7 @@ fn read_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError
 /// Used by SADD, SREM, HDEL, and ZREM deserialization.
 fn read_string_list(r: &mut impl io::Read, field: &str) -> Result<Vec<String>, FormatError> {
     let count = format::read_u32(r)?;
+    format::validate_collection_count(count, field)?;
     let mut items = Vec::with_capacity(format::capped_capacity(count));
     for _ in 0..count {
         items.push(read_string(r, field)?);
@@ -505,6 +506,7 @@ impl AofRecord {
             TAG_LPUSH | TAG_RPUSH => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
+                format::validate_collection_count(count, "list")?;
                 let mut values = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
                     values.push(Bytes::from(format::read_bytes(&mut cursor)?));
@@ -526,6 +528,7 @@ impl AofRecord {
             TAG_ZADD => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
+                format::validate_collection_count(count, "sorted set")?;
                 let mut members = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
                     let score = format::read_f64(&mut cursor)?;
@@ -559,6 +562,7 @@ impl AofRecord {
             TAG_HSET => {
                 let key = read_string(&mut cursor, "key")?;
                 let count = format::read_u32(&mut cursor)?;
+                format::validate_collection_count(count, "hash")?;
                 let mut fields = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
                     let field = read_string(&mut cursor, "field")?;
@@ -992,6 +996,7 @@ impl AofReader {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
+                format::validate_collection_count(count, "list")?;
                 format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let val = format::read_bytes(&mut self.reader)?;
@@ -1006,6 +1011,7 @@ impl AofReader {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
+                format::validate_collection_count(count, "sorted set")?;
                 format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let score = format::read_f64(&mut self.reader)?;
@@ -1018,6 +1024,7 @@ impl AofReader {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
+                format::validate_collection_count(count, "sorted set")?;
                 format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let member = format::read_bytes(&mut self.reader)?;
@@ -1042,6 +1049,7 @@ impl AofReader {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
+                format::validate_collection_count(count, "hash")?;
                 format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let field = format::read_bytes(&mut self.reader)?;
@@ -1054,6 +1062,7 @@ impl AofReader {
                 let key = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &key)?;
                 let count = format::read_u32(&mut self.reader)?;
+                format::validate_collection_count(count, "set")?;
                 format::write_u32(&mut payload, count)?;
                 for _ in 0..count {
                     let item = format::read_bytes(&mut self.reader)?;
