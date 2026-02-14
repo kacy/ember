@@ -179,10 +179,13 @@ class PgVectorClient(VectorClient):
 
     def insert_batch(self, ids: list, vectors: np.ndarray):
         cur = self.conn.cursor()
-        # use executemany for batch insert
-        data = [(vid, vec.tolist()) for vid, vec in zip(ids, vectors)]
+        # format vectors as pgvector string literals: "[0.1,0.2,0.3]"
+        data = [
+            (vid, "[" + ",".join(str(float(v)) for v in vec) + "]")
+            for vid, vec in zip(ids, vectors)
+        ]
         cur.executemany(
-            "INSERT INTO bench_vectors (id, embedding) VALUES (%s, %s) "
+            "INSERT INTO bench_vectors (id, embedding) VALUES (%s, %s::vector) "
             "ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding",
             data,
         )
@@ -190,9 +193,11 @@ class PgVectorClient(VectorClient):
 
     def query(self, vector: np.ndarray, k: int) -> list:
         cur = self.conn.cursor()
+        # explicit cast to vector type since psycopg2 sends lists as numeric[]
+        vec_str = "[" + ",".join(str(float(v)) for v in vector) + "]"
         cur.execute(
-            "SELECT id FROM bench_vectors ORDER BY embedding <=> %s LIMIT %s",
-            (vector.tolist(), k),
+            "SELECT id FROM bench_vectors ORDER BY embedding <=> %s::vector LIMIT %s",
+            (vec_str, k),
         )
         results = [row[0] for row in cur.fetchall()]
         cur.close()
