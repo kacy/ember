@@ -657,6 +657,8 @@ message PubSubNumSubResponse {
   repeated ChannelCount counts = 1;
 }
 
+message PubSubNumPatRequest {}
+
 message ChannelCount {
   string channel = 1;
   int64 count = 2;

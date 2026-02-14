@@ -132,7 +132,7 @@ pub async fn run(
     #[cfg(feature = "grpc")]
     let _grpc_handle = if let Some(grpc_addr) = grpc_addr {
         let svc =
-            crate::grpc::EmberService::new(engine.clone(), Arc::clone(&ctx), Arc::clone(&slow_log));
+            crate::grpc::EmberService::new(engine.clone(), Arc::clone(&ctx), Arc::clone(&slow_log), Arc::clone(&pubsub));
         info!("gRPC listening on {grpc_addr}");
         let server = tonic::transport::Server::builder()
             .add_service(svc.into_service())
@@ -397,7 +397,7 @@ pub async fn run_concurrent(
     #[cfg(feature = "grpc")]
     let _grpc_handle = if let Some(grpc_addr) = grpc_addr {
         let svc =
-            crate::grpc::EmberService::new(engine.clone(), Arc::clone(&ctx), Arc::clone(&slow_log));
+            crate::grpc::EmberService::new(engine.clone(), Arc::clone(&ctx), Arc::clone(&slow_log), Arc::clone(&pubsub));
         info!("gRPC listening on {grpc_addr}");
         let server = tonic::transport::Server::builder()
             .add_service(svc.into_service())
