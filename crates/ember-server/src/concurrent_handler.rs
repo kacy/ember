@@ -266,14 +266,13 @@ async fn execute_concurrent(
 
         Command::Persist { key } => Frame::Integer(if keyspace.persist(&key) { 1 } else { 0 }),
 
-        Command::Pexpire {
-            key,
-            milliseconds,
-        } => Frame::Integer(if keyspace.pexpire(&key, milliseconds) {
-            1
-        } else {
-            0
-        }),
+        Command::Pexpire { key, milliseconds } => {
+            Frame::Integer(if keyspace.pexpire(&key, milliseconds) {
+                1
+            } else {
+                0
+            })
+        }
 
         Command::Pttl { key } => match keyspace.pttl(&key) {
             TtlResult::Milliseconds(ms) => Frame::Integer(ms as i64),
@@ -351,9 +350,7 @@ async fn execute_concurrent(
             Err(msg) => Frame::Error(msg.into()),
         },
 
-        Command::Info { section } => {
-            render_concurrent_info(keyspace, ctx, section.as_deref())
-        }
+        Command::Info { section } => render_concurrent_info(keyspace, ctx, section.as_deref()),
 
         // -- pub/sub --
         Command::Publish { channel, message } => {

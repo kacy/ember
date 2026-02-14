@@ -727,6 +727,7 @@ version = "0.4.3"
 dependencies = [
  "bytes",
  "ember-protocol",
+ "ember-server",
  "prost-reflect",
  "tempfile",
  "tokio",
