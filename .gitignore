@@ -31,3 +31,8 @@ criterion/
 bench/results/*.csv
 bench/results/*.json
 .bench-venv/
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/

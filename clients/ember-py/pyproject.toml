@@ -1,0 +1,27 @@
+[project]
+name = "ember-py"
+version = "0.1.0"
+description = "python client for the ember cache server over gRPC"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "grpcio>=1.60",
+    "protobuf>=4.25",
+]
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools>=1.60",
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ember*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
