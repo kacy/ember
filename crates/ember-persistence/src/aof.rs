@@ -360,15 +360,13 @@ impl AofRecord {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_i64(&mut buf, *milliseconds as i64)?;
             }
-            AofRecord::IncrBy { key, delta }
-            | AofRecord::DecrBy { key, delta } => {
+            AofRecord::IncrBy { key, delta } | AofRecord::DecrBy { key, delta } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_i64(&mut buf, *delta)?;
             }
 
             // key + byte list
-            AofRecord::LPush { key, values }
-            | AofRecord::RPush { key, values } => {
+            AofRecord::LPush { key, values } | AofRecord::RPush { key, values } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_len(&mut buf, values.len())?;
                 for v in values {

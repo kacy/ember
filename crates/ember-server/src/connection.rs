@@ -1249,9 +1249,7 @@ async fn resolve_response(
 fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
     match tag {
         // Value(Some(String)) → Bulk, Value(None) → Null
-        ResponseTag::Get
-        | ResponseTag::PopResult
-        | ResponseTag::HGetResult => match resp {
+        ResponseTag::Get | ResponseTag::PopResult | ResponseTag::HGetResult => match resp {
             ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
             ShardResponse::Value(None) => Frame::Null,
             ShardResponse::WrongType => wrongtype_error(),
@@ -1273,8 +1271,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         },
 
         // Bool → Integer(0/1), with WrongType
-        ResponseTag::HExistsResult
-        | ResponseTag::SIsMemberResult => match resp {
+        ResponseTag::HExistsResult | ResponseTag::SIsMemberResult => match resp {
             ShardResponse::Bool(b) => Frame::Integer(i64::from(b)),
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1310,8 +1307,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         },
 
         // Len → Integer, with WrongType + OOM
-        ResponseTag::LenResultOom
-        | ResponseTag::HSetResult => match resp {
+        ResponseTag::LenResultOom | ResponseTag::HSetResult => match resp {
             ShardResponse::Len(n) => Frame::Integer(n as i64),
             ShardResponse::WrongType => wrongtype_error(),
             ShardResponse::OutOfMemory => oom_error(),
@@ -1327,8 +1323,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         },
 
         // Array of Bytes → Array of Bulk
-        ResponseTag::ArrayResult
-        | ResponseTag::HValsResult => match resp {
+        ResponseTag::ArrayResult | ResponseTag::HValsResult => match resp {
             ShardResponse::Array(items) => {
                 Frame::Array(items.into_iter().map(Frame::Bulk).collect())
             }
