@@ -832,6 +832,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tonic",
  "tonic-build",
  "tracing",

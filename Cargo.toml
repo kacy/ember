@@ -77,6 +77,7 @@ usearch = "2.23"
 tonic = "0.13"
 prost = "0.13"
 tonic-build = "0.13"
+tokio-stream = "0.1"
 
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.4.3", path = "crates/ember-core" }
