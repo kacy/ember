@@ -245,12 +245,17 @@ fn find_crlf(cursor: &mut Cursor<&[u8]>) -> Result<usize, ProtocolError> {
         return Err(ProtocolError::Incomplete);
     }
 
-    // scan for \r\n
-    for i in start..buf.len().saturating_sub(1) {
-        if buf[i] == b'\r' && buf[i + 1] == b'\n' {
-            cursor.set_position((i + 2) as u64);
-            return Ok(i);
+    // SIMD-accelerated scan for \r, then verify \n follows.
+    // memchr processes 16-32 bytes per cycle vs 1 byte in a naive loop.
+    let mut pos = start;
+    while let Some(offset) = memchr::memchr(b'\r', &buf[pos..]) {
+        let cr = pos + offset;
+        if cr + 1 < buf.len() && buf[cr + 1] == b'\n' {
+            cursor.set_position((cr + 2) as u64);
+            return Ok(cr);
         }
+        // bare \r without \n — keep scanning past it
+        pos = cr + 1;
     }
 
     Err(ProtocolError::Incomplete)
