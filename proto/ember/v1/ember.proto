@@ -87,9 +87,28 @@ service EmberCache {
   // --- server ---
 
   rpc Ping(PingRequest) returns (PingResponse);
+  rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc Decr(DecrRequest) returns (IntResponse);
+  rpc Unlink(UnlinkRequest) returns (DelResponse);
   rpc FlushDb(FlushDbRequest) returns (StatusResponse);
   rpc DbSize(DbSizeRequest) returns (IntResponse);
   rpc Info(InfoRequest) returns (InfoResponse);
+  rpc BgSave(BgSaveRequest) returns (StatusResponse);
+  rpc BgRewriteAof(BgRewriteAofRequest) returns (StatusResponse);
+
+  // --- slowlog ---
+
+  rpc SlowLogGet(SlowLogGetRequest) returns (SlowLogGetResponse);
+  rpc SlowLogLen(SlowLogLenRequest) returns (IntResponse);
+  rpc SlowLogReset(SlowLogResetRequest) returns (StatusResponse);
+
+  // --- pub/sub ---
+
+  rpc Publish(PublishRequest) returns (IntResponse);
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeEvent);
+  rpc PubSubChannels(PubSubChannelsRequest) returns (KeysResponse);
+  rpc PubSubNumSub(PubSubNumSubRequest) returns (PubSubNumSubResponse);
+  rpc PubSubNumPat(PubSubNumPatRequest) returns (IntResponse);
 
   // --- streaming ---
   // bidirectional streaming for batch operations, matching RESP3 pipelining.
@@ -560,6 +579,89 @@ message InfoResponse {
   string info = 1;
 }
 
+message EchoRequest {
+  string message = 1;
+}
+
+message EchoResponse {
+  string message = 1;
+}
+
+message DecrRequest {
+  string key = 1;
+}
+
+message UnlinkRequest {
+  repeated string keys = 1;
+}
+
+message BgSaveRequest {}
+
+message BgRewriteAofRequest {}
+
+// ---------------------------------------------------------------------------
+// slowlog
+// ---------------------------------------------------------------------------
+
+message SlowLogGetRequest {
+  optional uint32 count = 1;
+}
+
+message SlowLogGetResponse {
+  repeated SlowLogEntry entries = 1;
+}
+
+message SlowLogEntry {
+  uint64 id = 1;
+  uint64 timestamp_unix = 2;
+  uint64 duration_micros = 3;
+  string command = 4;
+}
+
+message SlowLogLenRequest {}
+
+message SlowLogResetRequest {}
+
+// ---------------------------------------------------------------------------
+// pub/sub
+// ---------------------------------------------------------------------------
+
+message PublishRequest {
+  string channel = 1;
+  bytes message = 2;
+}
+
+message SubscribeRequest {
+  repeated string channels = 1;
+  repeated string patterns = 2;
+}
+
+message SubscribeEvent {
+  // "message" for exact channel match, "pmessage" for pattern match.
+  string kind = 1;
+  string channel = 2;
+  bytes data = 3;
+  // the pattern that matched (only set for pmessage).
+  optional string pattern = 4;
+}
+
+message PubSubChannelsRequest {
+  optional string pattern = 1;
+}
+
+message PubSubNumSubRequest {
+  repeated string channels = 1;
+}
+
+message PubSubNumSubResponse {
+  repeated ChannelCount counts = 1;
+}
+
+message ChannelCount {
+  string channel = 1;
+  int64 count = 2;
+}
+
 // ---------------------------------------------------------------------------
 // pipeline (bidirectional streaming)
 // ---------------------------------------------------------------------------
@@ -625,6 +727,18 @@ message PipelineRequest {
     KeysRequest keys = 57;
     RenameRequest rename = 58;
     ScanRequest scan = 59;
+    EchoRequest echo = 60;
+    DecrRequest decr = 61;
+    UnlinkRequest unlink = 62;
+    BgSaveRequest bgsave = 63;
+    BgRewriteAofRequest bgrewriteaof = 64;
+    SlowLogGetRequest slowlog_get = 65;
+    SlowLogLenRequest slowlog_len = 66;
+    SlowLogResetRequest slowlog_reset = 67;
+    PublishRequest publish = 68;
+    PubSubChannelsRequest pubsub_channels = 69;
+    PubSubNumSubRequest pubsub_numsub = 70;
+    PubSubNumPatRequest pubsub_numpat = 71;
   }
 }
 
@@ -656,6 +770,9 @@ message PipelineResponse {
     PingResponse ping = 24;
     ErrorResponse error = 25;
     InfoResponse info = 26;
+    EchoResponse echo = 27;
+    SlowLogGetResponse slowlog_get = 28;
+    PubSubNumSubResponse pubsub_numsub = 29;
   }
 }
 
