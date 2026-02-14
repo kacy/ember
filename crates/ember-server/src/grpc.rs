@@ -98,6 +98,41 @@ fn unexpected_response(resp: &ShardResponse) -> Status {
     }
 }
 
+// input validation limits — reject obviously malformed requests early
+const MAX_KEY_LEN: usize = 512 * 1024; // 512 KB
+const MAX_VALUE_LEN: usize = 512 * 1024 * 1024; // 512 MB
+#[cfg(feature = "vector")]
+const MAX_VECTOR_DIMS: usize = 65_536;
+#[cfg(feature = "vector")]
+const MAX_VSIM_COUNT: usize = 10_000;
+#[cfg(feature = "vector")]
+const MAX_HNSW_M: u32 = 1_024;
+#[cfg(feature = "vector")]
+const MAX_HNSW_EF: u32 = 1_024;
+
+fn validate_key(key: &str) -> Result<(), Status> {
+    if key.is_empty() {
+        return Err(Status::invalid_argument("key must not be empty"));
+    }
+    if key.len() > MAX_KEY_LEN {
+        return Err(Status::invalid_argument(format!(
+            "key length {} exceeds max {MAX_KEY_LEN}",
+            key.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_value(value: &[u8]) -> Result<(), Status> {
+    if value.len() > MAX_VALUE_LEN {
+        return Err(Status::invalid_argument(format!(
+            "value length {} exceeds max {MAX_VALUE_LEN}",
+            value.len()
+        )));
+    }
+    Ok(())
+}
+
 fn parse_expire(seconds: u64, millis: u64) -> Option<Duration> {
     if millis > 0 {
         Some(Duration::from_millis(millis))
@@ -118,6 +153,7 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         let key = req.key;
+        validate_key(&key)?;
 
         let resp = self
             .route(&key, ShardRequest::Get { key: key.clone() })
@@ -138,6 +174,8 @@ impl EmberCache for EmberService {
     async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
+        validate_key(&req.key)?;
+        validate_value(&req.value)?;
 
         let expire = parse_expire(req.expire_seconds, req.expire_millis);
         let resp = self
@@ -167,6 +205,9 @@ impl EmberCache for EmberService {
     async fn del(&self, request: Request<DelRequest>) -> Result<Response<DelResponse>, Status> {
         let start = Instant::now();
         let keys = request.into_inner().keys;
+        for k in &keys {
+            validate_key(k)?;
+        }
 
         let responses = self
             .engine
@@ -188,6 +229,9 @@ impl EmberCache for EmberService {
     async fn m_get(&self, request: Request<MGetRequest>) -> Result<Response<MGetResponse>, Status> {
         let start = Instant::now();
         let keys = request.into_inner().keys;
+        for k in &keys {
+            validate_key(k)?;
+        }
 
         let responses = self
             .engine
@@ -212,6 +256,10 @@ impl EmberCache for EmberService {
     async fn m_set(&self, request: Request<MSetRequest>) -> Result<Response<MSetResponse>, Status> {
         let start = Instant::now();
         let pairs = request.into_inner().pairs;
+        for p in &pairs {
+            validate_key(&p.key)?;
+            validate_value(&p.value)?;
+        }
 
         let keys: Vec<String> = pairs.iter().map(|p| p.key.clone()).collect();
         let values: Vec<Bytes> = pairs.into_iter().map(|p| Bytes::from(p.value)).collect();
@@ -518,7 +566,7 @@ impl EmberCache for EmberService {
                 Ok(Response::new(TtlResponse { value: ms as i64 }))
             }
             ShardResponse::Ttl(TtlResult::Seconds(s)) => Ok(Response::new(TtlResponse {
-                value: (s * 1000) as i64,
+                value: s.saturating_mul(1000) as i64,
             })),
             ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
             ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
@@ -618,9 +666,10 @@ impl EmberCache for EmberService {
         // `cursor / shard_count` gives the per-shard cursor. when a shard finishes
         // (returns cursor=0), we advance to the next shard. global cursor 0 means
         // "scan complete" — same convention as redis.
-        let shard_count = self.engine.shard_count();
-        let shard_idx = (req.cursor as usize) % shard_count;
-        let shard_cursor = req.cursor / (shard_count as u64);
+        // arithmetic stays in u64 to avoid truncation on 32-bit platforms.
+        let shard_count = self.engine.shard_count() as u64;
+        let shard_idx = (req.cursor % shard_count) as usize;
+        let shard_cursor = req.cursor / shard_count;
 
         let resp = self
             .engine
@@ -644,13 +693,14 @@ impl EmberCache for EmberService {
             } => {
                 let global_cursor = if next_cursor == 0 {
                     // this shard is done, move to next
-                    if shard_idx + 1 < shard_count {
-                        (shard_idx + 1) as u64
+                    let next_shard = (shard_idx as u64) + 1;
+                    if next_shard < shard_count {
+                        next_shard
                     } else {
                         0 // all shards done
                     }
                 } else {
-                    next_cursor * (shard_count as u64) + (shard_idx as u64)
+                    next_cursor * shard_count + (shard_idx as u64)
                 };
                 Ok(Response::new(ScanResponse {
                     cursor: global_cursor,
@@ -1349,6 +1399,27 @@ impl EmberCache for EmberService {
         {
             let start = Instant::now();
             let req = request.into_inner();
+            validate_key(&req.key)?;
+            if req.vector.len() > MAX_VECTOR_DIMS {
+                return Err(Status::invalid_argument(format!(
+                    "vector dimensions {} exceeds max {MAX_VECTOR_DIMS}",
+                    req.vector.len()
+                )));
+            }
+            if let Some(m) = req.connectivity {
+                if m > MAX_HNSW_M {
+                    return Err(Status::invalid_argument(format!(
+                        "connectivity {m} exceeds max {MAX_HNSW_M}"
+                    )));
+                }
+            }
+            if let Some(ef) = req.ef_construction {
+                if ef > MAX_HNSW_EF {
+                    return Err(Status::invalid_argument(format!(
+                        "ef_construction {ef} exceeds max {MAX_HNSW_EF}"
+                    )));
+                }
+            }
 
             let metric = match req.metric() {
                 VectorMetric::Cosine => 0,
@@ -1399,6 +1470,13 @@ impl EmberCache for EmberService {
         {
             let start = Instant::now();
             let req = request.into_inner();
+            validate_key(&req.key)?;
+            if (req.count as usize) > MAX_VSIM_COUNT {
+                return Err(Status::invalid_argument(format!(
+                    "vsim count {} exceeds max {MAX_VSIM_COUNT}",
+                    req.count
+                )));
+            }
             let resp = self
                 .route(
                     &req.key,
