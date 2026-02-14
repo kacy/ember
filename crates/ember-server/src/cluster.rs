@@ -53,8 +53,11 @@ impl ClusterCoordinator {
         let (event_tx, event_rx) = mpsc::channel(256);
 
         let port_offset = gossip_config.gossip_port_offset;
-        let gossip_addr =
-            SocketAddr::new(bind_addr.ip(), bind_addr.port().saturating_add(port_offset));
+        let gossip_port = bind_addr
+            .port()
+            .checked_add(port_offset)
+            .expect("gossip port offset overflows u16");
+        let gossip_addr = SocketAddr::new(bind_addr.ip(), gossip_port);
 
         let gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
 
@@ -420,10 +423,14 @@ impl ClusterCoordinator {
         bind_addr: SocketAddr,
         mut event_rx: mpsc::Receiver<GossipEvent>,
     ) {
-        let gossip_addr = SocketAddr::new(
-            bind_addr.ip(),
-            bind_addr.port().saturating_add(self.gossip_port_offset),
-        );
+        let gossip_port = match bind_addr.port().checked_add(self.gossip_port_offset) {
+            Some(p) => p,
+            None => {
+                error!("gossip port offset overflows u16");
+                return;
+            }
+        };
+        let gossip_addr = SocketAddr::new(bind_addr.ip(), gossip_port);
 
         let socket = match UdpSocket::bind(gossip_addr).await {
             Ok(s) => Arc::new(s),
