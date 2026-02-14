@@ -6,6 +6,14 @@
 //! The parser uses a `Cursor<&[u8]>` to track its position through the
 //! input buffer without consuming it, allowing the caller to retry once
 //! more data arrives.
+//!
+//! # Single-pass design
+//!
+//! Earlier versions used a two-pass approach: `check()` to validate a
+//! complete frame exists, then `parse()` to build Frame values. This
+//! scanned every byte twice. The current implementation does a single
+//! pass that builds Frame values directly, returning `Incomplete` if
+//! the buffer doesn't contain enough data yet.
 
 use std::io::Cursor;
 
@@ -39,11 +47,8 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
 
     let mut cursor = Cursor::new(buf);
 
-    match check(&mut cursor, 0) {
-        Ok(()) => {
-            // we know a complete frame exists — reset and parse it
-            cursor.set_position(0);
-            let frame = parse(&mut cursor, 0)?;
+    match try_parse(&mut cursor, 0) {
+        Ok(frame) => {
             let consumed = cursor.position() as usize;
             Ok(Some((frame, consumed)))
         }
@@ -53,103 +58,12 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
 }
 
 // ---------------------------------------------------------------------------
-// check: validates a complete frame exists without allocating
+// single-pass parser: validates and builds Frame values in one traversal
 // ---------------------------------------------------------------------------
 
-/// Peeks through the buffer to verify a complete frame is present.
-/// Advances the cursor past the frame on success.
-fn check(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolError> {
-    let prefix = read_byte(cursor)?;
-
-    match prefix {
-        b'+' | b'-' => check_line(cursor),
-        b':' => check_line(cursor),
-        b'$' => check_bulk(cursor),
-        b'*' => check_array(cursor, depth),
-        b'_' => check_line(cursor),
-        b'%' => check_map(cursor, depth),
-        other => Err(ProtocolError::InvalidPrefix(other)),
-    }
-}
-
-fn check_line(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
-    find_crlf(cursor)?;
-    Ok(())
-}
-
-fn check_bulk(cursor: &mut Cursor<&[u8]>) -> Result<(), ProtocolError> {
-    let len = read_integer_line(cursor)?;
-    if len < 0 {
-        return Err(ProtocolError::InvalidFrameLength(len));
-    }
-    if len > MAX_BULK_LEN {
-        return Err(ProtocolError::BulkStringTooLarge(len as usize));
-    }
-    let len = len as usize;
-
-    // need `len` bytes of data + \r\n
-    let remaining = remaining(cursor);
-    if remaining < len + 2 {
-        return Err(ProtocolError::Incomplete);
-    }
-
-    let pos = cursor.position() as usize;
-    // verify trailing \r\n
-    let buf = cursor.get_ref();
-    if buf[pos + len] != b'\r' || buf[pos + len + 1] != b'\n' {
-        return Err(ProtocolError::InvalidFrameLength(len as i64));
-    }
-
-    cursor.set_position((pos + len + 2) as u64);
-    Ok(())
-}
-
-fn check_array(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolError> {
-    let next_depth = depth + 1;
-    if next_depth > MAX_NESTING_DEPTH {
-        return Err(ProtocolError::NestingTooDeep(MAX_NESTING_DEPTH));
-    }
-
-    let count = read_integer_line(cursor)?;
-    if count < 0 {
-        return Err(ProtocolError::InvalidFrameLength(count));
-    }
-    if count as usize > MAX_ARRAY_ELEMENTS {
-        return Err(ProtocolError::TooManyElements(count as usize));
-    }
-
-    for _ in 0..count {
-        check(cursor, next_depth)?;
-    }
-    Ok(())
-}
-
-fn check_map(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<(), ProtocolError> {
-    let next_depth = depth + 1;
-    if next_depth > MAX_NESTING_DEPTH {
-        return Err(ProtocolError::NestingTooDeep(MAX_NESTING_DEPTH));
-    }
-
-    let count = read_integer_line(cursor)?;
-    if count < 0 {
-        return Err(ProtocolError::InvalidFrameLength(count));
-    }
-    if count as usize > MAX_ARRAY_ELEMENTS {
-        return Err(ProtocolError::TooManyElements(count as usize));
-    }
-
-    for _ in 0..count {
-        check(cursor, next_depth)?; // key
-        check(cursor, next_depth)?; // value
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// parse: actually builds Frame values (only called after check succeeds)
-// ---------------------------------------------------------------------------
-
-fn parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, ProtocolError> {
+/// Parses a complete RESP3 frame from the cursor position, returning
+/// `Incomplete` if the buffer doesn't contain enough data.
+fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, ProtocolError> {
     let prefix = read_byte(cursor)?;
 
     match prefix {
@@ -172,18 +86,51 @@ fn parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, ProtocolErro
             Ok(Frame::Integer(val))
         }
         b'$' => {
-            let len = read_integer_line(cursor)? as usize;
+            let len = read_integer_line(cursor)?;
+            if len < 0 {
+                return Err(ProtocolError::InvalidFrameLength(len));
+            }
+            if len > MAX_BULK_LEN {
+                return Err(ProtocolError::BulkStringTooLarge(len as usize));
+            }
+            let len = len as usize;
+
+            // need `len` bytes of data + \r\n
+            let remaining = remaining(cursor);
+            if remaining < len + 2 {
+                return Err(ProtocolError::Incomplete);
+            }
+
             let pos = cursor.position() as usize;
-            let data = &cursor.get_ref()[pos..pos + len];
-            cursor.set_position((pos + len + 2) as u64); // skip data + \r\n
+            let buf = cursor.get_ref();
+
+            // verify trailing \r\n
+            if buf[pos + len] != b'\r' || buf[pos + len + 1] != b'\n' {
+                return Err(ProtocolError::InvalidFrameLength(len as i64));
+            }
+
+            let data = &buf[pos..pos + len];
+            cursor.set_position((pos + len + 2) as u64);
             Ok(Frame::Bulk(Bytes::copy_from_slice(data)))
         }
         b'*' => {
             let next_depth = depth + 1;
-            let count = read_integer_line(cursor)? as usize;
+            if next_depth > MAX_NESTING_DEPTH {
+                return Err(ProtocolError::NestingTooDeep(MAX_NESTING_DEPTH));
+            }
+
+            let count = read_integer_line(cursor)?;
+            if count < 0 {
+                return Err(ProtocolError::InvalidFrameLength(count));
+            }
+            if count as usize > MAX_ARRAY_ELEMENTS {
+                return Err(ProtocolError::TooManyElements(count as usize));
+            }
+
+            let count = count as usize;
             let mut frames = Vec::with_capacity(count);
             for _ in 0..count {
-                frames.push(parse(cursor, next_depth)?);
+                frames.push(try_parse(cursor, next_depth)?);
             }
             Ok(Frame::Array(frames))
         }
@@ -194,16 +141,27 @@ fn parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, ProtocolErro
         }
         b'%' => {
             let next_depth = depth + 1;
-            let count = read_integer_line(cursor)? as usize;
+            if next_depth > MAX_NESTING_DEPTH {
+                return Err(ProtocolError::NestingTooDeep(MAX_NESTING_DEPTH));
+            }
+
+            let count = read_integer_line(cursor)?;
+            if count < 0 {
+                return Err(ProtocolError::InvalidFrameLength(count));
+            }
+            if count as usize > MAX_ARRAY_ELEMENTS {
+                return Err(ProtocolError::TooManyElements(count as usize));
+            }
+
+            let count = count as usize;
             let mut pairs = Vec::with_capacity(count);
             for _ in 0..count {
-                let key = parse(cursor, next_depth)?;
-                let val = parse(cursor, next_depth)?;
+                let key = try_parse(cursor, next_depth)?;
+                let val = try_parse(cursor, next_depth)?;
                 pairs.push((key, val));
             }
             Ok(Frame::Map(pairs))
         }
-        // check() already validated the prefix, so this shouldn't happen
         other => Err(ProtocolError::InvalidPrefix(other)),
     }
 }
