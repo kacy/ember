@@ -72,7 +72,9 @@ impl EmberService {
     }
 }
 
-/// Extracts the bytes from a Value::String, or returns an error.
+/// Extracts the bytes from a Value::String, or returns an empty vec for
+/// non-string types. This is intentionally lenient — callers that need
+/// strict type checking should match on Value::String directly.
 fn value_to_bytes(v: Value) -> Vec<u8> {
     match v {
         Value::String(b) => b.to_vec(),
@@ -80,17 +82,19 @@ fn value_to_bytes(v: Value) -> Vec<u8> {
     }
 }
 
-/// Maps a ShardResponse error to a gRPC Status.
-fn check_wrong_type(resp: &ShardResponse) -> Option<Status> {
+/// Maps a ShardResponse to a gRPC error status. Handles the common error
+/// variants (WrongType, OutOfMemory, Err) and falls back to "unexpected
+/// response" for anything else. Used as the catch-all in response matching.
+fn unexpected_response(resp: &ShardResponse) -> Status {
     match resp {
-        ShardResponse::WrongType => Some(Status::failed_precondition(
+        ShardResponse::WrongType => Status::failed_precondition(
             "WRONGTYPE operation against a key holding the wrong kind of value",
-        )),
-        ShardResponse::OutOfMemory => Some(Status::resource_exhausted(
-            "OOM command not allowed when used memory > maxmemory",
-        )),
-        ShardResponse::Err(msg) => Some(Status::internal(msg.clone())),
-        _ => None,
+        ),
+        ShardResponse::OutOfMemory => {
+            Status::resource_exhausted("OOM command not allowed when used memory > maxmemory")
+        }
+        ShardResponse::Err(msg) => Status::internal(msg.clone()),
+        _ => Status::internal("unexpected response"),
     }
 }
 
@@ -126,8 +130,7 @@ impl EmberCache for EmberService {
             })),
             ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -156,8 +159,7 @@ impl EmberCache for EmberService {
             ShardResponse::Value(None) => Ok(Response::new(SetResponse { ok: false })),
             ShardResponse::OutOfMemory => Err(Status::resource_exhausted("OOM")),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -260,8 +262,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -286,8 +287,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -312,8 +312,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -338,8 +337,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::BulkString(s) => Ok(Response::new(FloatResponse { value: s })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -364,8 +362,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -384,8 +381,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -437,8 +433,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -463,8 +458,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -483,8 +477,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -507,8 +500,7 @@ impl EmberCache for EmberService {
             ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
             ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -531,8 +523,7 @@ impl EmberCache for EmberService {
             ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
             ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -608,8 +599,7 @@ impl EmberCache for EmberService {
             })),
             ShardResponse::Err(msg) => Err(Status::not_found(msg)),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -623,7 +613,11 @@ impl EmberCache for EmberService {
             req.count as usize
         };
 
-        // cursor encodes shard index in upper bits and per-shard cursor in lower bits
+        // the global cursor encodes both which shard we're scanning and where
+        // we are within that shard. `cursor % shard_count` gives the shard index,
+        // `cursor / shard_count` gives the per-shard cursor. when a shard finishes
+        // (returns cursor=0), we advance to the next shard. global cursor 0 means
+        // "scan complete" — same convention as redis.
         let shard_count = self.engine.shard_count();
         let shard_idx = (req.cursor as usize) % shard_count;
         let shard_cursor = req.cursor / (shard_count as u64);
@@ -692,8 +686,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -719,8 +712,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -739,8 +731,7 @@ impl EmberCache for EmberService {
             })),
             ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -759,8 +750,7 @@ impl EmberCache for EmberService {
             })),
             ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -788,8 +778,7 @@ impl EmberCache for EmberService {
                 values: arr.into_iter().map(|b| b.to_vec()).collect(),
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -805,8 +794,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -837,8 +825,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -863,8 +850,7 @@ impl EmberCache for EmberService {
             })),
             ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -891,8 +877,7 @@ impl EmberCache for EmberService {
                     .collect(),
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -916,8 +901,7 @@ impl EmberCache for EmberService {
                 value: count as i64,
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -942,8 +926,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -959,8 +942,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -986,8 +968,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1006,8 +987,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::StringArray(keys) => Ok(Response::new(KeysResponse { keys })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1028,8 +1008,7 @@ impl EmberCache for EmberService {
                 values: arr.into_iter().map(|b| b.to_vec()).collect(),
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1061,8 +1040,7 @@ impl EmberCache for EmberService {
                     .collect(),
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1088,8 +1066,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1111,8 +1088,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1133,8 +1109,7 @@ impl EmberCache for EmberService {
                 Ok(Response::new(KeysResponse { keys: members }))
             }
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1159,8 +1134,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1179,8 +1153,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1218,8 +1191,7 @@ impl EmberCache for EmberService {
                 value: count as i64,
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1243,8 +1215,7 @@ impl EmberCache for EmberService {
                 value: count as i64,
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1269,8 +1240,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Score(s) => Ok(Response::new(OptionalFloatResponse { value: s })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1297,8 +1267,7 @@ impl EmberCache for EmberService {
                 value: r.map(|n| n as i64),
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1317,8 +1286,7 @@ impl EmberCache for EmberService {
         match resp {
             ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1359,8 +1327,7 @@ impl EmberCache for EmberService {
                     .collect(),
             })),
             other => {
-                Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response")))
+                Err(unexpected_response(&other))
             }
         }
     }
@@ -1414,8 +1381,7 @@ impl EmberCache for EmberService {
                 ShardResponse::VAddResult { added, .. } => {
                     Ok(Response::new(BoolResponse { value: added }))
                 }
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
@@ -1453,8 +1419,7 @@ impl EmberCache for EmberService {
                         .map(|(element, distance)| VSimResult { element, distance })
                         .collect(),
                 })),
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
@@ -1485,8 +1450,7 @@ impl EmberCache for EmberService {
 
             match resp {
                 ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
@@ -1524,8 +1488,7 @@ impl EmberCache for EmberService {
                     exists: Some(false),
                     vector: vec![],
                 })),
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
@@ -1553,8 +1516,7 @@ impl EmberCache for EmberService {
 
             match resp {
                 ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
@@ -1579,8 +1541,7 @@ impl EmberCache for EmberService {
 
             match resp {
                 ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
@@ -1621,8 +1582,7 @@ impl EmberCache for EmberService {
                     exists: false,
                     info: vec![],
                 })),
-                other => Err(check_wrong_type(&other)
-                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+                other => Err(unexpected_response(&other)),
             }
         }
     }
