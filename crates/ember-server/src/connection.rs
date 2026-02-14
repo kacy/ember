@@ -1248,22 +1248,38 @@ async fn resolve_response(
 /// Converts a `ShardResponse` to a `Frame` based on the response tag.
 fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
     match tag {
-        ResponseTag::Get => match resp {
+        // Value(Some(String)) → Bulk, Value(None) → Null
+        ResponseTag::Get
+        | ResponseTag::PopResult
+        | ResponseTag::HGetResult => match resp {
             ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
             ShardResponse::Value(None) => Frame::Null,
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // Ok → Simple("OK"), with optional Null/OOM
         ResponseTag::Set => match resp {
             ShardResponse::Ok => Frame::Simple("OK".into()),
             ShardResponse::Value(None) => Frame::Null,
             ShardResponse::OutOfMemory => oom_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // Bool → Integer(0/1), no type check
         ResponseTag::BoolToInt => match resp {
             ShardResponse::Bool(b) => Frame::Integer(i64::from(b)),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // Bool → Integer(0/1), with WrongType
+        ResponseTag::HExistsResult
+        | ResponseTag::SIsMemberResult => match resp {
+            ShardResponse::Bool(b) => Frame::Integer(i64::from(b)),
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
         ResponseTag::Ttl => match resp {
             ShardResponse::Ttl(TtlResult::Seconds(s)) => Frame::Integer(s as i64),
             ShardResponse::Ttl(TtlResult::NoExpiry) => Frame::Integer(-1),
@@ -1276,6 +1292,8 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::Ttl(TtlResult::NotFound) => Frame::Integer(-2),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // Integer → Integer, with WrongType/OOM/Err
         ResponseTag::IntResult => match resp {
             ShardResponse::Integer(n) => Frame::Integer(n),
             ShardResponse::WrongType => wrongtype_error(),
@@ -1283,17 +1301,23 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::Err(msg) => Frame::Error(msg),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // Len → Integer, with WrongType only
         ResponseTag::LenResult => match resp {
             ShardResponse::Len(n) => Frame::Integer(n as i64),
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
-        ResponseTag::LenResultOom => match resp {
+
+        // Len → Integer, with WrongType + OOM
+        ResponseTag::LenResultOom
+        | ResponseTag::HSetResult => match resp {
             ShardResponse::Len(n) => Frame::Integer(n as i64),
             ShardResponse::WrongType => wrongtype_error(),
             ShardResponse::OutOfMemory => oom_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::FloatResult => match resp {
             ShardResponse::BulkString(val) => Frame::Bulk(Bytes::from(val)),
             ShardResponse::WrongType => wrongtype_error(),
@@ -1301,46 +1325,49 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::Err(msg) => Frame::Error(msg),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
-        ResponseTag::PopResult => match resp {
-            ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
-            ShardResponse::Value(None) => Frame::Null,
-            ShardResponse::WrongType => wrongtype_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
-        ResponseTag::ArrayResult => match resp {
+
+        // Array of Bytes → Array of Bulk
+        ResponseTag::ArrayResult
+        | ResponseTag::HValsResult => match resp {
             ShardResponse::Array(items) => {
                 Frame::Array(items.into_iter().map(Frame::Bulk).collect())
             }
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::TypeResult => match resp {
             ShardResponse::TypeName(name) => Frame::Simple(name.into()),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::ZAddResult => match resp {
             ShardResponse::ZAddLen { count, .. } => Frame::Integer(count as i64),
             ShardResponse::WrongType => wrongtype_error(),
             ShardResponse::OutOfMemory => oom_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::ZRemResult => match resp {
             ShardResponse::ZRemLen { count, .. } => Frame::Integer(count as i64),
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::ZScoreResult => match resp {
             ShardResponse::Score(Some(s)) => Frame::Bulk(Bytes::from(format!("{s}"))),
             ShardResponse::Score(None) => Frame::Null,
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::ZRankResult => match resp {
             ShardResponse::Rank(Some(r)) => Frame::Integer(r as i64),
             ShardResponse::Rank(None) => Frame::Null,
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::ZRangeResult { with_scores } => match resp {
             ShardResponse::ScoredArray(items) => {
                 let mut frames = Vec::new();
@@ -1355,18 +1382,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
-        ResponseTag::HSetResult => match resp {
-            ShardResponse::Len(n) => Frame::Integer(n as i64),
-            ShardResponse::WrongType => wrongtype_error(),
-            ShardResponse::OutOfMemory => oom_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
-        ResponseTag::HGetResult => match resp {
-            ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
-            ShardResponse::Value(None) => Frame::Null,
-            ShardResponse::WrongType => wrongtype_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
+
         ResponseTag::HGetAllResult => match resp {
             ShardResponse::HashFields(fields) => {
                 let mut frames = Vec::with_capacity(fields.len() * 2);
@@ -1379,16 +1395,14 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
         ResponseTag::HDelResult => match resp {
             ShardResponse::HDelLen { count, .. } => Frame::Integer(count as i64),
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
-        ResponseTag::HExistsResult => match resp {
-            ShardResponse::Bool(b) => Frame::Integer(if b { 1 } else { 0 }),
-            ShardResponse::WrongType => wrongtype_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
+
+        // Integer → Integer, with WrongType/OOM and prefixed Err
         ResponseTag::HIncrByResult => match resp {
             ShardResponse::Integer(n) => Frame::Integer(n),
             ShardResponse::WrongType => wrongtype_error(),
@@ -1396,6 +1410,8 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::Err(msg) => Frame::Error(format!("ERR {msg}")),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // StringArray → Array of Bulk
         ResponseTag::StringArrayResult => match resp {
             ShardResponse::StringArray(items) => Frame::Array(
                 items
@@ -1406,11 +1422,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
-        ResponseTag::HValsResult => match resp {
-            ShardResponse::Array(vals) => Frame::Array(vals.into_iter().map(Frame::Bulk).collect()),
-            ShardResponse::WrongType => wrongtype_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
+
         ResponseTag::HMGetResult => match resp {
             ShardResponse::OptionalArray(vals) => Frame::Array(
                 vals.into_iter()
@@ -1423,19 +1435,17 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
-        ResponseTag::SIsMemberResult => match resp {
-            ShardResponse::Bool(b) => Frame::Integer(if b { 1 } else { 0 }),
-            ShardResponse::WrongType => wrongtype_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
+
         ResponseTag::RenameResult => match resp {
             ShardResponse::Ok => Frame::Simple("OK".into()),
             ShardResponse::Err(msg) => Frame::Error(msg),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // -- vector commands --
         #[cfg(feature = "vector")]
         ResponseTag::VAddResult => match resp {
-            ShardResponse::VAddResult { added, .. } => Frame::Integer(if added { 1 } else { 0 }),
+            ShardResponse::VAddResult { added, .. } => Frame::Integer(i64::from(added)),
             ShardResponse::WrongType => wrongtype_error(),
             ShardResponse::OutOfMemory => oom_error(),
             ShardResponse::Err(msg) => Frame::Error(format!("ERR {msg}")),
@@ -1458,7 +1468,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         },
         #[cfg(feature = "vector")]
         ResponseTag::VRemResult => match resp {
-            ShardResponse::Bool(removed) => Frame::Integer(if removed { 1 } else { 0 }),
+            ShardResponse::Bool(removed) => Frame::Integer(i64::from(removed)),
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
@@ -1494,6 +1504,8 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
+
+        // -- protobuf commands --
         #[cfg(feature = "protobuf")]
         ResponseTag::ProtoSetResult => match resp {
             ShardResponse::Ok => Frame::Simple("OK".into()),
