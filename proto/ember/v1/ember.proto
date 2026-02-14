@@ -1,0 +1,673 @@
+syntax = "proto3";
+package ember.v1;
+
+option go_package = "github.com/kacy/ember-go/proto/ember/v1;emberv1";
+
+// EmberCache provides a gRPC interface to ember's key-value store.
+// all commands route through the same engine as RESP3, so behavior
+// is identical regardless of protocol.
+service EmberCache {
+  // --- strings ---
+
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Set(SetRequest) returns (SetResponse);
+  rpc Del(DelRequest) returns (DelResponse);
+  rpc MGet(MGetRequest) returns (MGetResponse);
+  rpc MSet(MSetRequest) returns (MSetResponse);
+  rpc Incr(IncrRequest) returns (IntResponse);
+  rpc IncrBy(IncrByRequest) returns (IntResponse);
+  rpc DecrBy(DecrByRequest) returns (IntResponse);
+  rpc IncrByFloat(IncrByFloatRequest) returns (FloatResponse);
+  rpc Append(AppendRequest) returns (IntResponse);
+  rpc Strlen(StrlenRequest) returns (IntResponse);
+
+  // --- keys ---
+
+  rpc Exists(ExistsRequest) returns (IntResponse);
+  rpc Expire(ExpireRequest) returns (BoolResponse);
+  rpc PExpire(PExpireRequest) returns (BoolResponse);
+  rpc Persist(PersistRequest) returns (BoolResponse);
+  rpc Ttl(TtlRequest) returns (TtlResponse);
+  rpc PTtl(PTtlRequest) returns (TtlResponse);
+  rpc Type(TypeRequest) returns (TypeResponse);
+  rpc Keys(KeysRequest) returns (KeysResponse);
+  rpc Rename(RenameRequest) returns (StatusResponse);
+  rpc Scan(ScanRequest) returns (ScanResponse);
+
+  // --- lists ---
+
+  rpc LPush(LPushRequest) returns (IntResponse);
+  rpc RPush(RPushRequest) returns (IntResponse);
+  rpc LPop(LPopRequest) returns (GetResponse);
+  rpc RPop(RPopRequest) returns (GetResponse);
+  rpc LRange(LRangeRequest) returns (ArrayResponse);
+  rpc LLen(LLenRequest) returns (IntResponse);
+
+  // --- hashes ---
+
+  rpc HSet(HSetRequest) returns (IntResponse);
+  rpc HGet(HGetRequest) returns (GetResponse);
+  rpc HGetAll(HGetAllRequest) returns (HashResponse);
+  rpc HDel(HDelRequest) returns (IntResponse);
+  rpc HExists(HExistsRequest) returns (BoolResponse);
+  rpc HLen(HLenRequest) returns (IntResponse);
+  rpc HIncrBy(HIncrByRequest) returns (IntResponse);
+  rpc HKeys(HKeysRequest) returns (KeysResponse);
+  rpc HVals(HValsRequest) returns (ArrayResponse);
+  rpc HMGet(HMGetRequest) returns (OptionalArrayResponse);
+
+  // --- sets ---
+
+  rpc SAdd(SAddRequest) returns (IntResponse);
+  rpc SRem(SRemRequest) returns (IntResponse);
+  rpc SMembers(SMembersRequest) returns (KeysResponse);
+  rpc SIsMember(SIsMemberRequest) returns (BoolResponse);
+  rpc SCard(SCardRequest) returns (IntResponse);
+
+  // --- sorted sets ---
+
+  rpc ZAdd(ZAddRequest) returns (IntResponse);
+  rpc ZRem(ZRemRequest) returns (IntResponse);
+  rpc ZScore(ZScoreRequest) returns (OptionalFloatResponse);
+  rpc ZRank(ZRankRequest) returns (OptionalIntResponse);
+  rpc ZCard(ZCardRequest) returns (IntResponse);
+  rpc ZRange(ZRangeRequest) returns (ZRangeResponse);
+
+  // --- vectors ---
+  // only available when the server is built with the vector feature.
+
+  rpc VAdd(VAddRequest) returns (BoolResponse);
+  rpc VSim(VSimRequest) returns (VSimResponse);
+  rpc VRem(VRemRequest) returns (BoolResponse);
+  rpc VGet(VGetRequest) returns (VGetResponse);
+  rpc VCard(VCardRequest) returns (IntResponse);
+  rpc VDim(VDimRequest) returns (IntResponse);
+  rpc VInfo(VInfoRequest) returns (VInfoResponse);
+
+  // --- server ---
+
+  rpc Ping(PingRequest) returns (PingResponse);
+  rpc FlushDb(FlushDbRequest) returns (StatusResponse);
+  rpc DbSize(DbSizeRequest) returns (IntResponse);
+  rpc Info(InfoRequest) returns (InfoResponse);
+
+  // --- streaming ---
+  // bidirectional streaming for batch operations, matching RESP3 pipelining.
+
+  rpc Pipeline(stream PipelineRequest) returns (stream PipelineResponse);
+}
+
+// ---------------------------------------------------------------------------
+// shared response types
+// ---------------------------------------------------------------------------
+
+message IntResponse {
+  int64 value = 1;
+}
+
+message BoolResponse {
+  bool value = 1;
+}
+
+message FloatResponse {
+  string value = 1;
+}
+
+message StatusResponse {
+  string status = 1;
+}
+
+// ---------------------------------------------------------------------------
+// strings
+// ---------------------------------------------------------------------------
+
+message GetRequest {
+  string key = 1;
+}
+
+message GetResponse {
+  optional bytes value = 1;
+}
+
+message SetRequest {
+  string key = 1;
+  bytes value = 2;
+  // expire time in seconds. 0 means no expiration.
+  uint64 expire_seconds = 3;
+  // expire time in milliseconds. takes precedence over expire_seconds.
+  uint64 expire_millis = 4;
+  // NX: only set if key does not exist.
+  bool nx = 5;
+  // XX: only set if key already exists.
+  bool xx = 6;
+}
+
+message SetResponse {
+  // true if the key was set, false if NX/XX condition prevented it.
+  bool ok = 1;
+}
+
+message DelRequest {
+  repeated string keys = 1;
+}
+
+message DelResponse {
+  int64 deleted = 1;
+}
+
+message MGetRequest {
+  repeated string keys = 1;
+}
+
+message MGetResponse {
+  // one entry per requested key. missing keys have value unset.
+  repeated OptionalValue values = 1;
+}
+
+message OptionalValue {
+  optional bytes value = 1;
+}
+
+message MSetRequest {
+  repeated KeyValue pairs = 1;
+}
+
+message KeyValue {
+  string key = 1;
+  bytes value = 2;
+}
+
+message MSetResponse {}
+
+message IncrRequest {
+  string key = 1;
+}
+
+message IncrByRequest {
+  string key = 1;
+  int64 delta = 2;
+}
+
+message DecrByRequest {
+  string key = 1;
+  int64 delta = 2;
+}
+
+message IncrByFloatRequest {
+  string key = 1;
+  double delta = 2;
+}
+
+message AppendRequest {
+  string key = 1;
+  bytes value = 2;
+}
+
+message StrlenRequest {
+  string key = 1;
+}
+
+// ---------------------------------------------------------------------------
+// keys
+// ---------------------------------------------------------------------------
+
+message ExistsRequest {
+  repeated string keys = 1;
+}
+
+message ExpireRequest {
+  string key = 1;
+  uint64 seconds = 2;
+}
+
+message PExpireRequest {
+  string key = 1;
+  uint64 milliseconds = 2;
+}
+
+message PersistRequest {
+  string key = 1;
+}
+
+message TtlRequest {
+  string key = 1;
+}
+
+message PTtlRequest {
+  string key = 1;
+}
+
+message TtlResponse {
+  // -2 = key does not exist, -1 = no expiry, >= 0 = remaining time.
+  int64 value = 1;
+}
+
+message TypeRequest {
+  string key = 1;
+}
+
+message TypeResponse {
+  string type_name = 1;
+}
+
+message KeysRequest {
+  string pattern = 1;
+}
+
+message KeysResponse {
+  repeated string keys = 1;
+}
+
+message RenameRequest {
+  string key = 1;
+  string new_key = 2;
+}
+
+message ScanRequest {
+  uint64 cursor = 1;
+  uint32 count = 2;
+  optional string pattern = 3;
+}
+
+message ScanResponse {
+  uint64 cursor = 1;
+  repeated string keys = 2;
+}
+
+// ---------------------------------------------------------------------------
+// lists
+// ---------------------------------------------------------------------------
+
+message LPushRequest {
+  string key = 1;
+  repeated bytes values = 2;
+}
+
+message RPushRequest {
+  string key = 1;
+  repeated bytes values = 2;
+}
+
+message LPopRequest {
+  string key = 1;
+}
+
+message RPopRequest {
+  string key = 1;
+}
+
+message LRangeRequest {
+  string key = 1;
+  int64 start = 2;
+  int64 stop = 3;
+}
+
+message ArrayResponse {
+  repeated bytes values = 1;
+}
+
+message LLenRequest {
+  string key = 1;
+}
+
+// ---------------------------------------------------------------------------
+// hashes
+// ---------------------------------------------------------------------------
+
+message HSetRequest {
+  string key = 1;
+  repeated FieldValue fields = 2;
+}
+
+message FieldValue {
+  string field = 1;
+  bytes value = 2;
+}
+
+message HGetRequest {
+  string key = 1;
+  string field = 2;
+}
+
+message HGetAllRequest {
+  string key = 1;
+}
+
+message HashResponse {
+  repeated FieldValue fields = 1;
+}
+
+message HDelRequest {
+  string key = 1;
+  repeated string fields = 2;
+}
+
+message HExistsRequest {
+  string key = 1;
+  string field = 2;
+}
+
+message HLenRequest {
+  string key = 1;
+}
+
+message HIncrByRequest {
+  string key = 1;
+  string field = 2;
+  int64 delta = 3;
+}
+
+message HKeysRequest {
+  string key = 1;
+}
+
+message HValsRequest {
+  string key = 1;
+}
+
+message HMGetRequest {
+  string key = 1;
+  repeated string fields = 2;
+}
+
+message OptionalArrayResponse {
+  repeated OptionalValue values = 1;
+}
+
+// ---------------------------------------------------------------------------
+// sets
+// ---------------------------------------------------------------------------
+
+message SAddRequest {
+  string key = 1;
+  repeated string members = 2;
+}
+
+message SRemRequest {
+  string key = 1;
+  repeated string members = 2;
+}
+
+message SMembersRequest {
+  string key = 1;
+}
+
+message SIsMemberRequest {
+  string key = 1;
+  string member = 2;
+}
+
+message SCardRequest {
+  string key = 1;
+}
+
+// ---------------------------------------------------------------------------
+// sorted sets
+// ---------------------------------------------------------------------------
+
+message ZAddRequest {
+  string key = 1;
+  repeated ScoreMember members = 2;
+  bool nx = 3;
+  bool xx = 4;
+  bool gt = 5;
+  bool lt = 6;
+  bool ch = 7;
+}
+
+message ScoreMember {
+  double score = 1;
+  string member = 2;
+}
+
+message ZRemRequest {
+  string key = 1;
+  repeated string members = 2;
+}
+
+message ZScoreRequest {
+  string key = 1;
+  string member = 2;
+}
+
+message OptionalFloatResponse {
+  optional double value = 1;
+}
+
+message ZRankRequest {
+  string key = 1;
+  string member = 2;
+}
+
+message OptionalIntResponse {
+  optional int64 value = 1;
+}
+
+message ZCardRequest {
+  string key = 1;
+}
+
+message ZRangeRequest {
+  string key = 1;
+  int64 start = 2;
+  int64 stop = 3;
+  bool with_scores = 4;
+}
+
+message ZRangeResponse {
+  // when with_scores is false, only member is populated.
+  repeated ScoreMember members = 1;
+}
+
+// ---------------------------------------------------------------------------
+// vectors
+// ---------------------------------------------------------------------------
+
+enum VectorMetric {
+  VECTOR_METRIC_COSINE = 0;
+  VECTOR_METRIC_EUCLIDEAN = 1;
+  VECTOR_METRIC_INNER_PRODUCT = 2;
+}
+
+enum VectorQuantization {
+  VECTOR_QUANTIZATION_NONE = 0;
+  VECTOR_QUANTIZATION_F16 = 1;
+  VECTOR_QUANTIZATION_I8 = 2;
+}
+
+message VAddRequest {
+  string key = 1;
+  string element = 2;
+  // packed IEEE 754 floats — no parsing overhead.
+  repeated float vector = 3 [packed = true];
+  VectorMetric metric = 4;
+  VectorQuantization quantization = 5;
+  optional uint32 connectivity = 6;
+  optional uint32 ef_construction = 7;
+}
+
+message VSimRequest {
+  string key = 1;
+  repeated float query = 2 [packed = true];
+  uint32 count = 3;
+  optional uint32 ef_search = 4;
+}
+
+message VSimResponse {
+  repeated VSimResult results = 1;
+}
+
+message VSimResult {
+  string element = 1;
+  float distance = 2;
+}
+
+message VRemRequest {
+  string key = 1;
+  string element = 2;
+}
+
+message VGetRequest {
+  string key = 1;
+  string element = 2;
+}
+
+message VGetResponse {
+  optional bool exists = 1;
+  repeated float vector = 2 [packed = true];
+}
+
+message VCardRequest {
+  string key = 1;
+}
+
+message VDimRequest {
+  string key = 1;
+}
+
+message VInfoRequest {
+  string key = 1;
+}
+
+message VInfoResponse {
+  bool exists = 1;
+  repeated FieldValue info = 2;
+}
+
+// ---------------------------------------------------------------------------
+// server
+// ---------------------------------------------------------------------------
+
+message PingRequest {
+  optional string message = 1;
+}
+
+message PingResponse {
+  string message = 1;
+}
+
+message FlushDbRequest {
+  bool async = 1;
+}
+
+message DbSizeRequest {}
+
+message InfoRequest {
+  optional string section = 1;
+}
+
+message InfoResponse {
+  string info = 1;
+}
+
+// ---------------------------------------------------------------------------
+// pipeline (bidirectional streaming)
+// ---------------------------------------------------------------------------
+
+message PipelineRequest {
+  uint64 id = 1;
+  oneof command {
+    GetRequest get = 2;
+    SetRequest set = 3;
+    DelRequest del = 4;
+    ExistsRequest exists = 5;
+    IncrRequest incr = 6;
+    IncrByRequest incr_by = 7;
+    DecrByRequest decr_by = 8;
+    IncrByFloatRequest incr_by_float = 9;
+    AppendRequest append = 10;
+    StrlenRequest strlen = 11;
+    ExpireRequest expire = 12;
+    PExpireRequest pexpire = 13;
+    PersistRequest persist = 14;
+    TtlRequest ttl = 15;
+    PTtlRequest pttl = 16;
+    TypeRequest type = 17;
+    LPushRequest lpush = 18;
+    RPushRequest rpush = 19;
+    LPopRequest lpop = 20;
+    RPopRequest rpop = 21;
+    LRangeRequest lrange = 22;
+    LLenRequest llen = 23;
+    HSetRequest hset = 24;
+    HGetRequest hget = 25;
+    HGetAllRequest hgetall = 26;
+    HDelRequest hdel = 27;
+    HExistsRequest hexists = 28;
+    HLenRequest hlen = 29;
+    HIncrByRequest hincr_by = 30;
+    HKeysRequest hkeys = 31;
+    HValsRequest hvals = 32;
+    HMGetRequest hmget = 33;
+    SAddRequest sadd = 34;
+    SRemRequest srem = 35;
+    SMembersRequest smembers = 36;
+    SIsMemberRequest sismember = 37;
+    SCardRequest scard = 38;
+    ZAddRequest zadd = 39;
+    ZRemRequest zrem = 40;
+    ZScoreRequest zscore = 41;
+    ZRankRequest zrank = 42;
+    ZCardRequest zcard = 43;
+    ZRangeRequest zrange = 44;
+    VAddRequest vadd = 45;
+    VSimRequest vsim = 46;
+    VRemRequest vrem = 47;
+    VGetRequest vget = 48;
+    VCardRequest vcard = 49;
+    VDimRequest vdim = 50;
+    VInfoRequest vinfo = 51;
+    PingRequest ping = 52;
+    FlushDbRequest flushdb = 53;
+    DbSizeRequest dbsize = 54;
+    MGetRequest mget = 55;
+    MSetRequest mset = 56;
+    KeysRequest keys = 57;
+    RenameRequest rename = 58;
+    ScanRequest scan = 59;
+  }
+}
+
+message PipelineResponse {
+  uint64 id = 1;
+  oneof result {
+    GetResponse get = 2;
+    SetResponse set = 3;
+    DelResponse del = 4;
+    IntResponse int_val = 5;
+    BoolResponse bool_val = 6;
+    FloatResponse float_val = 7;
+    StatusResponse status = 8;
+    TtlResponse ttl = 9;
+    TypeResponse type = 10;
+    ArrayResponse array = 11;
+    HashResponse hash = 12;
+    OptionalArrayResponse optional_array = 13;
+    KeysResponse keys = 14;
+    ScanResponse scan = 15;
+    OptionalFloatResponse optional_float = 16;
+    OptionalIntResponse optional_int = 17;
+    ZRangeResponse zrange = 18;
+    VSimResponse vsim = 19;
+    VGetResponse vget = 20;
+    VInfoResponse vinfo = 21;
+    MGetResponse mget = 22;
+    MSetResponse mset = 23;
+    PingResponse ping = 24;
+    ErrorResponse error = 25;
+    InfoResponse info = 26;
+  }
+}
+
+message ErrorResponse {
+  string message = 1;
+  ErrorKind kind = 2;
+}
+
+enum ErrorKind {
+  ERROR_KIND_UNSPECIFIED = 0;
+  ERROR_KIND_WRONG_TYPE = 1;
+  ERROR_KIND_OUT_OF_MEMORY = 2;
+  ERROR_KIND_INTERNAL = 3;
+  ERROR_KIND_INVALID_ARGUMENT = 4;
+}
