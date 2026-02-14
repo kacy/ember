@@ -73,6 +73,11 @@ prost-reflect = "0.16"
 # HNSW vector similarity search
 usearch = "2.23"
 
+# grpc
+tonic = "0.13"
+prost = "0.13"
+tonic-build = "0.13"
+
 # internal crates (version required for crates.io publishing)
 emberkv-core = { version = "0.4.3", path = "crates/ember-core" }
 ember-protocol = { version = "0.4.3", path = "crates/ember-protocol" }

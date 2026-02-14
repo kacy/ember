@@ -4,12 +4,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     make \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/ember
 COPY . .
 
-RUN cargo build --release --bin ember-server
+RUN cargo build --release --bin ember-server --features grpc
 
 # ---
 
@@ -33,6 +34,7 @@ USER ember
 ENV EMBER_HOST=0.0.0.0
 
 EXPOSE 6379
+EXPOSE 6380
 EXPOSE 9100
 
 LABEL org.opencontainers.image.title="ember" \
