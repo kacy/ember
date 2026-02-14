@@ -255,6 +255,23 @@ pub fn capped_capacity(count: u32) -> usize {
     (count as usize).min(65_536)
 }
 
+/// Maximum element count for collections (lists, sets, hashes, sorted sets)
+/// in persistence formats. Prevents corrupt count fields from causing
+/// unbounded iteration during deserialization. 100M is well beyond any
+/// realistic collection while catching obviously corrupt u32 values.
+pub const MAX_COLLECTION_COUNT: u32 = 100_000_000;
+
+/// Validates that a deserialized collection count is within bounds.
+/// Returns `InvalidData` if the count exceeds `MAX_COLLECTION_COUNT`.
+pub fn validate_collection_count(count: u32, label: &str) -> Result<(), FormatError> {
+    if count > MAX_COLLECTION_COUNT {
+        return Err(FormatError::InvalidData(format!(
+            "{label} count {count} exceeds max {MAX_COLLECTION_COUNT}"
+        )));
+    }
+    Ok(())
+}
+
 /// Maximum vector dimensions allowed in persistence formats.
 /// Matches the protocol-layer cap. Records exceeding this are rejected
 /// during deserialization to prevent OOM from corrupt files.

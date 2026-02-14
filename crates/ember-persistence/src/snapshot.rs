@@ -68,6 +68,7 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
         }
         TYPE_LIST => {
             let count = format::read_u32(r)?;
+            format::validate_collection_count(count, "list")?;
             let mut deque = VecDeque::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 deque.push_back(Bytes::from(format::read_bytes(r)?));
@@ -76,6 +77,7 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
         }
         TYPE_SORTED_SET => {
             let count = format::read_u32(r)?;
+            format::validate_collection_count(count, "sorted set")?;
             let mut members = Vec::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 let score = format::read_f64(r)?;
@@ -86,6 +88,7 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
         }
         TYPE_HASH => {
             let count = format::read_u32(r)?;
+            format::validate_collection_count(count, "hash")?;
             let mut map = HashMap::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 let field = read_snap_string(r, "hash field")?;
@@ -96,6 +99,7 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
         }
         TYPE_SET => {
             let count = format::read_u32(r)?;
+            format::validate_collection_count(count, "set")?;
             let mut set = HashSet::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 let member = read_snap_string(r, "set member")?;
@@ -584,6 +588,7 @@ impl SnapshotReader {
                 }
                 TYPE_LIST => {
                     let count = format::read_u32(&mut self.reader)?;
+                    format::validate_collection_count(count, "list")?;
                     format::write_u32(&mut buf, count)?;
                     let mut deque = VecDeque::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
@@ -595,6 +600,7 @@ impl SnapshotReader {
                 }
                 TYPE_SORTED_SET => {
                     let count = format::read_u32(&mut self.reader)?;
+                    format::validate_collection_count(count, "sorted set")?;
                     format::write_u32(&mut buf, count)?;
                     let mut members = Vec::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
@@ -614,6 +620,7 @@ impl SnapshotReader {
                 }
                 TYPE_HASH => {
                     let count = format::read_u32(&mut self.reader)?;
+                    format::validate_collection_count(count, "hash")?;
                     format::write_u32(&mut buf, count)?;
                     let mut map = HashMap::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
@@ -633,6 +640,7 @@ impl SnapshotReader {
                 }
                 TYPE_SET => {
                     let count = format::read_u32(&mut self.reader)?;
+                    format::validate_collection_count(count, "set")?;
                     format::write_u32(&mut buf, count)?;
                     let mut set = HashSet::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
