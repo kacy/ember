@@ -9,6 +9,8 @@ mod concurrent_handler;
 mod config;
 mod connection;
 mod connection_common;
+#[cfg(feature = "grpc")]
+mod grpc;
 mod metrics;
 mod pubsub;
 mod server;
@@ -132,6 +134,17 @@ struct Args {
     #[cfg(feature = "protobuf")]
     #[arg(long, env = "EMBER_PROTOBUF")]
     protobuf: bool,
+
+    // -- gRPC options --
+    /// port for gRPC connections. set to 0 to disable even when compiled with grpc.
+    #[cfg(feature = "grpc")]
+    #[arg(long, default_value_t = 6380, env = "EMBER_GRPC_PORT")]
+    grpc_port: u16,
+
+    /// disable gRPC listener even when compiled with the grpc feature
+    #[cfg(feature = "grpc")]
+    #[arg(long, env = "EMBER_NO_GRPC")]
+    no_grpc: bool,
 
     // -- cluster options --
     /// enable cluster mode with gossip-based discovery and slot routing
@@ -443,6 +456,16 @@ async fn main() {
         None
     };
 
+    // build grpc address if enabled
+    #[cfg(feature = "grpc")]
+    let grpc_addr = if !args.no_grpc && args.grpc_port != 0 {
+        let addr = parse_bind_addr(&args.host, args.grpc_port, "gRPC");
+        info!(grpc_port = args.grpc_port, "gRPC enabled");
+        Some(addr)
+    } else {
+        None
+    };
+
     let result = if args.concurrent {
         server::run_concurrent(
             addr,
@@ -455,6 +478,8 @@ async fn main() {
             slowlog_config,
             args.requirepass,
             tls_config,
+            #[cfg(feature = "grpc")]
+            grpc_addr,
         )
         .await
     } else {
@@ -468,6 +493,8 @@ async fn main() {
             args.requirepass,
             tls_config,
             cluster,
+            #[cfg(feature = "grpc")]
+            grpc_addr,
         )
         .await
     };

@@ -1,0 +1,2184 @@
+//! gRPC service implementation for ember.
+//!
+//! Implements the `EmberCache` tonic service by translating proto requests
+//! into `ShardRequest`s, routing through the engine, and mapping responses
+//! back to proto types. Shares the same engine, semaphore, and slowlog as
+//! the RESP3 listener.
+
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use bytes::Bytes;
+use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Request, Response, Status, Streaming};
+
+use crate::server::ServerContext;
+use crate::slowlog::SlowLog;
+
+pub mod proto {
+    tonic::include_proto!("ember.v1");
+}
+
+use proto::ember_cache_server::EmberCache;
+use proto::*;
+
+/// The gRPC service backed by the sharded engine.
+pub struct EmberService {
+    engine: Engine,
+    ctx: Arc<ServerContext>,
+    slow_log: Arc<SlowLog>,
+}
+
+impl EmberService {
+    pub fn new(engine: Engine, ctx: Arc<ServerContext>, slow_log: Arc<SlowLog>) -> Self {
+        Self {
+            engine,
+            ctx,
+            slow_log,
+        }
+    }
+
+    /// Build this service into a tonic router, optionally with auth.
+    pub fn into_service(self) -> proto::ember_cache_server::EmberCacheServer<Self> {
+        proto::ember_cache_server::EmberCacheServer::new(self)
+    }
+
+    /// Routes a single-key request through the engine.
+    async fn route(&self, key: &str, req: ShardRequest) -> Result<ShardResponse, Status> {
+        self.engine
+            .route(key, req)
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))
+    }
+
+    /// Broadcasts a request to all shards.
+    async fn broadcast<F>(&self, make_req: F) -> Result<Vec<ShardResponse>, Status>
+    where
+        F: Fn() -> ShardRequest,
+    {
+        self.engine
+            .broadcast(make_req)
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))
+    }
+
+    /// Records command metrics and slowlog.
+    fn record_command(&self, start: Instant, cmd: &str) {
+        self.ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+        let elapsed = start.elapsed();
+        self.slow_log.maybe_record(elapsed, cmd);
+    }
+}
+
+/// Extracts the bytes from a Value::String, or returns an error.
+fn value_to_bytes(v: Value) -> Vec<u8> {
+    match v {
+        Value::String(b) => b.to_vec(),
+        _ => Vec::new(),
+    }
+}
+
+/// Maps a ShardResponse error to a gRPC Status.
+fn check_wrong_type(resp: &ShardResponse) -> Option<Status> {
+    match resp {
+        ShardResponse::WrongType => Some(Status::failed_precondition(
+            "WRONGTYPE operation against a key holding the wrong kind of value",
+        )),
+        ShardResponse::OutOfMemory => Some(Status::resource_exhausted(
+            "OOM command not allowed when used memory > maxmemory",
+        )),
+        ShardResponse::Err(msg) => Some(Status::internal(msg.clone())),
+        _ => None,
+    }
+}
+
+fn parse_expire(seconds: u64, millis: u64) -> Option<Duration> {
+    if millis > 0 {
+        Some(Duration::from_millis(millis))
+    } else if seconds > 0 {
+        Some(Duration::from_secs(seconds))
+    } else {
+        None
+    }
+}
+
+#[tonic::async_trait]
+impl EmberCache for EmberService {
+    // -----------------------------------------------------------------------
+    // strings
+    // -----------------------------------------------------------------------
+
+    async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let key = req.key;
+
+        let resp = self
+            .route(&key, ShardRequest::Get { key: key.clone() })
+            .await?;
+        self.record_command(start, "GET");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+
+        let expire = parse_expire(req.expire_seconds, req.expire_millis);
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Set {
+                    key: req.key.clone(),
+                    value: Bytes::from(req.value),
+                    expire,
+                    nx: req.nx,
+                    xx: req.xx,
+                },
+            )
+            .await?;
+        self.record_command(start, "SET");
+
+        match resp {
+            ShardResponse::Ok => Ok(Response::new(SetResponse { ok: true })),
+            ShardResponse::Value(None) => Ok(Response::new(SetResponse { ok: false })),
+            ShardResponse::OutOfMemory => Err(Status::resource_exhausted("OOM")),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn del(&self, request: Request<DelRequest>) -> Result<Response<DelResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+
+        let responses = self
+            .engine
+            .route_multi(&keys, |k| ShardRequest::Del { key: k })
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))?;
+
+        let mut deleted = 0i64;
+        for resp in responses {
+            if let ShardResponse::Bool(true) = resp {
+                deleted += 1;
+            }
+        }
+        self.record_command(start, "DEL");
+
+        Ok(Response::new(DelResponse { deleted }))
+    }
+
+    async fn m_get(&self, request: Request<MGetRequest>) -> Result<Response<MGetResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+
+        let responses = self
+            .engine
+            .route_multi(&keys, |k| ShardRequest::Get { key: k })
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))?;
+
+        let values: Vec<OptionalValue> = responses
+            .into_iter()
+            .map(|resp| match resp {
+                ShardResponse::Value(Some(v)) => OptionalValue {
+                    value: Some(value_to_bytes(v)),
+                },
+                _ => OptionalValue { value: None },
+            })
+            .collect();
+
+        self.record_command(start, "MGET");
+        Ok(Response::new(MGetResponse { values }))
+    }
+
+    async fn m_set(&self, request: Request<MSetRequest>) -> Result<Response<MSetResponse>, Status> {
+        let start = Instant::now();
+        let pairs = request.into_inner().pairs;
+
+        let keys: Vec<String> = pairs.iter().map(|p| p.key.clone()).collect();
+        let values: Vec<Bytes> = pairs.into_iter().map(|p| Bytes::from(p.value)).collect();
+
+        // dispatch all SETs concurrently
+        let mut receivers = Vec::with_capacity(keys.len());
+        for (key, value) in keys.iter().zip(values) {
+            let idx = self.engine.shard_for_key(key);
+            let rx = self
+                .engine
+                .dispatch_to_shard(
+                    idx,
+                    ShardRequest::Set {
+                        key: key.clone(),
+                        value,
+                        expire: None,
+                        nx: false,
+                        xx: false,
+                    },
+                )
+                .await
+                .map_err(|_| Status::unavailable("shard unavailable"))?;
+            receivers.push(rx);
+        }
+
+        // collect all responses
+        for rx in receivers {
+            let resp = rx
+                .await
+                .map_err(|_| Status::unavailable("shard unavailable"))?;
+            if let ShardResponse::OutOfMemory = resp {
+                return Err(Status::resource_exhausted("OOM"));
+            }
+        }
+
+        self.record_command(start, "MSET");
+        Ok(Response::new(MSetResponse {}))
+    }
+
+    async fn incr(&self, request: Request<IncrRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::Incr { key: key.clone() })
+            .await?;
+        self.record_command(start, "INCR");
+
+        match resp {
+            ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn incr_by(
+        &self,
+        request: Request<IncrByRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::IncrBy {
+                    key: req.key.clone(),
+                    delta: req.delta,
+                },
+            )
+            .await?;
+        self.record_command(start, "INCRBY");
+
+        match resp {
+            ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn decr_by(
+        &self,
+        request: Request<DecrByRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::DecrBy {
+                    key: req.key.clone(),
+                    delta: req.delta,
+                },
+            )
+            .await?;
+        self.record_command(start, "DECRBY");
+
+        match resp {
+            ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn incr_by_float(
+        &self,
+        request: Request<IncrByFloatRequest>,
+    ) -> Result<Response<FloatResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::IncrByFloat {
+                    key: req.key.clone(),
+                    delta: req.delta,
+                },
+            )
+            .await?;
+        self.record_command(start, "INCRBYFLOAT");
+
+        match resp {
+            ShardResponse::BulkString(s) => Ok(Response::new(FloatResponse { value: s })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn append(
+        &self,
+        request: Request<AppendRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Append {
+                    key: req.key.clone(),
+                    value: Bytes::from(req.value),
+                },
+            )
+            .await?;
+        self.record_command(start, "APPEND");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn strlen(
+        &self,
+        request: Request<StrlenRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::Strlen { key: key.clone() })
+            .await?;
+        self.record_command(start, "STRLEN");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // keys
+    // -----------------------------------------------------------------------
+
+    async fn exists(
+        &self,
+        request: Request<ExistsRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+
+        let responses = self
+            .engine
+            .route_multi(&keys, |k| ShardRequest::Exists { key: k })
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))?;
+
+        let mut count = 0i64;
+        for resp in responses {
+            if let ShardResponse::Bool(true) = resp {
+                count += 1;
+            }
+        }
+        self.record_command(start, "EXISTS");
+        Ok(Response::new(IntResponse { value: count }))
+    }
+
+    async fn expire(
+        &self,
+        request: Request<ExpireRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Expire {
+                    key: req.key.clone(),
+                    seconds: req.seconds,
+                },
+            )
+            .await?;
+        self.record_command(start, "EXPIRE");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn p_expire(
+        &self,
+        request: Request<PExpireRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Pexpire {
+                    key: req.key.clone(),
+                    milliseconds: req.milliseconds,
+                },
+            )
+            .await?;
+        self.record_command(start, "PEXPIRE");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn persist(
+        &self,
+        request: Request<PersistRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::Persist { key: key.clone() })
+            .await?;
+        self.record_command(start, "PERSIST");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn ttl(&self, request: Request<TtlRequest>) -> Result<Response<TtlResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::Ttl { key: key.clone() })
+            .await?;
+        self.record_command(start, "TTL");
+
+        match resp {
+            ShardResponse::Ttl(TtlResult::Seconds(s)) => {
+                Ok(Response::new(TtlResponse { value: s as i64 }))
+            }
+            ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => Ok(Response::new(TtlResponse {
+                value: (ms / 1000) as i64,
+            })),
+            ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
+            ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn p_ttl(&self, request: Request<PTtlRequest>) -> Result<Response<TtlResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::Pttl { key: key.clone() })
+            .await?;
+        self.record_command(start, "PTTL");
+
+        match resp {
+            ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
+                Ok(Response::new(TtlResponse { value: ms as i64 }))
+            }
+            ShardResponse::Ttl(TtlResult::Seconds(s)) => Ok(Response::new(TtlResponse {
+                value: (s * 1000) as i64,
+            })),
+            ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
+            ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn r#type(
+        &self,
+        request: Request<TypeRequest>,
+    ) -> Result<Response<TypeResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::Type { key: key.clone() })
+            .await?;
+        self.record_command(start, "TYPE");
+
+        match resp {
+            ShardResponse::TypeName(name) => Ok(Response::new(TypeResponse {
+                type_name: name.to_string(),
+            })),
+            _ => Ok(Response::new(TypeResponse {
+                type_name: "none".to_string(),
+            })),
+        }
+    }
+
+    async fn keys(&self, request: Request<KeysRequest>) -> Result<Response<KeysResponse>, Status> {
+        let start = Instant::now();
+        let pattern = request.into_inner().pattern;
+
+        let responses = self
+            .broadcast(|| ShardRequest::Keys {
+                pattern: pattern.clone(),
+            })
+            .await?;
+
+        let mut keys = Vec::new();
+        for resp in responses {
+            if let ShardResponse::StringArray(shard_keys) = resp {
+                keys.extend(shard_keys);
+            }
+        }
+        self.record_command(start, "KEYS");
+        Ok(Response::new(KeysResponse { keys }))
+    }
+
+    async fn rename(
+        &self,
+        request: Request<RenameRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+
+        if !self.engine.same_shard(&req.key, &req.new_key) {
+            return Err(Status::failed_precondition(
+                "ERR source and destination keys must hash to the same shard",
+            ));
+        }
+
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Rename {
+                    key: req.key.clone(),
+                    newkey: req.new_key,
+                },
+            )
+            .await?;
+        self.record_command(start, "RENAME");
+
+        match resp {
+            ShardResponse::Ok => Ok(Response::new(StatusResponse {
+                status: "OK".to_string(),
+            })),
+            ShardResponse::Err(msg) => Err(Status::not_found(msg)),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn scan(&self, request: Request<ScanRequest>) -> Result<Response<ScanResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let count = if req.count == 0 {
+            10
+        } else {
+            req.count as usize
+        };
+
+        // cursor encodes shard index in upper bits and per-shard cursor in lower bits
+        let shard_count = self.engine.shard_count();
+        let shard_idx = (req.cursor as usize) % shard_count;
+        let shard_cursor = req.cursor / (shard_count as u64);
+
+        let resp = self
+            .engine
+            .send_to_shard(
+                shard_idx,
+                ShardRequest::Scan {
+                    cursor: shard_cursor,
+                    count,
+                    pattern: req.pattern,
+                },
+            )
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))?;
+
+        self.record_command(start, "SCAN");
+
+        match resp {
+            ShardResponse::Scan {
+                cursor: next_cursor,
+                keys,
+            } => {
+                let global_cursor = if next_cursor == 0 {
+                    // this shard is done, move to next
+                    if shard_idx + 1 < shard_count {
+                        (shard_idx + 1) as u64
+                    } else {
+                        0 // all shards done
+                    }
+                } else {
+                    next_cursor * (shard_count as u64) + (shard_idx as u64)
+                };
+                Ok(Response::new(ScanResponse {
+                    cursor: global_cursor,
+                    keys,
+                }))
+            }
+            _ => Err(Status::internal("unexpected response")),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // lists
+    // -----------------------------------------------------------------------
+
+    async fn l_push(
+        &self,
+        request: Request<LPushRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let values: Vec<Bytes> = req.values.into_iter().map(Bytes::from).collect();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LPush {
+                    key: req.key.clone(),
+                    values,
+                },
+            )
+            .await?;
+        self.record_command(start, "LPUSH");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn r_push(
+        &self,
+        request: Request<RPushRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let values: Vec<Bytes> = req.values.into_iter().map(Bytes::from).collect();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::RPush {
+                    key: req.key.clone(),
+                    values,
+                },
+            )
+            .await?;
+        self.record_command(start, "RPUSH");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn l_pop(&self, request: Request<LPopRequest>) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::LPop { key: key.clone() })
+            .await?;
+        self.record_command(start, "LPOP");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn r_pop(&self, request: Request<RPopRequest>) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::RPop { key: key.clone() })
+            .await?;
+        self.record_command(start, "RPOP");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn l_range(
+        &self,
+        request: Request<LRangeRequest>,
+    ) -> Result<Response<ArrayResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LRange {
+                    key: req.key.clone(),
+                    start: req.start,
+                    stop: req.stop,
+                },
+            )
+            .await?;
+        self.record_command(start, "LRANGE");
+
+        match resp {
+            ShardResponse::Array(arr) => Ok(Response::new(ArrayResponse {
+                values: arr.into_iter().map(|b| b.to_vec()).collect(),
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn l_len(&self, request: Request<LLenRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::LLen { key: key.clone() })
+            .await?;
+        self.record_command(start, "LLEN");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // hashes
+    // -----------------------------------------------------------------------
+
+    async fn h_set(&self, request: Request<HSetRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let fields: Vec<(String, Bytes)> = req
+            .fields
+            .into_iter()
+            .map(|f| (f.field, Bytes::from(f.value)))
+            .collect();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HSet {
+                    key: req.key.clone(),
+                    fields,
+                },
+            )
+            .await?;
+        self.record_command(start, "HSET");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_get(&self, request: Request<HGetRequest>) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HGet {
+                    key: req.key.clone(),
+                    field: req.field,
+                },
+            )
+            .await?;
+        self.record_command(start, "HGET");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_get_all(
+        &self,
+        request: Request<HGetAllRequest>,
+    ) -> Result<Response<HashResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::HGetAll { key: key.clone() })
+            .await?;
+        self.record_command(start, "HGETALL");
+
+        match resp {
+            ShardResponse::HashFields(fields) => Ok(Response::new(HashResponse {
+                fields: fields
+                    .into_iter()
+                    .map(|(f, v)| FieldValue {
+                        field: f,
+                        value: v.to_vec(),
+                    })
+                    .collect(),
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_del(&self, request: Request<HDelRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HDel {
+                    key: req.key.clone(),
+                    fields: req.fields,
+                },
+            )
+            .await?;
+        self.record_command(start, "HDEL");
+
+        match resp {
+            ShardResponse::HDelLen { count, .. } => Ok(Response::new(IntResponse {
+                value: count as i64,
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_exists(
+        &self,
+        request: Request<HExistsRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HExists {
+                    key: req.key.clone(),
+                    field: req.field,
+                },
+            )
+            .await?;
+        self.record_command(start, "HEXISTS");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_len(&self, request: Request<HLenRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::HLen { key: key.clone() })
+            .await?;
+        self.record_command(start, "HLEN");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_incr_by(
+        &self,
+        request: Request<HIncrByRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HIncrBy {
+                    key: req.key.clone(),
+                    field: req.field,
+                    delta: req.delta,
+                },
+            )
+            .await?;
+        self.record_command(start, "HINCRBY");
+
+        match resp {
+            ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_keys(
+        &self,
+        request: Request<HKeysRequest>,
+    ) -> Result<Response<KeysResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::HKeys { key: key.clone() })
+            .await?;
+        self.record_command(start, "HKEYS");
+
+        match resp {
+            ShardResponse::StringArray(keys) => Ok(Response::new(KeysResponse { keys })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn h_vals(
+        &self,
+        request: Request<HValsRequest>,
+    ) -> Result<Response<ArrayResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::HVals { key: key.clone() })
+            .await?;
+        self.record_command(start, "HVALS");
+
+        match resp {
+            ShardResponse::Array(arr) => Ok(Response::new(ArrayResponse {
+                values: arr.into_iter().map(|b| b.to_vec()).collect(),
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn hm_get(
+        &self,
+        request: Request<HmGetRequest>,
+    ) -> Result<Response<OptionalArrayResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HMGet {
+                    key: req.key.clone(),
+                    fields: req.fields,
+                },
+            )
+            .await?;
+        self.record_command(start, "HMGET");
+
+        match resp {
+            ShardResponse::OptionalArray(arr) => Ok(Response::new(OptionalArrayResponse {
+                values: arr
+                    .into_iter()
+                    .map(|opt| OptionalValue {
+                        value: opt.map(|b| b.to_vec()),
+                    })
+                    .collect(),
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sets
+    // -----------------------------------------------------------------------
+
+    async fn s_add(&self, request: Request<SAddRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SAdd {
+                    key: req.key.clone(),
+                    members: req.members,
+                },
+            )
+            .await?;
+        self.record_command(start, "SADD");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn s_rem(&self, request: Request<SRemRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SRem {
+                    key: req.key.clone(),
+                    members: req.members,
+                },
+            )
+            .await?;
+        self.record_command(start, "SREM");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn s_members(
+        &self,
+        request: Request<SMembersRequest>,
+    ) -> Result<Response<KeysResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::SMembers { key: key.clone() })
+            .await?;
+        self.record_command(start, "SMEMBERS");
+
+        match resp {
+            ShardResponse::StringArray(members) => {
+                Ok(Response::new(KeysResponse { keys: members }))
+            }
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn s_is_member(
+        &self,
+        request: Request<SIsMemberRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SIsMember {
+                    key: req.key.clone(),
+                    member: req.member,
+                },
+            )
+            .await?;
+        self.record_command(start, "SISMEMBER");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn s_card(
+        &self,
+        request: Request<SCardRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::SCard { key: key.clone() })
+            .await?;
+        self.record_command(start, "SCARD");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sorted sets
+    // -----------------------------------------------------------------------
+
+    async fn z_add(&self, request: Request<ZAddRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let members: Vec<(f64, String)> = req
+            .members
+            .into_iter()
+            .map(|m| (m.score, m.member))
+            .collect();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZAdd {
+                    key: req.key.clone(),
+                    members,
+                    nx: req.nx,
+                    xx: req.xx,
+                    gt: req.gt,
+                    lt: req.lt,
+                    ch: req.ch,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZADD");
+
+        match resp {
+            ShardResponse::ZAddLen { count, .. } => Ok(Response::new(IntResponse {
+                value: count as i64,
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn z_rem(&self, request: Request<ZRemRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRem {
+                    key: req.key.clone(),
+                    members: req.members,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZREM");
+
+        match resp {
+            ShardResponse::ZRemLen { count, .. } => Ok(Response::new(IntResponse {
+                value: count as i64,
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn z_score(
+        &self,
+        request: Request<ZScoreRequest>,
+    ) -> Result<Response<OptionalFloatResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZScore {
+                    key: req.key.clone(),
+                    member: req.member,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZSCORE");
+
+        match resp {
+            ShardResponse::Score(s) => Ok(Response::new(OptionalFloatResponse { value: s })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn z_rank(
+        &self,
+        request: Request<ZRankRequest>,
+    ) -> Result<Response<OptionalIntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRank {
+                    key: req.key.clone(),
+                    member: req.member,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZRANK");
+
+        match resp {
+            ShardResponse::Rank(r) => Ok(Response::new(OptionalIntResponse {
+                value: r.map(|n| n as i64),
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn z_card(
+        &self,
+        request: Request<ZCardRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        let resp = self
+            .route(&key, ShardRequest::ZCard { key: key.clone() })
+            .await?;
+        self.record_command(start, "ZCARD");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    async fn z_range(
+        &self,
+        request: Request<ZRangeRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRange {
+                    key: req.key.clone(),
+                    start: req.start,
+                    stop: req.stop,
+                    with_scores: req.with_scores,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZRANGE");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => Ok(Response::new(ZRangeResponse {
+                members: arr
+                    .into_iter()
+                    .map(|(member, score)| ScoreMember { score, member })
+                    .collect(),
+            })),
+            ShardResponse::Array(arr) => Ok(Response::new(ZRangeResponse {
+                members: arr
+                    .into_iter()
+                    .map(|b| ScoreMember {
+                        member: String::from_utf8_lossy(&b).to_string(),
+                        score: 0.0,
+                    })
+                    .collect(),
+            })),
+            other => {
+                Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response")))
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // vectors
+    // -----------------------------------------------------------------------
+
+    async fn v_add(&self, request: Request<VAddRequest>) -> Result<Response<BoolResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let req = request.into_inner();
+
+            let metric = match req.metric() {
+                VectorMetric::Cosine => 0,
+                VectorMetric::Euclidean => 1,
+                VectorMetric::InnerProduct => 2,
+            };
+            let quantization = match req.quantization() {
+                VectorQuantization::None => 0,
+                VectorQuantization::F16 => 1,
+                VectorQuantization::I8 => 2,
+            };
+
+            let resp = self
+                .route(
+                    &req.key,
+                    ShardRequest::VAdd {
+                        key: req.key.clone(),
+                        element: req.element,
+                        vector: req.vector,
+                        metric,
+                        quantization,
+                        connectivity: req.connectivity.unwrap_or(16),
+                        expansion_add: req.ef_construction.unwrap_or(64),
+                    },
+                )
+                .await?;
+            self.record_command(start, "VADD");
+
+            match resp {
+                ShardResponse::VAddResult { added, .. } => {
+                    Ok(Response::new(BoolResponse { value: added }))
+                }
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    async fn v_sim(&self, request: Request<VSimRequest>) -> Result<Response<VSimResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let req = request.into_inner();
+            let resp = self
+                .route(
+                    &req.key,
+                    ShardRequest::VSim {
+                        key: req.key.clone(),
+                        query: req.query,
+                        count: req.count as usize,
+                        ef_search: req.ef_search.unwrap_or(0) as usize,
+                    },
+                )
+                .await?;
+            self.record_command(start, "VSIM");
+
+            match resp {
+                ShardResponse::VSimResult(results) => Ok(Response::new(VSimResponse {
+                    results: results
+                        .into_iter()
+                        .map(|(element, distance)| VSimResult { element, distance })
+                        .collect(),
+                })),
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    async fn v_rem(&self, request: Request<VRemRequest>) -> Result<Response<BoolResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let req = request.into_inner();
+            let resp = self
+                .route(
+                    &req.key,
+                    ShardRequest::VRem {
+                        key: req.key.clone(),
+                        element: req.element,
+                    },
+                )
+                .await?;
+            self.record_command(start, "VREM");
+
+            match resp {
+                ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    async fn v_get(&self, request: Request<VGetRequest>) -> Result<Response<VGetResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let req = request.into_inner();
+            let resp = self
+                .route(
+                    &req.key,
+                    ShardRequest::VGet {
+                        key: req.key.clone(),
+                        element: req.element,
+                    },
+                )
+                .await?;
+            self.record_command(start, "VGET");
+
+            match resp {
+                ShardResponse::VectorData(Some(v)) => Ok(Response::new(VGetResponse {
+                    exists: Some(true),
+                    vector: v,
+                })),
+                ShardResponse::VectorData(None) => Ok(Response::new(VGetResponse {
+                    exists: Some(false),
+                    vector: vec![],
+                })),
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    async fn v_card(
+        &self,
+        request: Request<VCardRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let key = request.into_inner().key;
+            let resp = self
+                .route(&key, ShardRequest::VCard { key: key.clone() })
+                .await?;
+            self.record_command(start, "VCARD");
+
+            match resp {
+                ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    async fn v_dim(&self, request: Request<VDimRequest>) -> Result<Response<IntResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let key = request.into_inner().key;
+            let resp = self
+                .route(&key, ShardRequest::VDim { key: key.clone() })
+                .await?;
+            self.record_command(start, "VDIM");
+
+            match resp {
+                ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    async fn v_info(
+        &self,
+        request: Request<VInfoRequest>,
+    ) -> Result<Response<VInfoResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let key = request.into_inner().key;
+            let resp = self
+                .route(&key, ShardRequest::VInfo { key: key.clone() })
+                .await?;
+            self.record_command(start, "VINFO");
+
+            match resp {
+                ShardResponse::VectorInfo(Some(info)) => Ok(Response::new(VInfoResponse {
+                    exists: true,
+                    info: info
+                        .into_iter()
+                        .map(|(f, v)| FieldValue {
+                            field: f,
+                            value: v.into_bytes(),
+                        })
+                        .collect(),
+                })),
+                ShardResponse::VectorInfo(None) => Ok(Response::new(VInfoResponse {
+                    exists: false,
+                    info: vec![],
+                })),
+                other => Err(check_wrong_type(&other)
+                    .unwrap_or_else(|| Status::internal("unexpected response"))),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // server
+    // -----------------------------------------------------------------------
+
+    async fn ping(&self, request: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
+        let msg = request.into_inner().message;
+        Ok(Response::new(PingResponse {
+            message: msg.unwrap_or_else(|| "PONG".to_string()),
+        }))
+    }
+
+    async fn flush_db(
+        &self,
+        request: Request<FlushDbRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let start = Instant::now();
+        let async_mode = request.into_inner().r#async;
+
+        if async_mode {
+            self.broadcast(|| ShardRequest::FlushDbAsync).await?;
+        } else {
+            self.broadcast(|| ShardRequest::FlushDb).await?;
+        }
+
+        self.record_command(start, "FLUSHDB");
+        Ok(Response::new(StatusResponse {
+            status: "OK".to_string(),
+        }))
+    }
+
+    async fn db_size(
+        &self,
+        _request: Request<DbSizeRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+
+        let responses = self.broadcast(|| ShardRequest::DbSize).await?;
+        let mut total = 0i64;
+        for resp in responses {
+            if let ShardResponse::KeyCount(n) = resp {
+                total += n as i64;
+            }
+        }
+        self.record_command(start, "DBSIZE");
+        Ok(Response::new(IntResponse { value: total }))
+    }
+
+    async fn info(&self, request: Request<InfoRequest>) -> Result<Response<InfoResponse>, Status> {
+        let start = Instant::now();
+        let _section = request.into_inner().section;
+
+        let responses = self.broadcast(|| ShardRequest::Stats).await?;
+        let mut total_keys = 0usize;
+        let mut total_memory = 0usize;
+        for resp in &responses {
+            if let ShardResponse::Stats(stats) = resp {
+                total_keys += stats.key_count;
+                total_memory += stats.used_bytes;
+            }
+        }
+
+        let uptime = self.ctx.start_time.elapsed().as_secs();
+        let info = format!(
+            "# server\r\n\
+             version:{}\r\n\
+             uptime_in_seconds:{}\r\n\
+             shard_count:{}\r\n\
+             \r\n\
+             # clients\r\n\
+             connected_clients:{}\r\n\
+             \r\n\
+             # memory\r\n\
+             used_memory:{}\r\n\
+             \r\n\
+             # keyspace\r\n\
+             total_keys:{}\r\n\
+             \r\n\
+             # stats\r\n\
+             total_commands_processed:{}\r\n\
+             total_connections_received:{}\r\n",
+            self.ctx.version,
+            uptime,
+            self.ctx.shard_count,
+            self.ctx.connections_active.load(Ordering::Relaxed),
+            total_memory,
+            total_keys,
+            self.ctx.commands_processed.load(Ordering::Relaxed),
+            self.ctx.connections_accepted.load(Ordering::Relaxed),
+        );
+
+        self.record_command(start, "INFO");
+        Ok(Response::new(InfoResponse { info }))
+    }
+
+    // -----------------------------------------------------------------------
+    // pipeline (bidirectional streaming)
+    // -----------------------------------------------------------------------
+
+    type PipelineStream = ReceiverStream<Result<PipelineResponse, Status>>;
+
+    async fn pipeline(
+        &self,
+        request: Request<Streaming<PipelineRequest>>,
+    ) -> Result<Response<Self::PipelineStream>, Status> {
+        let mut stream = request.into_inner();
+        let engine = self.engine.clone();
+        let ctx = Arc::clone(&self.ctx);
+        let slow_log = Arc::clone(&self.slow_log);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+
+        tokio::spawn(async move {
+            let svc = EmberService::new(engine, ctx, slow_log);
+            while let Ok(Some(req)) = stream.message().await {
+                let id = req.id;
+                let result = handle_pipeline_command(&svc, req).await;
+                let resp = match result {
+                    Ok(pr) => pr,
+                    Err(status) => PipelineResponse {
+                        id,
+                        result: Some(pipeline_response::Result::Error(ErrorResponse {
+                            message: status.message().to_string(),
+                            kind: ErrorKind::Internal as i32,
+                        })),
+                    },
+                };
+                if tx.send(Ok(resp)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+/// Dispatches a single pipeline command to the appropriate RPC handler.
+async fn handle_pipeline_command(
+    svc: &EmberService,
+    req: PipelineRequest,
+) -> Result<PipelineResponse, Status> {
+    let id = req.id;
+    let cmd = req
+        .command
+        .ok_or_else(|| Status::invalid_argument("missing command"))?;
+
+    match cmd {
+        pipeline_request::Command::Get(r) => {
+            let resp = svc.get(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Get(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Set(r) => {
+            let resp = svc.set(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Set(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Del(r) => {
+            let resp = svc.del(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Del(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Exists(r) => {
+            let resp = svc.exists(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Incr(r) => {
+            let resp = svc.incr(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::IncrBy(r) => {
+            let resp = svc.incr_by(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::DecrBy(r) => {
+            let resp = svc.decr_by(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::IncrByFloat(r) => {
+            let resp = svc.incr_by_float(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::FloatVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Append(r) => {
+            let resp = svc.append(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Strlen(r) => {
+            let resp = svc.strlen(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Expire(r) => {
+            let resp = svc.expire(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Pexpire(r) => {
+            let resp = svc.p_expire(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Persist(r) => {
+            let resp = svc.persist(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Ttl(r) => {
+            let resp = svc.ttl(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Ttl(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Pttl(r) => {
+            let resp = svc.p_ttl(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Ttl(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Type(r) => {
+            let resp = svc.r#type(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Type(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Lpush(r) => {
+            let resp = svc.l_push(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Rpush(r) => {
+            let resp = svc.r_push(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Lpop(r) => {
+            let resp = svc.l_pop(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Get(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Rpop(r) => {
+            let resp = svc.r_pop(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Get(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Lrange(r) => {
+            let resp = svc.l_range(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Array(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Llen(r) => {
+            let resp = svc.l_len(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hset(r) => {
+            let resp = svc.h_set(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hget(r) => {
+            let resp = svc.h_get(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Get(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hgetall(r) => {
+            let resp = svc.h_get_all(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Hash(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hdel(r) => {
+            let resp = svc.h_del(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hexists(r) => {
+            let resp = svc.h_exists(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hlen(r) => {
+            let resp = svc.h_len(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::HincrBy(r) => {
+            let resp = svc.h_incr_by(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hkeys(r) => {
+            let resp = svc.h_keys(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Keys(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hvals(r) => {
+            let resp = svc.h_vals(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Array(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Hmget(r) => {
+            let resp = svc.hm_get(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::OptionalArray(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Sadd(r) => {
+            let resp = svc.s_add(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Srem(r) => {
+            let resp = svc.s_rem(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Smembers(r) => {
+            let resp = svc.s_members(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Keys(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Sismember(r) => {
+            let resp = svc.s_is_member(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Scard(r) => {
+            let resp = svc.s_card(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Zadd(r) => {
+            let resp = svc.z_add(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Zrem(r) => {
+            let resp = svc.z_rem(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Zscore(r) => {
+            let resp = svc.z_score(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::OptionalFloat(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Zrank(r) => {
+            let resp = svc.z_rank(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::OptionalInt(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Zcard(r) => {
+            let resp = svc.z_card(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Zrange(r) => {
+            let resp = svc.z_range(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Zrange(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vadd(r) => {
+            let resp = svc.v_add(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vsim(r) => {
+            let resp = svc.v_sim(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Vsim(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vrem(r) => {
+            let resp = svc.v_rem(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vget(r) => {
+            let resp = svc.v_get(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Vget(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vcard(r) => {
+            let resp = svc.v_card(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vdim(r) => {
+            let resp = svc.v_dim(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Vinfo(r) => {
+            let resp = svc.v_info(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Vinfo(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Ping(r) => {
+            let resp = svc.ping(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Ping(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Flushdb(r) => {
+            let resp = svc.flush_db(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Status(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Dbsize(r) => {
+            let resp = svc.db_size(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Mget(r) => {
+            let resp = svc.m_get(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Mget(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Mset(r) => {
+            let resp = svc.m_set(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Mset(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Keys(r) => {
+            let resp = svc.keys(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Keys(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Rename(r) => {
+            let resp = svc.rename(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Status(resp.into_inner())),
+            })
+        }
+        pipeline_request::Command::Scan(r) => {
+            let resp = svc.scan(Request::new(r)).await?;
+            Ok(PipelineResponse {
+                id,
+                result: Some(pipeline_response::Result::Scan(resp.into_inner())),
+            })
+        }
+    }
+}

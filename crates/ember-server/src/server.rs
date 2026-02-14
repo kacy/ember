@@ -71,6 +71,7 @@ pub async fn run(
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
     cluster: Option<Arc<ClusterCoordinator>>,
+    #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
     if let Some(ref pcfg) = config.persistence {
@@ -126,6 +127,24 @@ pub async fn run(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
+
+    // spawn gRPC listener if configured
+    #[cfg(feature = "grpc")]
+    let _grpc_handle = if let Some(grpc_addr) = grpc_addr {
+        let svc =
+            crate::grpc::EmberService::new(engine.clone(), Arc::clone(&ctx), Arc::clone(&slow_log));
+        info!("gRPC listening on {grpc_addr}");
+        let server = tonic::transport::Server::builder()
+            .add_service(svc.into_service())
+            .serve(grpc_addr);
+        Some(tokio::spawn(async move {
+            if let Err(e) = server.await {
+                error!("gRPC server error: {e}");
+            }
+        }))
+    } else {
+        None
+    };
 
     info!(
         "listening on {addr} with {} shards (max {max_conn} connections)",
@@ -322,6 +341,7 @@ pub async fn run_concurrent(
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
+    #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
         .persistence
@@ -372,6 +392,24 @@ pub async fn run_concurrent(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
+
+    // spawn gRPC listener if configured
+    #[cfg(feature = "grpc")]
+    let _grpc_handle = if let Some(grpc_addr) = grpc_addr {
+        let svc =
+            crate::grpc::EmberService::new(engine.clone(), Arc::clone(&ctx), Arc::clone(&slow_log));
+        info!("gRPC listening on {grpc_addr}");
+        let server = tonic::transport::Server::builder()
+            .add_service(svc.into_service())
+            .serve(grpc_addr);
+        Some(tokio::spawn(async move {
+            if let Err(e) = server.await {
+                error!("gRPC server error: {e}");
+            }
+        }))
+    } else {
+        None
+    };
 
     info!("listening on {addr} with concurrent keyspace (max {max_conn} connections)");
 
