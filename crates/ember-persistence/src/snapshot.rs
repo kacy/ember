@@ -41,16 +41,23 @@ const TYPE_VECTOR: u8 = 6;
 #[cfg(feature = "protobuf")]
 const TYPE_PROTO: u8 = 5;
 
-/// Reads a UTF-8 string from a length-prefixed byte field.
-#[cfg(feature = "encryption")]
-fn read_snap_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError> {
-    let bytes = format::read_bytes(r)?;
+/// Converts raw bytes to a UTF-8 string, returning a descriptive error
+/// on invalid data. `field` names the field for the error message
+/// (e.g. "key", "member", "hash field").
+fn parse_utf8(bytes: Vec<u8>, field: &str) -> Result<String, FormatError> {
     String::from_utf8(bytes).map_err(|_| {
         FormatError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{field} is not valid utf-8"),
         ))
     })
+}
+
+/// Reads a UTF-8 string from a length-prefixed byte field.
+#[cfg(feature = "encryption")]
+fn read_snap_string(r: &mut impl io::Read, field: &str) -> Result<String, FormatError> {
+    let bytes = format::read_bytes(r)?;
+    parse_utf8(bytes, field)
 }
 
 /// Parses a type-tagged SnapValue from a reader (v2+ format).
@@ -608,12 +615,7 @@ impl SnapshotReader {
                         format::write_f64(&mut buf, score)?;
                         let member_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &member_bytes)?;
-                        let member = String::from_utf8(member_bytes).map_err(|_| {
-                            FormatError::Io(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "member is not valid utf-8",
-                            ))
-                        })?;
+                        let member = parse_utf8(member_bytes, "member")?;
                         members.push((score, member));
                     }
                     SnapValue::SortedSet(members)
@@ -626,12 +628,7 @@ impl SnapshotReader {
                     for _ in 0..count {
                         let field_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &field_bytes)?;
-                        let field = String::from_utf8(field_bytes).map_err(|_| {
-                            FormatError::Io(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "hash field is not valid utf-8",
-                            ))
-                        })?;
+                        let field = parse_utf8(field_bytes, "hash field")?;
                         let value_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &value_bytes)?;
                         map.insert(field, Bytes::from(value_bytes));
@@ -646,12 +643,7 @@ impl SnapshotReader {
                     for _ in 0..count {
                         let member_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &member_bytes)?;
-                        let member = String::from_utf8(member_bytes).map_err(|_| {
-                            FormatError::Io(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "set member is not valid utf-8",
-                            ))
-                        })?;
+                        let member = parse_utf8(member_bytes, "set member")?;
                         set.insert(member);
                     }
                     SnapValue::Set(set)
@@ -696,12 +688,7 @@ impl SnapshotReader {
                     for _ in 0..count {
                         let name_bytes = format::read_bytes(&mut self.reader)?;
                         format::write_bytes(&mut buf, &name_bytes)?;
-                        let name = String::from_utf8(name_bytes).map_err(|_| {
-                            FormatError::Io(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "vector element name is not valid utf-8",
-                            ))
-                        })?;
+                        let name = parse_utf8(name_bytes, "vector element name")?;
                         let mut vector = Vec::with_capacity(dim as usize);
                         for _ in 0..dim {
                             let v = format::read_f32(&mut self.reader)?;
@@ -723,12 +710,7 @@ impl SnapshotReader {
                 TYPE_PROTO => {
                     let type_name_bytes = format::read_bytes(&mut self.reader)?;
                     format::write_bytes(&mut buf, &type_name_bytes)?;
-                    let type_name = String::from_utf8(type_name_bytes).map_err(|_| {
-                        FormatError::Io(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "proto type_name is not valid utf-8",
-                        ))
-                    })?;
+                    let type_name = parse_utf8(type_name_bytes, "proto type_name")?;
                     let data = format::read_bytes(&mut self.reader)?;
                     format::write_bytes(&mut buf, &data)?;
                     SnapValue::Proto {
@@ -746,12 +728,7 @@ impl SnapshotReader {
         format::write_i64(&mut buf, expire_ms)?;
         self.hasher.update(&buf);
 
-        let key = String::from_utf8(key_bytes).map_err(|_| {
-            FormatError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "key is not valid utf-8",
-            ))
-        })?;
+        let key = parse_utf8(key_bytes, "key")?;
 
         self.read_so_far += 1;
         Ok(Some(SnapEntry {

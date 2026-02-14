@@ -191,6 +191,42 @@ pub enum AofRecord {
 }
 
 impl AofRecord {
+    /// Returns the on-disk tag byte for this record variant.
+    fn tag(&self) -> u8 {
+        match self {
+            AofRecord::Set { .. } => TAG_SET,
+            AofRecord::Del { .. } => TAG_DEL,
+            AofRecord::Expire { .. } => TAG_EXPIRE,
+            AofRecord::LPush { .. } => TAG_LPUSH,
+            AofRecord::RPush { .. } => TAG_RPUSH,
+            AofRecord::LPop { .. } => TAG_LPOP,
+            AofRecord::RPop { .. } => TAG_RPOP,
+            AofRecord::ZAdd { .. } => TAG_ZADD,
+            AofRecord::ZRem { .. } => TAG_ZREM,
+            AofRecord::Persist { .. } => TAG_PERSIST,
+            AofRecord::Pexpire { .. } => TAG_PEXPIRE,
+            AofRecord::Incr { .. } => TAG_INCR,
+            AofRecord::Decr { .. } => TAG_DECR,
+            AofRecord::HSet { .. } => TAG_HSET,
+            AofRecord::HDel { .. } => TAG_HDEL,
+            AofRecord::HIncrBy { .. } => TAG_HINCRBY,
+            AofRecord::SAdd { .. } => TAG_SADD,
+            AofRecord::SRem { .. } => TAG_SREM,
+            AofRecord::IncrBy { .. } => TAG_INCRBY,
+            AofRecord::DecrBy { .. } => TAG_DECRBY,
+            AofRecord::Append { .. } => TAG_APPEND,
+            AofRecord::Rename { .. } => TAG_RENAME,
+            #[cfg(feature = "vector")]
+            AofRecord::VAdd { .. } => TAG_VADD,
+            #[cfg(feature = "vector")]
+            AofRecord::VRem { .. } => TAG_VREM,
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoSet { .. } => TAG_PROTO_SET,
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoRegister { .. } => TAG_PROTO_REGISTER,
+        }
+    }
+
     /// Estimates the serialized size of this record in bytes.
     ///
     /// Used as a capacity hint for `to_bytes()` to avoid intermediate
@@ -291,52 +327,75 @@ impl AofRecord {
     /// Serializes this record into a byte vector (tag + payload, no CRC).
     fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
         let mut buf = Vec::with_capacity(self.estimated_size());
+        format::write_u8(&mut buf, self.tag())?;
+
         match self {
+            // key-only: tag + key
+            AofRecord::Del { key }
+            | AofRecord::LPop { key }
+            | AofRecord::RPop { key }
+            | AofRecord::Persist { key }
+            | AofRecord::Incr { key }
+            | AofRecord::Decr { key } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+            }
+
+            // key + bytes value + expire
             AofRecord::Set {
                 key,
                 value,
                 expire_ms,
             } => {
-                format::write_u8(&mut buf, TAG_SET)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, value)?;
                 format::write_i64(&mut buf, *expire_ms)?;
             }
-            AofRecord::Del { key } => {
-                format::write_u8(&mut buf, TAG_DEL)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-            }
+
+            // key + i64
             AofRecord::Expire { key, seconds } => {
-                format::write_u8(&mut buf, TAG_EXPIRE)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_i64(&mut buf, *seconds as i64)?;
             }
-            AofRecord::LPush { key, values } => {
-                format::write_u8(&mut buf, TAG_LPUSH)?;
+            AofRecord::Pexpire { key, milliseconds } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *milliseconds as i64)?;
+            }
+            AofRecord::IncrBy { key, delta }
+            | AofRecord::DecrBy { key, delta } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *delta)?;
+            }
+
+            // key + byte list
+            AofRecord::LPush { key, values }
+            | AofRecord::RPush { key, values } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_len(&mut buf, values.len())?;
                 for v in values {
                     format::write_bytes(&mut buf, v)?;
                 }
             }
-            AofRecord::RPush { key, values } => {
-                format::write_u8(&mut buf, TAG_RPUSH)?;
+
+            // key + string list
+            AofRecord::ZRem { key, members }
+            | AofRecord::SAdd { key, members }
+            | AofRecord::SRem { key, members } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_len(&mut buf, values.len())?;
-                for v in values {
-                    format::write_bytes(&mut buf, v)?;
+                format::write_len(&mut buf, members.len())?;
+                for member in members {
+                    format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
-            AofRecord::LPop { key } => {
-                format::write_u8(&mut buf, TAG_LPOP)?;
+            AofRecord::HDel { key, fields } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_len(&mut buf, fields.len())?;
+                for field in fields {
+                    format::write_bytes(&mut buf, field.as_bytes())?;
+                }
             }
-            AofRecord::RPop { key } => {
-                format::write_u8(&mut buf, TAG_RPOP)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-            }
+
+            // key + scored members
             AofRecord::ZAdd { key, members } => {
-                format::write_u8(&mut buf, TAG_ZADD)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_len(&mut buf, members.len())?;
                 for (score, member) in members {
@@ -344,33 +403,9 @@ impl AofRecord {
                     format::write_bytes(&mut buf, member.as_bytes())?;
                 }
             }
-            AofRecord::ZRem { key, members } => {
-                format::write_u8(&mut buf, TAG_ZREM)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_len(&mut buf, members.len())?;
-                for member in members {
-                    format::write_bytes(&mut buf, member.as_bytes())?;
-                }
-            }
-            AofRecord::Persist { key } => {
-                format::write_u8(&mut buf, TAG_PERSIST)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-            }
-            AofRecord::Pexpire { key, milliseconds } => {
-                format::write_u8(&mut buf, TAG_PEXPIRE)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_i64(&mut buf, *milliseconds as i64)?;
-            }
-            AofRecord::Incr { key } => {
-                format::write_u8(&mut buf, TAG_INCR)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-            }
-            AofRecord::Decr { key } => {
-                format::write_u8(&mut buf, TAG_DECR)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-            }
+
+            // key + field-value pairs
             AofRecord::HSet { key, fields } => {
-                format::write_u8(&mut buf, TAG_HSET)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_len(&mut buf, fields.len())?;
                 for (field, value) in fields {
@@ -378,56 +413,26 @@ impl AofRecord {
                     format::write_bytes(&mut buf, value)?;
                 }
             }
-            AofRecord::HDel { key, fields } => {
-                format::write_u8(&mut buf, TAG_HDEL)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_len(&mut buf, fields.len())?;
-                for field in fields {
-                    format::write_bytes(&mut buf, field.as_bytes())?;
-                }
-            }
+
+            // key + field + delta
             AofRecord::HIncrBy { key, field, delta } => {
-                format::write_u8(&mut buf, TAG_HINCRBY)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, field.as_bytes())?;
                 format::write_i64(&mut buf, *delta)?;
             }
-            AofRecord::SAdd { key, members } => {
-                format::write_u8(&mut buf, TAG_SADD)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_len(&mut buf, members.len())?;
-                for member in members {
-                    format::write_bytes(&mut buf, member.as_bytes())?;
-                }
-            }
-            AofRecord::SRem { key, members } => {
-                format::write_u8(&mut buf, TAG_SREM)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_len(&mut buf, members.len())?;
-                for member in members {
-                    format::write_bytes(&mut buf, member.as_bytes())?;
-                }
-            }
-            AofRecord::IncrBy { key, delta } => {
-                format::write_u8(&mut buf, TAG_INCRBY)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_i64(&mut buf, *delta)?;
-            }
-            AofRecord::DecrBy { key, delta } => {
-                format::write_u8(&mut buf, TAG_DECRBY)?;
-                format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_i64(&mut buf, *delta)?;
-            }
+
+            // key + bytes value (no expire)
             AofRecord::Append { key, value } => {
-                format::write_u8(&mut buf, TAG_APPEND)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, value)?;
             }
+
+            // key + newkey
             AofRecord::Rename { key, newkey } => {
-                format::write_u8(&mut buf, TAG_RENAME)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, newkey.as_bytes())?;
             }
+
             #[cfg(feature = "vector")]
             AofRecord::VAdd {
                 key,
@@ -438,7 +443,6 @@ impl AofRecord {
                 connectivity,
                 expansion_add,
             } => {
-                format::write_u8(&mut buf, TAG_VADD)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, element.as_bytes())?;
                 format::write_len(&mut buf, vector.len())?;
@@ -452,10 +456,10 @@ impl AofRecord {
             }
             #[cfg(feature = "vector")]
             AofRecord::VRem { key, element } => {
-                format::write_u8(&mut buf, TAG_VREM)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, element.as_bytes())?;
             }
+
             #[cfg(feature = "protobuf")]
             AofRecord::ProtoSet {
                 key,
@@ -463,7 +467,6 @@ impl AofRecord {
                 data,
                 expire_ms,
             } => {
-                format::write_u8(&mut buf, TAG_PROTO_SET)?;
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, type_name.as_bytes())?;
                 format::write_bytes(&mut buf, data)?;
@@ -471,7 +474,6 @@ impl AofRecord {
             }
             #[cfg(feature = "protobuf")]
             AofRecord::ProtoRegister { name, descriptor } => {
-                format::write_u8(&mut buf, TAG_PROTO_REGISTER)?;
                 format::write_bytes(&mut buf, name.as_bytes())?;
                 format::write_bytes(&mut buf, descriptor)?;
             }
