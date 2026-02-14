@@ -43,6 +43,8 @@ impl EmberService {
     /// Build this service into a tonic router, optionally with auth.
     pub fn into_service(self) -> proto::ember_cache_server::EmberCacheServer<Self> {
         proto::ember_cache_server::EmberCacheServer::new(self)
+            .max_decoding_message_size(4 * 1024 * 1024) // 4 MB
+            .max_encoding_message_size(4 * 1024 * 1024)
     }
 
     /// Routes a single-key request through the engine.
@@ -110,6 +112,7 @@ const MAX_HNSW_M: u32 = 1_024;
 #[cfg(feature = "vector")]
 const MAX_HNSW_EF: u32 = 1_024;
 
+#[allow(clippy::result_large_err)] // Status is tonic's idiomatic error type
 fn validate_key(key: &str) -> Result<(), Status> {
     if key.is_empty() {
         return Err(Status::invalid_argument("key must not be empty"));
@@ -123,6 +126,7 @@ fn validate_key(key: &str) -> Result<(), Status> {
     Ok(())
 }
 
+#[allow(clippy::result_large_err)] // Status is tonic's idiomatic error type
 fn validate_value(value: &[u8]) -> Result<(), Status> {
     if value.len() > MAX_VALUE_LEN {
         return Err(Status::invalid_argument(format!(
@@ -630,7 +634,7 @@ impl EmberCache for EmberService {
         let count = if req.count == 0 {
             10
         } else {
-            req.count as usize
+            (req.count as usize).min(10_000)
         };
 
         // the global cursor encodes both which shard we're scanning and where
