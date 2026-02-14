@@ -113,6 +113,30 @@ AES-256-GCM encryption at rest (AOF and snapshots). requires building with `--fe
 
 note: encryption only affects persistence writes. GET throughput should be unchanged since reads come from the in-memory keyspace.
 
+### vector similarity
+
+ember vs chromadb vs pgvector. 100k vectors, 128 dimensions, cosine metric, k=10 kNN search.
+HNSW index: M=16, ef_construction=64 for all systems.
+
+| metric | ember | chromadb | pgvector |
+|--------|-------|----------|----------|
+| insert (vectors/sec) | — | — | — |
+| query (queries/sec) | — | — | — |
+| query p99 (ms) | — | — | — |
+| memory (MB) | — | — | — |
+
+*results pending — run `bench/bench-vector.sh` on a dedicated VM to populate.*
+
+#### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
+
+| metric | ember | chromadb | pgvector |
+|--------|-------|----------|----------|
+| recall@10 | — | — | — |
+| insert (vectors/sec) | — | — | — |
+| query p99 (ms) | — | — | — |
+
+*results pending — run `bench/bench-vector.sh --sift` to populate.*
+
 ### scaling efficiency
 
 | cores | ember sharded SET | scaling factor |
@@ -166,6 +190,16 @@ cargo build --release -p ember-server --features jemalloc,encryption
 
 # comprehensive comparison using memtier_benchmark (redis + dragonfly)
 ./bench/bench-memtier.sh
+
+# vector similarity benchmark (requires --features vector, docker for full comparison)
+cargo build --release -p ember-server --features jemalloc,vector
+./bench/bench-vector.sh
+
+# vector benchmark (ember only, no docker required)
+./bench/bench-vector.sh --ember-only
+
+# SIFT1M recall accuracy
+./bench/bench-vector.sh --sift
 ```
 
 ### cloud VM benchmarking
@@ -204,7 +238,9 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 | `compare-redis.sh` | comprehensive comparison using redis-benchmark |
 | `bench-memtier.sh` | comprehensive comparison using memtier_benchmark |
 | `bench-encryption.sh` | encryption at rest overhead (plaintext vs AES-256-GCM) |
+| `bench-vector.sh` | vector similarity: ember vs chromadb vs pgvector |
 | `setup-vm.sh` | bootstrap dependencies on fresh ubuntu VM |
+| `setup-vm-vector.sh` | additional dependencies for vector benchmarks |
 
 ## configuration
 
