@@ -30,3 +30,4 @@ flamegraph.svg
 criterion/
 bench/results/*.csv
 bench/results/*.json
+.bench-venv/

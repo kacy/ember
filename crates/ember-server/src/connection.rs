@@ -713,8 +713,13 @@ async fn dispatch_command(
         ($key:expr, $req:expr, $tag:expr) => {{
             let idx = engine.shard_for_key(&$key);
             match engine.dispatch_to_shard(idx, $req).await {
-                Ok(rx) => PendingResponse::Pending { rx, tag: $tag, start, cmd_name },
-                Err(e) => PendingResponse::Immediate(Frame::Error(format!("ERR {e}")))
+                Ok(rx) => PendingResponse::Pending {
+                    rx,
+                    tag: $tag,
+                    start,
+                    cmd_name,
+                },
+                Err(e) => PendingResponse::Immediate(Frame::Error(format!("ERR {e}"))),
             }
         }};
     }
@@ -729,12 +734,28 @@ async fn dispatch_command(
         Command::Get { key } => {
             dispatch!(key, ShardRequest::Get { key }, ResponseTag::Get)
         }
-        Command::Set { key, value, expire, nx, xx } => {
+        Command::Set {
+            key,
+            value,
+            expire,
+            nx,
+            xx,
+        } => {
             let duration = expire.map(|e| match e {
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
-            dispatch!(key, ShardRequest::Set { key, value, expire: duration, nx, xx }, ResponseTag::Set)
+            dispatch!(
+                key,
+                ShardRequest::Set {
+                    key,
+                    value,
+                    expire: duration,
+                    nx,
+                    xx
+                },
+                ResponseTag::Set
+            )
         }
         Command::Incr { key } => {
             dispatch!(key, ShardRequest::Incr { key }, ResponseTag::IntResult)
@@ -743,22 +764,42 @@ async fn dispatch_command(
             dispatch!(key, ShardRequest::Decr { key }, ResponseTag::IntResult)
         }
         Command::IncrBy { key, delta } => {
-            dispatch!(key, ShardRequest::IncrBy { key, delta }, ResponseTag::IntResult)
+            dispatch!(
+                key,
+                ShardRequest::IncrBy { key, delta },
+                ResponseTag::IntResult
+            )
         }
         Command::DecrBy { key, delta } => {
-            dispatch!(key, ShardRequest::DecrBy { key, delta }, ResponseTag::IntResult)
+            dispatch!(
+                key,
+                ShardRequest::DecrBy { key, delta },
+                ResponseTag::IntResult
+            )
         }
         Command::IncrByFloat { key, delta } => {
-            dispatch!(key, ShardRequest::IncrByFloat { key, delta }, ResponseTag::FloatResult)
+            dispatch!(
+                key,
+                ShardRequest::IncrByFloat { key, delta },
+                ResponseTag::FloatResult
+            )
         }
         Command::Append { key, value } => {
-            dispatch!(key, ShardRequest::Append { key, value }, ResponseTag::LenResultOom)
+            dispatch!(
+                key,
+                ShardRequest::Append { key, value },
+                ResponseTag::LenResultOom
+            )
         }
         Command::Strlen { key } => {
             dispatch!(key, ShardRequest::Strlen { key }, ResponseTag::LenResult)
         }
         Command::Expire { key, seconds } => {
-            dispatch!(key, ShardRequest::Expire { key, seconds }, ResponseTag::BoolToInt)
+            dispatch!(
+                key,
+                ShardRequest::Expire { key, seconds },
+                ResponseTag::BoolToInt
+            )
         }
         Command::Ttl { key } => {
             dispatch!(key, ShardRequest::Ttl { key }, ResponseTag::Ttl)
@@ -770,7 +811,11 @@ async fn dispatch_command(
             dispatch!(key, ShardRequest::Pttl { key }, ResponseTag::Pttl)
         }
         Command::Pexpire { key, milliseconds } => {
-            dispatch!(key, ShardRequest::Pexpire { key, milliseconds }, ResponseTag::BoolToInt)
+            dispatch!(
+                key,
+                ShardRequest::Pexpire { key, milliseconds },
+                ResponseTag::BoolToInt
+            )
         }
         Command::Type { key } => {
             dispatch!(key, ShardRequest::Type { key }, ResponseTag::TypeResult)
@@ -778,10 +823,18 @@ async fn dispatch_command(
 
         // -- list commands --
         Command::LPush { key, values } => {
-            dispatch!(key, ShardRequest::LPush { key, values }, ResponseTag::LenResultOom)
+            dispatch!(
+                key,
+                ShardRequest::LPush { key, values },
+                ResponseTag::LenResultOom
+            )
         }
         Command::RPush { key, values } => {
-            dispatch!(key, ShardRequest::RPush { key, values }, ResponseTag::LenResultOom)
+            dispatch!(
+                key,
+                ShardRequest::RPush { key, values },
+                ResponseTag::LenResultOom
+            )
         }
         Command::LPop { key } => {
             dispatch!(key, ShardRequest::LPop { key }, ResponseTag::PopResult)
@@ -790,30 +843,73 @@ async fn dispatch_command(
             dispatch!(key, ShardRequest::RPop { key }, ResponseTag::PopResult)
         }
         Command::LRange { key, start, stop } => {
-            dispatch!(key, ShardRequest::LRange { key, start, stop }, ResponseTag::ArrayResult)
+            dispatch!(
+                key,
+                ShardRequest::LRange { key, start, stop },
+                ResponseTag::ArrayResult
+            )
         }
         Command::LLen { key } => {
             dispatch!(key, ShardRequest::LLen { key }, ResponseTag::LenResult)
         }
 
         // -- sorted set commands --
-        Command::ZAdd { key, flags, members } => {
-            dispatch!(key, ShardRequest::ZAdd {
-                key, members, nx: flags.nx, xx: flags.xx, gt: flags.gt, lt: flags.lt, ch: flags.ch
-            }, ResponseTag::ZAddResult)
+        Command::ZAdd {
+            key,
+            flags,
+            members,
+        } => {
+            dispatch!(
+                key,
+                ShardRequest::ZAdd {
+                    key,
+                    members,
+                    nx: flags.nx,
+                    xx: flags.xx,
+                    gt: flags.gt,
+                    lt: flags.lt,
+                    ch: flags.ch
+                },
+                ResponseTag::ZAddResult
+            )
         }
         Command::ZRem { key, members } => {
-            dispatch!(key, ShardRequest::ZRem { key, members }, ResponseTag::ZRemResult)
+            dispatch!(
+                key,
+                ShardRequest::ZRem { key, members },
+                ResponseTag::ZRemResult
+            )
         }
         Command::ZScore { key, member } => {
-            dispatch!(key, ShardRequest::ZScore { key, member }, ResponseTag::ZScoreResult)
+            dispatch!(
+                key,
+                ShardRequest::ZScore { key, member },
+                ResponseTag::ZScoreResult
+            )
         }
         Command::ZRank { key, member } => {
-            dispatch!(key, ShardRequest::ZRank { key, member }, ResponseTag::ZRankResult)
+            dispatch!(
+                key,
+                ShardRequest::ZRank { key, member },
+                ResponseTag::ZRankResult
+            )
         }
-        Command::ZRange { key, start, stop, with_scores } => {
-            dispatch!(key, ShardRequest::ZRange { key, start, stop, with_scores },
-                ResponseTag::ZRangeResult { with_scores })
+        Command::ZRange {
+            key,
+            start,
+            stop,
+            with_scores,
+        } => {
+            dispatch!(
+                key,
+                ShardRequest::ZRange {
+                    key,
+                    start,
+                    stop,
+                    with_scores
+                },
+                ResponseTag::ZRangeResult { with_scores }
+            )
         }
         Command::ZCard { key } => {
             dispatch!(key, ShardRequest::ZCard { key }, ResponseTag::LenResult)
@@ -821,48 +917,96 @@ async fn dispatch_command(
 
         // -- hash commands --
         Command::HSet { key, fields } => {
-            dispatch!(key, ShardRequest::HSet { key, fields }, ResponseTag::HSetResult)
+            dispatch!(
+                key,
+                ShardRequest::HSet { key, fields },
+                ResponseTag::HSetResult
+            )
         }
         Command::HGet { key, field } => {
-            dispatch!(key, ShardRequest::HGet { key, field }, ResponseTag::HGetResult)
+            dispatch!(
+                key,
+                ShardRequest::HGet { key, field },
+                ResponseTag::HGetResult
+            )
         }
         Command::HGetAll { key } => {
-            dispatch!(key, ShardRequest::HGetAll { key }, ResponseTag::HGetAllResult)
+            dispatch!(
+                key,
+                ShardRequest::HGetAll { key },
+                ResponseTag::HGetAllResult
+            )
         }
         Command::HDel { key, fields } => {
-            dispatch!(key, ShardRequest::HDel { key, fields }, ResponseTag::HDelResult)
+            dispatch!(
+                key,
+                ShardRequest::HDel { key, fields },
+                ResponseTag::HDelResult
+            )
         }
         Command::HExists { key, field } => {
-            dispatch!(key, ShardRequest::HExists { key, field }, ResponseTag::HExistsResult)
+            dispatch!(
+                key,
+                ShardRequest::HExists { key, field },
+                ResponseTag::HExistsResult
+            )
         }
         Command::HLen { key } => {
             dispatch!(key, ShardRequest::HLen { key }, ResponseTag::LenResult)
         }
         Command::HIncrBy { key, field, delta } => {
-            dispatch!(key, ShardRequest::HIncrBy { key, field, delta }, ResponseTag::HIncrByResult)
+            dispatch!(
+                key,
+                ShardRequest::HIncrBy { key, field, delta },
+                ResponseTag::HIncrByResult
+            )
         }
         Command::HKeys { key } => {
-            dispatch!(key, ShardRequest::HKeys { key }, ResponseTag::StringArrayResult)
+            dispatch!(
+                key,
+                ShardRequest::HKeys { key },
+                ResponseTag::StringArrayResult
+            )
         }
         Command::HVals { key } => {
             dispatch!(key, ShardRequest::HVals { key }, ResponseTag::HValsResult)
         }
         Command::HMGet { key, fields } => {
-            dispatch!(key, ShardRequest::HMGet { key, fields }, ResponseTag::HMGetResult)
+            dispatch!(
+                key,
+                ShardRequest::HMGet { key, fields },
+                ResponseTag::HMGetResult
+            )
         }
 
         // -- set commands --
         Command::SAdd { key, members } => {
-            dispatch!(key, ShardRequest::SAdd { key, members }, ResponseTag::LenResultOom)
+            dispatch!(
+                key,
+                ShardRequest::SAdd { key, members },
+                ResponseTag::LenResultOom
+            )
         }
         Command::SRem { key, members } => {
-            dispatch!(key, ShardRequest::SRem { key, members }, ResponseTag::LenResult)
+            dispatch!(
+                key,
+                ShardRequest::SRem { key, members },
+                ResponseTag::LenResult
+            )
         }
         Command::SMembers { key } => {
-            dispatch!(key, ShardRequest::SMembers { key }, ResponseTag::StringArrayResult)
+            dispatch!(
+                key,
+                ShardRequest::SMembers { key },
+                ResponseTag::StringArrayResult
+            )
         }
         Command::SIsMember { key, member } => {
-            dispatch!(key, ShardRequest::SIsMember { key, member }, ResponseTag::SIsMemberResult)
+            dispatch!(
+                key,
+                ShardRequest::SIsMember { key, member },
+                ResponseTag::SIsMemberResult
+            )
         }
         Command::SCard { key } => {
             dispatch!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
@@ -870,23 +1014,63 @@ async fn dispatch_command(
 
         // -- vector commands --
         #[cfg(feature = "vector")]
-        Command::VAdd { key, element, vector, metric, quantization, connectivity, expansion_add } => {
-            dispatch!(key, ShardRequest::VAdd {
-                key, element, vector, metric, quantization, connectivity, expansion_add
-            }, ResponseTag::VAddResult)
+        Command::VAdd {
+            key,
+            element,
+            vector,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => {
+            dispatch!(
+                key,
+                ShardRequest::VAdd {
+                    key,
+                    element,
+                    vector,
+                    metric,
+                    quantization,
+                    connectivity,
+                    expansion_add
+                },
+                ResponseTag::VAddResult
+            )
         }
         #[cfg(feature = "vector")]
-        Command::VSim { key, query, count, ef_search, with_scores } => {
-            dispatch!(key, ShardRequest::VSim { key, query, count, ef_search },
-                ResponseTag::VSimResult { with_scores })
+        Command::VSim {
+            key,
+            query,
+            count,
+            ef_search,
+            with_scores,
+        } => {
+            dispatch!(
+                key,
+                ShardRequest::VSim {
+                    key,
+                    query,
+                    count,
+                    ef_search
+                },
+                ResponseTag::VSimResult { with_scores }
+            )
         }
         #[cfg(feature = "vector")]
         Command::VRem { key, element } => {
-            dispatch!(key, ShardRequest::VRem { key, element }, ResponseTag::VRemResult)
+            dispatch!(
+                key,
+                ShardRequest::VRem { key, element },
+                ResponseTag::VRemResult
+            )
         }
         #[cfg(feature = "vector")]
         Command::VGet { key, element } => {
-            dispatch!(key, ShardRequest::VGet { key, element }, ResponseTag::VGetResult)
+            dispatch!(
+                key,
+                ShardRequest::VGet { key, element },
+                ResponseTag::VGetResult
+            )
         }
         #[cfg(feature = "vector")]
         Command::VCard { key } => {
@@ -908,25 +1092,38 @@ async fn dispatch_command(
                     "ERR source and destination keys must hash to the same shard".into(),
                 ))
             } else {
-                dispatch!(key, ShardRequest::Rename { key, newkey }, ResponseTag::RenameResult)
+                dispatch!(
+                    key,
+                    ShardRequest::Rename { key, newkey },
+                    ResponseTag::RenameResult
+                )
             }
         }
 
         // -- proto commands that are single-key dispatches --
         #[cfg(feature = "protobuf")]
-        Command::ProtoSet { key, type_name, data, expire, nx, xx } => {
+        Command::ProtoSet {
+            key,
+            type_name,
+            data,
+            expire,
+            nx,
+            xx,
+        } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(
-                    Frame::Error("ERR protobuf support is not enabled".into()),
-                );
+                return PendingResponse::Immediate(Frame::Error(
+                    "ERR protobuf support is not enabled".into(),
+                ));
             }
             let registry = engine.schema_registry().unwrap();
             {
                 let reg = match registry.read() {
                     Ok(r) => r,
-                    Err(_) => return PendingResponse::Immediate(
-                        Frame::Error("ERR schema registry lock poisoned".into()),
-                    ),
+                    Err(_) => {
+                        return PendingResponse::Immediate(Frame::Error(
+                            "ERR schema registry lock poisoned".into(),
+                        ))
+                    }
                 };
                 if let Err(e) = reg.validate(&type_name, &data) {
                     return PendingResponse::Immediate(Frame::Error(format!("ERR {e}")));
@@ -936,47 +1133,78 @@ async fn dispatch_command(
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
-            dispatch!(key, ShardRequest::ProtoSet {
-                key, type_name, data, expire: duration, nx, xx
-            }, ResponseTag::ProtoSetResult)
+            dispatch!(
+                key,
+                ShardRequest::ProtoSet {
+                    key,
+                    type_name,
+                    data,
+                    expire: duration,
+                    nx,
+                    xx
+                },
+                ResponseTag::ProtoSetResult
+            )
         }
         #[cfg(feature = "protobuf")]
         Command::ProtoGet { key } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(
-                    Frame::Error("ERR protobuf support is not enabled".into()),
-                );
+                return PendingResponse::Immediate(Frame::Error(
+                    "ERR protobuf support is not enabled".into(),
+                ));
             }
-            dispatch!(key, ShardRequest::ProtoGet { key }, ResponseTag::ProtoGetResult)
+            dispatch!(
+                key,
+                ShardRequest::ProtoGet { key },
+                ResponseTag::ProtoGetResult
+            )
         }
         #[cfg(feature = "protobuf")]
         Command::ProtoType { key } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(
-                    Frame::Error("ERR protobuf support is not enabled".into()),
-                );
+                return PendingResponse::Immediate(Frame::Error(
+                    "ERR protobuf support is not enabled".into(),
+                ));
             }
-            dispatch!(key, ShardRequest::ProtoType { key }, ResponseTag::ProtoTypeResult)
+            dispatch!(
+                key,
+                ShardRequest::ProtoType { key },
+                ResponseTag::ProtoTypeResult
+            )
         }
         #[cfg(feature = "protobuf")]
-        Command::ProtoSetField { key, field_path, value } => {
+        Command::ProtoSetField {
+            key,
+            field_path,
+            value,
+        } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(
-                    Frame::Error("ERR protobuf support is not enabled".into()),
-                );
+                return PendingResponse::Immediate(Frame::Error(
+                    "ERR protobuf support is not enabled".into(),
+                ));
             }
-            dispatch!(key, ShardRequest::ProtoSetField { key, field_path, value },
-                ResponseTag::ProtoSetFieldResult)
+            dispatch!(
+                key,
+                ShardRequest::ProtoSetField {
+                    key,
+                    field_path,
+                    value
+                },
+                ResponseTag::ProtoSetFieldResult
+            )
         }
         #[cfg(feature = "protobuf")]
         Command::ProtoDelField { key, field_path } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(
-                    Frame::Error("ERR protobuf support is not enabled".into()),
-                );
+                return PendingResponse::Immediate(Frame::Error(
+                    "ERR protobuf support is not enabled".into(),
+                ));
             }
-            dispatch!(key, ShardRequest::ProtoDelField { key, field_path },
-                ResponseTag::ProtoDelFieldResult)
+            dispatch!(
+                key,
+                ShardRequest::ProtoDelField { key, field_path },
+                ResponseTag::ProtoDelFieldResult
+            )
         }
 
         // -- everything else falls back to the full execute() path --
@@ -995,7 +1223,12 @@ async fn resolve_response(
 ) -> Frame {
     match pending {
         PendingResponse::Immediate(frame) => frame,
-        PendingResponse::Pending { rx, tag, start, cmd_name } => {
+        PendingResponse::Pending {
+            rx,
+            tag,
+            start,
+            cmd_name,
+        } => {
             let frame = match rx.await {
                 Ok(resp) => resolve_shard_response(resp, tag),
                 Err(_) => Frame::Error("ERR shard unavailable".into()),
@@ -1175,9 +1408,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
         ResponseTag::HValsResult => match resp {
-            ShardResponse::Array(vals) => {
-                Frame::Array(vals.into_iter().map(Frame::Bulk).collect())
-            }
+            ShardResponse::Array(vals) => Frame::Array(vals.into_iter().map(Frame::Bulk).collect()),
             ShardResponse::WrongType => wrongtype_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
@@ -1205,9 +1436,7 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         },
         #[cfg(feature = "vector")]
         ResponseTag::VAddResult => match resp {
-            ShardResponse::VAddResult { added, .. } => {
-                Frame::Integer(if added { 1 } else { 0 })
-            }
+            ShardResponse::VAddResult { added, .. } => Frame::Integer(if added { 1 } else { 0 }),
             ShardResponse::WrongType => wrongtype_error(),
             ShardResponse::OutOfMemory => oom_error(),
             ShardResponse::Err(msg) => Frame::Error(format!("ERR {msg}")),

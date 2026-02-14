@@ -56,7 +56,8 @@ impl TestServer {
         let mut cmd = Command::new(&binary);
         cmd.arg("--port").arg(port.to_string());
         cmd.arg("--host").arg("127.0.0.1");
-        cmd.arg("--shards").arg(opts.shards.unwrap_or(2).to_string());
+        cmd.arg("--shards")
+            .arg(opts.shards.unwrap_or(2).to_string());
         // suppress tracing output in tests
         cmd.env("RUST_LOG", "error");
 
@@ -160,6 +161,7 @@ impl TestClient {
 
     /// Sends a command with raw byte arguments and returns the parsed response.
     /// Useful for binary data like protobuf descriptors.
+    #[allow(dead_code)]
     pub async fn cmd_raw(&mut self, args: &[&[u8]]) -> Frame {
         let parts: Vec<Frame> = args
             .iter()
