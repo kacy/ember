@@ -135,7 +135,7 @@ ember's query throughput is 3.2x chromadb and 1.4x pgvector, with 4-6x lower mem
 | insert (vectors/sec) | — | — | — |
 | query p99 (ms) | — | — | — |
 
-*results pending — run `bench/bench-vector.sh --sift` to populate.*
+*results pending — requires a larger VM (c2-standard-16 or higher) since the 1M-vector HNSW index exceeds 16GB RAM during construction. run `bench/bench-vector.sh --sift` to populate.*
 
 ### scaling efficiency
 
