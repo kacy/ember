@@ -43,6 +43,9 @@ pub enum FormatError {
     #[error("unknown record tag: {0}")]
     UnknownTag(u8),
 
+    #[error("invalid data: {0}")]
+    InvalidData(String),
+
     #[error("file is encrypted but no encryption key was provided")]
     EncryptionRequired,
 
@@ -246,6 +249,15 @@ pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), FormatError> {
 pub fn capped_capacity(count: u32) -> usize {
     (count as usize).min(65_536)
 }
+
+/// Maximum vector dimensions allowed in persistence formats.
+/// Matches the protocol-layer cap. Records exceeding this are rejected
+/// during deserialization to prevent OOM from corrupt files.
+pub const MAX_PERSISTED_VECTOR_DIMS: u32 = 65_536;
+
+/// Maximum element count per vector set in persistence formats.
+/// Prevents corrupt count fields from causing unbounded loops.
+pub const MAX_PERSISTED_VECTOR_COUNT: u32 = 10_000_000;
 
 /// Verifies that two CRC32 values match.
 pub fn verify_crc32_values(computed: u32, stored: u32) -> Result<(), FormatError> {
