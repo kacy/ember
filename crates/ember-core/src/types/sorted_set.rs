@@ -92,7 +92,12 @@ impl SortedSet {
                 return AddResult::UNCHANGED;
             }
             // update: remove old tree entry, reuse the Rc for the new one
-            let name: Arc<str> = self.scores.get_key_value(member.as_str()).unwrap().0.clone();
+            let name: Arc<str> = self
+                .scores
+                .get_key_value(member.as_str())
+                .unwrap()
+                .0
+                .clone();
             self.tree.remove(&(old_score, name.clone()));
             self.scores.insert(name.clone(), new_score);
             self.tree.insert((new_score, name), ());
@@ -175,9 +180,7 @@ impl SortedSet {
 
     /// Returns an iterator over (member, score) pairs in sorted order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, f64)> {
-        self.tree
-            .keys()
-            .map(|(score, member)| (&**member, score.0))
+        self.tree.keys().map(|(score, member)| (&**member, score.0))
     }
 
     /// Estimates memory usage in bytes.
@@ -209,7 +212,7 @@ impl SortedSet {
         const HASHMAP_ENTRY: usize = 56;
         const RC_PTR: usize = 8; // pointer per Rc clone
         const RC_HEADER: usize = 16; // strong + weak counts
-        // string data stored once + Rc header + 2 Rc pointers + 2 OrderedFloat
+                                     // string data stored once + Rc header + 2 Rc pointers + 2 OrderedFloat
         BTREE_ENTRY + HASHMAP_ENTRY + member.len() + RC_HEADER + RC_PTR * 2 + 16
     }
 }
