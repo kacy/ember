@@ -15,6 +15,7 @@ jemalloc = ["tikv-jemallocator"]
 encryption = ["emberkv-core/encryption", "ember-persistence/encryption"]
 protobuf = ["emberkv-core/protobuf", "ember-persistence/protobuf"]
 vector = ["emberkv-core/vector", "ember-persistence/vector"]
+grpc = ["dep:tonic", "dep:prost", "dep:tonic-build"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -38,5 +39,12 @@ tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
 
+# grpc (optional)
+tonic = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+
 # optional: better multi-threaded allocation performance
 tikv-jemallocator = { version = "0.6", optional = true }
+
+[build-dependencies]
+tonic-build = { workspace = true, optional = true }
