@@ -281,6 +281,24 @@ pub const MAX_PERSISTED_VECTOR_DIMS: u32 = 65_536;
 /// Prevents corrupt count fields from causing unbounded loops.
 pub const MAX_PERSISTED_VECTOR_COUNT: u32 = 10_000_000;
 
+/// Maximum total f32 elements (dim * count) for vector deserialization.
+/// Caps total allocation at ~4 GB. Without this, a crafted file with
+/// 65536 dims x 10M vectors would attempt ~2.6 TB.
+pub const MAX_PERSISTED_VECTOR_TOTAL_FLOATS: u64 = 1_000_000_000;
+
+/// Validates that the total vector element budget (dim * count) is within
+/// bounds. Call after validating dim and count individually.
+pub fn validate_vector_total(dim: u32, count: u32) -> Result<(), FormatError> {
+    let total = dim as u64 * count as u64;
+    if total > MAX_PERSISTED_VECTOR_TOTAL_FLOATS {
+        return Err(FormatError::InvalidData(format!(
+            "vector total elements ({dim} dims x {count} vectors = {total}) \
+             exceeds max {MAX_PERSISTED_VECTOR_TOTAL_FLOATS}"
+        )));
+    }
+    Ok(())
+}
+
 /// Verifies that two CRC32 values match.
 pub fn verify_crc32_values(computed: u32, stored: u32) -> Result<(), FormatError> {
     if computed != stored {
