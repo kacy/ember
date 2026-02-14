@@ -96,8 +96,8 @@ impl SortedSet {
             }
             // update: remove old entry, insert new
             self.tree.remove(&(old_score, member.clone()));
-            self.tree.insert((new_score, member.clone()), ());
-            self.scores.insert(member, new_score);
+            self.scores.insert(member.clone(), new_score);
+            self.tree.insert((new_score, member), ());
             AddResult {
                 added: false,
                 updated: true,
@@ -110,8 +110,8 @@ impl SortedSet {
                     updated: false,
                 };
             }
-            self.tree.insert((new_score, member.clone()), ());
-            self.scores.insert(member, new_score);
+            self.scores.insert(member.clone(), new_score);
+            self.tree.insert((new_score, member), ());
             AddResult {
                 added: true,
                 updated: false,
