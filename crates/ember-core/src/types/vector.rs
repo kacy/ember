@@ -329,7 +329,10 @@ impl VectorSet {
             .search(query, count)
             .map_err(|e| VectorError::Index(e.to_string()))?;
 
-        let mut results = Vec::with_capacity(matches.keys.len());
+        // usearch should always return matching key/distance counts, but
+        // guard against library bugs by using the shorter length
+        let result_count = matches.keys.len().min(matches.distances.len());
+        let mut results = Vec::with_capacity(result_count);
         for (key, distance) in matches.keys.iter().zip(matches.distances.iter()) {
             if let Some(name) = self.names.get(key) {
                 results.push(SearchResult {
@@ -417,8 +420,10 @@ impl VectorSet {
         let count = self.elements.len();
 
         // usearch internal: vector storage + HNSW graph edges
-        let vector_bytes = count * self.dim * self.quantization.bytes_per_element();
-        let graph_bytes = count * self.connectivity * 2 * 8; // each edge is a u64 key
+        let vector_bytes = count
+            .saturating_mul(self.dim)
+            .saturating_mul(self.quantization.bytes_per_element());
+        let graph_bytes = count.saturating_mul(self.connectivity).saturating_mul(16); // each edge is a u64 key
 
         // rust-side hashmaps: elements + names
         let name_bytes: usize = self
@@ -476,22 +481,54 @@ impl Clone for VectorSet {
         // try_clone rebuilds the index from scratch. if it fails (e.g. OOM
         // inside usearch), return an empty set with the same config rather
         // than panicking. data loss is preferable to a server crash.
-        self.try_clone().unwrap_or_else(|_| {
-            Self::new(
-                self.dim,
-                self.metric,
-                self.quantization,
-                self.connectivity,
-                self.expansion_add,
-            )
-            .unwrap_or_else(|_| {
-                // if we can't even create an empty index with the same
-                // config, fall back to the smallest possible valid set.
-                // this only happens under extreme memory pressure.
-                Self::new(self.dim, self.metric, self.quantization, 2, 2)
-                    .expect("failed to allocate even a minimal index — system is out of memory")
+        self.try_clone()
+            .or_else(|_| {
+                Self::new(
+                    self.dim,
+                    self.metric,
+                    self.quantization,
+                    self.connectivity,
+                    self.expansion_add,
+                )
             })
-        })
+            .or_else(|_| Self::new(self.dim, self.metric, self.quantization, 2, 2))
+            .unwrap_or_else(|e| {
+                // absolute last resort — log the error and return a 1-dim
+                // empty set. this loses data but keeps the server alive.
+                tracing::error!("VectorSet clone failed under extreme memory pressure: {e}");
+                Self {
+                    index: Index::new(&IndexOptions {
+                        dimensions: self.dim,
+                        metric: self.metric.to_metric_kind(),
+                        quantization: self.quantization.to_scalar_kind(),
+                        connectivity: 2,
+                        expansion_add: 2,
+                        expansion_search: 0,
+                        multi: false,
+                    })
+                    .unwrap_or_else(|_| {
+                        // if even this fails, create the absolute minimum
+                        Index::new(&IndexOptions {
+                            dimensions: 1,
+                            metric: MetricKind::Cos,
+                            quantization: ScalarKind::F32,
+                            connectivity: 2,
+                            expansion_add: 2,
+                            expansion_search: 0,
+                            multi: false,
+                        })
+                        .expect("cannot allocate 1-dim index — system is critically out of memory")
+                    }),
+                    elements: HashMap::new(),
+                    names: HashMap::new(),
+                    next_key: 0,
+                    dim: self.dim,
+                    metric: self.metric,
+                    quantization: self.quantization,
+                    connectivity: 2,
+                    expansion_add: 2,
+                }
+            })
     }
 }
 

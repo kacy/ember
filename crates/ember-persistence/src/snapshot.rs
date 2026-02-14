@@ -106,15 +106,37 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
         #[cfg(feature = "vector")]
         TYPE_VECTOR => {
             let metric = format::read_u8(r)?;
+            if metric > 2 {
+                return Err(FormatError::InvalidData(format!(
+                    "unknown vector metric: {metric}"
+                )));
+            }
             let quantization = format::read_u8(r)?;
+            if quantization > 2 {
+                return Err(FormatError::InvalidData(format!(
+                    "unknown vector quantization: {quantization}"
+                )));
+            }
             let connectivity = format::read_u32(r)?;
             let expansion_add = format::read_u32(r)?;
             let dim = format::read_u32(r)?;
+            if dim > format::MAX_PERSISTED_VECTOR_DIMS {
+                return Err(FormatError::InvalidData(format!(
+                    "vector dimension {dim} exceeds max {}",
+                    format::MAX_PERSISTED_VECTOR_DIMS
+                )));
+            }
             let count = format::read_u32(r)?;
+            if count > format::MAX_PERSISTED_VECTOR_COUNT {
+                return Err(FormatError::InvalidData(format!(
+                    "vector element count {count} exceeds max {}",
+                    format::MAX_PERSISTED_VECTOR_COUNT
+                )));
+            }
             let mut elements = Vec::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 let name = read_snap_string(r, "vector element name")?;
-                let mut vector = Vec::with_capacity(format::capped_capacity(dim));
+                let mut vector = Vec::with_capacity(dim as usize);
                 for _ in 0..dim {
                     vector.push(format::read_f32(r)?);
                 }
@@ -629,16 +651,38 @@ impl SnapshotReader {
                 #[cfg(feature = "vector")]
                 TYPE_VECTOR => {
                     let metric = format::read_u8(&mut self.reader)?;
+                    if metric > 2 {
+                        return Err(FormatError::InvalidData(format!(
+                            "unknown vector metric: {metric}"
+                        )));
+                    }
                     format::write_u8(&mut buf, metric)?;
                     let quantization = format::read_u8(&mut self.reader)?;
+                    if quantization > 2 {
+                        return Err(FormatError::InvalidData(format!(
+                            "unknown vector quantization: {quantization}"
+                        )));
+                    }
                     format::write_u8(&mut buf, quantization)?;
                     let connectivity = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, connectivity)?;
                     let expansion_add = format::read_u32(&mut self.reader)?;
                     format::write_u32(&mut buf, expansion_add)?;
                     let dim = format::read_u32(&mut self.reader)?;
+                    if dim > format::MAX_PERSISTED_VECTOR_DIMS {
+                        return Err(FormatError::InvalidData(format!(
+                            "vector dimension {dim} exceeds max {}",
+                            format::MAX_PERSISTED_VECTOR_DIMS
+                        )));
+                    }
                     format::write_u32(&mut buf, dim)?;
                     let count = format::read_u32(&mut self.reader)?;
+                    if count > format::MAX_PERSISTED_VECTOR_COUNT {
+                        return Err(FormatError::InvalidData(format!(
+                            "vector element count {count} exceeds max {}",
+                            format::MAX_PERSISTED_VECTOR_COUNT
+                        )));
+                    }
                     format::write_u32(&mut buf, count)?;
                     let mut elements = Vec::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
@@ -650,7 +694,7 @@ impl SnapshotReader {
                                 "vector element name is not valid utf-8",
                             ))
                         })?;
-                        let mut vector = Vec::with_capacity(format::capped_capacity(dim));
+                        let mut vector = Vec::with_capacity(dim as usize);
                         for _ in 0..dim {
                             let v = format::read_f32(&mut self.reader)?;
                             format::write_f32(&mut buf, v)?;

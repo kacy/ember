@@ -613,7 +613,13 @@ impl AofRecord {
                 let key = read_string(&mut cursor, "key")?;
                 let element = read_string(&mut cursor, "element")?;
                 let dim = format::read_u32(&mut cursor)?;
-                let mut vector = Vec::with_capacity(format::capped_capacity(dim));
+                if dim > format::MAX_PERSISTED_VECTOR_DIMS {
+                    return Err(FormatError::InvalidData(format!(
+                        "AOF VADD dimension {dim} exceeds max {}",
+                        format::MAX_PERSISTED_VECTOR_DIMS
+                    )));
+                }
+                let mut vector = Vec::with_capacity(dim as usize);
                 for _ in 0..dim {
                     vector.push(format::read_f32(&mut cursor)?);
                 }
