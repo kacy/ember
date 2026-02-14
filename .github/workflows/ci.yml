@@ -20,12 +20,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '28.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --workspace --features protobuf -- -D warnings
+        run: cargo clippy --workspace --features protobuf,grpc -- -D warnings
       - name: check
-        run: cargo check --workspace --features protobuf
+        run: cargo check --workspace --features protobuf,grpc
 
   test:
     name: test
@@ -37,10 +41,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '28.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: build
-        run: cargo build --workspace --features protobuf
+        run: cargo build --workspace --features protobuf,grpc
       - name: test
-        run: cargo test --workspace --features protobuf
+        run: cargo test --workspace --features protobuf,grpc
 
   build:
     name: build

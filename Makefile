@@ -1,7 +1,7 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build docker-run \
        release-patch release-minor release-major github-release \
        publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick \
-       helm-lint helm-template
+       helm-lint helm-template proto-gen
 
 # extract the workspace version from the root Cargo.toml
 VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -13,7 +13,7 @@ release:
 	cargo build --release
 
 test:
-	cargo test --workspace --features protobuf
+	cargo test --workspace --features protobuf,grpc
 
 fmt:
 	cargo fmt --all
@@ -22,7 +22,7 @@ fmt-check:
 	cargo fmt --all --check
 
 clippy:
-	cargo clippy --workspace --features protobuf -- -D warnings
+	cargo clippy --workspace --features protobuf,grpc -- -D warnings
 
 check: fmt-check clippy test
 
@@ -129,6 +129,11 @@ publish:
 	done
 	@echo ""
 	@echo "all crates published successfully"
+
+# --- proto ---
+
+proto-gen:
+	cargo build -p ember-server --features grpc
 
 # --- helm ---
 
