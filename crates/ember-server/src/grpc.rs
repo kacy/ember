@@ -1802,6 +1802,28 @@ impl EmberCache for EmberService {
 }
 
 /// Dispatches a single pipeline command to the appropriate RPC handler.
+/// Dispatches a single pipeline command to the service method and wraps the
+/// response in a PipelineResponse. Each arm follows the same pattern: call
+/// the service method, extract the inner response, wrap it in the correct
+/// result variant. The macro eliminates the boilerplate of ~57 identical arms.
+macro_rules! pipeline_dispatch {
+    ($svc:expr, $id:expr, $cmd:expr, {
+        $( $Variant:ident => $method:ident => $Result:ident ),* $(,)?
+    }) => {
+        match $cmd {
+            $(
+                pipeline_request::Command::$Variant(r) => {
+                    let resp = $svc.$method(Request::new(r)).await?;
+                    Ok(PipelineResponse {
+                        id: $id,
+                        result: Some(pipeline_response::Result::$Result(resp.into_inner())),
+                    })
+                }
+            )*
+        }
+    };
+}
+
 async fn handle_pipeline_command(
     svc: &EmberService,
     req: PipelineRequest,
@@ -1811,412 +1833,79 @@ async fn handle_pipeline_command(
         .command
         .ok_or_else(|| Status::invalid_argument("missing command"))?;
 
-    match cmd {
-        pipeline_request::Command::Get(r) => {
-            let resp = svc.get(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Get(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Set(r) => {
-            let resp = svc.set(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Set(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Del(r) => {
-            let resp = svc.del(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Del(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Exists(r) => {
-            let resp = svc.exists(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Incr(r) => {
-            let resp = svc.incr(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::IncrBy(r) => {
-            let resp = svc.incr_by(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::DecrBy(r) => {
-            let resp = svc.decr_by(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::IncrByFloat(r) => {
-            let resp = svc.incr_by_float(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::FloatVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Append(r) => {
-            let resp = svc.append(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Strlen(r) => {
-            let resp = svc.strlen(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Expire(r) => {
-            let resp = svc.expire(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Pexpire(r) => {
-            let resp = svc.p_expire(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Persist(r) => {
-            let resp = svc.persist(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Ttl(r) => {
-            let resp = svc.ttl(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Ttl(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Pttl(r) => {
-            let resp = svc.p_ttl(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Ttl(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Type(r) => {
-            let resp = svc.r#type(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Type(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Lpush(r) => {
-            let resp = svc.l_push(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Rpush(r) => {
-            let resp = svc.r_push(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Lpop(r) => {
-            let resp = svc.l_pop(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Get(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Rpop(r) => {
-            let resp = svc.r_pop(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Get(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Lrange(r) => {
-            let resp = svc.l_range(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Array(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Llen(r) => {
-            let resp = svc.l_len(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hset(r) => {
-            let resp = svc.h_set(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hget(r) => {
-            let resp = svc.h_get(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Get(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hgetall(r) => {
-            let resp = svc.h_get_all(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Hash(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hdel(r) => {
-            let resp = svc.h_del(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hexists(r) => {
-            let resp = svc.h_exists(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hlen(r) => {
-            let resp = svc.h_len(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::HincrBy(r) => {
-            let resp = svc.h_incr_by(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hkeys(r) => {
-            let resp = svc.h_keys(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Keys(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hvals(r) => {
-            let resp = svc.h_vals(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Array(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Hmget(r) => {
-            let resp = svc.hm_get(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::OptionalArray(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Sadd(r) => {
-            let resp = svc.s_add(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Srem(r) => {
-            let resp = svc.s_rem(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Smembers(r) => {
-            let resp = svc.s_members(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Keys(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Sismember(r) => {
-            let resp = svc.s_is_member(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Scard(r) => {
-            let resp = svc.s_card(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Zadd(r) => {
-            let resp = svc.z_add(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Zrem(r) => {
-            let resp = svc.z_rem(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Zscore(r) => {
-            let resp = svc.z_score(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::OptionalFloat(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Zrank(r) => {
-            let resp = svc.z_rank(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::OptionalInt(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Zcard(r) => {
-            let resp = svc.z_card(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Zrange(r) => {
-            let resp = svc.z_range(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Zrange(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vadd(r) => {
-            let resp = svc.v_add(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vsim(r) => {
-            let resp = svc.v_sim(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Vsim(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vrem(r) => {
-            let resp = svc.v_rem(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::BoolVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vget(r) => {
-            let resp = svc.v_get(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Vget(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vcard(r) => {
-            let resp = svc.v_card(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vdim(r) => {
-            let resp = svc.v_dim(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Vinfo(r) => {
-            let resp = svc.v_info(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Vinfo(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Ping(r) => {
-            let resp = svc.ping(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Ping(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Flushdb(r) => {
-            let resp = svc.flush_db(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Status(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Dbsize(r) => {
-            let resp = svc.db_size(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::IntVal(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Mget(r) => {
-            let resp = svc.m_get(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Mget(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Mset(r) => {
-            let resp = svc.m_set(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Mset(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Keys(r) => {
-            let resp = svc.keys(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Keys(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Rename(r) => {
-            let resp = svc.rename(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Status(resp.into_inner())),
-            })
-        }
-        pipeline_request::Command::Scan(r) => {
-            let resp = svc.scan(Request::new(r)).await?;
-            Ok(PipelineResponse {
-                id,
-                result: Some(pipeline_response::Result::Scan(resp.into_inner())),
-            })
-        }
-    }
+    pipeline_dispatch!(svc, id, cmd, {
+        // string commands
+        Get       => get           => Get,
+        Set       => set           => Set,
+        Del       => del           => Del,
+        Exists    => exists         => IntVal,
+        Incr      => incr           => IntVal,
+        IncrBy    => incr_by        => IntVal,
+        DecrBy    => decr_by        => IntVal,
+        IncrByFloat => incr_by_float => FloatVal,
+        Append    => append         => IntVal,
+        Strlen    => strlen         => IntVal,
+
+        // ttl / expiry
+        Expire    => expire         => BoolVal,
+        Pexpire   => p_expire       => BoolVal,
+        Persist   => persist        => BoolVal,
+        Ttl       => ttl            => Ttl,
+        Pttl      => p_ttl          => Ttl,
+        Type      => r#type         => Type,
+
+        // list commands
+        Lpush     => l_push         => IntVal,
+        Rpush     => r_push         => IntVal,
+        Lpop      => l_pop          => Get,
+        Rpop      => r_pop          => Get,
+        Lrange    => l_range        => Array,
+        Llen      => l_len          => IntVal,
+
+        // hash commands
+        Hset      => h_set          => IntVal,
+        Hget      => h_get          => Get,
+        Hgetall   => h_get_all      => Hash,
+        Hdel      => h_del          => IntVal,
+        Hexists   => h_exists       => BoolVal,
+        Hlen      => h_len          => IntVal,
+        HincrBy   => h_incr_by      => IntVal,
+        Hkeys     => h_keys         => Keys,
+        Hvals     => h_vals         => Array,
+        Hmget     => hm_get         => OptionalArray,
+
+        // set commands
+        Sadd      => s_add          => IntVal,
+        Srem      => s_rem          => IntVal,
+        Smembers  => s_members      => Keys,
+        Sismember => s_is_member    => BoolVal,
+        Scard     => s_card         => IntVal,
+
+        // sorted set commands
+        Zadd      => z_add          => IntVal,
+        Zrem      => z_rem          => IntVal,
+        Zscore    => z_score        => OptionalFloat,
+        Zrank     => z_rank         => OptionalInt,
+        Zcard     => z_card         => IntVal,
+        Zrange    => z_range        => Zrange,
+
+        // vector commands
+        Vadd      => v_add          => BoolVal,
+        Vsim      => v_sim          => Vsim,
+        Vrem      => v_rem          => BoolVal,
+        Vget      => v_get          => Vget,
+        Vcard     => v_card         => IntVal,
+        Vdim      => v_dim          => IntVal,
+        Vinfo     => v_info         => Vinfo,
+
+        // server commands
+        Ping      => ping           => Ping,
+        Flushdb   => flush_db       => Status,
+        Dbsize    => db_size        => IntVal,
+        Mget      => m_get          => Mget,
+        Mset      => m_set          => Mset,
+        Keys      => keys           => Keys,
+        Rename    => rename         => Status,
+        Scan      => scan           => Scan,
+    })
 }
