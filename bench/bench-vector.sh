@@ -314,6 +314,7 @@ if [[ "$EMBER_ONLY" == "false" ]]; then
     echo ""
     echo "  starting pgvector container on port $PGVECTOR_PORT..."
     PGVECTOR_CONTAINER=$(docker run -d --rm \
+        --shm-size=512m \
         -p "$PGVECTOR_PORT:5432" \
         -e POSTGRES_PASSWORD=postgres \
         -e POSTGRES_DB=vectordb \
