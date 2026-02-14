@@ -1,0 +1,4 @@
+*.fvecs
+*.ivecs
+*.tar.gz
+sift/

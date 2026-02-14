@@ -726,7 +726,11 @@ mod tests {
     #[test]
     fn persist_removes_ttl() {
         let ks = ConcurrentKeyspace::default();
-        ks.set("key".into(), Bytes::from("val"), Some(Duration::from_secs(60)));
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+        );
         assert!(ks.persist("key"));
         assert!(matches!(ks.ttl("key"), TtlResult::NoExpiry));
     }

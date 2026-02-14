@@ -113,6 +113,30 @@ AES-256-GCM encryption at rest (AOF and snapshots). requires building with `--fe
 
 note: encryption only affects persistence writes. GET throughput should be unchanged since reads come from the in-memory keyspace.
 
+### vector similarity
+
+ember vs chromadb vs pgvector. 100k random vectors, 128 dimensions, cosine metric, k=10 kNN search.
+HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-8.
+
+| metric | ember | chromadb | pgvector |
+|--------|-------|----------|----------|
+| insert (vectors/sec) | 917 | **3,738** | 1,562 |
+| query (queries/sec) | **1,214** | 376 | 882 |
+| query p99 (ms) | **1.09ms** | 2.90ms | 1.52ms |
+| memory (MB) | **30 MB** | 122 MB | 178 MB |
+
+ember's query throughput is 3.2x chromadb and 1.4x pgvector, with 4-6x lower memory usage. insert throughput is lower due to per-vector RESP protocol overhead — batched pipelining helps but each VADD is still a separate command.
+
+#### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
+
+| metric | ember | chromadb | pgvector |
+|--------|-------|----------|----------|
+| recall@10 | — | — | — |
+| insert (vectors/sec) | — | — | — |
+| query p99 (ms) | — | — | — |
+
+*results pending — requires a larger VM (c2-standard-16 or higher) since the 1M-vector HNSW index exceeds 16GB RAM during construction. run `bench/bench-vector.sh --sift` to populate.*
+
 ### scaling efficiency
 
 | cores | ember sharded SET | scaling factor |
@@ -166,6 +190,16 @@ cargo build --release -p ember-server --features jemalloc,encryption
 
 # comprehensive comparison using memtier_benchmark (redis + dragonfly)
 ./bench/bench-memtier.sh
+
+# vector similarity benchmark (requires --features vector, docker for full comparison)
+cargo build --release -p ember-server --features jemalloc,vector
+./bench/bench-vector.sh
+
+# vector benchmark (ember only, no docker required)
+./bench/bench-vector.sh --ember-only
+
+# SIFT1M recall accuracy
+./bench/bench-vector.sh --sift
 ```
 
 ### cloud VM benchmarking
@@ -204,7 +238,9 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 | `compare-redis.sh` | comprehensive comparison using redis-benchmark |
 | `bench-memtier.sh` | comprehensive comparison using memtier_benchmark |
 | `bench-encryption.sh` | encryption at rest overhead (plaintext vs AES-256-GCM) |
+| `bench-vector.sh` | vector similarity: ember vs chromadb vs pgvector |
 | `setup-vm.sh` | bootstrap dependencies on fresh ubuntu VM |
+| `setup-vm-vector.sh` | additional dependencies for vector benchmarks |
 
 ## configuration
 
