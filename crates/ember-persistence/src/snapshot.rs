@@ -828,28 +828,31 @@ pub fn snapshot_path(data_dir: &Path, shard_id: u16) -> PathBuf {
 mod tests {
     use super::*;
 
+    type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp dir")
     }
 
     #[test]
-    fn empty_snapshot_round_trip() {
+    fn empty_snapshot_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("empty.snap");
 
         {
-            let writer = SnapshotWriter::create(&path, 0).unwrap();
-            writer.finish().unwrap();
+            let writer = SnapshotWriter::create(&path, 0)?;
+            writer.finish()?;
         }
 
-        let reader = SnapshotReader::open(&path).unwrap();
+        let reader = SnapshotReader::open(&path)?;
         assert_eq!(reader.shard_id, 0);
         assert_eq!(reader.entry_count, 0);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[test]
-    fn entries_round_trip() {
+    fn entries_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("data.snap");
 
@@ -872,100 +875,97 @@ mod tests {
         ];
 
         {
-            let mut writer = SnapshotWriter::create(&path, 7).unwrap();
+            let mut writer = SnapshotWriter::create(&path, 7)?;
             for entry in &entries {
-                writer.write_entry(entry).unwrap();
+                writer.write_entry(entry)?;
             }
-            writer.finish().unwrap();
+            writer.finish()?;
         }
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
         assert_eq!(reader.shard_id, 7);
         assert_eq!(reader.entry_count, 3);
 
         let mut got = Vec::new();
-        while let Some(entry) = reader.read_entry().unwrap() {
+        while let Some(entry) = reader.read_entry()? {
             got.push(entry);
         }
         assert_eq!(entries, got);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[test]
-    fn corrupt_footer_detected() {
+    fn corrupt_footer_detected() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("corrupt.snap");
 
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
-            writer
-                .write_entry(&SnapEntry {
-                    key: "k".into(),
-                    value: SnapValue::String(Bytes::from("v")),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer.finish().unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
+            writer.write_entry(&SnapEntry {
+                key: "k".into(),
+                value: SnapValue::String(Bytes::from("v")),
+                expire_ms: -1,
+            })?;
+            writer.finish()?;
         }
 
         // corrupt the last byte (footer CRC)
-        let mut data = fs::read(&path).unwrap();
+        let mut data = fs::read(&path)?;
         let last = data.len() - 1;
         data[last] ^= 0xFF;
-        fs::write(&path, &data).unwrap();
+        fs::write(&path, &data)?;
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
         // reading entries should still work
-        reader.read_entry().unwrap();
+        reader.read_entry()?;
         // but footer verification should fail
         let err = reader.verify_footer().unwrap_err();
         assert!(matches!(err, FormatError::ChecksumMismatch { .. }));
+        Ok(())
     }
 
     #[test]
-    fn atomic_rename_prevents_partial_snapshots() {
+    fn atomic_rename_prevents_partial_snapshots() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("atomic.snap");
 
         // write an initial snapshot
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
-            writer
-                .write_entry(&SnapEntry {
-                    key: "original".into(),
-                    value: SnapValue::String(Bytes::from("data")),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer.finish().unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
+            writer.write_entry(&SnapEntry {
+                key: "original".into(),
+                value: SnapValue::String(Bytes::from("data")),
+                expire_ms: -1,
+            })?;
+            writer.finish()?;
         }
 
         // start a second snapshot but don't finish it
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
-            writer
-                .write_entry(&SnapEntry {
-                    key: "new".into(),
-                    value: SnapValue::String(Bytes::from("partial")),
-                    expire_ms: -1,
-                })
-                .unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
+            writer.write_entry(&SnapEntry {
+                key: "new".into(),
+                value: SnapValue::String(Bytes::from("partial")),
+                expire_ms: -1,
+            })?;
             // drop without finish — simulates a crash
             drop(writer);
         }
 
         // the original snapshot should still be intact
-        let mut reader = SnapshotReader::open(&path).unwrap();
-        let entry = reader.read_entry().unwrap().unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
+        let entry = reader.read_entry()?.unwrap();
         assert_eq!(entry.key, "original");
 
         // the tmp file should have been cleaned up by Drop
         let tmp = path.with_extension("snap.tmp");
         assert!(!tmp.exists(), "drop should clean up incomplete tmp file");
+        Ok(())
     }
 
     #[test]
-    fn ttl_entries_preserved() {
+    fn ttl_entries_preserved() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("ttl.snap");
 
@@ -976,19 +976,20 @@ mod tests {
         };
 
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
-            writer.write_entry(&entry).unwrap();
-            writer.finish().unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
+            writer.write_entry(&entry)?;
+            writer.finish()?;
         }
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
-        let got = reader.read_entry().unwrap().unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
+        let got = reader.read_entry()?.unwrap();
         assert_eq!(got.expire_ms, 42_000);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[test]
-    fn list_entries_round_trip() {
+    fn list_entries_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("list.snap");
 
@@ -1011,24 +1012,25 @@ mod tests {
         ];
 
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
             for entry in &entries {
-                writer.write_entry(entry).unwrap();
+                writer.write_entry(entry)?;
             }
-            writer.finish().unwrap();
+            writer.finish()?;
         }
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(entry) = reader.read_entry().unwrap() {
+        while let Some(entry) = reader.read_entry()? {
             got.push(entry);
         }
         assert_eq!(entries, got);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[test]
-    fn sorted_set_entries_round_trip() {
+    fn sorted_set_entries_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("zset.snap");
 
@@ -1050,20 +1052,21 @@ mod tests {
         ];
 
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
             for entry in &entries {
-                writer.write_entry(entry).unwrap();
+                writer.write_entry(entry)?;
             }
-            writer.finish().unwrap();
+            writer.finish()?;
         }
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(entry) = reader.read_entry().unwrap() {
+        while let Some(entry) = reader.read_entry()? {
             got.push(entry);
         }
         assert_eq!(entries, got);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[test]
@@ -1073,40 +1076,36 @@ mod tests {
     }
 
     #[test]
-    fn truncated_snapshot_detected() {
+    fn truncated_snapshot_detected() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("truncated.snap");
 
         // write a valid 2-entry snapshot
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
-            writer
-                .write_entry(&SnapEntry {
-                    key: "a".into(),
-                    value: SnapValue::String(Bytes::from("1")),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer
-                .write_entry(&SnapEntry {
-                    key: "b".into(),
-                    value: SnapValue::String(Bytes::from("2")),
-                    expire_ms: 5000,
-                })
-                .unwrap();
-            writer.finish().unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
+            writer.write_entry(&SnapEntry {
+                key: "a".into(),
+                value: SnapValue::String(Bytes::from("1")),
+                expire_ms: -1,
+            })?;
+            writer.write_entry(&SnapEntry {
+                key: "b".into(),
+                value: SnapValue::String(Bytes::from("2")),
+                expire_ms: 5000,
+            })?;
+            writer.finish()?;
         }
 
         // truncate the file mid-way through the second entry
-        let data = fs::read(&path).unwrap();
+        let data = fs::read(&path)?;
         let truncated = &data[..data.len() - 20];
-        fs::write(&path, truncated).unwrap();
+        fs::write(&path, truncated)?;
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
         assert_eq!(reader.entry_count, 2);
 
         // first entry should still be readable
-        let first = reader.read_entry().unwrap();
+        let first = reader.read_entry()?;
         assert!(first.is_some());
 
         // second entry should fail with an EOF-related error
@@ -1115,11 +1114,12 @@ mod tests {
             matches!(err, FormatError::UnexpectedEof | FormatError::Io(_)),
             "expected EOF error, got {err:?}"
         );
+        Ok(())
     }
 
     #[cfg(feature = "vector")]
     #[test]
-    fn vector_entries_round_trip() {
+    fn vector_entries_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("vec.snap");
 
@@ -1140,25 +1140,26 @@ mod tests {
         }];
 
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
             for entry in &entries {
-                writer.write_entry(entry).unwrap();
+                writer.write_entry(entry)?;
             }
-            writer.finish().unwrap();
+            writer.finish()?;
         }
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(entry) = reader.read_entry().unwrap() {
+        while let Some(entry) = reader.read_entry()? {
             got.push(entry);
         }
         assert_eq!(entries, got);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[cfg(feature = "vector")]
     #[test]
-    fn vector_empty_set_round_trip() {
+    fn vector_empty_set_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("vec_empty.snap");
 
@@ -1176,17 +1177,18 @@ mod tests {
         }];
 
         {
-            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            let mut writer = SnapshotWriter::create(&path, 0)?;
             for entry in &entries {
-                writer.write_entry(entry).unwrap();
+                writer.write_entry(entry)?;
             }
-            writer.finish().unwrap();
+            writer.finish()?;
         }
 
-        let mut reader = SnapshotReader::open(&path).unwrap();
-        let got = reader.read_entry().unwrap().unwrap();
+        let mut reader = SnapshotReader::open(&path)?;
+        let got = reader.read_entry()?.unwrap();
         assert_eq!(entries[0], got);
-        reader.verify_footer().unwrap();
+        reader.verify_footer()?;
+        Ok(())
     }
 
     #[cfg(feature = "encryption")]
@@ -1194,12 +1196,14 @@ mod tests {
         use super::*;
         use crate::encryption::EncryptionKey;
 
+        type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+
         fn test_key() -> EncryptionKey {
             EncryptionKey::from_bytes([0x42; 32])
         }
 
         #[test]
-        fn encrypted_snapshot_round_trip() {
+        fn encrypted_snapshot_round_trip() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("enc.snap");
             let key = test_key();
@@ -1218,97 +1222,95 @@ mod tests {
             ];
 
             {
-                let mut writer = SnapshotWriter::create_encrypted(&path, 7, key.clone()).unwrap();
+                let mut writer = SnapshotWriter::create_encrypted(&path, 7, key.clone())?;
                 for entry in &entries {
-                    writer.write_entry(entry).unwrap();
+                    writer.write_entry(entry)?;
                 }
-                writer.finish().unwrap();
+                writer.finish()?;
             }
 
-            let mut reader = SnapshotReader::open_encrypted(&path, key).unwrap();
+            let mut reader = SnapshotReader::open_encrypted(&path, key)?;
             assert_eq!(reader.shard_id, 7);
             assert_eq!(reader.entry_count, 2);
 
             let mut got = Vec::new();
-            while let Some(entry) = reader.read_entry().unwrap() {
+            while let Some(entry) = reader.read_entry()? {
                 got.push(entry);
             }
             assert_eq!(entries, got);
-            reader.verify_footer().unwrap();
+            reader.verify_footer()?;
+            Ok(())
         }
 
         #[test]
-        fn encrypted_snapshot_wrong_key_fails() {
+        fn encrypted_snapshot_wrong_key_fails() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("enc_bad.snap");
             let key = test_key();
             let wrong_key = EncryptionKey::from_bytes([0xFF; 32]);
 
             {
-                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key).unwrap();
-                writer
-                    .write_entry(&SnapEntry {
-                        key: "k".into(),
-                        value: SnapValue::String(Bytes::from("v")),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.finish().unwrap();
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key)?;
+                writer.write_entry(&SnapEntry {
+                    key: "k".into(),
+                    value: SnapValue::String(Bytes::from("v")),
+                    expire_ms: -1,
+                })?;
+                writer.finish()?;
             }
 
-            let mut reader = SnapshotReader::open_encrypted(&path, wrong_key).unwrap();
+            let mut reader = SnapshotReader::open_encrypted(&path, wrong_key)?;
             let err = reader.read_entry().unwrap_err();
             assert!(matches!(err, FormatError::DecryptionFailed));
+            Ok(())
         }
 
         #[test]
-        fn v2_snapshot_readable_with_encryption_key() {
+        fn v2_snapshot_readable_with_encryption_key() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("v2.snap");
             let key = test_key();
 
             {
-                let mut writer = SnapshotWriter::create(&path, 0).unwrap();
-                writer
-                    .write_entry(&SnapEntry {
-                        key: "k".into(),
-                        value: SnapValue::String(Bytes::from("v")),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.finish().unwrap();
+                let mut writer = SnapshotWriter::create(&path, 0)?;
+                writer.write_entry(&SnapEntry {
+                    key: "k".into(),
+                    value: SnapValue::String(Bytes::from("v")),
+                    expire_ms: -1,
+                })?;
+                writer.finish()?;
             }
 
-            let mut reader = SnapshotReader::open_encrypted(&path, key).unwrap();
-            let entry = reader.read_entry().unwrap().unwrap();
+            let mut reader = SnapshotReader::open_encrypted(&path, key)?;
+            let entry = reader.read_entry()?.unwrap();
             assert_eq!(entry.key, "k");
-            reader.verify_footer().unwrap();
+            reader.verify_footer()?;
+            Ok(())
         }
 
         #[test]
-        fn v3_snapshot_without_key_returns_error() {
+        fn v3_snapshot_without_key_returns_error() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("v3_nokey.snap");
             let key = test_key();
 
             {
-                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key).unwrap();
-                writer
-                    .write_entry(&SnapEntry {
-                        key: "k".into(),
-                        value: SnapValue::String(Bytes::from("v")),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.finish().unwrap();
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key)?;
+                writer.write_entry(&SnapEntry {
+                    key: "k".into(),
+                    value: SnapValue::String(Bytes::from("v")),
+                    expire_ms: -1,
+                })?;
+                writer.finish()?;
             }
 
             let result = SnapshotReader::open(&path);
             assert!(matches!(result, Err(FormatError::EncryptionRequired)));
+            Ok(())
         }
 
         #[test]
-        fn encrypted_snapshot_with_all_types() {
+        fn encrypted_snapshot_with_all_types() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("enc_types.snap");
             let key = test_key();
@@ -1353,20 +1355,21 @@ mod tests {
             ];
 
             {
-                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key.clone()).unwrap();
+                let mut writer = SnapshotWriter::create_encrypted(&path, 0, key.clone())?;
                 for entry in &entries {
-                    writer.write_entry(entry).unwrap();
+                    writer.write_entry(entry)?;
                 }
-                writer.finish().unwrap();
+                writer.finish()?;
             }
 
-            let mut reader = SnapshotReader::open_encrypted(&path, key).unwrap();
+            let mut reader = SnapshotReader::open_encrypted(&path, key)?;
             let mut got = Vec::new();
-            while let Some(entry) = reader.read_entry().unwrap() {
+            while let Some(entry) = reader.read_entry()? {
                 got.push(entry);
             }
             assert_eq!(entries, got);
-            reader.verify_footer().unwrap();
+            reader.verify_footer()?;
+            Ok(())
         }
     }
 }

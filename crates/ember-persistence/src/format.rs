@@ -244,8 +244,13 @@ pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), FormatError> {
 }
 
 /// Caps pre-allocation to avoid huge allocations from corrupt count fields.
+///
 /// The loop will still iterate `count` times — this just limits the
-/// up-front reservation so a bogus u32 can't exhaust memory.
+/// up-front `Vec::with_capacity` reservation so a bogus u32 (up to 4 billion)
+/// can't cause a multi-gigabyte allocation on the first call. The cap of
+/// 65,536 is a pragmatic choice: large enough that realistic collections
+/// never re-allocate during deserialization, small enough that even a
+/// corrupt count only wastes ~1 MB (65k × 16 bytes per element).
 pub fn capped_capacity(count: u32) -> usize {
     (count as usize).min(65_536)
 }
