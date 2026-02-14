@@ -415,14 +415,12 @@ async fn execute_concurrent(
         // -- protobuf commands --
         #[cfg(feature = "protobuf")]
         Command::ProtoRegister { name, descriptor } => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            let Some(registry) = _engine.schema_registry() else {
+                return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let result = {
-                let mut reg = match registry.write() {
-                    Ok(r) => r,
-                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                let Ok(mut reg) = registry.write() else {
+                    return Frame::Error("ERR schema registry lock poisoned".into());
                 };
                 reg.register(name.clone(), descriptor.clone())
             };
@@ -457,14 +455,12 @@ async fn execute_concurrent(
             nx,
             xx,
         } => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            let Some(registry) = _engine.schema_registry() else {
+                return Frame::Error("ERR protobuf support is not enabled".into());
             };
             {
-                let reg = match registry.read() {
-                    Ok(r) => r,
-                    Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                let Ok(reg) = registry.read() else {
+                    return Frame::Error("ERR schema registry lock poisoned".into());
                 };
                 if let Err(e) = reg.validate(&type_name, &data) {
                     return Frame::Error(format!("ERR {e}"));
@@ -533,13 +529,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoSchemas => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            let Some(registry) = _engine.schema_registry() else {
+                return Frame::Error("ERR protobuf support is not enabled".into());
             };
-            let reg = match registry.read() {
-                Ok(r) => r,
-                Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+            let Ok(reg) = registry.read() else {
+                return Frame::Error("ERR schema registry lock poisoned".into());
             };
             let names = reg.schema_names();
             Frame::Array(
@@ -552,13 +546,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDescribe { name } => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            let Some(registry) = _engine.schema_registry() else {
+                return Frame::Error("ERR protobuf support is not enabled".into());
             };
-            let reg = match registry.read() {
-                Ok(r) => r,
-                Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+            let Ok(reg) = registry.read() else {
+                return Frame::Error("ERR schema registry lock poisoned".into());
             };
             match reg.describe(&name) {
                 Some(types) => Frame::Array(
@@ -573,16 +565,14 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoGetField { key, field_path } => {
-            let registry = match _engine.schema_registry() {
-                Some(r) => r,
-                None => return Frame::Error("ERR protobuf support is not enabled".into()),
+            let Some(registry) = _engine.schema_registry() else {
+                return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
             match _engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
-                    let reg = match registry.read() {
-                        Ok(r) => r,
-                        Err(_) => return Frame::Error("ERR schema registry lock poisoned".into()),
+                    let Ok(reg) = registry.read() else {
+                        return Frame::Error("ERR schema registry lock poisoned".into());
                     };
                     match reg.get_field(&type_name, &data, &field_path) {
                         Ok(frame) => frame,
