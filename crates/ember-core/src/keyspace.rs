@@ -1884,10 +1884,13 @@ impl Keyspace {
             return Err(VectorWriteError::WrongType);
         }
 
-        // estimate memory for the new vector
+        // estimate memory for the new vector (saturating to avoid overflow)
         let dim = vector.len();
-        let per_vector =
-            dim * quantization.bytes_per_element() + connectivity * 2 * 8 + element.len() + 80;
+        let per_vector = dim
+            .saturating_mul(quantization.bytes_per_element())
+            .saturating_add(connectivity.saturating_mul(16))
+            .saturating_add(element.len())
+            .saturating_add(80);
         let estimated_increase = if is_new {
             memory::ENTRY_OVERHEAD + key.len() + VectorSet::BASE_OVERHEAD + per_vector
         } else {
@@ -1976,7 +1979,7 @@ impl Keyspace {
 
         let removed = match entry.value {
             Value::Vector(ref mut vs) => vs.remove(element),
-            _ => unreachable!(),
+            _ => return Err(WrongType),
         };
 
         if removed {

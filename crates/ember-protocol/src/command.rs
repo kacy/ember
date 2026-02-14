@@ -18,6 +18,14 @@ const MAX_VECTOR_DIMS: usize = 65_536;
 /// Values above 1024 give no practical benefit and waste memory.
 const MAX_HNSW_PARAM: u64 = 1024;
 
+/// Maximum number of results for VSIM. 10,000 is generous for any practical
+/// similarity search while preventing OOM from unbounded result allocation.
+const MAX_VSIM_COUNT: u64 = 10_000;
+
+/// Maximum search beam width for VSIM. Same cap as MAX_HNSW_PARAM —
+/// larger values cause worst-case O(n) graph traversal with no accuracy gain.
+const MAX_VSIM_EF: u64 = MAX_HNSW_PARAM;
+
 /// Expiration option for the SET command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetExpire {
@@ -1993,7 +2001,13 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
                         "VSIM: COUNT requires a value".into(),
                     ));
                 }
-                count = Some(parse_u64(&args[idx], "VSIM")? as usize);
+                let c = parse_u64(&args[idx], "VSIM")?;
+                if c > MAX_VSIM_COUNT {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VSIM: COUNT {c} exceeds max {MAX_VSIM_COUNT}"
+                    )));
+                }
+                count = Some(c as usize);
                 idx += 1;
             }
             "EF" => {
@@ -2003,7 +2017,13 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
                         "VSIM: EF requires a value".into(),
                     ));
                 }
-                ef_search = parse_u64(&args[idx], "VSIM")? as usize;
+                let ef = parse_u64(&args[idx], "VSIM")?;
+                if ef > MAX_VSIM_EF {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VSIM: EF {ef} exceeds max {MAX_VSIM_EF}"
+                    )));
+                }
+                ef_search = ef as usize;
                 idx += 1;
             }
             "WITHSCORES" => {
@@ -4702,6 +4722,237 @@ mod tests {
 
         let err =
             Command::from_frame(cmd(&["PROTO.DELFIELD", "key", "field", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- vector commands ---
+
+    #[test]
+    fn vadd_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VADD", "vecs", "elem1", "0.1", "0.2", "0.3"])).unwrap(),
+            Command::VAdd {
+                key: "vecs".into(),
+                element: "elem1".into(),
+                vector: vec![0.1, 0.2, 0.3],
+                metric: 0,
+                quantization: 0,
+                connectivity: 16,
+                expansion_add: 64,
+            },
+        );
+    }
+
+    #[test]
+    fn vadd_with_options() {
+        assert_eq!(
+            Command::from_frame(cmd(&[
+                "VADD", "vecs", "elem1", "1.0", "2.0", "METRIC", "L2", "QUANT", "F16", "M", "32",
+                "EF", "128"
+            ]))
+            .unwrap(),
+            Command::VAdd {
+                key: "vecs".into(),
+                element: "elem1".into(),
+                vector: vec![1.0, 2.0],
+                metric: 1,
+                quantization: 1,
+                connectivity: 32,
+                expansion_add: 128,
+            },
+        );
+    }
+
+    #[test]
+    fn vadd_wrong_arity() {
+        // no args
+        let err = Command::from_frame(cmd(&["VADD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        // key only
+        let err = Command::from_frame(cmd(&["VADD", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        // key + element but no vector — "elem" is not numeric so vector is empty
+        let err = Command::from_frame(cmd(&["VADD", "key", "elem"])).unwrap_err();
+        assert!(matches!(
+            err,
+            ProtocolError::WrongArity(_) | ProtocolError::InvalidCommandFrame(_)
+        ));
+    }
+
+    #[test]
+    fn vadd_m_exceeds_max() {
+        let err =
+            Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "M", "9999"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_ef_exceeds_max() {
+        let err =
+            Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "EF", "9999"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_unknown_metric() {
+        let err = Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "METRIC", "HAMMING"]))
+            .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_unknown_quantization() {
+        let err =
+            Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "QUANT", "F64"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vsim_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VSIM", "vecs", "0.1", "0.2", "0.3", "COUNT", "5"])).unwrap(),
+            Command::VSim {
+                key: "vecs".into(),
+                query: vec![0.1, 0.2, 0.3],
+                count: 5,
+                ef_search: 0,
+                with_scores: false,
+            },
+        );
+    }
+
+    #[test]
+    fn vsim_with_ef_and_scores() {
+        assert_eq!(
+            Command::from_frame(cmd(&[
+                "VSIM",
+                "vecs",
+                "1.0",
+                "2.0",
+                "COUNT",
+                "10",
+                "EF",
+                "128",
+                "WITHSCORES"
+            ]))
+            .unwrap(),
+            Command::VSim {
+                key: "vecs".into(),
+                query: vec![1.0, 2.0],
+                count: 10,
+                ef_search: 128,
+                with_scores: true,
+            },
+        );
+    }
+
+    #[test]
+    fn vsim_missing_count() {
+        // all args are numeric so they're consumed as query — COUNT is never found
+        let err = Command::from_frame(cmd(&["VSIM", "key", "1.0", "2.0"])).unwrap_err();
+        assert!(matches!(
+            err,
+            ProtocolError::InvalidCommandFrame(_) | ProtocolError::WrongArity(_)
+        ));
+    }
+
+    #[test]
+    fn vsim_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VSIM"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn vsim_count_exceeds_max() {
+        let err = Command::from_frame(cmd(&["VSIM", "key", "1.0", "COUNT", "99999"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vsim_ef_exceeds_max() {
+        let err = Command::from_frame(cmd(&["VSIM", "key", "1.0", "COUNT", "5", "EF", "9999"]))
+            .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vrem_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VREM", "key", "elem"])).unwrap(),
+            Command::VRem {
+                key: "key".into(),
+                element: "elem".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn vrem_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VREM"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["VREM", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn vget_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VGET", "key", "elem"])).unwrap(),
+            Command::VGet {
+                key: "key".into(),
+                element: "elem".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn vget_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VGET"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn vcard_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VCARD", "key"])).unwrap(),
+            Command::VCard { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn vcard_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VCARD"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn vdim_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VDIM", "key"])).unwrap(),
+            Command::VDim { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn vdim_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VDIM"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn vinfo_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VINFO", "key"])).unwrap(),
+            Command::VInfo { key: "key".into() },
+        );
+    }
+
+    #[test]
+    fn vinfo_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VINFO"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }
