@@ -332,8 +332,8 @@ impl Keyspace {
                 self.decrement_expiry_if_set(&removed);
             }
             self.memory.remove_with_size(old_size);
-        } else {
-            let new_size = memory::entry_size(key, &self.entries[key].value);
+        } else if let Some(entry) = self.entries.get(key) {
+            let new_size = memory::entry_size(key, &entry.value);
             self.memory.adjust(old_size, new_size);
         }
     }
@@ -386,10 +386,16 @@ impl Keyspace {
     /// Measures entry size before and after a mutation, adjusting the
     /// memory tracker for the difference. Touches the entry afterwards.
     fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> T {
-        let entry = self.entries.get_mut(key).expect("caller verified key exists");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("caller verified key exists");
         let old_size = memory::entry_size(key, &entry.value);
         let result = f(entry);
-        let entry = self.entries.get(key).expect("mutation should not remove key");
+        let entry = self
+            .entries
+            .get(key)
+            .expect("mutation should not remove key");
         let new_size = memory::entry_size(key, &entry.value);
         self.memory.adjust(old_size, new_size);
         result
@@ -1128,7 +1134,12 @@ impl Keyspace {
             .iter()
             .map(|v| memory::VECDEQUE_ELEMENT_OVERHEAD + v.len())
             .sum();
-        self.reserve_memory(is_new, key, memory::VECDEQUE_BASE_OVERHEAD, element_increase)?;
+        self.reserve_memory(
+            is_new,
+            key,
+            memory::VECDEQUE_BASE_OVERHEAD,
+            element_increase,
+        )?;
 
         if is_new {
             self.insert_empty(key, Value::List(VecDeque::new()));
@@ -1201,8 +1212,7 @@ impl Keyspace {
     ) -> Result<ZAddResult, WriteError> {
         self.remove_if_expired(key);
 
-        let is_new =
-            self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
+        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
 
         // worst-case estimate: assume all members are new
         let member_increase: usize = members
@@ -1260,13 +1270,17 @@ impl Keyspace {
             return Ok(vec![]);
         }
 
-        let Some(entry) = self.entries.get(key) else { return Ok(vec![]) };
+        let Some(entry) = self.entries.get(key) else {
+            return Ok(vec![]);
+        };
         if !matches!(entry.value, Value::SortedSet(_)) {
             return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &self.entries[key].value);
-        let entry = self.entries.get_mut(key).expect("verified above");
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(vec![]);
+        };
+        let old_entry_size = memory::entry_size(key, &entry.value);
         let mut removed = Vec::new();
         if let Value::SortedSet(ref mut ss) = entry.value {
             for member in members {
@@ -1465,18 +1479,14 @@ impl Keyspace {
             return Ok(vec![]);
         }
 
-        match self.entries.get(key) {
-            None => return Ok(vec![]),
-            Some(e) => {
-                if !matches!(e.value, Value::Hash(_)) {
-                    return Err(WrongType);
-                }
-            }
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(vec![]);
+        };
+        if !matches!(entry.value, Value::Hash(_)) {
+            return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &self.entries[key].value);
-        let entry = self.entries.get_mut(key).expect("verified above");
-
+        let old_entry_size = memory::entry_size(key, &entry.value);
         let mut removed = Vec::new();
         let is_empty = if let Value::Hash(ref mut map) = entry.value {
             for field in fields {
@@ -1532,14 +1542,11 @@ impl Keyspace {
     pub fn hincrby(&mut self, key: &str, field: &str, delta: i64) -> Result<i64, IncrError> {
         self.remove_if_expired(key);
 
-        let is_new = !self.entries.contains_key(key);
-
-        if !is_new {
-            match &self.entries[key].value {
-                Value::Hash(_) => {}
-                _ => return Err(IncrError::WrongType),
-            }
-        }
+        let is_new = match self.entries.get(key) {
+            None => true,
+            Some(e) if matches!(e.value, Value::Hash(_)) => false,
+            Some(_) => return Err(IncrError::WrongType),
+        };
 
         // estimate memory for new field (worst case: new hash + new field)
         let val_str_len = 20; // max i64 string length
@@ -1564,10 +1571,10 @@ impl Keyspace {
             self.entries.insert(key.to_owned(), Entry::new(value, None));
         }
 
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("just inserted or verified");
+        // safe: key was either just inserted above or verified to exist
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Err(IncrError::WrongType);
+        };
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let Value::Hash(ref mut map) = entry.value else {
@@ -1698,17 +1705,14 @@ impl Keyspace {
             return Ok(0);
         }
 
-        match self.entries.get(key) {
-            None => return Ok(0),
-            Some(e) => {
-                if !matches!(e.value, Value::Set(_)) {
-                    return Err(WrongType);
-                }
-            }
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(0);
+        };
+        if !matches!(entry.value, Value::Set(_)) {
+            return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &self.entries[key].value);
-        let entry = self.entries.get_mut(key).expect("verified above");
+        let old_entry_size = memory::entry_size(key, &entry.value);
 
         let mut removed = 0;
         let is_empty = if let Value::Set(ref mut set) = entry.value {
@@ -1851,10 +1855,11 @@ impl Keyspace {
 
         self.remove_if_expired(key);
 
-        let is_new = !self.entries.contains_key(key);
-        if !is_new && !matches!(self.entries[key].value, Value::Vector(_)) {
-            return Err(VectorWriteError::WrongType);
-        }
+        let is_new = match self.entries.get(key) {
+            None => true,
+            Some(e) if matches!(e.value, Value::Vector(_)) => false,
+            Some(_) => return Err(VectorWriteError::WrongType),
+        };
 
         // estimate memory for the new vector (saturating to avoid overflow)
         let dim = vector.len();
@@ -2167,8 +2172,8 @@ pub(crate) fn format_float(val: f64) -> String {
     let s = format!("{:.17e}", val);
     // Parse back to get the clean representation
     let reparsed: f64 = s.parse().unwrap_or(val);
-    // If it's a whole number, format without decimals
-    if reparsed == reparsed.trunc() && reparsed.abs() < 1e15 {
+    // If it's a whole number that fits in i64, format without decimals
+    if reparsed == reparsed.trunc() && reparsed >= i64::MIN as f64 && reparsed <= i64::MAX as f64 {
         format!("{}", reparsed as i64)
     } else {
         // Use ryu-like formatting via Display which strips trailing zeros
