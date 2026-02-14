@@ -115,17 +115,17 @@ note: encryption only affects persistence writes. GET throughput should be uncha
 
 ### vector similarity
 
-ember vs chromadb vs pgvector. 100k vectors, 128 dimensions, cosine metric, k=10 kNN search.
-HNSW index: M=16, ef_construction=64 for all systems.
+ember vs chromadb vs pgvector. 100k random vectors, 128 dimensions, cosine metric, k=10 kNN search.
+HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-8.
 
 | metric | ember | chromadb | pgvector |
 |--------|-------|----------|----------|
-| insert (vectors/sec) | — | — | — |
-| query (queries/sec) | — | — | — |
-| query p99 (ms) | — | — | — |
-| memory (MB) | — | — | — |
+| insert (vectors/sec) | 917 | **3,738** | 1,562 |
+| query (queries/sec) | **1,214** | 376 | 882 |
+| query p99 (ms) | **1.09ms** | 2.90ms | 1.52ms |
+| memory (MB) | **30 MB** | 122 MB | 178 MB |
 
-*results pending — run `bench/bench-vector.sh` on a dedicated VM to populate.*
+ember's query throughput is 3.2x chromadb and 1.4x pgvector, with 4-6x lower memory usage. insert throughput is lower due to per-vector RESP protocol overhead — batched pipelining helps but each VADD is still a separate command.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 
