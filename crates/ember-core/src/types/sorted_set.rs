@@ -37,6 +37,14 @@ pub struct AddResult {
     pub updated: bool,
 }
 
+impl AddResult {
+    /// No change: member was neither added nor updated.
+    pub const UNCHANGED: Self = Self {
+        added: false,
+        updated: false,
+    };
+}
+
 /// A sorted set of unique string members, each with a floating-point score.
 ///
 /// Members are ordered by `(score, member_name)`. Rank is determined by
@@ -69,30 +77,13 @@ impl SortedSet {
         let new_score = OrderedFloat(score);
 
         if let Some(&old_score) = self.scores.get(&member) {
-            // member exists — check flags
-            if flags.nx {
-                return AddResult {
-                    added: false,
-                    updated: false,
-                };
-            }
-            if flags.gt && new_score <= old_score {
-                return AddResult {
-                    added: false,
-                    updated: false,
-                };
-            }
-            if flags.lt && new_score >= old_score {
-                return AddResult {
-                    added: false,
-                    updated: false,
-                };
-            }
-            if new_score == old_score {
-                return AddResult {
-                    added: false,
-                    updated: false,
-                };
+            // member exists — skip if any flag condition prevents the update
+            if flags.nx
+                || (flags.gt && new_score <= old_score)
+                || (flags.lt && new_score >= old_score)
+                || new_score == old_score
+            {
+                return AddResult::UNCHANGED;
             }
             // update: remove old entry, insert new
             self.tree.remove(&(old_score, member.clone()));
@@ -103,12 +94,9 @@ impl SortedSet {
                 updated: true,
             }
         } else {
-            // new member — check XX flag
+            // new member — XX means only update, so skip
             if flags.xx {
-                return AddResult {
-                    added: false,
-                    updated: false,
-                };
+                return AddResult::UNCHANGED;
             }
             self.scores.insert(member.clone(), new_score);
             self.tree.insert((new_score, member), ());
