@@ -386,10 +386,16 @@ impl Keyspace {
     /// Measures entry size before and after a mutation, adjusting the
     /// memory tracker for the difference. Touches the entry afterwards.
     fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> T {
-        let entry = self.entries.get_mut(key).expect("caller verified key exists");
+        let entry = self
+            .entries
+            .get_mut(key)
+            .expect("caller verified key exists");
         let old_size = memory::entry_size(key, &entry.value);
         let result = f(entry);
-        let entry = self.entries.get(key).expect("mutation should not remove key");
+        let entry = self
+            .entries
+            .get(key)
+            .expect("mutation should not remove key");
         let new_size = memory::entry_size(key, &entry.value);
         self.memory.adjust(old_size, new_size);
         result
@@ -1128,7 +1134,12 @@ impl Keyspace {
             .iter()
             .map(|v| memory::VECDEQUE_ELEMENT_OVERHEAD + v.len())
             .sum();
-        self.reserve_memory(is_new, key, memory::VECDEQUE_BASE_OVERHEAD, element_increase)?;
+        self.reserve_memory(
+            is_new,
+            key,
+            memory::VECDEQUE_BASE_OVERHEAD,
+            element_increase,
+        )?;
 
         if is_new {
             self.insert_empty(key, Value::List(VecDeque::new()));
@@ -1201,8 +1212,7 @@ impl Keyspace {
     ) -> Result<ZAddResult, WriteError> {
         self.remove_if_expired(key);
 
-        let is_new =
-            self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
+        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
 
         // worst-case estimate: assume all members are new
         let member_increase: usize = members
@@ -1260,7 +1270,9 @@ impl Keyspace {
             return Ok(vec![]);
         }
 
-        let Some(entry) = self.entries.get(key) else { return Ok(vec![]) };
+        let Some(entry) = self.entries.get(key) else {
+            return Ok(vec![]);
+        };
         if !matches!(entry.value, Value::SortedSet(_)) {
             return Err(WrongType);
         }
