@@ -4,12 +4,15 @@
 //! are ordered by (score, member) — ties in score are broken
 //! lexicographically, matching Redis semantics.
 //!
-//! Implementation uses a `BTreeMap<(OrderedFloat<f64>, String), ()>` for
-//! ordered iteration and a `HashMap<String, OrderedFloat<f64>>` for O(1)
-//! member→score lookups. This is simpler and more correct than a
-//! hand-rolled skip list.
+//! Implementation uses a `BTreeMap<(OrderedFloat<f64>, Arc<str>), ()>` for
+//! ordered iteration and a `HashMap<Arc<str>, OrderedFloat<f64>>` for O(1)
+//! member→score lookups. Member strings are shared via `Arc<str>` between
+//! both indexes, cutting per-member memory roughly in half vs storing
+//! two independent `String`s. `Arc` (vs `Rc`) is required because shards
+//! are spawned as tokio tasks which require `Send`.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
 
@@ -49,12 +52,15 @@ impl AddResult {
 ///
 /// Members are ordered by `(score, member_name)`. Rank is determined by
 /// position in this ordering (0-based, lowest score first).
+///
+/// Member strings are shared between the score index and the member index
+/// via `Arc<str>`, so each string is stored once on the heap.
 #[derive(Debug, Clone)]
 pub struct SortedSet {
     /// Score→member index for ordered iteration.
-    tree: BTreeMap<(OrderedFloat<f64>, String), ()>,
+    tree: BTreeMap<(OrderedFloat<f64>, Arc<str>), ()>,
     /// Member→score index for O(1) lookups.
-    scores: HashMap<String, OrderedFloat<f64>>,
+    scores: HashMap<Arc<str>, OrderedFloat<f64>>,
 }
 
 impl SortedSet {
@@ -76,7 +82,7 @@ impl SortedSet {
     pub fn add_with_flags(&mut self, member: String, score: f64, flags: &ZAddFlags) -> AddResult {
         let new_score = OrderedFloat(score);
 
-        if let Some(&old_score) = self.scores.get(&member) {
+        if let Some(&old_score) = self.scores.get(member.as_str()) {
             // member exists — skip if any flag condition prevents the update
             if flags.nx
                 || (flags.gt && new_score <= old_score)
@@ -85,10 +91,16 @@ impl SortedSet {
             {
                 return AddResult::UNCHANGED;
             }
-            // update: remove old entry, insert new
-            self.tree.remove(&(old_score, member.clone()));
-            self.scores.insert(member.clone(), new_score);
-            self.tree.insert((new_score, member), ());
+            // update: remove old tree entry, reuse the Rc for the new one
+            let name: Arc<str> = self
+                .scores
+                .get_key_value(member.as_str())
+                .unwrap()
+                .0
+                .clone();
+            self.tree.remove(&(old_score, name.clone()));
+            self.scores.insert(name.clone(), new_score);
+            self.tree.insert((new_score, name), ());
             AddResult {
                 added: false,
                 updated: true,
@@ -98,8 +110,9 @@ impl SortedSet {
             if flags.xx {
                 return AddResult::UNCHANGED;
             }
-            self.scores.insert(member.clone(), new_score);
-            self.tree.insert((new_score, member), ());
+            let name: Arc<str> = Arc::from(member);
+            self.scores.insert(name.clone(), new_score);
+            self.tree.insert((new_score, name), ());
             AddResult {
                 added: true,
                 updated: false,
@@ -109,8 +122,8 @@ impl SortedSet {
 
     /// Removes a member from the sorted set. Returns `true` if it existed.
     pub fn remove(&mut self, member: &str) -> bool {
-        if let Some(score) = self.scores.remove(member) {
-            self.tree.remove(&(score, member.to_owned()));
+        if let Some((name, score)) = self.scores.remove_entry(member) {
+            self.tree.remove(&(score, name));
             true
         } else {
             false
@@ -129,8 +142,8 @@ impl SortedSet {
     /// small-to-medium sets; a skip list with rank counts would give
     /// O(log n) if this becomes a bottleneck.
     pub fn rank(&self, member: &str) -> Option<usize> {
-        let score = self.scores.get(member)?;
-        let key = (*score, member.to_owned());
+        let (name, &score) = self.scores.get_key_value(member)?;
+        let key = (score, name.clone());
         // count entries before this one
         Some(self.tree.range(..&key).count())
     }
@@ -151,7 +164,7 @@ impl SortedSet {
             .keys()
             .skip(s)
             .take(e - s + 1)
-            .map(|(score, member)| (member.as_str(), score.0))
+            .map(|(score, member)| (&**member, score.0))
             .collect()
     }
 
@@ -167,9 +180,7 @@ impl SortedSet {
 
     /// Returns an iterator over (member, score) pairs in sorted order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, f64)> {
-        self.tree
-            .keys()
-            .map(|(score, member)| (member.as_str(), score.0))
+        self.tree.keys().map(|(score, member)| (&**member, score.0))
     }
 
     /// Estimates memory usage in bytes.
@@ -193,11 +204,16 @@ impl SortedSet {
     /// Estimates the memory cost of storing a single member.
     ///
     /// Includes BTreeMap entry overhead (64), HashMap entry overhead (56),
-    /// the member string stored in both collections, and the OrderedFloat.
+    /// two Arc<str> pointers (8 bytes each), the shared string data once
+    /// (with Arc overhead of 16 bytes for strong + weak counts), and the
+    /// OrderedFloat in both.
     pub fn estimated_member_cost(member: &str) -> usize {
         const BTREE_ENTRY: usize = 64;
         const HASHMAP_ENTRY: usize = 56;
-        BTREE_ENTRY + HASHMAP_ENTRY + member.len() * 2 + 8
+        const RC_PTR: usize = 8; // pointer per Rc clone
+        const RC_HEADER: usize = 16; // strong + weak counts
+                                     // string data stored once + Rc header + 2 Rc pointers + 2 OrderedFloat
+        BTREE_ENTRY + HASHMAP_ENTRY + member.len() + RC_HEADER + RC_PTR * 2 + 16
     }
 }
 

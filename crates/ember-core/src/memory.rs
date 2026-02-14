@@ -43,16 +43,20 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 
 /// Estimated overhead per entry in the HashMap.
 ///
-/// Accounts for: HashMap bucket pointer (8), Entry struct fields
-/// (Option<Instant> = 16, last_access Instant = 8, Value enum tag + padding),
-/// plus HashMap per-entry bookkeeping.
+/// Accounts for: the String key struct (24 bytes ptr+len+cap), Entry struct
+/// fields (Value enum tag + Bytes/collection inline storage + expires_at_ms
+/// + last_access_ms), plus hashbrown per-entry bookkeeping (1 control byte
+/// + empty slot waste at ~87.5% load factor).
 ///
-/// This is an approximation measured empirically on x86-64 linux. The exact
-/// value varies by platform and compiler version, but precision isn't critical —
-/// we use this for eviction triggers and memory reporting, not for correctness.
+/// This is calibrated from `std::mem::size_of` on 64-bit platforms. The
+/// exact value varies by compiler version, but precision isn't critical —
+/// we use this for eviction triggers and memory reporting, not correctness.
 /// Overestimating is fine (triggers eviction earlier); underestimating could
-/// theoretically let memory grow slightly beyond the configured limit.
-pub(crate) const ENTRY_OVERHEAD: usize = 96;
+/// let memory grow slightly beyond the configured limit.
+///
+/// The `entry_overhead_not_too_small` test validates this constant against
+/// the actual struct sizes on each platform.
+pub(crate) const ENTRY_OVERHEAD: usize = 128;
 
 /// Tracks memory usage for a single keyspace.
 ///
@@ -301,8 +305,29 @@ mod tests {
     fn entry_size_accounts_for_key_and_value() {
         let val = string_val("test");
         let size = entry_size("mykey", &val);
-        // 5 (key) + 4 (value) + 96 (overhead)
+        // 5 (key) + 4 (value) + ENTRY_OVERHEAD
         assert_eq!(size, 5 + 4 + ENTRY_OVERHEAD);
+    }
+
+    /// Validates that ENTRY_OVERHEAD is at least as large as the actual
+    /// struct sizes, so we never underestimate memory usage.
+    #[test]
+    fn entry_overhead_not_too_small() {
+        use crate::keyspace::Entry;
+
+        let entry_size = std::mem::size_of::<Entry>();
+        let key_struct_size = std::mem::size_of::<String>();
+        // hashbrown uses 1 control byte per slot + ~14% empty slot waste.
+        // 8 bytes is a conservative lower bound for per-entry hash overhead.
+        let hashmap_per_entry = 8;
+        let minimum = entry_size + key_struct_size + hashmap_per_entry;
+
+        assert!(
+            ENTRY_OVERHEAD >= minimum,
+            "ENTRY_OVERHEAD ({ENTRY_OVERHEAD}) is less than measured minimum \
+             ({minimum} = Entry({entry_size}) + String({key_struct_size}) + \
+             hashmap({hashmap_per_entry}))"
+        );
     }
 
     #[test]

@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 bytes = { workspace = true }
 itoa = "1"
+memchr = "2"
 thiserror = { workspace = true }
 
 [dev-dependencies]
