@@ -33,6 +33,10 @@ pub enum Frame {
     Null,
 
     /// Ordered map of key-value frame pairs, e.g. `%1\r\n+key\r\n+val\r\n`.
+    ///
+    /// Uses `Vec` instead of `HashMap` to preserve insertion order (RESP3
+    /// maps are ordered) and because typical maps in Redis responses are
+    /// small enough that linear scan beats hashing overhead.
     Map(Vec<(Frame, Frame)>),
 }
 
