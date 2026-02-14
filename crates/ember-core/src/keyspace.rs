@@ -508,6 +508,10 @@ impl Keyspace {
     /// Randomly samples `EVICTION_SAMPLE_SIZE` keys and removes the one
     /// with the oldest `last_access` time. Returns `true` if a key was
     /// evicted, `false` if the keyspace is empty.
+    ///
+    /// Uses reservoir sampling with k=1 to avoid allocating a Vec on
+    /// every eviction attempt. The victim key index is remembered
+    /// rather than cloned, eliminating a heap allocation on the hot path.
     fn try_evict(&mut self) -> bool {
         if self.entries.is_empty() {
             return false;
@@ -515,18 +519,38 @@ impl Keyspace {
 
         let mut rng = rand::rng();
 
-        // randomly sample keys and find the least recently accessed one
-        let victim = self
-            .entries
-            .iter()
-            .choose_multiple(&mut rng, EVICTION_SAMPLE_SIZE)
-            .into_iter()
-            .min_by_key(|(_, entry)| entry.last_access_ms)
-            .map(|(k, _)| k.clone());
+        // reservoir sample k=1 from the iterator, tracking the oldest
+        // entry by last_access_ms. this replaces choose_multiple() which
+        // allocates a Vec internally.
+        let mut best_key: Option<&str> = None;
+        let mut best_access = u64::MAX;
+        let mut seen = 0usize;
 
-        if let Some(key) = victim {
-            if let Some(entry) = self.entries.remove(&key) {
-                self.memory.remove(&key, &entry.value);
+        for (key, entry) in &self.entries {
+            // reservoir sampling: include this item with probability
+            // EVICTION_SAMPLE_SIZE / (seen + 1), capped once we have
+            // enough candidates
+            seen += 1;
+            if seen <= EVICTION_SAMPLE_SIZE {
+                if entry.last_access_ms < best_access {
+                    best_access = entry.last_access_ms;
+                    best_key = Some(key.as_str());
+                }
+            } else {
+                use rand::Rng;
+                let j = rng.random_range(0..seen);
+                if j < EVICTION_SAMPLE_SIZE && entry.last_access_ms < best_access {
+                    best_access = entry.last_access_ms;
+                    best_key = Some(key.as_str());
+                }
+            }
+        }
+
+        if let Some(victim) = best_key {
+            // we need an owned key to remove from the map
+            let victim = victim.to_owned();
+            if let Some(entry) = self.entries.remove(&victim) {
+                self.memory.remove(&victim, &entry.value);
                 self.decrement_expiry_if_set(&entry);
                 self.evicted_total += 1;
                 self.defer_drop(entry.value);
