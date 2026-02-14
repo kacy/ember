@@ -1096,24 +1096,22 @@ impl Keyspace {
             .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
-        if let Value::List(ref mut deque) = entry.value {
-            for val in values {
-                if left {
-                    deque.push_front(val.clone());
-                } else {
-                    deque.push_back(val.clone());
-                }
+        let Value::List(ref mut deque) = entry.value else {
+            return Err(WriteError::WrongType);
+        };
+        for val in values {
+            if left {
+                deque.push_front(val.clone());
+            } else {
+                deque.push_back(val.clone());
             }
         }
+        let len = deque.len();
         entry.touch();
 
         let new_entry_size = memory::entry_size(key, &entry.value);
         self.memory.adjust(old_entry_size, new_entry_size);
 
-        let len = match &entry.value {
-            Value::List(d) => d.len(),
-            _ => unreachable!(),
-        };
         Ok(len)
     }
 
@@ -1123,25 +1121,22 @@ impl Keyspace {
             return Ok(None);
         }
 
-        match self.entries.get(key) {
-            None => return Ok(None),
-            Some(e) => {
-                if !matches!(e.value, Value::List(_)) {
-                    return Err(WrongType);
-                }
-            }
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(None);
         };
+        if !matches!(entry.value, Value::List(_)) {
+            return Err(WrongType);
+        }
 
-        let old_entry_size = memory::entry_size(key, &self.entries[key].value);
-        let entry = self.entries.get_mut(key).expect("verified above");
-        let popped = if let Value::List(ref mut deque) = entry.value {
-            if left {
-                deque.pop_front()
-            } else {
-                deque.pop_back()
-            }
+        let old_entry_size = memory::entry_size(key, &entry.value);
+        let Value::List(ref mut deque) = entry.value else {
+            // checked above
+            return Err(WrongType);
+        };
+        let popped = if left {
+            deque.pop_front()
         } else {
-            unreachable!()
+            deque.pop_back()
         };
         entry.touch();
 
@@ -1576,21 +1571,18 @@ impl Keyspace {
             .expect("just inserted or verified");
         let old_entry_size = memory::entry_size(key, &entry.value);
 
-        let new_val = if let Value::Hash(ref mut map) = entry.value {
-            let current_val = match map.get(field) {
-                Some(data) => {
-                    let s = std::str::from_utf8(data).map_err(|_| IncrError::NotAnInteger)?;
-                    s.parse::<i64>().map_err(|_| IncrError::NotAnInteger)?
-                }
-                None => 0,
-            };
-
-            let new_val = current_val.checked_add(delta).ok_or(IncrError::Overflow)?;
-            map.insert(field.to_owned(), Bytes::from(new_val.to_string()));
-            new_val
-        } else {
-            unreachable!()
+        let Value::Hash(ref mut map) = entry.value else {
+            return Err(IncrError::WrongType);
         };
+        let current_val = match map.get(field) {
+            Some(data) => {
+                let s = std::str::from_utf8(data).map_err(|_| IncrError::NotAnInteger)?;
+                s.parse::<i64>().map_err(|_| IncrError::NotAnInteger)?
+            }
+            None => 0,
+        };
+        let new_val = current_val.checked_add(delta).ok_or(IncrError::Overflow)?;
+        map.insert(field.to_owned(), Bytes::from(new_val.to_string()));
         entry.touch();
 
         let new_entry_size = memory::entry_size(key, &entry.value);
