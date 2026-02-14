@@ -338,6 +338,63 @@ impl Keyspace {
         }
     }
 
+    /// Checks whether a key either doesn't exist or holds the expected
+    /// collection type. Returns `Ok(true)` if the key is new,
+    /// `Ok(false)` if it exists with the right type, or `Err(WrongType)`
+    /// if the key exists with a different type.
+    fn ensure_collection_type(
+        &self,
+        key: &str,
+        type_check: fn(&Value) -> bool,
+    ) -> Result<bool, WriteError> {
+        match self.entries.get(key) {
+            None => Ok(true),
+            Some(e) if type_check(&e.value) => Ok(false),
+            Some(_) => Err(WriteError::WrongType),
+        }
+    }
+
+    /// Estimates the memory cost of a collection write and enforces the
+    /// limit. `base_overhead` is the fixed cost of a new collection
+    /// (e.g. VECDEQUE_BASE_OVERHEAD). Returns `Ok(())` on success.
+    fn reserve_memory(
+        &mut self,
+        is_new: bool,
+        key: &str,
+        base_overhead: usize,
+        element_increase: usize,
+    ) -> Result<(), WriteError> {
+        let estimated_increase = if is_new {
+            memory::ENTRY_OVERHEAD + key.len() + base_overhead + element_increase
+        } else {
+            element_increase
+        };
+        if self.enforce_memory_limit(estimated_increase) {
+            Ok(())
+        } else {
+            Err(WriteError::OutOfMemory)
+        }
+    }
+
+    /// Inserts a new key with an empty collection value. Used by
+    /// collection-write methods after type-checking and memory reservation.
+    fn insert_empty(&mut self, key: &str, value: Value) {
+        self.memory.add(key, &value);
+        self.entries.insert(key.to_owned(), Entry::new(value, None));
+    }
+
+    /// Measures entry size before and after a mutation, adjusting the
+    /// memory tracker for the difference. Touches the entry afterwards.
+    fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> T {
+        let entry = self.entries.get_mut(key).expect("caller verified key exists");
+        let old_size = memory::entry_size(key, &entry.value);
+        let result = f(entry);
+        let entry = self.entries.get(key).expect("mutation should not remove key");
+        let new_size = memory::entry_size(key, &entry.value);
+        self.memory.adjust(old_size, new_size);
+        result
+    }
+
     /// Adjusts the expiry count when replacing an entry whose TTL status
     /// may have changed (e.g. SET overwriting an existing key).
     fn adjust_expiry_count(&mut self, had_expiry: bool, has_expiry: bool) {
@@ -1024,6 +1081,7 @@ impl Keyspace {
                     Value::List(deque) => {
                         let len = deque.len() as i64;
                         let (s, e) = normalize_range(start, stop, len);
+                        // empty range: inverted indices or both out of bounds
                         if s > e {
                             return Ok(vec![]);
                         }
@@ -1064,53 +1122,33 @@ impl Keyspace {
     fn list_push(&mut self, key: &str, values: &[Bytes], left: bool) -> Result<usize, WriteError> {
         self.remove_if_expired(key);
 
-        let is_new = !self.entries.contains_key(key);
+        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::List(_)))?;
 
-        if !is_new && !matches!(self.entries[key].value, Value::List(_)) {
-            return Err(WriteError::WrongType);
-        }
-
-        // estimate the memory increase and enforce the limit before mutating
         let element_increase: usize = values
             .iter()
             .map(|v| memory::VECDEQUE_ELEMENT_OVERHEAD + v.len())
             .sum();
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD + key.len() + memory::VECDEQUE_BASE_OVERHEAD + element_increase
-        } else {
-            element_increase
-        };
-        if !self.enforce_memory_limit(estimated_increase) {
-            return Err(WriteError::OutOfMemory);
-        }
+        self.reserve_memory(is_new, key, memory::VECDEQUE_BASE_OVERHEAD, element_increase)?;
 
         if is_new {
-            let value = Value::List(VecDeque::new());
-            self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.insert_empty(key, Value::List(VecDeque::new()));
         }
 
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("just inserted or verified");
-        let old_entry_size = memory::entry_size(key, &entry.value);
-
-        let Value::List(ref mut deque) = entry.value else {
-            return Err(WriteError::WrongType);
-        };
-        for val in values {
-            if left {
-                deque.push_front(val.clone());
-            } else {
-                deque.push_back(val.clone());
+        let len = self.track_size(key, |entry| {
+            let Value::List(ref mut deque) = entry.value else {
+                unreachable!("type verified by ensure_collection_type");
+            };
+            for val in values {
+                if left {
+                    deque.push_front(val.clone());
+                } else {
+                    deque.push_back(val.clone());
+                }
             }
-        }
-        let len = deque.len();
-        entry.touch();
-
-        let new_entry_size = memory::entry_size(key, &entry.value);
-        self.memory.adjust(old_entry_size, new_entry_size);
+            let len = deque.len();
+            entry.touch();
+            len
+        });
 
         Ok(len)
     }
@@ -1163,40 +1201,26 @@ impl Keyspace {
     ) -> Result<ZAddResult, WriteError> {
         self.remove_if_expired(key);
 
-        let is_new = !self.entries.contains_key(key);
-        if !is_new && !matches!(self.entries[key].value, Value::SortedSet(_)) {
-            return Err(WriteError::WrongType);
-        }
+        let is_new =
+            self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
 
         // worst-case estimate: assume all members are new
         let member_increase: usize = members
             .iter()
             .map(|(_, m)| SortedSet::estimated_member_cost(m))
             .sum();
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD + key.len() + SortedSet::BASE_OVERHEAD + member_increase
-        } else {
-            member_increase
-        };
-        if !self.enforce_memory_limit(estimated_increase) {
-            return Err(WriteError::OutOfMemory);
-        }
+        self.reserve_memory(is_new, key, SortedSet::BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            let value = Value::SortedSet(SortedSet::new());
-            self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.insert_empty(key, Value::SortedSet(SortedSet::new()));
         }
 
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("just inserted or verified");
-        let old_entry_size = memory::entry_size(key, &entry.value);
-
-        let mut count = 0;
-        let mut applied = Vec::new();
-        if let Value::SortedSet(ref mut ss) = entry.value {
+        let (count, applied) = self.track_size(key, |entry| {
+            let Value::SortedSet(ref mut ss) = entry.value else {
+                unreachable!("type verified by ensure_collection_type");
+            };
+            let mut count = 0;
+            let mut applied = Vec::new();
             for (score, member) in members {
                 let result = ss.add_with_flags(member.clone(), *score, flags);
                 if result.added || result.updated {
@@ -1210,15 +1234,13 @@ impl Keyspace {
                     count += 1;
                 }
             }
-        }
-        entry.touch();
+            entry.touch();
+            (count, applied)
+        });
 
-        let new_entry_size = memory::entry_size(key, &entry.value);
-        self.memory.adjust(old_entry_size, new_entry_size);
-
-        // clean up if the set is still empty (e.g. XX on a new key)
-        if let Value::SortedSet(ref ss) = entry.value {
-            if ss.is_empty() {
+        // clean up if the set is still empty (e.g. XX flag on a new key)
+        if let Some(entry) = self.entries.get(key) {
+            if matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty()) {
                 self.memory
                     .remove_with_size(memory::entry_size(key, &entry.value));
                 self.entries.remove(key);
@@ -1238,13 +1260,9 @@ impl Keyspace {
             return Ok(vec![]);
         }
 
-        match self.entries.get(key) {
-            None => return Ok(vec![]),
-            Some(e) => {
-                if !matches!(e.value, Value::SortedSet(_)) {
-                    return Err(WrongType);
-                }
-            }
+        let Some(entry) = self.entries.get(key) else { return Ok(vec![]) };
+        if !matches!(entry.value, Value::SortedSet(_)) {
+            return Err(WrongType);
         }
 
         let old_entry_size = memory::entry_size(key, &self.entries[key].value);
@@ -1370,50 +1388,31 @@ impl Keyspace {
 
         self.remove_if_expired(key);
 
-        let is_new = !self.entries.contains_key(key);
+        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::Hash(_)))?;
 
-        if !is_new && !matches!(self.entries[key].value, Value::Hash(_)) {
-            return Err(WriteError::WrongType);
-        }
-
-        // estimate memory increase before mutating
         let field_increase: usize = fields
             .iter()
             .map(|(f, v)| f.len() + v.len() + memory::HASHMAP_ENTRY_OVERHEAD)
             .sum();
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD + key.len() + memory::HASHMAP_BASE_OVERHEAD + field_increase
-        } else {
-            field_increase
-        };
-        if !self.enforce_memory_limit(estimated_increase) {
-            return Err(WriteError::OutOfMemory);
-        }
+        self.reserve_memory(is_new, key, memory::HASHMAP_BASE_OVERHEAD, field_increase)?;
 
         if is_new {
-            let value = Value::Hash(HashMap::new());
-            self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.insert_empty(key, Value::Hash(HashMap::new()));
         }
 
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("just inserted or verified");
-        let old_entry_size = memory::entry_size(key, &entry.value);
-
-        let mut added = 0;
-        if let Value::Hash(ref mut map) = entry.value {
+        let added = self.track_size(key, |entry| {
+            let Value::Hash(ref mut map) = entry.value else {
+                unreachable!("type verified by ensure_collection_type");
+            };
+            let mut added = 0;
             for (field, value) in fields {
                 if map.insert(field.clone(), value.clone()).is_none() {
                     added += 1;
                 }
             }
-        }
-        entry.touch();
-
-        let new_entry_size = memory::entry_size(key, &entry.value);
-        self.memory.adjust(old_entry_size, new_entry_size);
+            entry.touch();
+            added
+        });
 
         Ok(added)
     }
@@ -1662,50 +1661,31 @@ impl Keyspace {
 
         self.remove_if_expired(key);
 
-        let is_new = !self.entries.contains_key(key);
+        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::Set(_)))?;
 
-        if !is_new && !matches!(self.entries[key].value, Value::Set(_)) {
-            return Err(WriteError::WrongType);
-        }
-
-        // estimate memory increase before mutating
         let member_increase: usize = members
             .iter()
             .map(|m| m.len() + memory::HASHSET_MEMBER_OVERHEAD)
             .sum();
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD + key.len() + memory::HASHSET_BASE_OVERHEAD + member_increase
-        } else {
-            member_increase
-        };
-        if !self.enforce_memory_limit(estimated_increase) {
-            return Err(WriteError::OutOfMemory);
-        }
+        self.reserve_memory(is_new, key, memory::HASHSET_BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            let value = Value::Set(std::collections::HashSet::new());
-            self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.insert_empty(key, Value::Set(std::collections::HashSet::new()));
         }
 
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("just inserted or verified");
-        let old_entry_size = memory::entry_size(key, &entry.value);
-
-        let mut added = 0;
-        if let Value::Set(ref mut set) = entry.value {
+        let added = self.track_size(key, |entry| {
+            let Value::Set(ref mut set) = entry.value else {
+                unreachable!("type verified by ensure_collection_type");
+            };
+            let mut added = 0;
             for member in members {
                 if set.insert(member.clone()) {
                     added += 1;
                 }
             }
-        }
-        entry.touch();
-
-        let new_entry_size = memory::entry_size(key, &entry.value);
-        self.memory.adjust(old_entry_size, new_entry_size);
+            entry.touch();
+            added
+        });
 
         Ok(added)
     }
