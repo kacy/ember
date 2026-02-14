@@ -18,6 +18,14 @@ const MAX_VECTOR_DIMS: usize = 65_536;
 /// Values above 1024 give no practical benefit and waste memory.
 const MAX_HNSW_PARAM: u64 = 1024;
 
+/// Maximum number of results for VSIM. 10,000 is generous for any practical
+/// similarity search while preventing OOM from unbounded result allocation.
+const MAX_VSIM_COUNT: u64 = 10_000;
+
+/// Maximum search beam width for VSIM. Same cap as MAX_HNSW_PARAM —
+/// larger values cause worst-case O(n) graph traversal with no accuracy gain.
+const MAX_VSIM_EF: u64 = MAX_HNSW_PARAM;
+
 /// Expiration option for the SET command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetExpire {
@@ -1993,7 +2001,13 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
                         "VSIM: COUNT requires a value".into(),
                     ));
                 }
-                count = Some(parse_u64(&args[idx], "VSIM")? as usize);
+                let c = parse_u64(&args[idx], "VSIM")?;
+                if c > MAX_VSIM_COUNT {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VSIM: COUNT {c} exceeds max {MAX_VSIM_COUNT}"
+                    )));
+                }
+                count = Some(c as usize);
                 idx += 1;
             }
             "EF" => {
@@ -2003,7 +2017,13 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
                         "VSIM: EF requires a value".into(),
                     ));
                 }
-                ef_search = parse_u64(&args[idx], "VSIM")? as usize;
+                let ef = parse_u64(&args[idx], "VSIM")?;
+                if ef > MAX_VSIM_EF {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VSIM: EF {ef} exceeds max {MAX_VSIM_EF}"
+                    )));
+                }
+                ef_search = ef as usize;
                 idx += 1;
             }
             "WITHSCORES" => {
