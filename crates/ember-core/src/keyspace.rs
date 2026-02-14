@@ -816,7 +816,7 @@ impl Keyspace {
         // Redis strips trailing zeros: "10.5" not "10.50000..."
         // but keeps at least one decimal if the result is a whole number
         let formatted = format_float(new_val);
-        let new_bytes = Bytes::from(formatted.clone());
+        let new_bytes = Bytes::copy_from_slice(formatted.as_bytes());
 
         match self.set(key.to_owned(), new_bytes, existing_expire) {
             SetResult::Ok => Ok(formatted),

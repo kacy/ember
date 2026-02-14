@@ -710,7 +710,7 @@ fn extract_string(frame: &Frame) -> Result<String, ProtocolError> {
 fn extract_bytes(frame: &Frame) -> Result<Bytes, ProtocolError> {
     match frame {
         Frame::Bulk(data) => Ok(data.clone()),
-        Frame::Simple(s) => Ok(Bytes::from(s.clone().into_bytes())),
+        Frame::Simple(s) => Ok(Bytes::copy_from_slice(s.as_bytes())),
         _ => Err(ProtocolError::InvalidCommandFrame(
             "expected bulk or simple string argument".into(),
         )),
