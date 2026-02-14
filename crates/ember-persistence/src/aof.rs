@@ -1159,55 +1159,62 @@ pub fn aof_path(data_dir: &Path, shard_id: u16) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp dir")
     }
 
     #[test]
-    fn record_round_trip_set() {
+    fn record_round_trip_set() -> Result {
         let rec = AofRecord::Set {
             key: "hello".into(),
             value: Bytes::from("world"),
             expire_ms: 5000,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_del() {
+    fn record_round_trip_del() -> Result {
         let rec = AofRecord::Del { key: "gone".into() };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_expire() {
+    fn record_round_trip_expire() -> Result {
         let rec = AofRecord::Expire {
             key: "ttl".into(),
             seconds: 300,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn set_with_no_expiry() {
+    fn set_with_no_expiry() -> Result {
         let rec = AofRecord::Set {
             key: "k".into(),
             value: Bytes::from("v"),
             expire_ms: -1,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn writer_reader_round_trip() {
+    fn writer_reader_round_trip() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("test.aof");
 
@@ -1231,94 +1238,94 @@ mod tests {
 
         // write
         {
-            let mut writer = AofWriter::open(&path).unwrap();
+            let mut writer = AofWriter::open(&path)?;
             for rec in &records {
-                writer.write_record(rec).unwrap();
+                writer.write_record(rec)?;
             }
-            writer.sync().unwrap();
+            writer.sync()?;
         }
 
         // read back
-        let mut reader = AofReader::open(&path).unwrap();
+        let mut reader = AofReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(rec) = reader.read_record().unwrap() {
+        while let Some(rec) = reader.read_record()? {
             got.push(rec);
         }
         assert_eq!(records, got);
+        Ok(())
     }
 
     #[test]
-    fn empty_aof_returns_no_records() {
+    fn empty_aof_returns_no_records() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("empty.aof");
 
         // just write the header
         {
-            let _writer = AofWriter::open(&path).unwrap();
+            let _writer = AofWriter::open(&path)?;
         }
 
-        let mut reader = AofReader::open(&path).unwrap();
-        assert!(reader.read_record().unwrap().is_none());
+        let mut reader = AofReader::open(&path)?;
+        assert!(reader.read_record()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn truncated_record_treated_as_eof() {
+    fn truncated_record_treated_as_eof() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("trunc.aof");
 
         // write one good record, then append garbage (simulating a crash)
         {
-            let mut writer = AofWriter::open(&path).unwrap();
-            writer
-                .write_record(&AofRecord::Set {
-                    key: "ok".into(),
-                    value: Bytes::from("good"),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer.flush().unwrap();
+            let mut writer = AofWriter::open(&path)?;
+            writer.write_record(&AofRecord::Set {
+                key: "ok".into(),
+                value: Bytes::from("good"),
+                expire_ms: -1,
+            })?;
+            writer.flush()?;
         }
 
         // append a partial tag with no payload
         {
-            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
-            file.write_all(&[TAG_SET]).unwrap();
+            let mut file = OpenOptions::new().append(true).open(&path)?;
+            file.write_all(&[TAG_SET])?;
         }
 
-        let mut reader = AofReader::open(&path).unwrap();
+        let mut reader = AofReader::open(&path)?;
         // first record should be fine
-        let rec = reader.read_record().unwrap().unwrap();
+        let rec = reader.read_record()?.unwrap();
         assert!(matches!(rec, AofRecord::Set { .. }));
         // second should be None (truncated)
-        assert!(reader.read_record().unwrap().is_none());
+        assert!(reader.read_record()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn corrupt_crc_detected() {
+    fn corrupt_crc_detected() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("corrupt.aof");
 
         {
-            let mut writer = AofWriter::open(&path).unwrap();
-            writer
-                .write_record(&AofRecord::Set {
-                    key: "k".into(),
-                    value: Bytes::from("v"),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer.flush().unwrap();
+            let mut writer = AofWriter::open(&path)?;
+            writer.write_record(&AofRecord::Set {
+                key: "k".into(),
+                value: Bytes::from("v"),
+                expire_ms: -1,
+            })?;
+            writer.flush()?;
         }
 
         // corrupt the last byte (part of the CRC)
-        let mut data = fs::read(&path).unwrap();
+        let mut data = fs::read(&path)?;
         let last = data.len() - 1;
         data[last] ^= 0xFF;
-        fs::write(&path, &data).unwrap();
+        fs::write(&path, &data)?;
 
-        let mut reader = AofReader::open(&path).unwrap();
+        let mut reader = AofReader::open(&path)?;
         let err = reader.read_record().unwrap_err();
         assert!(matches!(err, FormatError::ChecksumMismatch { .. }));
+        Ok(())
     }
 
     #[test]
@@ -1332,82 +1339,83 @@ mod tests {
     }
 
     #[test]
-    fn truncate_resets_aof() {
+    fn truncate_resets_aof() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("reset.aof");
 
         {
-            let mut writer = AofWriter::open(&path).unwrap();
-            writer
-                .write_record(&AofRecord::Set {
-                    key: "old".into(),
-                    value: Bytes::from("data"),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer.truncate().unwrap();
+            let mut writer = AofWriter::open(&path)?;
+            writer.write_record(&AofRecord::Set {
+                key: "old".into(),
+                value: Bytes::from("data"),
+                expire_ms: -1,
+            })?;
+            writer.truncate()?;
 
             // write a new record after truncation
-            writer
-                .write_record(&AofRecord::Set {
-                    key: "new".into(),
-                    value: Bytes::from("fresh"),
-                    expire_ms: -1,
-                })
-                .unwrap();
-            writer.sync().unwrap();
+            writer.write_record(&AofRecord::Set {
+                key: "new".into(),
+                value: Bytes::from("fresh"),
+                expire_ms: -1,
+            })?;
+            writer.sync()?;
         }
 
-        let mut reader = AofReader::open(&path).unwrap();
-        let rec = reader.read_record().unwrap().unwrap();
+        let mut reader = AofReader::open(&path)?;
+        let rec = reader.read_record()?.unwrap();
         match rec {
             AofRecord::Set { key, .. } => assert_eq!(key, "new"),
             other => panic!("expected Set, got {other:?}"),
         }
         // only one record after truncation
-        assert!(reader.read_record().unwrap().is_none());
+        assert!(reader.read_record()?.is_none());
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_lpush() {
+    fn record_round_trip_lpush() -> Result {
         let rec = AofRecord::LPush {
             key: "list".into(),
             values: vec![Bytes::from("a"), Bytes::from("b")],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_rpush() {
+    fn record_round_trip_rpush() -> Result {
         let rec = AofRecord::RPush {
             key: "list".into(),
             values: vec![Bytes::from("x")],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_lpop() {
+    fn record_round_trip_lpop() -> Result {
         let rec = AofRecord::LPop { key: "list".into() };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_rpop() {
+    fn record_round_trip_rpop() -> Result {
         let rec = AofRecord::RPop { key: "list".into() };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn writer_reader_round_trip_with_list_records() {
+    fn writer_reader_round_trip_with_list_records() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("list.aof");
 
@@ -1425,45 +1433,48 @@ mod tests {
         ];
 
         {
-            let mut writer = AofWriter::open(&path).unwrap();
+            let mut writer = AofWriter::open(&path)?;
             for rec in &records {
-                writer.write_record(rec).unwrap();
+                writer.write_record(rec)?;
             }
-            writer.sync().unwrap();
+            writer.sync()?;
         }
 
-        let mut reader = AofReader::open(&path).unwrap();
+        let mut reader = AofReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(rec) = reader.read_record().unwrap() {
+        while let Some(rec) = reader.read_record()? {
             got.push(rec);
         }
         assert_eq!(records, got);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_zadd() {
+    fn record_round_trip_zadd() -> Result {
         let rec = AofRecord::ZAdd {
             key: "board".into(),
             members: vec![(100.0, "alice".into()), (200.5, "bob".into())],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_zrem() {
+    fn record_round_trip_zrem() -> Result {
         let rec = AofRecord::ZRem {
             key: "board".into(),
             members: vec!["alice".into(), "bob".into()],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn writer_reader_round_trip_with_sorted_set_records() {
+    fn writer_reader_round_trip_with_sorted_set_records() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("zset.aof");
 
@@ -1479,64 +1490,69 @@ mod tests {
         ];
 
         {
-            let mut writer = AofWriter::open(&path).unwrap();
+            let mut writer = AofWriter::open(&path)?;
             for rec in &records {
-                writer.write_record(rec).unwrap();
+                writer.write_record(rec)?;
             }
-            writer.sync().unwrap();
+            writer.sync()?;
         }
 
-        let mut reader = AofReader::open(&path).unwrap();
+        let mut reader = AofReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(rec) = reader.read_record().unwrap() {
+        while let Some(rec) = reader.read_record()? {
             got.push(rec);
         }
         assert_eq!(records, got);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_persist() {
+    fn record_round_trip_persist() -> Result {
         let rec = AofRecord::Persist {
             key: "mykey".into(),
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_pexpire() {
+    fn record_round_trip_pexpire() -> Result {
         let rec = AofRecord::Pexpire {
             key: "mykey".into(),
             milliseconds: 5000,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_incr() {
+    fn record_round_trip_incr() -> Result {
         let rec = AofRecord::Incr {
             key: "counter".into(),
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_decr() {
+    fn record_round_trip_decr() -> Result {
         let rec = AofRecord::Decr {
             key: "counter".into(),
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn writer_reader_round_trip_with_persist_pexpire() {
+    fn writer_reader_round_trip_with_persist_pexpire() -> Result {
         let dir = temp_dir();
         let path = dir.path().join("persist_pexpire.aof");
 
@@ -1554,19 +1570,20 @@ mod tests {
         ];
 
         {
-            let mut writer = AofWriter::open(&path).unwrap();
+            let mut writer = AofWriter::open(&path)?;
             for rec in &records {
-                writer.write_record(rec).unwrap();
+                writer.write_record(rec)?;
             }
-            writer.sync().unwrap();
+            writer.sync()?;
         }
 
-        let mut reader = AofReader::open(&path).unwrap();
+        let mut reader = AofReader::open(&path)?;
         let mut got = Vec::new();
-        while let Some(rec) = reader.read_record().unwrap() {
+        while let Some(rec) = reader.read_record()? {
             got.push(rec);
         }
         assert_eq!(records, got);
+        Ok(())
     }
 
     #[test]
@@ -1576,7 +1593,7 @@ mod tests {
     }
 
     #[test]
-    fn record_round_trip_hset() {
+    fn record_round_trip_hset() -> Result {
         let rec = AofRecord::HSet {
             key: "hash".into(),
             fields: vec![
@@ -1584,59 +1601,64 @@ mod tests {
                 ("f2".into(), Bytes::from("v2")),
             ],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_hdel() {
+    fn record_round_trip_hdel() -> Result {
         let rec = AofRecord::HDel {
             key: "hash".into(),
             fields: vec!["f1".into(), "f2".into()],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_hincrby() {
+    fn record_round_trip_hincrby() -> Result {
         let rec = AofRecord::HIncrBy {
             key: "hash".into(),
             field: "counter".into(),
             delta: -42,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_sadd() {
+    fn record_round_trip_sadd() -> Result {
         let rec = AofRecord::SAdd {
             key: "set".into(),
             members: vec!["m1".into(), "m2".into(), "m3".into()],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[test]
-    fn record_round_trip_srem() {
+    fn record_round_trip_srem() -> Result {
         let rec = AofRecord::SRem {
             key: "set".into(),
             members: vec!["m1".into()],
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[cfg(feature = "vector")]
     #[test]
-    fn record_round_trip_vadd() {
+    fn record_round_trip_vadd() -> Result {
         let rec = AofRecord::VAdd {
             key: "embeddings".into(),
             element: "doc1".into(),
@@ -1646,14 +1668,15 @@ mod tests {
             connectivity: 16,
             expansion_add: 64,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[cfg(feature = "vector")]
     #[test]
-    fn record_round_trip_vadd_high_dim() {
+    fn record_round_trip_vadd_high_dim() -> Result {
         let rec = AofRecord::VAdd {
             key: "vecs".into(),
             element: "e".into(),
@@ -1663,21 +1686,23 @@ mod tests {
             connectivity: 32,
             expansion_add: 128,
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[cfg(feature = "vector")]
     #[test]
-    fn record_round_trip_vrem() {
+    fn record_round_trip_vrem() -> Result {
         let rec = AofRecord::VRem {
             key: "embeddings".into(),
             element: "doc1".into(),
         };
-        let bytes = rec.to_bytes().unwrap();
-        let decoded = AofRecord::from_bytes(&bytes).unwrap();
+        let bytes = rec.to_bytes()?;
+        let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
     }
 
     #[cfg(feature = "encryption")]
@@ -1685,12 +1710,14 @@ mod tests {
         use super::*;
         use crate::encryption::EncryptionKey;
 
+        type Result = std::result::Result<(), Box<dyn std::error::Error>>;
+
         fn test_key() -> EncryptionKey {
             EncryptionKey::from_bytes([0x42; 32])
         }
 
         #[test]
-        fn encrypted_writer_reader_round_trip() {
+        fn encrypted_writer_reader_round_trip() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("enc.aof");
             let key = test_key();
@@ -1713,128 +1740,123 @@ mod tests {
             ];
 
             {
-                let mut writer = AofWriter::open_encrypted(&path, key.clone()).unwrap();
+                let mut writer = AofWriter::open_encrypted(&path, key.clone())?;
                 for rec in &records {
-                    writer.write_record(rec).unwrap();
+                    writer.write_record(rec)?;
                 }
-                writer.sync().unwrap();
+                writer.sync()?;
             }
 
-            let mut reader = AofReader::open_encrypted(&path, key).unwrap();
+            let mut reader = AofReader::open_encrypted(&path, key)?;
             let mut got = Vec::new();
-            while let Some(rec) = reader.read_record().unwrap() {
+            while let Some(rec) = reader.read_record()? {
                 got.push(rec);
             }
             assert_eq!(records, got);
+            Ok(())
         }
 
         #[test]
-        fn encrypted_aof_wrong_key_fails() {
+        fn encrypted_aof_wrong_key_fails() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("enc_bad.aof");
             let key = test_key();
             let wrong_key = EncryptionKey::from_bytes([0xFF; 32]);
 
             {
-                let mut writer = AofWriter::open_encrypted(&path, key).unwrap();
-                writer
-                    .write_record(&AofRecord::Set {
-                        key: "k".into(),
-                        value: Bytes::from("v"),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.sync().unwrap();
+                let mut writer = AofWriter::open_encrypted(&path, key)?;
+                writer.write_record(&AofRecord::Set {
+                    key: "k".into(),
+                    value: Bytes::from("v"),
+                    expire_ms: -1,
+                })?;
+                writer.sync()?;
             }
 
-            let mut reader = AofReader::open_encrypted(&path, wrong_key).unwrap();
+            let mut reader = AofReader::open_encrypted(&path, wrong_key)?;
             let err = reader.read_record().unwrap_err();
             assert!(matches!(err, FormatError::DecryptionFailed));
+            Ok(())
         }
 
         #[test]
-        fn v2_file_readable_with_encryption_key() {
+        fn v2_file_readable_with_encryption_key() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("v2.aof");
             let key = test_key();
 
             // write a plaintext v2 file
             {
-                let mut writer = AofWriter::open(&path).unwrap();
-                writer
-                    .write_record(&AofRecord::Set {
-                        key: "k".into(),
-                        value: Bytes::from("v"),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.sync().unwrap();
+                let mut writer = AofWriter::open(&path)?;
+                writer.write_record(&AofRecord::Set {
+                    key: "k".into(),
+                    value: Bytes::from("v"),
+                    expire_ms: -1,
+                })?;
+                writer.sync()?;
             }
 
             // read with encryption key — should work (v2 is plaintext)
-            let mut reader = AofReader::open_encrypted(&path, key).unwrap();
-            let rec = reader.read_record().unwrap().unwrap();
+            let mut reader = AofReader::open_encrypted(&path, key)?;
+            let rec = reader.read_record()?.unwrap();
             assert!(matches!(rec, AofRecord::Set { .. }));
+            Ok(())
         }
 
         #[test]
-        fn v3_file_without_key_returns_error() {
+        fn v3_file_without_key_returns_error() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("v3_nokey.aof");
             let key = test_key();
 
             // write an encrypted v3 file
             {
-                let mut writer = AofWriter::open_encrypted(&path, key).unwrap();
-                writer
-                    .write_record(&AofRecord::Set {
-                        key: "k".into(),
-                        value: Bytes::from("v"),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.sync().unwrap();
+                let mut writer = AofWriter::open_encrypted(&path, key)?;
+                writer.write_record(&AofRecord::Set {
+                    key: "k".into(),
+                    value: Bytes::from("v"),
+                    expire_ms: -1,
+                })?;
+                writer.sync()?;
             }
 
             // try to open without a key
             let err = AofReader::open(&path).unwrap_err();
             assert!(matches!(err, FormatError::EncryptionRequired));
+            Ok(())
         }
 
         #[test]
-        fn encrypted_truncate_preserves_encryption() {
+        fn encrypted_truncate_preserves_encryption() -> Result {
             let dir = temp_dir();
             let path = dir.path().join("enc_trunc.aof");
             let key = test_key();
 
             {
-                let mut writer = AofWriter::open_encrypted(&path, key.clone()).unwrap();
-                writer
-                    .write_record(&AofRecord::Set {
-                        key: "old".into(),
-                        value: Bytes::from("data"),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.truncate().unwrap();
+                let mut writer = AofWriter::open_encrypted(&path, key.clone())?;
+                writer.write_record(&AofRecord::Set {
+                    key: "old".into(),
+                    value: Bytes::from("data"),
+                    expire_ms: -1,
+                })?;
+                writer.truncate()?;
 
-                writer
-                    .write_record(&AofRecord::Set {
-                        key: "new".into(),
-                        value: Bytes::from("fresh"),
-                        expire_ms: -1,
-                    })
-                    .unwrap();
-                writer.sync().unwrap();
+                writer.write_record(&AofRecord::Set {
+                    key: "new".into(),
+                    value: Bytes::from("fresh"),
+                    expire_ms: -1,
+                })?;
+                writer.sync()?;
             }
 
-            let mut reader = AofReader::open_encrypted(&path, key).unwrap();
-            let rec = reader.read_record().unwrap().unwrap();
+            let mut reader = AofReader::open_encrypted(&path, key)?;
+            let rec = reader.read_record()?.unwrap();
             match rec {
                 AofRecord::Set { key, .. } => assert_eq!(key, "new"),
                 other => panic!("expected Set, got {other:?}"),
             }
-            assert!(reader.read_record().unwrap().is_none());
+            assert!(reader.read_record()?.is_none());
+            Ok(())
         }
     }
 }
