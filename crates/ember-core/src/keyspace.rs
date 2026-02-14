@@ -2591,12 +2591,12 @@ mod tests {
 
     #[test]
     fn safety_margin_rejects_near_raw_limit() {
-        // one entry = 1 (key) + 3 (val) + 96 (overhead) = 100 bytes.
-        // configure max_memory = 112. effective limit = 112 * 90 / 100 = 100.
+        // one entry = 1 (key) + 3 (val) + 128 (overhead) = 132 bytes.
+        // configure max_memory = 147. effective limit = 147 * 90 / 100 = 132.
         // the entry fills exactly the effective limit, so a second entry should
-        // be rejected even though the raw limit has 12 bytes of headroom.
+        // be rejected even though the raw limit has 15 bytes of headroom.
         let config = ShardConfig {
-            max_memory: Some(112),
+            max_memory: Some(147),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -3455,8 +3455,12 @@ mod tests {
 
     #[test]
     fn lpush_evicts_under_lru_policy() {
+        // "a" entry = 1 + 3 + 128 = 132 bytes.
+        // list entry = 4 + 24 + (4 + 32) + 128 = 192 bytes.
+        // effective limit = 250 * 90 / 100 = 225. fits one entry but not both,
+        // so lpush should evict "a" to make room for the list.
         let config = ShardConfig {
-            max_memory: Some(200),
+            max_memory: Some(250),
             eviction_policy: EvictionPolicy::AllKeysLru,
             ..ShardConfig::default()
         };
