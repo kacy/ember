@@ -880,10 +880,11 @@ impl Keyspace {
                 "KEYS on large keyspace, consider SCAN instead"
             );
         }
+        let compiled = GlobPattern::new(pattern);
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
-            .filter(|(key, _)| glob_match(pattern, key))
+            .filter(|(key, _)| compiled.matches(key))
             .map(|(key, _)| key.clone())
             .collect()
     }
@@ -986,6 +987,8 @@ impl Keyspace {
         let mut position = 0u64;
         let target_count = if count == 0 { 10 } else { count };
 
+        let compiled = pattern.map(GlobPattern::new);
+
         for (key, entry) in self.entries.iter() {
             // skip expired entries
             if entry.is_expired() {
@@ -999,8 +1002,8 @@ impl Keyspace {
             }
 
             // pattern matching
-            if let Some(pat) = pattern {
-                if !glob_match(pat, key) {
+            if let Some(ref pat) = compiled {
+                if !pat.matches(key) {
                     position += 1;
                     continue;
                 }
@@ -2216,8 +2219,36 @@ pub(crate) fn format_float(val: f64) -> String {
 ///
 /// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
 /// worst-case performance, where n is pattern length and m is text length.
+///
+/// Prefer [`GlobPattern::new`] + [`GlobPattern::matches`] when matching
+/// the same pattern against many strings (KEYS, SCAN) to avoid
+/// re-collecting the pattern chars on every call.
 pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     let pat: Vec<char> = pattern.chars().collect();
+    glob_match_compiled(&pat, text)
+}
+
+/// Pre-compiled glob pattern that avoids re-allocating pattern chars
+/// on every match call. Use for KEYS/SCAN where the same pattern is
+/// tested against every key in the keyspace.
+pub(crate) struct GlobPattern {
+    chars: Vec<char>,
+}
+
+impl GlobPattern {
+    pub(crate) fn new(pattern: &str) -> Self {
+        Self {
+            chars: pattern.chars().collect(),
+        }
+    }
+
+    pub(crate) fn matches(&self, text: &str) -> bool {
+        glob_match_compiled(&self.chars, text)
+    }
+}
+
+/// Core glob matching against a pre-compiled pattern char slice.
+fn glob_match_compiled(pat: &[char], text: &str) -> bool {
     let txt: Vec<char> = text.chars().collect();
 
     let mut pi = 0; // pattern index
