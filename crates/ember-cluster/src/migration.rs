@@ -38,15 +38,21 @@ use crate::NodeId;
 pub struct MigrationId(pub u64);
 
 impl MigrationId {
-    /// Generate a new migration ID from timestamp and slot.
+    /// Generate a new migration ID from timestamp, slot, and random bits.
+    ///
+    /// The ID combines nanosecond timestamp with the slot number and 16 bits
+    /// of randomness. The random component prevents collisions when the
+    /// system clock is unavailable (`unwrap_or_default` returns zero) or
+    /// when two migrations for the same slot start within the same nanosecond.
     pub fn new(slot: u16) -> Self {
+        use rand::Rng;
         use std::time::{SystemTime, UNIX_EPOCH};
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        // Combine timestamp with slot for uniqueness
-        Self(ts ^ (slot as u64))
+        let noise: u16 = rand::rng().random();
+        Self(ts ^ (slot as u64) ^ ((noise as u64) << 48))
     }
 }
 
