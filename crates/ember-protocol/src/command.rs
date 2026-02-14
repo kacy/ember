@@ -1189,9 +1189,9 @@ fn parse_f64(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
     let v = s.parse::<f64>().map_err(|_| {
         ProtocolError::InvalidCommandFrame(format!("value is not a valid float for '{cmd}'"))
     })?;
-    if v.is_nan() {
+    if v.is_nan() || v.is_infinite() {
         return Err(ProtocolError::InvalidCommandFrame(format!(
-            "NaN is not a valid score for '{cmd}'"
+            "value is not a valid finite float for '{cmd}'"
         )));
     }
     Ok(v)
@@ -1643,6 +1643,11 @@ fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
         let slot: u16 = slot_str
             .parse()
             .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+        if slot >= 16384 {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "invalid slot {slot}: must be 0-16383"
+            )));
+        }
         slots.push(slot);
     }
     Ok(slots)
@@ -1657,6 +1662,11 @@ fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
     let slot: u16 = slot_str
         .parse()
         .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+    if slot >= 16384 {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "invalid slot {slot}: must be 0-16383"
+        )));
+    }
 
     if args.len() < 2 {
         return Err(ProtocolError::WrongArity("CLUSTER SETSLOT".into()));
@@ -1825,10 +1835,15 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
     let element = extract_string(&args[1])?;
 
-    // parse vector values until we hit a non-numeric argument or end
+    // parse vector values until we hit a non-numeric argument, end, or dim limit
     let mut idx = 2;
     let mut vector = Vec::new();
     while idx < args.len() {
+        if vector.len() >= MAX_VECTOR_DIMS {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "VADD: vector exceeds {MAX_VECTOR_DIMS} dimensions"
+            )));
+        }
         let s = extract_string(&args[idx])?;
         if let Ok(v) = s.parse::<f32>() {
             vector.push(v);
@@ -1842,13 +1857,6 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::InvalidCommandFrame(
             "VADD: at least one vector dimension required".into(),
         ));
-    }
-
-    if vector.len() > MAX_VECTOR_DIMS {
-        return Err(ProtocolError::InvalidCommandFrame(format!(
-            "VADD: vector has {} dimensions, max is {MAX_VECTOR_DIMS}",
-            vector.len()
-        )));
     }
 
     // parse optional flags
@@ -1960,10 +1968,15 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
 
     let key = extract_string(&args[0])?;
 
-    // parse query vector until we hit a non-numeric argument
+    // parse query vector until we hit a non-numeric argument, end, or dim limit
     let mut idx = 1;
     let mut query = Vec::new();
     while idx < args.len() {
+        if query.len() >= MAX_VECTOR_DIMS {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "VSIM: query exceeds {MAX_VECTOR_DIMS} dimensions"
+            )));
+        }
         let s = extract_string(&args[idx])?;
         if let Ok(v) = s.parse::<f32>() {
             query.push(v);
@@ -1977,13 +1990,6 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(ProtocolError::InvalidCommandFrame(
             "VSIM: at least one query dimension required".into(),
         ));
-    }
-
-    if query.len() > MAX_VECTOR_DIMS {
-        return Err(ProtocolError::InvalidCommandFrame(format!(
-            "VSIM: query has {} dimensions, max is {MAX_VECTOR_DIMS}",
-            query.len()
-        )));
     }
 
     // COUNT k is required
