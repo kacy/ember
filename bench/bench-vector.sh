@@ -134,7 +134,7 @@ wait_for_ember() {
 wait_for_chroma() {
     local port=$1
     local retries=60
-    while ! curl -sf "http://127.0.0.1:$port/api/v1/heartbeat" > /dev/null 2>&1; do
+    while ! curl -sf "http://127.0.0.1:$port/api/v2/heartbeat" > /dev/null 2>&1; do
         retries=$((retries - 1))
         if [[ $retries -le 0 ]]; then
             echo "error: chromadb did not start on port $port" >&2
