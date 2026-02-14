@@ -144,6 +144,7 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
                     format::MAX_PERSISTED_VECTOR_COUNT
                 )));
             }
+            format::validate_vector_total(dim, count)?;
             let mut elements = Vec::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 let name = read_snap_string(r, "vector element name")?;
@@ -683,6 +684,7 @@ impl SnapshotReader {
                             format::MAX_PERSISTED_VECTOR_COUNT
                         )));
                     }
+                    format::validate_vector_total(dim, count)?;
                     format::write_u32(&mut buf, count)?;
                     let mut elements = Vec::with_capacity(format::capped_capacity(count));
                     for _ in 0..count {
