@@ -1110,12 +1110,11 @@ async fn dispatch_command(
             nx,
             xx,
         } => {
-            if engine.schema_registry().is_none() {
+            let Some(registry) = engine.schema_registry() else {
                 return PendingResponse::Immediate(Frame::Error(
                     "ERR protobuf support is not enabled".into(),
                 ));
-            }
-            let registry = engine.schema_registry().unwrap();
+            };
             {
                 let reg = match registry.read() {
                     Ok(r) => r,
