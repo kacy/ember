@@ -508,6 +508,10 @@ impl Keyspace {
     /// Randomly samples `EVICTION_SAMPLE_SIZE` keys and removes the one
     /// with the oldest `last_access` time. Returns `true` if a key was
     /// evicted, `false` if the keyspace is empty.
+    ///
+    /// Uses reservoir sampling with k=1 to avoid allocating a Vec on
+    /// every eviction attempt. The victim key index is remembered
+    /// rather than cloned, eliminating a heap allocation on the hot path.
     fn try_evict(&mut self) -> bool {
         if self.entries.is_empty() {
             return false;
@@ -515,18 +519,38 @@ impl Keyspace {
 
         let mut rng = rand::rng();
 
-        // randomly sample keys and find the least recently accessed one
-        let victim = self
-            .entries
-            .iter()
-            .choose_multiple(&mut rng, EVICTION_SAMPLE_SIZE)
-            .into_iter()
-            .min_by_key(|(_, entry)| entry.last_access_ms)
-            .map(|(k, _)| k.clone());
+        // reservoir sample k=1 from the iterator, tracking the oldest
+        // entry by last_access_ms. this replaces choose_multiple() which
+        // allocates a Vec internally.
+        let mut best_key: Option<&str> = None;
+        let mut best_access = u64::MAX;
+        let mut seen = 0usize;
 
-        if let Some(key) = victim {
-            if let Some(entry) = self.entries.remove(&key) {
-                self.memory.remove(&key, &entry.value);
+        for (key, entry) in &self.entries {
+            // reservoir sampling: include this item with probability
+            // EVICTION_SAMPLE_SIZE / (seen + 1), capped once we have
+            // enough candidates
+            seen += 1;
+            if seen <= EVICTION_SAMPLE_SIZE {
+                if entry.last_access_ms < best_access {
+                    best_access = entry.last_access_ms;
+                    best_key = Some(key.as_str());
+                }
+            } else {
+                use rand::Rng;
+                let j = rng.random_range(0..seen);
+                if j < EVICTION_SAMPLE_SIZE && entry.last_access_ms < best_access {
+                    best_access = entry.last_access_ms;
+                    best_key = Some(key.as_str());
+                }
+            }
+        }
+
+        if let Some(victim) = best_key {
+            // we need an owned key to remove from the map
+            let victim = victim.to_owned();
+            if let Some(entry) = self.entries.remove(&victim) {
+                self.memory.remove(&victim, &entry.value);
                 self.decrement_expiry_if_set(&entry);
                 self.evicted_total += 1;
                 self.defer_drop(entry.value);
@@ -792,7 +816,7 @@ impl Keyspace {
         // Redis strips trailing zeros: "10.5" not "10.50000..."
         // but keeps at least one decimal if the result is a whole number
         let formatted = format_float(new_val);
-        let new_bytes = Bytes::from(formatted.clone());
+        let new_bytes = Bytes::copy_from_slice(formatted.as_bytes());
 
         match self.set(key.to_owned(), new_bytes, existing_expire) {
             SetResult::Ok => Ok(formatted),
@@ -856,10 +880,11 @@ impl Keyspace {
                 "KEYS on large keyspace, consider SCAN instead"
             );
         }
+        let compiled = GlobPattern::new(pattern);
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
-            .filter(|(key, _)| glob_match(pattern, key))
+            .filter(|(key, _)| compiled.matches(key))
             .map(|(key, _)| key.clone())
             .collect()
     }
@@ -962,6 +987,8 @@ impl Keyspace {
         let mut position = 0u64;
         let target_count = if count == 0 { 10 } else { count };
 
+        let compiled = pattern.map(GlobPattern::new);
+
         for (key, entry) in self.entries.iter() {
             // skip expired entries
             if entry.is_expired() {
@@ -975,8 +1002,8 @@ impl Keyspace {
             }
 
             // pattern matching
-            if let Some(pat) = pattern {
-                if !glob_match(pat, key) {
+            if let Some(ref pat) = compiled {
+                if !pat.matches(key) {
                     position += 1;
                     continue;
                 }
@@ -2192,8 +2219,36 @@ pub(crate) fn format_float(val: f64) -> String {
 ///
 /// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
 /// worst-case performance, where n is pattern length and m is text length.
+///
+/// Prefer [`GlobPattern::new`] + [`GlobPattern::matches`] when matching
+/// the same pattern against many strings (KEYS, SCAN) to avoid
+/// re-collecting the pattern chars on every call.
 pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
     let pat: Vec<char> = pattern.chars().collect();
+    glob_match_compiled(&pat, text)
+}
+
+/// Pre-compiled glob pattern that avoids re-allocating pattern chars
+/// on every match call. Use for KEYS/SCAN where the same pattern is
+/// tested against every key in the keyspace.
+pub(crate) struct GlobPattern {
+    chars: Vec<char>,
+}
+
+impl GlobPattern {
+    pub(crate) fn new(pattern: &str) -> Self {
+        Self {
+            chars: pattern.chars().collect(),
+        }
+    }
+
+    pub(crate) fn matches(&self, text: &str) -> bool {
+        glob_match_compiled(&self.chars, text)
+    }
+}
+
+/// Core glob matching against a pre-compiled pattern char slice.
+fn glob_match_compiled(pat: &[char], text: &str) -> bool {
     let txt: Vec<char> = text.chars().collect();
 
     let mut pi = 0; // pattern index
@@ -2536,12 +2591,12 @@ mod tests {
 
     #[test]
     fn safety_margin_rejects_near_raw_limit() {
-        // one entry = 1 (key) + 3 (val) + 96 (overhead) = 100 bytes.
-        // configure max_memory = 112. effective limit = 112 * 90 / 100 = 100.
+        // one entry = 1 (key) + 3 (val) + 128 (overhead) = 132 bytes.
+        // configure max_memory = 147. effective limit = 147 * 90 / 100 = 132.
         // the entry fills exactly the effective limit, so a second entry should
-        // be rejected even though the raw limit has 12 bytes of headroom.
+        // be rejected even though the raw limit has 15 bytes of headroom.
         let config = ShardConfig {
-            max_memory: Some(112),
+            max_memory: Some(147),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -3400,8 +3455,12 @@ mod tests {
 
     #[test]
     fn lpush_evicts_under_lru_policy() {
+        // "a" entry = 1 + 3 + 128 = 132 bytes.
+        // list entry = 4 + 24 + (4 + 32) + 128 = 192 bytes.
+        // effective limit = 250 * 90 / 100 = 225. fits one entry but not both,
+        // so lpush should evict "a" to make room for the list.
         let config = ShardConfig {
-            max_memory: Some(200),
+            max_memory: Some(250),
             eviction_policy: EvictionPolicy::AllKeysLru,
             ..ShardConfig::default()
         };

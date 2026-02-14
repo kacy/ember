@@ -166,6 +166,7 @@ where
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
+    let mut frames = Vec::new();
 
     loop {
         // guard against unbounded buffer growth from incomplete frames
@@ -190,7 +191,7 @@ where
         // them concurrently to shards. this allows pipelined commands to
         // be processed in parallel rather than serially.
         out.clear();
-        let mut frames = Vec::new();
+        frames.clear();
         loop {
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
@@ -210,7 +211,7 @@ where
         // when not yet authenticated, process frames serially so that an
         // AUTH command in a pipeline takes effect for subsequent frames
         if !authenticated {
-            for frame in frames {
+            for frame in frames.drain(..) {
                 if is_auth_frame(&frame) {
                     let (response, success) = try_auth(frame, ctx);
                     response.serialize(&mut out);
@@ -245,7 +246,7 @@ where
         if enter_sub {
             // process any non-subscribe commands that came before
             let mut sub_frames = Vec::new();
-            for frame in frames {
+            for frame in frames.drain(..) {
                 if is_subscribe_frame(&frame) {
                     sub_frames.push(frame);
                 } else {
@@ -273,7 +274,7 @@ where
             // each dispatch is just an mpsc send (fast, completes
             // immediately when the channel has capacity).
             let mut pending = Vec::with_capacity(frames.len());
-            for frame in frames {
+            for frame in frames.drain(..) {
                 let p = dispatch_command(frame, &engine, ctx, slow_log, pubsub).await;
                 pending.push(p);
             }
