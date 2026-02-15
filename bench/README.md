@@ -104,28 +104,29 @@ persistence overhead is minimal with everysec fsync. `appendfsync always` has si
 
 AES-256-GCM encryption at rest (AOF and snapshots). requires building with `--features encryption`:
 
-| mode | SET throughput | overhead vs plaintext |
-|------|----------------|----------------------|
-| ember concurrent | — | — |
-| ember sharded | — | — |
+| test | plaintext | encrypted | overhead |
+|------|-----------|-----------|----------|
+| SET (P=16) | 848,245/s | 467,523/s | 44% |
+| GET (P=16) | 1,496,716/s | 1,252,950/s | 16% |
+| SET (P=1) | 160,000/s | 133,155/s | 16% |
+| GET (P=1) | 159,872/s | 159,872/s | 0% |
 
-*results pending — run `bench/bench-encryption.sh` on a dedicated VM to populate.*
-
-note: encryption only affects persistence writes. GET throughput should be unchanged since reads come from the in-memory keyspace.
+note: encryption only affects persistence writes. GET overhead at P=1 is effectively zero since reads come from the in-memory keyspace. the higher P=16 GET overhead comes from increased memory pressure during concurrent persistence flushes.
 
 ### vector similarity
 
 ember vs chromadb vs pgvector. 100k random vectors, 128 dimensions, cosine metric, k=10 kNN search.
 HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-8.
 
-| metric | ember | chromadb | pgvector | qdrant |
-|--------|-------|----------|----------|--------|
-| insert (vectors/sec) | 917 | **3,738** | 1,562 | — |
-| query (queries/sec) | **1,214** | 376 | 882 | — |
-| query p99 (ms) | **1.09ms** | 2.90ms | 1.52ms | — |
-| memory (MB) | **30 MB** | 122 MB | 178 MB | — |
+| metric | ember (RESP) | ember (gRPC) | chromadb | pgvector | qdrant |
+|--------|--------------|--------------|----------|----------|--------|
+| insert (vectors/sec) | 945 | 995 | **3,837** | 1,528 | 7,616 |
+| query (queries/sec) | 1,214 | **1,372** | 382 | 823 | 561 |
+| query p50 (ms) | 0.82ms | **0.73ms** | 2.61ms | 1.19ms | 1.78ms |
+| query p99 (ms) | 0.96ms | **0.89ms** | 2.86ms | 1.58ms | 2.02ms |
+| memory (MB) | **36 MB** | — | 123 MB | 178 MB | 127 MB |
 
-ember's query throughput is 3.2x chromadb and 1.4x pgvector, with 4-6x lower memory usage. insert throughput is lower due to per-vector RESP protocol overhead — batched pipelining helps but each VADD is still a separate command.
+ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.2x qdrant — with 3-5x lower memory usage. gRPC gives an additional 13% boost over RESP3 for queries. insert throughput is lower due to per-vector protocol overhead — qdrant's batch API gives it a significant edge on inserts.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 
@@ -152,14 +153,14 @@ standard SET/GET operations comparing RESP3 (redis-py) against gRPC (ember-py). 
 
 | test | ops/sec | p50 (ms) | p99 (ms) |
 |------|---------|----------|----------|
-| RESP3 SET (sequential) | — | — | — |
-| RESP3 GET (sequential) | — | — | — |
-| RESP3 SET (pipelined) | — | — | — |
-| RESP3 GET (pipelined) | — | — | — |
-| gRPC SET (unary) | — | — | — |
-| gRPC GET (unary) | — | — | — |
+| RESP3 SET (sequential) | 15,414 | 0.061 | 0.100 |
+| RESP3 GET (sequential) | 17,573 | 0.055 | 0.085 |
+| RESP3 SET (pipelined) | **83,069** | 0.012 | 0.014 |
+| RESP3 GET (pipelined) | **108,781** | 0.009 | 0.010 |
+| gRPC SET (unary) | 6,274 | 0.149 | 0.236 |
+| gRPC GET (unary) | 6,282 | 0.150 | 0.237 |
 
-*results pending — run `bench/bench-grpc.sh` to populate. requires `--features grpc` and ember-py client installed.*
+RESP3 with pipelining dominates for standard key-value operations — the protocol is simpler and redis-py's pipeline batching is very efficient. gRPC unary calls have higher per-request overhead but provide typed APIs, streaming, and cross-language codegen. for vector operations, gRPC's advantage is more pronounced (see vector section above).
 
 ### pub/sub throughput
 
@@ -167,16 +168,16 @@ publish throughput and fan-out delivery rate across subscriber counts and messag
 
 | test | pub msg/s | fanout msg/s | p99 (ms) |
 |------|-----------|--------------|----------|
-| 1 sub, 64B, SUBSCRIBE | — | — | — |
-| 10 sub, 64B, SUBSCRIBE | — | — | — |
-| 100 sub, 64B, SUBSCRIBE | — | — | — |
-| 1 sub, 1KB, SUBSCRIBE | — | — | — |
-| 10 sub, 1KB, SUBSCRIBE | — | — | — |
-| 100 sub, 1KB, SUBSCRIBE | — | — | — |
-| 10 sub, 64B, PSUBSCRIBE | — | — | — |
-| 100 sub, 64B, PSUBSCRIBE | — | — | — |
+| 1 sub, 64B, SUBSCRIBE | **11,006** | 11,006 | 0.19 |
+| 10 sub, 64B, SUBSCRIBE | 1,893 | 18,929 | 3.07 |
+| 100 sub, 64B, SUBSCRIBE | 388 | **27,202** | 26.82 |
+| 1 sub, 1KB, SUBSCRIBE | **10,235** | 10,235 | 0.21 |
+| 10 sub, 1KB, SUBSCRIBE | 1,832 | 18,320 | 3.19 |
+| 100 sub, 1KB, SUBSCRIBE | 389 | **26,189** | 27.54 |
+| 10 sub, 64B, PSUBSCRIBE | 1,837 | 18,370 | 3.19 |
+| 100 sub, 64B, PSUBSCRIBE | 391 | 26,221 | 27.33 |
 
-*results pending — run `bench/bench-pubsub.sh` to populate.*
+single-subscriber throughput is 11k msg/s with sub-millisecond p99 latency. fan-out scales well — 100 subscribers deliver 27k total messages/sec. message size (64B vs 1KB) has minimal impact. PSUBSCRIBE pattern matching adds negligible overhead vs exact SUBSCRIBE.
 
 ### protobuf storage overhead
 

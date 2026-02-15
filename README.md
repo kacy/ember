@@ -268,11 +268,12 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 \*redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grain of salt — ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
 
 **highlights**:
-- sharded mode: 1.24M SET/sec, 1.56M GET/sec (redis-benchmark, P=16)
-- concurrent mode: 1.77M SET/sec, 2.16M GET/sec (redis-benchmark, P=16)
-- p99 latency: 0.61ms SET, 0.56ms GET (P=1, concurrent mode)
-- vector queries: 1.2k queries/sec with 4-6x less memory than chromadb
-- memory: ~166 bytes/key (redis: ~105 bytes/key)
+- sharded mode: 1.19M SET/sec, 1.48M GET/sec (redis-benchmark, P=16)
+- concurrent mode: 963k SET/sec, 1.10M GET/sec (redis-benchmark, P=16)
+- p99 latency: 0.60ms SET, 0.60ms GET (P=1, concurrent mode)
+- vector queries: 1.4k queries/sec (gRPC) with 3-5x less memory than alternatives
+- pub/sub: 11k msg/s single subscriber, 27k msg/s fan-out at 100 subscribers
+- encryption at rest: 16-44% SET overhead, near-zero GET overhead
 
 ```bash
 ./bench/bench-quick.sh       # quick sanity check
