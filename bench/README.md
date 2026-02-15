@@ -52,7 +52,7 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04, 2.4M to
 
 dragonfly in particular offers features ember simply doesn't have:
 
-- full Redis API compatibility (200+ commands vs ember's ~101)
+- full Redis API compatibility (200+ commands vs ember's ~106)
 - sophisticated memory management (dashtable for ~25% of Redis memory usage)
 - transactional semantics (MULTI/EXEC, Lua scripting)
 - fork-free snapshotting
@@ -146,6 +146,66 @@ ember's query throughput is 3.2x chromadb and 1.4x pgvector, with 4-6x lower mem
 
 sharded mode scales super-linearly with cores for pipelined workloads thanks to the dispatch-collect pipeline pattern. concurrent mode uses a global DashMap and doesn't scale with core count but has lower per-request overhead.
 
+### gRPC vs RESP3
+
+standard SET/GET operations comparing RESP3 (redis-py) against gRPC (ember-py). 100k requests, 64B values.
+
+| test | ops/sec | p50 (ms) | p99 (ms) |
+|------|---------|----------|----------|
+| RESP3 SET (sequential) | — | — | — |
+| RESP3 GET (sequential) | — | — | — |
+| RESP3 SET (pipelined) | — | — | — |
+| RESP3 GET (pipelined) | — | — | — |
+| gRPC SET (unary) | — | — | — |
+| gRPC GET (unary) | — | — | — |
+
+*results pending — run `bench/bench-grpc.sh` to populate. requires `--features grpc` and ember-py client installed.*
+
+### pub/sub throughput
+
+publish throughput and fan-out delivery rate across subscriber counts and message sizes. 10k messages per test.
+
+| test | pub msg/s | fanout msg/s | p99 (ms) |
+|------|-----------|--------------|----------|
+| 1 sub, 64B, SUBSCRIBE | — | — | — |
+| 10 sub, 64B, SUBSCRIBE | — | — | — |
+| 100 sub, 64B, SUBSCRIBE | — | — | — |
+| 1 sub, 1KB, SUBSCRIBE | — | — | — |
+| 10 sub, 1KB, SUBSCRIBE | — | — | — |
+| 100 sub, 1KB, SUBSCRIBE | — | — | — |
+| 10 sub, 64B, PSUBSCRIBE | — | — | — |
+| 100 sub, 64B, PSUBSCRIBE | — | — | — |
+
+*results pending — run `bench/bench-pubsub.sh` to populate.*
+
+### protobuf storage overhead
+
+PROTO.* commands vs raw SET/GET with identical data. measures the cost of server-side schema validation and field-level access. 100k requests, bench.User message (~30 bytes).
+
+| test | ops/sec | p50 (ms) | p99 (ms) |
+|------|---------|----------|----------|
+| raw SET | — | — | — |
+| PROTO.SET | — | — | — |
+| raw GET | — | — | — |
+| PROTO.GET | — | — | — |
+| PROTO.GETFIELD | — | — | — |
+| PROTO.SETFIELD | — | — | — |
+
+*results pending — run `bench/bench-proto.sh` to populate. requires `--features protobuf` and `protoc` on PATH.*
+
+### memory by data type
+
+per-key memory overhead across data types. string: 1M keys, 64B values. hash/zset: 100k keys. vector: 100k 128-dim vectors.
+
+| data type | ember concurrent | ember sharded | redis |
+|-----------|------------------|---------------|-------|
+| string (64B) | — | — | — |
+| hash (5 fields) | — | — | — |
+| sorted set | — | — | — |
+| vector (128-dim) | — | — | — |
+
+*results pending — run `bench/bench-memory.sh --vector` to populate.*
+
 ## execution modes
 
 ember offers two modes with different tradeoffs:
@@ -198,8 +258,25 @@ cargo build --release -p ember-server --features jemalloc,vector
 # vector benchmark (ember only, no docker required)
 ./bench/bench-vector.sh --ember-only
 
+# vector benchmark with qdrant
+./bench/bench-vector.sh --qdrant
+
 # SIFT1M recall accuracy
 ./bench/bench-vector.sh --sift
+
+# gRPC vs RESP3 comparison (requires --features grpc + ember-py)
+cargo build --release -p ember-server --features jemalloc,grpc
+./bench/bench-grpc.sh
+
+# pub/sub throughput
+./bench/bench-pubsub.sh
+
+# protobuf storage overhead (requires --features protobuf + protoc)
+cargo build --release -p ember-server --features jemalloc,protobuf
+./bench/bench-proto.sh
+
+# run everything (builds with all features automatically)
+./bench/bench-all.sh
 ```
 
 ### cloud VM benchmarking
@@ -217,12 +294,22 @@ gcloud compute instances create ember-bench \
 # bootstrap (installs rust, redis, memtier_benchmark, dragonfly)
 gcloud compute ssh ember-bench --zone=us-central1-a -- 'bash -s' < ./bench/setup-vm.sh
 
-# run benchmarks
+# setup for vector benchmarks (docker, python deps, qdrant)
+gcloud compute ssh ember-bench --zone=us-central1-a -- 'bash -s' < ./bench/setup-vm-vector.sh
+
+# run all benchmarks
 gcloud compute ssh ember-bench --zone=us-central1-a
 cd ember
+./bench/bench-all.sh          # runs everything sequentially
+
+# or run individual suites
 ./bench/compare-redis.sh      # redis-benchmark suite
 ./bench/bench-memtier.sh      # memtier_benchmark suite
 ./bench/bench-memory.sh       # memory comparison
+./bench/bench-vector.sh --qdrant  # vector comparison
+./bench/bench-grpc.sh         # gRPC vs RESP3
+./bench/bench-pubsub.sh       # pub/sub
+./bench/bench-proto.sh        # protobuf overhead
 
 # cleanup
 gcloud compute instances delete ember-bench --zone=us-central1-a
@@ -232,13 +319,17 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 
 | script | description |
 |--------|-------------|
+| `bench-all.sh` | run all benchmarks sequentially (builds with all features) |
 | `bench.sh` | full benchmark: ember (sharded + concurrent) vs redis |
 | `bench-quick.sh` | quick sanity check (~10 seconds) |
-| `bench-memory.sh` | memory usage with 1M keys |
+| `bench-memory.sh` | memory usage across data types (string, hash, zset, vector) |
 | `compare-redis.sh` | comprehensive comparison using redis-benchmark |
 | `bench-memtier.sh` | comprehensive comparison using memtier_benchmark |
 | `bench-encryption.sh` | encryption at rest overhead (plaintext vs AES-256-GCM) |
-| `bench-vector.sh` | vector similarity: ember vs chromadb vs pgvector |
+| `bench-vector.sh` | vector similarity: ember vs chromadb vs pgvector vs qdrant |
+| `bench-grpc.sh` | gRPC vs RESP3 standard operations |
+| `bench-pubsub.sh` | pub/sub throughput and fan-out latency |
+| `bench-proto.sh` | protobuf storage overhead (PROTO.* vs raw SET/GET) |
 | `setup-vm.sh` | bootstrap dependencies on fresh ubuntu VM |
 | `setup-vm-vector.sh` | additional dependencies for vector benchmarks |
 
@@ -252,7 +343,7 @@ BENCH_REQUESTS=1000000 BENCH_THREADS=16 ./bench/compare-redis.sh
 MEMTIER_THREADS=8 MEMTIER_CLIENTS=16 MEMTIER_REQUESTS=20000 ./bench/bench-memtier.sh
 
 # customize memory test
-KEY_COUNT=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
+STRING_KEYS=5000000 VALUE_SIZE=128 ./bench/bench-memory.sh
 ```
 
 ## environment variables
