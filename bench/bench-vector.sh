@@ -9,12 +9,14 @@
 # usage:
 #   bash bench/bench-vector.sh              # full comparison (100k vectors)
 #   bash bench/bench-vector.sh --ember-only # ember only (no docker needed)
+#   bash bench/bench-vector.sh --ember-grpc # include ember gRPC benchmark
 #   bash bench/bench-vector.sh --quick      # quick run (1k vectors)
 #   bash bench/bench-vector.sh --qdrant      # include qdrant comparison
 #   bash bench/bench-vector.sh --sift       # SIFT1M recall accuracy
 #
 # environment variables:
 #   EMBER_PORT       ember port             (default: 6379)
+#   EMBER_GRPC_PORT  ember gRPC port        (default: 6380)
 #   CHROMA_PORT      chromadb port          (default: 8000)
 #   PGVECTOR_PORT    pgvector port          (default: 5432)
 #   QDRANT_PORT      qdrant port            (default: 6333)
@@ -28,6 +30,7 @@ set -euo pipefail
 # --- configuration ---
 
 EMBER_PORT="${EMBER_PORT:-6379}"
+EMBER_GRPC_PORT="${EMBER_GRPC_PORT:-6380}"
 CHROMA_PORT="${CHROMA_PORT:-8000}"
 PGVECTOR_PORT="${PGVECTOR_PORT:-5432}"
 QDRANT_PORT="${QDRANT_PORT:-6333}"
@@ -44,6 +47,7 @@ SIFT_DIR="bench/vector_data"
 
 EMBER_ONLY=false
 QDRANT=false
+EMBER_GRPC=false
 QUICK_MODE=false
 SIFT_MODE=false
 
@@ -51,6 +55,7 @@ for arg in "$@"; do
     case "$arg" in
         --ember-only) EMBER_ONLY=true ;;
         --qdrant) QDRANT=true ;;
+        --ember-grpc) EMBER_GRPC=true ;;
         --quick) QUICK_MODE=true ;;
         --sift) SIFT_MODE=true ;;
         *) echo "unknown flag: $arg"; exit 1 ;;
@@ -236,10 +241,20 @@ elif [[ "$QDRANT" == "true" ]] && ! python3 -c "import qdrant_client" 2>/dev/nul
     pip install --quiet $REQUIRED_DEPS
 fi
 
+# install ember-py for gRPC benchmarks
+if [[ "$EMBER_GRPC" == "true" ]]; then
+    ensure_venv
+    pip install --quiet ./clients/ember-py
+fi
+
 # build ember if needed
 if [[ ! -x "$EMBER_BIN" ]]; then
-    echo "building ember-server with vector support..."
-    cargo build --release -p ember-server --features jemalloc,vector
+    FEATURES="jemalloc,vector"
+    if [[ "$EMBER_GRPC" == "true" ]]; then
+        FEATURES="$FEATURES,grpc"
+    fi
+    echo "building ember-server with features: $FEATURES..."
+    cargo build --release -p ember-server --features "$FEATURES"
 fi
 
 # download SIFT dataset if needed
@@ -282,6 +297,7 @@ BENCH_ARGS=(
     --k "$K"
     --batch-size "$BATCH_SIZE"
     --ember-port "$EMBER_PORT"
+    --ember-grpc-port "$EMBER_GRPC_PORT"
     --chroma-port "$CHROMA_PORT"
     --pgvector-port "$PGVECTOR_PORT"
     --qdrant-port "$QDRANT_PORT"
@@ -298,13 +314,28 @@ fi
 
 echo "--- ember ---"
 echo ""
-echo "  starting ember on port $EMBER_PORT..."
-"$EMBER_BIN" --port "$EMBER_PORT" > /dev/null 2>&1 &
+EMBER_ARGS=(--port "$EMBER_PORT")
+if [[ "$EMBER_GRPC" == "true" ]]; then
+    EMBER_ARGS+=(--grpc-port "$EMBER_GRPC_PORT")
+    echo "  starting ember on port $EMBER_PORT (gRPC: $EMBER_GRPC_PORT)..."
+else
+    echo "  starting ember on port $EMBER_PORT..."
+fi
+"$EMBER_BIN" "${EMBER_ARGS[@]}" > /dev/null 2>&1 &
 EMBER_PID=$!
 wait_for_ember "$EMBER_PORT"
 
 EMBER_JSON="/tmp/bench_vector_ember.json"
 python3 "$BENCH_SCRIPT" --system ember "${BENCH_ARGS[@]}" --output "$EMBER_JSON"
+
+# also run gRPC benchmark if requested
+EMBER_GRPC_JSON="/tmp/bench_vector_ember_grpc.json"
+if [[ "$EMBER_GRPC" == "true" ]]; then
+    echo ""
+    echo "--- ember (gRPC) ---"
+    echo ""
+    python3 "$BENCH_SCRIPT" --system ember-grpc "${BENCH_ARGS[@]}" --output "$EMBER_GRPC_JSON"
+fi
 
 EMBER_RSS=$(get_rss_mb "$EMBER_PID")
 echo "  memory (RSS): ${EMBER_RSS} MB"
@@ -421,6 +452,21 @@ E_P50=$(extract "$EMBER_JSON" "query.p50_ms")
 E_P95=$(extract "$EMBER_JSON" "query.p95_ms")
 E_P99=$(extract "$EMBER_JSON" "query.p99_ms")
 
+# ember gRPC results
+EG_INSERT="—"
+EG_QUERY="—"
+EG_P50="—"
+EG_P95="—"
+EG_P99="—"
+
+if [[ "$EMBER_GRPC" == "true" ]] && [[ -f "$EMBER_GRPC_JSON" ]]; then
+    EG_INSERT=$(extract "$EMBER_GRPC_JSON" "insert.throughput")
+    EG_QUERY=$(extract "$EMBER_GRPC_JSON" "query.throughput")
+    EG_P50=$(extract "$EMBER_GRPC_JSON" "query.p50_ms")
+    EG_P95=$(extract "$EMBER_GRPC_JSON" "query.p95_ms")
+    EG_P99=$(extract "$EMBER_GRPC_JSON" "query.p99_ms")
+fi
+
 # chromadb results
 C_INSERT="—"
 C_QUERY="—"
@@ -517,6 +563,21 @@ else
     printf "$fmt\n" "memory (MB)" "$EMBER_RSS" "$CHROMA_RSS" "$PGVECTOR_RSS"
 fi
 
+# grpc comparison (if enabled)
+if [[ "$EMBER_GRPC" == "true" ]]; then
+    echo ""
+    echo "=== ember RESP vs gRPC ==="
+    echo ""
+    fmt="%-24s %14s %14s"
+    printf "$fmt\n" "metric" "RESP" "gRPC"
+    printf "$fmt\n" "------" "----" "----"
+    printf "$fmt\n" "insert (vectors/sec)" "$E_INSERT" "$EG_INSERT"
+    printf "$fmt\n" "query (queries/sec)" "$E_QUERY" "$EG_QUERY"
+    printf "$fmt\n" "query p50 (ms)" "$E_P50" "$EG_P50"
+    printf "$fmt\n" "query p95 (ms)" "$E_P95" "$EG_P95"
+    printf "$fmt\n" "query p99 (ms)" "$E_P99" "$EG_P99"
+fi
+
 # recall (sift mode only)
 if [[ "$SIFT_MODE" == "true" ]]; then
     echo ""
@@ -551,13 +612,13 @@ echo ""
 
 RESULT_FILE="$RESULTS_DIR/${TIMESTAMP}-vector.csv"
 {
-    echo "metric,ember,chromadb,pgvector,qdrant"
-    echo "insert_throughput,$E_INSERT,$C_INSERT,$P_INSERT,$Q_INSERT"
-    echo "query_throughput,$E_QUERY,$C_QUERY,$P_QUERY,$Q_QUERY"
-    echo "query_p50_ms,$E_P50,$C_P50,$P_P50,$Q_P50"
-    echo "query_p95_ms,$E_P95,$C_P95,$P_P95,$Q_P95"
-    echo "query_p99_ms,$E_P99,$C_P99,$P_P99,$Q_P99"
-    echo "memory_mb,$EMBER_RSS,$CHROMA_RSS,$PGVECTOR_RSS,$QDRANT_RSS"
+    echo "metric,ember,ember-grpc,chromadb,pgvector,qdrant"
+    echo "insert_throughput,$E_INSERT,$EG_INSERT,$C_INSERT,$P_INSERT,$Q_INSERT"
+    echo "query_throughput,$E_QUERY,$EG_QUERY,$C_QUERY,$P_QUERY,$Q_QUERY"
+    echo "query_p50_ms,$E_P50,$EG_P50,$C_P50,$P_P50,$Q_P50"
+    echo "query_p95_ms,$E_P95,$EG_P95,$C_P95,$P_P95,$Q_P95"
+    echo "query_p99_ms,$E_P99,$EG_P99,$C_P99,$P_P99,$Q_P99"
+    echo "memory_mb,$EMBER_RSS,—,$CHROMA_RSS,$PGVECTOR_RSS,$QDRANT_RSS"
     if [[ "$SIFT_MODE" == "true" ]]; then
         E_RECALL=$(extract "$EMBER_JSON" "recall.recall_at_k")
         C_RECALL="—"

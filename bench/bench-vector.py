@@ -100,6 +100,38 @@ class EmberClient(VectorClient):
         return "ember"
 
 
+class EmberGrpcClient(VectorClient):
+    """ember vector client using the python gRPC client.
+
+    sends vectors as packed floats — no string parsing overhead.
+    requires the ember-py package to be installed.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 6380):
+        from ember import EmberClient
+        self.client = EmberClient(f"{host}:{port}")
+        self.key = "bench_vectors"
+
+    def setup(self, dim: int, metric: str = "cosine"):
+        self.client.flushdb()
+
+    def insert_batch(self, ids: list, vectors: np.ndarray):
+        for i, vid in enumerate(ids):
+            vec = vectors[i].tolist()
+            self.client.vadd(self.key, vid, vec, metric="cosine", m=16, ef=64)
+
+    def query(self, vector: np.ndarray, k: int) -> list:
+        results = self.client.vsim(self.key, vector.tolist(), count=k)
+        return [r[0] for r in results]
+
+    def teardown(self):
+        self.client.flushdb()
+        self.client.close()
+
+    def name(self) -> str:
+        return "ember-grpc"
+
+
 class ChromaClient(VectorClient):
     """chromadb client via HTTP API."""
 
@@ -373,7 +405,7 @@ def compute_recall(client: VectorClient, queries: np.ndarray,
 
 def main():
     parser = argparse.ArgumentParser(description="vector similarity benchmark")
-    parser.add_argument("--system", required=True, choices=["ember", "chromadb", "pgvector", "qdrant"])
+    parser.add_argument("--system", required=True, choices=["ember", "ember-grpc", "chromadb", "pgvector", "qdrant"])
     parser.add_argument("--mode", default="random", choices=["random", "sift"])
     parser.add_argument("--dim", type=int, default=128)
     parser.add_argument("--count", type=int, default=100000)
@@ -381,6 +413,7 @@ def main():
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=500)
     parser.add_argument("--ember-port", type=int, default=6379)
+    parser.add_argument("--ember-grpc-port", type=int, default=6380)
     parser.add_argument("--chroma-port", type=int, default=8000)
     parser.add_argument("--pgvector-port", type=int, default=5432)
     parser.add_argument("--qdrant-port", type=int, default=6333)
@@ -391,6 +424,8 @@ def main():
     # create client
     if args.system == "ember":
         client = EmberClient(port=args.ember_port)
+    elif args.system == "ember-grpc":
+        client = EmberGrpcClient(port=args.ember_grpc_port)
     elif args.system == "chromadb":
         client = ChromaClient(port=args.chroma_port)
     elif args.system == "pgvector":
