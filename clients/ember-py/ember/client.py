@@ -342,3 +342,132 @@ class EmberClient:
             metadata=self._metadata(),
         )
         return resp.value
+
+    def echo(self, message: str) -> str:
+        """Echo a message back."""
+        resp = self._stub.Echo(
+            ember_pb2.EchoRequest(message=message),
+            metadata=self._metadata(),
+        )
+        return resp.message
+
+    def decr(self, key: str) -> int:
+        """Decrement a key by 1. Returns the new value."""
+        resp = self._stub.Decr(
+            ember_pb2.DecrRequest(key=key),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def unlink(self, *keys: str) -> int:
+        """Async delete keys (background deallocation). Returns count removed."""
+        resp = self._stub.Unlink(
+            ember_pb2.UnlinkRequest(keys=list(keys)),
+            metadata=self._metadata(),
+        )
+        return resp.deleted
+
+    def bgsave(self) -> str:
+        """Trigger a background snapshot."""
+        resp = self._stub.BgSave(
+            ember_pb2.BgSaveRequest(),
+            metadata=self._metadata(),
+        )
+        return resp.status
+
+    def bgrewriteaof(self) -> str:
+        """Trigger a background AOF rewrite."""
+        resp = self._stub.BgRewriteAof(
+            ember_pb2.BgRewriteAofRequest(),
+            metadata=self._metadata(),
+        )
+        return resp.status
+
+    # --- slowlog ---
+
+    def slowlog_get(self, count: int | None = None) -> list[dict]:
+        """Get slow log entries."""
+        req = ember_pb2.SlowLogGetRequest()
+        if count is not None:
+            req.count = count
+        resp = self._stub.SlowLogGet(req, metadata=self._metadata())
+        return [
+            {
+                "id": e.id,
+                "timestamp": e.timestamp_unix,
+                "duration_micros": e.duration_micros,
+                "command": e.command,
+            }
+            for e in resp.entries
+        ]
+
+    def slowlog_len(self) -> int:
+        """Get the number of slow log entries."""
+        resp = self._stub.SlowLogLen(
+            ember_pb2.SlowLogLenRequest(),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def slowlog_reset(self) -> None:
+        """Clear the slow log."""
+        self._stub.SlowLogReset(
+            ember_pb2.SlowLogResetRequest(),
+            metadata=self._metadata(),
+        )
+
+    # --- pub/sub ---
+
+    def publish(self, channel: str, message: bytes) -> int:
+        """Publish a message to a channel. Returns subscriber count."""
+        resp = self._stub.Publish(
+            ember_pb2.PublishRequest(channel=channel, message=message),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def subscribe(
+        self,
+        channels: list[str] | None = None,
+        patterns: list[str] | None = None,
+    ):
+        """Subscribe to channels/patterns. Returns an iterator of events.
+
+        Each event is a dict with keys: kind, channel, data, pattern.
+        """
+        req = ember_pb2.SubscribeRequest(
+            channels=channels or [],
+            patterns=patterns or [],
+        )
+        stream = self._stub.Subscribe(req, metadata=self._metadata())
+        for event in stream:
+            yield {
+                "kind": event.kind,
+                "channel": event.channel,
+                "data": event.data,
+                "pattern": event.pattern if event.HasField("pattern") else None,
+            }
+
+    def pubsub_channels(self, pattern: str | None = None) -> list[str]:
+        """List active channels, optionally filtered by glob pattern."""
+        req = ember_pb2.PubSubChannelsRequest()
+        if pattern is not None:
+            req.pattern = pattern
+        resp = self._stub.PubSubChannels(req, metadata=self._metadata())
+        return list(resp.keys)
+
+    def pubsub_numsub(self, *channels: str) -> dict[str, int]:
+        """Get subscriber counts for channels."""
+        resp = self._stub.PubSubNumSub(
+            ember_pb2.PubSubNumSubRequest(channels=list(channels)),
+            metadata=self._metadata(),
+        )
+        return {c.channel: c.count for c in resp.counts}
+
+    def pubsub_numpat(self) -> int:
+        """Get the number of active pattern subscriptions."""
+        resp = self._stub.PubSubNumPat(
+            ember_pb2.PubSubNumPatRequest(),
+            metadata=self._metadata(),
+        )
+        return resp.value
