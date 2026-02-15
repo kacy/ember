@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vector similarity benchmark: ember vs chromadb vs pgvector.
+# vector similarity benchmark: ember vs chromadb vs pgvector (+ optional qdrant).
 #
 # compares insert throughput, query throughput/latency, and memory usage
 # across three vector databases using identical HNSW parameters (M=16,
@@ -10,12 +10,14 @@
 #   bash bench/bench-vector.sh              # full comparison (100k vectors)
 #   bash bench/bench-vector.sh --ember-only # ember only (no docker needed)
 #   bash bench/bench-vector.sh --quick      # quick run (1k vectors)
+#   bash bench/bench-vector.sh --qdrant      # include qdrant comparison
 #   bash bench/bench-vector.sh --sift       # SIFT1M recall accuracy
 #
 # environment variables:
 #   EMBER_PORT       ember port             (default: 6379)
 #   CHROMA_PORT      chromadb port          (default: 8000)
 #   PGVECTOR_PORT    pgvector port          (default: 5432)
+#   QDRANT_PORT      qdrant port            (default: 6333)
 #   VECTOR_COUNT     base vector count      (default: 100000)
 #   VECTOR_DIM       vector dimensions      (default: 128)
 #   QUERY_COUNT      query vector count     (default: 1000)
@@ -28,6 +30,7 @@ set -euo pipefail
 EMBER_PORT="${EMBER_PORT:-6379}"
 CHROMA_PORT="${CHROMA_PORT:-8000}"
 PGVECTOR_PORT="${PGVECTOR_PORT:-5432}"
+QDRANT_PORT="${QDRANT_PORT:-6333}"
 VECTOR_COUNT="${VECTOR_COUNT:-100000}"
 VECTOR_DIM="${VECTOR_DIM:-128}"
 QUERY_COUNT="${QUERY_COUNT:-1000}"
@@ -40,12 +43,14 @@ BENCH_SCRIPT="bench/bench-vector.py"
 SIFT_DIR="bench/vector_data"
 
 EMBER_ONLY=false
+QDRANT=false
 QUICK_MODE=false
 SIFT_MODE=false
 
 for arg in "$@"; do
     case "$arg" in
         --ember-only) EMBER_ONLY=true ;;
+        --qdrant) QDRANT=true ;;
         --quick) QUICK_MODE=true ;;
         --sift) SIFT_MODE=true ;;
         *) echo "unknown flag: $arg"; exit 1 ;;
@@ -62,6 +67,7 @@ fi
 EMBER_PID=""
 CHROMA_CONTAINER=""
 PGVECTOR_CONTAINER=""
+QDRANT_CONTAINER=""
 
 cleanup() {
     echo ""
@@ -69,6 +75,7 @@ cleanup() {
     [[ -n "$EMBER_PID" ]] && kill "$EMBER_PID" 2>/dev/null && wait "$EMBER_PID" 2>/dev/null || true
     [[ -n "$CHROMA_CONTAINER" ]] && docker rm -f "$CHROMA_CONTAINER" > /dev/null 2>&1 || true
     [[ -n "$PGVECTOR_CONTAINER" ]] && docker rm -f "$PGVECTOR_CONTAINER" > /dev/null 2>&1 || true
+    [[ -n "$QDRANT_CONTAINER" ]] && docker rm -f "$QDRANT_CONTAINER" > /dev/null 2>&1 || true
     rm -f /tmp/bench_vector_*.json
 }
 trap cleanup EXIT
@@ -159,6 +166,19 @@ wait_for_pgvector() {
     sleep 1
 }
 
+wait_for_qdrant() {
+    local port=$1
+    local retries=60
+    while ! curl -sf "http://127.0.0.1:$port/healthz" > /dev/null 2>&1; do
+        retries=$((retries - 1))
+        if [[ $retries -le 0 ]]; then
+            echo "error: qdrant did not start on port $port" >&2
+            exit 1
+        fi
+        sleep 0.5
+    done
+}
+
 # --- dependency checks ---
 
 if ! command -v python3 &> /dev/null; then
@@ -195,11 +215,23 @@ if [[ "$EMBER_ONLY" == "false" ]]; then
     fi
 fi
 
+if [[ "$QDRANT" == "true" ]]; then
+    REQUIRED_DEPS="$REQUIRED_DEPS qdrant-client"
+
+    if ! command -v docker &> /dev/null; then
+        echo "error: docker required for qdrant" >&2
+        exit 1
+    fi
+fi
+
 # check if all deps are available in current python; if not, use venv
 if ! python3 -c "import redis, numpy" 2>/dev/null; then
     ensure_venv
     pip install --quiet $REQUIRED_DEPS
 elif [[ "$EMBER_ONLY" == "false" ]] && ! python3 -c "import chromadb, psycopg2" 2>/dev/null; then
+    ensure_venv
+    pip install --quiet $REQUIRED_DEPS
+elif [[ "$QDRANT" == "true" ]] && ! python3 -c "import qdrant_client" 2>/dev/null; then
     ensure_venv
     pip install --quiet $REQUIRED_DEPS
 fi
@@ -252,6 +284,7 @@ BENCH_ARGS=(
     --ember-port "$EMBER_PORT"
     --chroma-port "$CHROMA_PORT"
     --pgvector-port "$PGVECTOR_PORT"
+    --qdrant-port "$QDRANT_PORT"
     --sift-dir "$SIFT_DIR"
 )
 
@@ -335,6 +368,32 @@ if [[ "$EMBER_ONLY" == "false" ]]; then
     echo ""
 fi
 
+# --- benchmark qdrant ---
+
+QDRANT_JSON="/tmp/bench_vector_qdrant.json"
+QDRANT_RSS=0
+
+if [[ "$QDRANT" == "true" ]]; then
+    echo "--- qdrant ---"
+    echo ""
+    echo "  starting qdrant container on port $QDRANT_PORT..."
+    QDRANT_CONTAINER=$(docker run -d --rm \
+        -p "$QDRANT_PORT:6333" \
+        qdrant/qdrant \
+        2>/dev/null)
+    wait_for_qdrant "$QDRANT_PORT"
+
+    python3 "$BENCH_SCRIPT" --system qdrant "${BENCH_ARGS[@]}" --output "$QDRANT_JSON"
+
+    QDRANT_RSS=$(get_container_rss_mb "$QDRANT_CONTAINER")
+    echo "  memory (RSS): ${QDRANT_RSS} MB"
+
+    docker rm -f "$QDRANT_CONTAINER" > /dev/null 2>&1 || true
+    QDRANT_CONTAINER=""
+    sleep 0.5
+    echo ""
+fi
+
 # --- parse results ---
 
 # extract values from JSON files using python (avoids jq dependency)
@@ -392,6 +451,21 @@ if [[ "$EMBER_ONLY" == "false" ]] && [[ -f "$PGVECTOR_JSON" ]]; then
     P_P99=$(extract "$PGVECTOR_JSON" "query.p99_ms")
 fi
 
+# qdrant results
+Q_INSERT="—"
+Q_QUERY="—"
+Q_P50="—"
+Q_P95="—"
+Q_P99="—"
+
+if [[ "$QDRANT" == "true" ]] && [[ -f "$QDRANT_JSON" ]]; then
+    Q_INSERT=$(extract "$QDRANT_JSON" "insert.throughput")
+    Q_QUERY=$(extract "$QDRANT_JSON" "query.throughput")
+    Q_P50=$(extract "$QDRANT_JSON" "query.p50_ms")
+    Q_P95=$(extract "$QDRANT_JSON" "query.p95_ms")
+    Q_P99=$(extract "$QDRANT_JSON" "query.p99_ms")
+fi
+
 # --- display results ---
 
 DATE=$(date +%Y-%m-%d)
@@ -421,6 +495,16 @@ if [[ "$EMBER_ONLY" == "true" ]]; then
     printf "$fmt\n" "query p95 (ms)" "$E_P95"
     printf "$fmt\n" "query p99 (ms)" "$E_P99"
     printf "$fmt\n" "memory (MB)" "$EMBER_RSS"
+elif [[ "$QDRANT" == "true" ]]; then
+    fmt="%-24s %14s %14s %14s %14s"
+    printf "$fmt\n" "metric" "ember" "chromadb" "pgvector" "qdrant"
+    printf "$fmt\n" "------" "-----" "--------" "--------" "------"
+    printf "$fmt\n" "insert (vectors/sec)" "$E_INSERT" "$C_INSERT" "$P_INSERT" "$Q_INSERT"
+    printf "$fmt\n" "query (queries/sec)" "$E_QUERY" "$C_QUERY" "$P_QUERY" "$Q_QUERY"
+    printf "$fmt\n" "query p50 (ms)" "$E_P50" "$C_P50" "$P_P50" "$Q_P50"
+    printf "$fmt\n" "query p95 (ms)" "$E_P95" "$C_P95" "$P_P95" "$Q_P95"
+    printf "$fmt\n" "query p99 (ms)" "$E_P99" "$C_P99" "$P_P99" "$Q_P99"
+    printf "$fmt\n" "memory (MB)" "$EMBER_RSS" "$CHROMA_RSS" "$PGVECTOR_RSS" "$QDRANT_RSS"
 else
     fmt="%-24s %14s %14s %14s"
     printf "$fmt\n" "metric" "ember" "chromadb" "pgvector"
@@ -445,6 +529,13 @@ if [[ "$SIFT_MODE" == "true" ]]; then
         printf "%-24s %14s\n" "metric" "ember"
         printf "%-24s %14s\n" "------" "-----"
         printf "%-24s %14s\n" "recall@$K" "$E_RECALL"
+    elif [[ "$QDRANT" == "true" ]]; then
+        C_RECALL=$(extract "$CHROMA_JSON" "recall.recall_at_k")
+        P_RECALL=$(extract "$PGVECTOR_JSON" "recall.recall_at_k")
+        Q_RECALL=$(extract "$QDRANT_JSON" "recall.recall_at_k")
+        printf "%-24s %14s %14s %14s %14s\n" "metric" "ember" "chromadb" "pgvector" "qdrant"
+        printf "%-24s %14s %14s %14s %14s\n" "------" "-----" "--------" "--------" "------"
+        printf "%-24s %14s %14s %14s %14s\n" "recall@$K" "$E_RECALL" "$C_RECALL" "$P_RECALL" "$Q_RECALL"
     else
         C_RECALL=$(extract "$CHROMA_JSON" "recall.recall_at_k")
         P_RECALL=$(extract "$PGVECTOR_JSON" "recall.recall_at_k")
@@ -460,22 +551,26 @@ echo ""
 
 RESULT_FILE="$RESULTS_DIR/${TIMESTAMP}-vector.csv"
 {
-    echo "metric,ember,chromadb,pgvector"
-    echo "insert_throughput,$E_INSERT,$C_INSERT,$P_INSERT"
-    echo "query_throughput,$E_QUERY,$C_QUERY,$P_QUERY"
-    echo "query_p50_ms,$E_P50,$C_P50,$P_P50"
-    echo "query_p95_ms,$E_P95,$C_P95,$P_P95"
-    echo "query_p99_ms,$E_P99,$C_P99,$P_P99"
-    echo "memory_mb,$EMBER_RSS,$CHROMA_RSS,$PGVECTOR_RSS"
+    echo "metric,ember,chromadb,pgvector,qdrant"
+    echo "insert_throughput,$E_INSERT,$C_INSERT,$P_INSERT,$Q_INSERT"
+    echo "query_throughput,$E_QUERY,$C_QUERY,$P_QUERY,$Q_QUERY"
+    echo "query_p50_ms,$E_P50,$C_P50,$P_P50,$Q_P50"
+    echo "query_p95_ms,$E_P95,$C_P95,$P_P95,$Q_P95"
+    echo "query_p99_ms,$E_P99,$C_P99,$P_P99,$Q_P99"
+    echo "memory_mb,$EMBER_RSS,$CHROMA_RSS,$PGVECTOR_RSS,$QDRANT_RSS"
     if [[ "$SIFT_MODE" == "true" ]]; then
         E_RECALL=$(extract "$EMBER_JSON" "recall.recall_at_k")
         C_RECALL="—"
         P_RECALL="—"
+        Q_RECALL="—"
         if [[ "$EMBER_ONLY" == "false" ]]; then
             C_RECALL=$(extract "$CHROMA_JSON" "recall.recall_at_k")
             P_RECALL=$(extract "$PGVECTOR_JSON" "recall.recall_at_k")
         fi
-        echo "recall_at_$K,$E_RECALL,$C_RECALL,$P_RECALL"
+        if [[ "$QDRANT" == "true" ]]; then
+            Q_RECALL=$(extract "$QDRANT_JSON" "recall.recall_at_k")
+        fi
+        echo "recall_at_$K,$E_RECALL,$C_RECALL,$P_RECALL,$Q_RECALL"
     fi
 } > "$RESULT_FILE"
 

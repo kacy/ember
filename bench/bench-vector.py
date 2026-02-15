@@ -213,6 +213,71 @@ class PgVectorClient(VectorClient):
         return "pgvector"
 
 
+class QdrantClient_(VectorClient):
+    """qdrant client via the official python SDK."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 6333):
+        from qdrant_client import QdrantClient as _QC
+        from qdrant_client.models import Distance, VectorParams, PointStruct
+        self._qc = _QC(host=host, port=port)
+        self._PointStruct = PointStruct
+        self._Distance = Distance
+        self._VectorParams = VectorParams
+        self.collection_name = "bench_vectors"
+
+    def setup(self, dim: int, metric: str = "cosine"):
+        # delete if exists
+        try:
+            self._qc.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        self._qc.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=self._VectorParams(
+                size=dim,
+                distance=self._Distance.COSINE,
+            ),
+            hnsw_config={
+                "m": 16,
+                "ef_construct": 64,
+            },
+        )
+
+    def insert_batch(self, ids: list, vectors: np.ndarray):
+        points = [
+            self._PointStruct(
+                id=idx,
+                vector=vectors[idx].tolist(),
+                payload={"name": vid},
+            )
+            for idx, vid in enumerate(ids)
+        ]
+        self._qc.upsert(
+            collection_name=self.collection_name,
+            points=points,
+        )
+
+    def query(self, vector: np.ndarray, k: int) -> list:
+        results = self._qc.search(
+            collection_name=self.collection_name,
+            query_vector=vector.tolist(),
+            limit=k,
+        )
+        return [
+            r.payload.get("name", str(r.id)) if r.payload else str(r.id)
+            for r in results
+        ]
+
+    def teardown(self):
+        try:
+            self._qc.delete_collection(self.collection_name)
+        except Exception:
+            pass
+
+    def name(self) -> str:
+        return "qdrant"
+
+
 # ---------------------------------------------------------------------------
 # benchmark functions
 # ---------------------------------------------------------------------------
@@ -308,7 +373,7 @@ def compute_recall(client: VectorClient, queries: np.ndarray,
 
 def main():
     parser = argparse.ArgumentParser(description="vector similarity benchmark")
-    parser.add_argument("--system", required=True, choices=["ember", "chromadb", "pgvector"])
+    parser.add_argument("--system", required=True, choices=["ember", "chromadb", "pgvector", "qdrant"])
     parser.add_argument("--mode", default="random", choices=["random", "sift"])
     parser.add_argument("--dim", type=int, default=128)
     parser.add_argument("--count", type=int, default=100000)
@@ -318,6 +383,7 @@ def main():
     parser.add_argument("--ember-port", type=int, default=6379)
     parser.add_argument("--chroma-port", type=int, default=8000)
     parser.add_argument("--pgvector-port", type=int, default=5432)
+    parser.add_argument("--qdrant-port", type=int, default=6333)
     parser.add_argument("--sift-dir", default="bench/vector_data")
     parser.add_argument("--output", help="JSON output file")
     args = parser.parse_args()
@@ -329,6 +395,8 @@ def main():
         client = ChromaClient(port=args.chroma_port)
     elif args.system == "pgvector":
         client = PgVectorClient(port=args.pgvector_port)
+    elif args.system == "qdrant":
+        client = QdrantClient_(port=args.qdrant_port)
 
     # load or generate vectors
     if args.mode == "sift":
