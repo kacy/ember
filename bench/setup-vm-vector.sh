@@ -14,7 +14,7 @@ echo "=== installing python dependencies ==="
 sudo apt-get update
 sudo apt-get install -y python3-pip python3-dev
 
-pip3 install --quiet redis chromadb psycopg2-binary numpy
+pip3 install --quiet redis chromadb psycopg2-binary numpy grpcio protobuf
 
 echo ""
 echo "=== installing docker ==="
@@ -35,11 +35,16 @@ sudo docker pull chromadb/chroma
 sudo docker pull pgvector/pgvector:pg17
 
 echo ""
-echo "=== rebuilding ember with vector support ==="
+echo "=== installing ember python client ==="
 
 cd ~/ember
+pip3 install --quiet ./clients/ember-py
+
+echo ""
+echo "=== rebuilding ember with vector + grpc support ==="
+
 source ~/.cargo/env
-cargo build --release -p ember-server --features jemalloc,vector
+cargo build --release -p ember-server --features jemalloc,vector,grpc
 
 echo ""
 echo "=== verifying ==="
@@ -54,5 +59,6 @@ echo ""
 echo "run benchmarks with:"
 echo "  ./bench/bench-vector.sh               # 100k random vectors"
 echo "  ./bench/bench-vector.sh --ember-only  # ember only (no docker)"
+echo "  ./bench/bench-vector.sh --ember-grpc  # include gRPC benchmark"
 echo "  ./bench/bench-vector.sh --quick       # quick sanity check"
 echo "  ./bench/bench-vector.sh --sift        # SIFT1M recall accuracy"
