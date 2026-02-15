@@ -14,6 +14,7 @@ use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 
@@ -29,14 +30,21 @@ pub struct EmberService {
     engine: Engine,
     ctx: Arc<ServerContext>,
     slow_log: Arc<SlowLog>,
+    pubsub: Arc<PubSubManager>,
 }
 
 impl EmberService {
-    pub fn new(engine: Engine, ctx: Arc<ServerContext>, slow_log: Arc<SlowLog>) -> Self {
+    pub fn new(
+        engine: Engine,
+        ctx: Arc<ServerContext>,
+        slow_log: Arc<SlowLog>,
+        pubsub: Arc<PubSubManager>,
+    ) -> Self {
         Self {
             engine,
             ctx,
             slow_log,
+            pubsub,
         }
     }
 
@@ -1682,6 +1690,241 @@ impl EmberCache for EmberService {
     }
 
     // -----------------------------------------------------------------------
+    // additional commands
+    // -----------------------------------------------------------------------
+
+    async fn echo(&self, request: Request<EchoRequest>) -> Result<Response<EchoResponse>, Status> {
+        Ok(Response::new(EchoResponse {
+            message: request.into_inner().message,
+        }))
+    }
+
+    async fn decr(&self, request: Request<DecrRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        validate_key(&key)?;
+        let resp = self
+            .route(&key, ShardRequest::Decr { key: key.clone() })
+            .await?;
+        self.record_command(start, "DECR");
+
+        match resp {
+            ShardResponse::Integer(v) => Ok(Response::new(IntResponse { value: v })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn unlink(
+        &self,
+        request: Request<UnlinkRequest>,
+    ) -> Result<Response<DelResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+        for k in &keys {
+            validate_key(k)?;
+        }
+
+        let responses = self
+            .engine
+            .route_multi(&keys, |k| ShardRequest::Unlink { key: k })
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))?;
+
+        let mut deleted = 0i64;
+        for resp in responses {
+            if let ShardResponse::Bool(true) = resp {
+                deleted += 1;
+            }
+        }
+        self.record_command(start, "UNLINK");
+        Ok(Response::new(DelResponse { deleted }))
+    }
+
+    async fn bg_save(
+        &self,
+        _request: Request<BgSaveRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let start = Instant::now();
+        self.broadcast(|| ShardRequest::Snapshot).await?;
+        self.record_command(start, "BGSAVE");
+        Ok(Response::new(StatusResponse {
+            status: "Background saving started".to_string(),
+        }))
+    }
+
+    async fn bg_rewrite_aof(
+        &self,
+        _request: Request<BgRewriteAofRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let start = Instant::now();
+        self.broadcast(|| ShardRequest::RewriteAof).await?;
+        self.record_command(start, "BGREWRITEAOF");
+        Ok(Response::new(StatusResponse {
+            status: "Background append only file rewriting started".to_string(),
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // slowlog
+    // -----------------------------------------------------------------------
+
+    async fn slow_log_get(
+        &self,
+        request: Request<SlowLogGetRequest>,
+    ) -> Result<Response<SlowLogGetResponse>, Status> {
+        let count = request.into_inner().count.map(|c| c as usize);
+        let entries = self.slow_log.get(count);
+        Ok(Response::new(SlowLogGetResponse {
+            entries: entries
+                .into_iter()
+                .map(|e| {
+                    let ts = e
+                        .timestamp
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    SlowLogEntry {
+                        id: e.id,
+                        timestamp_unix: ts,
+                        duration_micros: e.duration.as_micros() as u64,
+                        command: e.command,
+                    }
+                })
+                .collect(),
+        }))
+    }
+
+    async fn slow_log_len(
+        &self,
+        _request: Request<SlowLogLenRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        Ok(Response::new(IntResponse {
+            value: self.slow_log.len() as i64,
+        }))
+    }
+
+    async fn slow_log_reset(
+        &self,
+        _request: Request<SlowLogResetRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        self.slow_log.reset();
+        Ok(Response::new(StatusResponse {
+            status: "OK".to_string(),
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // pub/sub
+    // -----------------------------------------------------------------------
+
+    async fn publish(
+        &self,
+        request: Request<PublishRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let req = request.into_inner();
+        let count = self.pubsub.publish(&req.channel, Bytes::from(req.message));
+        Ok(Response::new(IntResponse {
+            value: count as i64,
+        }))
+    }
+
+    type SubscribeStream = ReceiverStream<Result<SubscribeEvent, Status>>;
+
+    async fn subscribe(
+        &self,
+        request: Request<SubscribeRequest>,
+    ) -> Result<Response<Self::SubscribeStream>, Status> {
+        let req = request.into_inner();
+        if req.channels.is_empty() && req.patterns.is_empty() {
+            return Err(Status::invalid_argument(
+                "at least one channel or pattern required",
+            ));
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        let pubsub = Arc::clone(&self.pubsub);
+
+        // collect all broadcast receivers
+        let mut channel_rxs: Vec<(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)> = Vec::new();
+        let mut pattern_rxs: Vec<(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)> = Vec::new();
+
+        for ch in &req.channels {
+            channel_rxs.push((ch.clone(), pubsub.subscribe(ch)));
+        }
+        for pat in &req.patterns {
+            pattern_rxs.push((pat.clone(), pubsub.psubscribe(pat)));
+        }
+
+        tokio::spawn(async move {
+            loop {
+                // build a future that races all receivers
+                let event = tokio::select! {
+                    biased;
+                    result = recv_any_channel(&mut channel_rxs) => result,
+                    result = recv_any_pattern(&mut pattern_rxs) => result,
+                };
+
+                match event {
+                    Some(evt) => {
+                        if tx.send(Ok(evt)).await.is_err() {
+                            break; // client disconnected
+                        }
+                    }
+                    None => {
+                        // all receivers closed
+                        break;
+                    }
+                }
+            }
+
+            // cleanup subscriptions
+            for (ch, _) in &channel_rxs {
+                pubsub.unsubscribe(ch);
+            }
+            for (pat, _) in &pattern_rxs {
+                pubsub.punsubscribe(pat);
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn pub_sub_channels(
+        &self,
+        request: Request<PubSubChannelsRequest>,
+    ) -> Result<Response<KeysResponse>, Status> {
+        let pattern = request.into_inner().pattern;
+        let names = self.pubsub.channel_names(pattern.as_deref());
+        Ok(Response::new(KeysResponse { keys: names }))
+    }
+
+    async fn pub_sub_num_sub(
+        &self,
+        request: Request<PubSubNumSubRequest>,
+    ) -> Result<Response<PubSubNumSubResponse>, Status> {
+        let channels = request.into_inner().channels;
+        let pairs = self.pubsub.numsub(&channels);
+        Ok(Response::new(PubSubNumSubResponse {
+            counts: pairs
+                .into_iter()
+                .map(|(channel, count)| ChannelCount {
+                    channel,
+                    count: count as i64,
+                })
+                .collect(),
+        }))
+    }
+
+    async fn pub_sub_num_pat(
+        &self,
+        _request: Request<PubSubNumPatRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        Ok(Response::new(IntResponse {
+            value: self.pubsub.active_patterns() as i64,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
     // pipeline (bidirectional streaming)
     // -----------------------------------------------------------------------
 
@@ -1695,11 +1938,12 @@ impl EmberCache for EmberService {
         let engine = self.engine.clone();
         let ctx = Arc::clone(&self.ctx);
         let slow_log = Arc::clone(&self.slow_log);
+        let pubsub = Arc::clone(&self.pubsub);
 
         let (tx, rx) = tokio::sync::mpsc::channel(256);
 
         tokio::spawn(async move {
-            let svc = EmberService::new(engine, ctx, slow_log);
+            let svc = EmberService::new(engine, ctx, slow_log, pubsub);
             while let Ok(Some(req)) = stream.message().await {
                 let id = req.id;
                 let result = handle_pipeline_command(&svc, req).await;
@@ -1822,12 +2066,92 @@ async fn handle_pipeline_command(
 
         // server commands
         Ping      => ping           => Ping,
+        Echo      => echo           => Echo,
+        Decr      => decr           => IntVal,
+        Unlink    => unlink         => Del,
         Flushdb   => flush_db       => Status,
         Dbsize    => db_size        => IntVal,
+        Bgsave    => bg_save        => Status,
+        Bgrewriteaof => bg_rewrite_aof => Status,
         Mget      => m_get          => Mget,
         Mset      => m_set          => Mset,
         Keys      => keys           => Keys,
         Rename    => rename         => Status,
         Scan      => scan           => Scan,
+
+        // slowlog
+        SlowlogGet   => slow_log_get   => SlowlogGet,
+        SlowlogLen   => slow_log_len   => IntVal,
+        SlowlogReset => slow_log_reset => Status,
+
+        // pub/sub (unary only — Subscribe is streaming)
+        Publish        => publish          => IntVal,
+        PubsubChannels => pub_sub_channels => Keys,
+        PubsubNumsub   => pub_sub_num_sub  => PubsubNumsub,
+        PubsubNumpat   => pub_sub_num_pat  => IntVal,
     })
+}
+
+/// Waits for the next message on any channel subscription receiver.
+/// Returns None when all receivers are closed.
+async fn recv_any_channel(
+    rxs: &mut [(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)],
+) -> Option<SubscribeEvent> {
+    if rxs.is_empty() {
+        // no channel subscriptions — park forever so pattern branch can drive
+        std::future::pending::<()>().await;
+        return None;
+    }
+
+    loop {
+        // poll each receiver in round-robin (tokio::select! on a slice
+        // requires a loop because we can't use select! with dynamic count).
+        for (_, rx) in rxs.iter_mut() {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    return Some(SubscribeEvent {
+                        kind: "message".to_string(),
+                        channel: msg.channel,
+                        data: msg.data.to_vec(),
+                        pattern: None,
+                    });
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+            }
+        }
+        // yield to avoid busy-spinning
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// Waits for the next message on any pattern subscription receiver.
+/// Returns None when all receivers are closed.
+async fn recv_any_pattern(
+    rxs: &mut [(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)],
+) -> Option<SubscribeEvent> {
+    if rxs.is_empty() {
+        std::future::pending::<()>().await;
+        return None;
+    }
+
+    loop {
+        for (pat, rx) in rxs.iter_mut() {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    return Some(SubscribeEvent {
+                        kind: "pmessage".to_string(),
+                        channel: msg.channel,
+                        data: msg.data.to_vec(),
+                        pattern: Some(pat.clone()),
+                    });
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
 }
