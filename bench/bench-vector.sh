@@ -531,7 +531,17 @@ fi
 echo "hnsw: M=16, ef_construction=64, cosine similarity, k=$K"
 echo ""
 
-if [[ "$EMBER_ONLY" == "true" ]]; then
+if [[ "$EMBER_ONLY" == "true" ]] && [[ "$QDRANT" == "true" ]]; then
+    fmt="%-24s %14s %14s"
+    printf "$fmt\n" "metric" "ember" "qdrant"
+    printf "$fmt\n" "------" "-----" "------"
+    printf "$fmt\n" "insert (vectors/sec)" "$E_INSERT" "$Q_INSERT"
+    printf "$fmt\n" "query (queries/sec)" "$E_QUERY" "$Q_QUERY"
+    printf "$fmt\n" "query p50 (ms)" "$E_P50" "$Q_P50"
+    printf "$fmt\n" "query p95 (ms)" "$E_P95" "$Q_P95"
+    printf "$fmt\n" "query p99 (ms)" "$E_P99" "$Q_P99"
+    printf "$fmt\n" "memory (MB)" "$EMBER_RSS" "$QDRANT_RSS"
+elif [[ "$EMBER_ONLY" == "true" ]]; then
     fmt="%-24s %14s"
     printf "$fmt\n" "metric" "ember"
     printf "$fmt\n" "------" "-----"
@@ -586,7 +596,12 @@ if [[ "$SIFT_MODE" == "true" ]]; then
 
     E_RECALL=$(extract "$EMBER_JSON" "recall.recall_at_k")
 
-    if [[ "$EMBER_ONLY" == "true" ]]; then
+    if [[ "$EMBER_ONLY" == "true" ]] && [[ "$QDRANT" == "true" ]]; then
+        Q_RECALL=$(extract "$QDRANT_JSON" "recall.recall_at_k")
+        printf "%-24s %14s %14s\n" "metric" "ember" "qdrant"
+        printf "%-24s %14s %14s\n" "------" "-----" "------"
+        printf "%-24s %14s %14s\n" "recall@$K" "$E_RECALL" "$Q_RECALL"
+    elif [[ "$EMBER_ONLY" == "true" ]]; then
         printf "%-24s %14s\n" "metric" "ember"
         printf "%-24s %14s\n" "------" "-----"
         printf "%-24s %14s\n" "recall@$K" "$E_RECALL"
