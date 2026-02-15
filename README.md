@@ -271,12 +271,16 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 - sharded mode: 1.24M SET/sec, 1.56M GET/sec (redis-benchmark, P=16)
 - concurrent mode: 1.77M SET/sec, 2.16M GET/sec (redis-benchmark, P=16)
 - p99 latency: 0.61ms SET, 0.56ms GET (P=1, concurrent mode)
+- vector queries: 1.2k queries/sec with 4-6x less memory than chromadb
 - memory: ~166 bytes/key (redis: ~105 bytes/key)
 
 ```bash
 ./bench/bench-quick.sh       # quick sanity check
 ./bench/compare-redis.sh     # redis-benchmark comparison
 ./bench/bench-memtier.sh     # memtier_benchmark comparison
+./bench/bench-vector.sh      # vector similarity (ember vs chromadb vs pgvector vs qdrant)
+./bench/bench-grpc.sh        # gRPC vs RESP3
+./bench/bench-all.sh         # run everything
 ```
 
 ## architecture
@@ -299,7 +303,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 101 commands, 796+ tests, ~22k lines of code (excluding tests)
+**current**: 106 commands, 796+ tests, ~31k lines of code (excluding tests)
 
 ## security
 
