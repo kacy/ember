@@ -250,11 +250,14 @@ class QdrantClient_(VectorClient):
 
     def __init__(self, host: str = "127.0.0.1", port: int = 6333):
         from qdrant_client import QdrantClient as _QC
-        from qdrant_client.models import Distance, VectorParams, PointStruct
+        from qdrant_client.models import (
+            Distance, VectorParams, PointStruct, HnswConfigDiff,
+        )
         self._qc = _QC(host=host, port=port)
         self._PointStruct = PointStruct
         self._Distance = Distance
         self._VectorParams = VectorParams
+        self._HnswConfigDiff = HnswConfigDiff
         self.collection_name = "bench_vectors"
 
     def setup(self, dim: int, metric: str = "cosine"):
@@ -269,10 +272,10 @@ class QdrantClient_(VectorClient):
                 size=dim,
                 distance=self._Distance.COSINE,
             ),
-            hnsw_config={
-                "m": 16,
-                "ef_construct": 64,
-            },
+            hnsw_config=self._HnswConfigDiff(
+                m=16,
+                ef_construct=64,
+            ),
         )
 
     def insert_batch(self, ids: list, vectors: np.ndarray):
@@ -290,14 +293,14 @@ class QdrantClient_(VectorClient):
         )
 
     def query(self, vector: np.ndarray, k: int) -> list:
-        results = self._qc.search(
+        response = self._qc.query_points(
             collection_name=self.collection_name,
-            query_vector=vector.tolist(),
+            query=vector.tolist(),
             limit=k,
         )
         return [
             r.payload.get("name", str(r.id)) if r.payload else str(r.id)
-            for r in results
+            for r in response.points
         ]
 
     def teardown(self):
