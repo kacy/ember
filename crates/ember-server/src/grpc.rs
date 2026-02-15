@@ -1845,8 +1845,14 @@ impl EmberCache for EmberService {
         let pubsub = Arc::clone(&self.pubsub);
 
         // collect all broadcast receivers
-        let mut channel_rxs: Vec<(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)> = Vec::new();
-        let mut pattern_rxs: Vec<(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)> = Vec::new();
+        let mut channel_rxs: Vec<(
+            String,
+            tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
+        )> = Vec::new();
+        let mut pattern_rxs: Vec<(
+            String,
+            tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
+        )> = Vec::new();
 
         for ch in &req.channels {
             channel_rxs.push((ch.clone(), pubsub.subscribe(ch)));
@@ -2095,7 +2101,10 @@ async fn handle_pipeline_command(
 /// Waits for the next message on any channel subscription receiver.
 /// Returns None when all receivers are closed.
 async fn recv_any_channel(
-    rxs: &mut [(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)],
+    rxs: &mut [(
+        String,
+        tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
+    )],
 ) -> Option<SubscribeEvent> {
     if rxs.is_empty() {
         // no channel subscriptions — park forever so pattern branch can drive
@@ -2129,7 +2138,10 @@ async fn recv_any_channel(
 /// Waits for the next message on any pattern subscription receiver.
 /// Returns None when all receivers are closed.
 async fn recv_any_pattern(
-    rxs: &mut [(String, tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>)],
+    rxs: &mut [(
+        String,
+        tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
+    )],
 ) -> Option<SubscribeEvent> {
     if rxs.is_empty() {
         std::future::pending::<()>().await;
