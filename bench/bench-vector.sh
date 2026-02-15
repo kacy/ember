@@ -11,7 +11,7 @@
 #   bash bench/bench-vector.sh --ember-only # ember only (no docker needed)
 #   bash bench/bench-vector.sh --ember-grpc # include ember gRPC benchmark
 #   bash bench/bench-vector.sh --quick      # quick run (1k vectors)
-#   bash bench/bench-vector.sh --qdrant      # include qdrant comparison
+#   bash bench/bench-vector.sh --no-qdrant   # skip qdrant comparison
 #   bash bench/bench-vector.sh --sift       # SIFT1M recall accuracy
 #
 # environment variables:
@@ -46,7 +46,7 @@ BENCH_SCRIPT="bench/bench-vector.py"
 SIFT_DIR="bench/vector_data"
 
 EMBER_ONLY=false
-QDRANT=false
+QDRANT=true
 EMBER_GRPC=false
 QUICK_MODE=false
 SIFT_MODE=false
@@ -55,6 +55,7 @@ for arg in "$@"; do
     case "$arg" in
         --ember-only) EMBER_ONLY=true ;;
         --qdrant) QDRANT=true ;;
+        --no-qdrant) QDRANT=false ;;
         --ember-grpc) EMBER_GRPC=true ;;
         --quick) QUICK_MODE=true ;;
         --sift) SIFT_MODE=true ;;
