@@ -63,15 +63,6 @@ if command -v redis-server &> /dev/null; then
     HAS_REDIS=true
 fi
 
-get_rss_kb() {
-    local pid=$1
-    if [[ "$(uname)" == "Darwin" ]]; then
-        ps -o rss= -p "$pid" 2>/dev/null | tr -d ' '
-    else
-        awk '/VmRSS/{print $2}' "/proc/$pid/status" 2>/dev/null || echo 0
-    fi
-}
-
 get_redis_memory() {
     local port=$1
     redis-cli -p "$port" info memory 2>/dev/null | grep used_memory: | cut -d: -f2 | tr -d '\r'
@@ -114,13 +105,12 @@ declare -a REDIS_BYTES=()
 # --- measure ember memory for one data type ---
 
 measure_ember_type() {
-    local pid=$1
-    local port=$2
-    local type=$3
-    local count=$4
+    local port=$1
+    local type=$2
+    local count=$3
 
-    local rss_before
-    rss_before=$(get_rss_kb "$pid")
+    local mem_before
+    mem_before=$(get_redis_memory "$port")
 
     case "$type" in
         string)
@@ -144,15 +134,15 @@ measure_ember_type() {
 
     sleep 1
 
-    local rss_after
-    rss_after=$(get_rss_kb "$pid")
+    local mem_after
+    mem_after=$(get_redis_memory "$port")
     local keys
     keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $2}' | tr -d '\r')
 
-    local used_kb=$((rss_after - rss_before))
+    local used=$((mem_after - mem_before))
     local bytes_per_key=0
     if [[ "${keys:-0}" -gt 0 ]] 2>/dev/null; then
-        bytes_per_key=$((used_kb * 1024 / keys))
+        bytes_per_key=$((used / keys))
     fi
 
     echo "$bytes_per_key"
@@ -224,7 +214,7 @@ run_type_benchmark() {
     wait_for_server $EMBER_CONCURRENT_PORT
 
     local ec_bytes
-    ec_bytes=$(measure_ember_type "$ec_pid" "$EMBER_CONCURRENT_PORT" "$type" "$count")
+    ec_bytes=$(measure_ember_type "$EMBER_CONCURRENT_PORT" "$type" "$count")
     EMBER_CONCURRENT_BYTES+=("$ec_bytes")
     echo "  ember concurrent: ${ec_bytes} bytes/key"
 
@@ -238,7 +228,7 @@ run_type_benchmark() {
     wait_for_server $EMBER_SHARDED_PORT
 
     local es_bytes
-    es_bytes=$(measure_ember_type "$es_pid" "$EMBER_SHARDED_PORT" "$type" "$count")
+    es_bytes=$(measure_ember_type "$EMBER_SHARDED_PORT" "$type" "$count")
     EMBER_SHARDED_BYTES+=("$es_bytes")
     echo "  ember sharded:    ${es_bytes} bytes/key"
 
@@ -318,13 +308,13 @@ PYEOF
         VEC_PID=$!
         wait_for_server $EMBER_SHARDED_PORT
 
-        VEC_RSS_BEFORE=$(get_rss_kb "$VEC_PID")
+        VEC_MEM_BEFORE=$(get_redis_memory "$EMBER_SHARDED_PORT")
         python3 "$VECTOR_HELPER" "$EMBER_SHARDED_PORT" "$VECTOR_KEYS" "$VECTOR_DIM"
         sleep 1
-        VEC_RSS_AFTER=$(get_rss_kb "$VEC_PID")
+        VEC_MEM_AFTER=$(get_redis_memory "$EMBER_SHARDED_PORT")
 
-        VEC_USED_KB=$((VEC_RSS_AFTER - VEC_RSS_BEFORE))
-        VEC_BYTES=$((VEC_USED_KB * 1024 / VECTOR_KEYS))
+        VEC_USED=$((VEC_MEM_AFTER - VEC_MEM_BEFORE))
+        VEC_BYTES=$((VEC_USED / VECTOR_KEYS))
 
         EMBER_CONCURRENT_BYTES+=("—")
         EMBER_SHARDED_BYTES+=("$VEC_BYTES")
