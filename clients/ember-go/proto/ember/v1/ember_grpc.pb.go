@@ -19,66 +19,79 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EmberCache_Get_FullMethodName         = "/ember.v1.EmberCache/Get"
-	EmberCache_Set_FullMethodName         = "/ember.v1.EmberCache/Set"
-	EmberCache_Del_FullMethodName         = "/ember.v1.EmberCache/Del"
-	EmberCache_MGet_FullMethodName        = "/ember.v1.EmberCache/MGet"
-	EmberCache_MSet_FullMethodName        = "/ember.v1.EmberCache/MSet"
-	EmberCache_Incr_FullMethodName        = "/ember.v1.EmberCache/Incr"
-	EmberCache_IncrBy_FullMethodName      = "/ember.v1.EmberCache/IncrBy"
-	EmberCache_DecrBy_FullMethodName      = "/ember.v1.EmberCache/DecrBy"
-	EmberCache_IncrByFloat_FullMethodName = "/ember.v1.EmberCache/IncrByFloat"
-	EmberCache_Append_FullMethodName      = "/ember.v1.EmberCache/Append"
-	EmberCache_Strlen_FullMethodName      = "/ember.v1.EmberCache/Strlen"
-	EmberCache_Exists_FullMethodName      = "/ember.v1.EmberCache/Exists"
-	EmberCache_Expire_FullMethodName      = "/ember.v1.EmberCache/Expire"
-	EmberCache_PExpire_FullMethodName     = "/ember.v1.EmberCache/PExpire"
-	EmberCache_Persist_FullMethodName     = "/ember.v1.EmberCache/Persist"
-	EmberCache_Ttl_FullMethodName         = "/ember.v1.EmberCache/Ttl"
-	EmberCache_PTtl_FullMethodName        = "/ember.v1.EmberCache/PTtl"
-	EmberCache_Type_FullMethodName        = "/ember.v1.EmberCache/Type"
-	EmberCache_Keys_FullMethodName        = "/ember.v1.EmberCache/Keys"
-	EmberCache_Rename_FullMethodName      = "/ember.v1.EmberCache/Rename"
-	EmberCache_Scan_FullMethodName        = "/ember.v1.EmberCache/Scan"
-	EmberCache_LPush_FullMethodName       = "/ember.v1.EmberCache/LPush"
-	EmberCache_RPush_FullMethodName       = "/ember.v1.EmberCache/RPush"
-	EmberCache_LPop_FullMethodName        = "/ember.v1.EmberCache/LPop"
-	EmberCache_RPop_FullMethodName        = "/ember.v1.EmberCache/RPop"
-	EmberCache_LRange_FullMethodName      = "/ember.v1.EmberCache/LRange"
-	EmberCache_LLen_FullMethodName        = "/ember.v1.EmberCache/LLen"
-	EmberCache_HSet_FullMethodName        = "/ember.v1.EmberCache/HSet"
-	EmberCache_HGet_FullMethodName        = "/ember.v1.EmberCache/HGet"
-	EmberCache_HGetAll_FullMethodName     = "/ember.v1.EmberCache/HGetAll"
-	EmberCache_HDel_FullMethodName        = "/ember.v1.EmberCache/HDel"
-	EmberCache_HExists_FullMethodName     = "/ember.v1.EmberCache/HExists"
-	EmberCache_HLen_FullMethodName        = "/ember.v1.EmberCache/HLen"
-	EmberCache_HIncrBy_FullMethodName     = "/ember.v1.EmberCache/HIncrBy"
-	EmberCache_HKeys_FullMethodName       = "/ember.v1.EmberCache/HKeys"
-	EmberCache_HVals_FullMethodName       = "/ember.v1.EmberCache/HVals"
-	EmberCache_HMGet_FullMethodName       = "/ember.v1.EmberCache/HMGet"
-	EmberCache_SAdd_FullMethodName        = "/ember.v1.EmberCache/SAdd"
-	EmberCache_SRem_FullMethodName        = "/ember.v1.EmberCache/SRem"
-	EmberCache_SMembers_FullMethodName    = "/ember.v1.EmberCache/SMembers"
-	EmberCache_SIsMember_FullMethodName   = "/ember.v1.EmberCache/SIsMember"
-	EmberCache_SCard_FullMethodName       = "/ember.v1.EmberCache/SCard"
-	EmberCache_ZAdd_FullMethodName        = "/ember.v1.EmberCache/ZAdd"
-	EmberCache_ZRem_FullMethodName        = "/ember.v1.EmberCache/ZRem"
-	EmberCache_ZScore_FullMethodName      = "/ember.v1.EmberCache/ZScore"
-	EmberCache_ZRank_FullMethodName       = "/ember.v1.EmberCache/ZRank"
-	EmberCache_ZCard_FullMethodName       = "/ember.v1.EmberCache/ZCard"
-	EmberCache_ZRange_FullMethodName      = "/ember.v1.EmberCache/ZRange"
-	EmberCache_VAdd_FullMethodName        = "/ember.v1.EmberCache/VAdd"
-	EmberCache_VSim_FullMethodName        = "/ember.v1.EmberCache/VSim"
-	EmberCache_VRem_FullMethodName        = "/ember.v1.EmberCache/VRem"
-	EmberCache_VGet_FullMethodName        = "/ember.v1.EmberCache/VGet"
-	EmberCache_VCard_FullMethodName       = "/ember.v1.EmberCache/VCard"
-	EmberCache_VDim_FullMethodName        = "/ember.v1.EmberCache/VDim"
-	EmberCache_VInfo_FullMethodName       = "/ember.v1.EmberCache/VInfo"
-	EmberCache_Ping_FullMethodName        = "/ember.v1.EmberCache/Ping"
-	EmberCache_FlushDb_FullMethodName     = "/ember.v1.EmberCache/FlushDb"
-	EmberCache_DbSize_FullMethodName      = "/ember.v1.EmberCache/DbSize"
-	EmberCache_Info_FullMethodName        = "/ember.v1.EmberCache/Info"
-	EmberCache_Pipeline_FullMethodName    = "/ember.v1.EmberCache/Pipeline"
+	EmberCache_Get_FullMethodName            = "/ember.v1.EmberCache/Get"
+	EmberCache_Set_FullMethodName            = "/ember.v1.EmberCache/Set"
+	EmberCache_Del_FullMethodName            = "/ember.v1.EmberCache/Del"
+	EmberCache_MGet_FullMethodName           = "/ember.v1.EmberCache/MGet"
+	EmberCache_MSet_FullMethodName           = "/ember.v1.EmberCache/MSet"
+	EmberCache_Incr_FullMethodName           = "/ember.v1.EmberCache/Incr"
+	EmberCache_IncrBy_FullMethodName         = "/ember.v1.EmberCache/IncrBy"
+	EmberCache_DecrBy_FullMethodName         = "/ember.v1.EmberCache/DecrBy"
+	EmberCache_IncrByFloat_FullMethodName    = "/ember.v1.EmberCache/IncrByFloat"
+	EmberCache_Append_FullMethodName         = "/ember.v1.EmberCache/Append"
+	EmberCache_Strlen_FullMethodName         = "/ember.v1.EmberCache/Strlen"
+	EmberCache_Exists_FullMethodName         = "/ember.v1.EmberCache/Exists"
+	EmberCache_Expire_FullMethodName         = "/ember.v1.EmberCache/Expire"
+	EmberCache_PExpire_FullMethodName        = "/ember.v1.EmberCache/PExpire"
+	EmberCache_Persist_FullMethodName        = "/ember.v1.EmberCache/Persist"
+	EmberCache_Ttl_FullMethodName            = "/ember.v1.EmberCache/Ttl"
+	EmberCache_PTtl_FullMethodName           = "/ember.v1.EmberCache/PTtl"
+	EmberCache_Type_FullMethodName           = "/ember.v1.EmberCache/Type"
+	EmberCache_Keys_FullMethodName           = "/ember.v1.EmberCache/Keys"
+	EmberCache_Rename_FullMethodName         = "/ember.v1.EmberCache/Rename"
+	EmberCache_Scan_FullMethodName           = "/ember.v1.EmberCache/Scan"
+	EmberCache_LPush_FullMethodName          = "/ember.v1.EmberCache/LPush"
+	EmberCache_RPush_FullMethodName          = "/ember.v1.EmberCache/RPush"
+	EmberCache_LPop_FullMethodName           = "/ember.v1.EmberCache/LPop"
+	EmberCache_RPop_FullMethodName           = "/ember.v1.EmberCache/RPop"
+	EmberCache_LRange_FullMethodName         = "/ember.v1.EmberCache/LRange"
+	EmberCache_LLen_FullMethodName           = "/ember.v1.EmberCache/LLen"
+	EmberCache_HSet_FullMethodName           = "/ember.v1.EmberCache/HSet"
+	EmberCache_HGet_FullMethodName           = "/ember.v1.EmberCache/HGet"
+	EmberCache_HGetAll_FullMethodName        = "/ember.v1.EmberCache/HGetAll"
+	EmberCache_HDel_FullMethodName           = "/ember.v1.EmberCache/HDel"
+	EmberCache_HExists_FullMethodName        = "/ember.v1.EmberCache/HExists"
+	EmberCache_HLen_FullMethodName           = "/ember.v1.EmberCache/HLen"
+	EmberCache_HIncrBy_FullMethodName        = "/ember.v1.EmberCache/HIncrBy"
+	EmberCache_HKeys_FullMethodName          = "/ember.v1.EmberCache/HKeys"
+	EmberCache_HVals_FullMethodName          = "/ember.v1.EmberCache/HVals"
+	EmberCache_HMGet_FullMethodName          = "/ember.v1.EmberCache/HMGet"
+	EmberCache_SAdd_FullMethodName           = "/ember.v1.EmberCache/SAdd"
+	EmberCache_SRem_FullMethodName           = "/ember.v1.EmberCache/SRem"
+	EmberCache_SMembers_FullMethodName       = "/ember.v1.EmberCache/SMembers"
+	EmberCache_SIsMember_FullMethodName      = "/ember.v1.EmberCache/SIsMember"
+	EmberCache_SCard_FullMethodName          = "/ember.v1.EmberCache/SCard"
+	EmberCache_ZAdd_FullMethodName           = "/ember.v1.EmberCache/ZAdd"
+	EmberCache_ZRem_FullMethodName           = "/ember.v1.EmberCache/ZRem"
+	EmberCache_ZScore_FullMethodName         = "/ember.v1.EmberCache/ZScore"
+	EmberCache_ZRank_FullMethodName          = "/ember.v1.EmberCache/ZRank"
+	EmberCache_ZCard_FullMethodName          = "/ember.v1.EmberCache/ZCard"
+	EmberCache_ZRange_FullMethodName         = "/ember.v1.EmberCache/ZRange"
+	EmberCache_VAdd_FullMethodName           = "/ember.v1.EmberCache/VAdd"
+	EmberCache_VSim_FullMethodName           = "/ember.v1.EmberCache/VSim"
+	EmberCache_VRem_FullMethodName           = "/ember.v1.EmberCache/VRem"
+	EmberCache_VGet_FullMethodName           = "/ember.v1.EmberCache/VGet"
+	EmberCache_VCard_FullMethodName          = "/ember.v1.EmberCache/VCard"
+	EmberCache_VDim_FullMethodName           = "/ember.v1.EmberCache/VDim"
+	EmberCache_VInfo_FullMethodName          = "/ember.v1.EmberCache/VInfo"
+	EmberCache_Ping_FullMethodName           = "/ember.v1.EmberCache/Ping"
+	EmberCache_Echo_FullMethodName           = "/ember.v1.EmberCache/Echo"
+	EmberCache_Decr_FullMethodName           = "/ember.v1.EmberCache/Decr"
+	EmberCache_Unlink_FullMethodName         = "/ember.v1.EmberCache/Unlink"
+	EmberCache_FlushDb_FullMethodName        = "/ember.v1.EmberCache/FlushDb"
+	EmberCache_DbSize_FullMethodName         = "/ember.v1.EmberCache/DbSize"
+	EmberCache_Info_FullMethodName           = "/ember.v1.EmberCache/Info"
+	EmberCache_BgSave_FullMethodName         = "/ember.v1.EmberCache/BgSave"
+	EmberCache_BgRewriteAof_FullMethodName   = "/ember.v1.EmberCache/BgRewriteAof"
+	EmberCache_SlowLogGet_FullMethodName     = "/ember.v1.EmberCache/SlowLogGet"
+	EmberCache_SlowLogLen_FullMethodName     = "/ember.v1.EmberCache/SlowLogLen"
+	EmberCache_SlowLogReset_FullMethodName   = "/ember.v1.EmberCache/SlowLogReset"
+	EmberCache_Publish_FullMethodName        = "/ember.v1.EmberCache/Publish"
+	EmberCache_Subscribe_FullMethodName      = "/ember.v1.EmberCache/Subscribe"
+	EmberCache_PubSubChannels_FullMethodName = "/ember.v1.EmberCache/PubSubChannels"
+	EmberCache_PubSubNumSub_FullMethodName   = "/ember.v1.EmberCache/PubSubNumSub"
+	EmberCache_PubSubNumPat_FullMethodName   = "/ember.v1.EmberCache/PubSubNumPat"
+	EmberCache_Pipeline_FullMethodName       = "/ember.v1.EmberCache/Pipeline"
 )
 
 // EmberCacheClient is the client API for EmberCache service.
@@ -145,9 +158,22 @@ type EmberCacheClient interface {
 	VDim(ctx context.Context, in *VDimRequest, opts ...grpc.CallOption) (*IntResponse, error)
 	VInfo(ctx context.Context, in *VInfoRequest, opts ...grpc.CallOption) (*VInfoResponse, error)
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	Echo(ctx context.Context, in *EchoRequest, opts ...grpc.CallOption) (*EchoResponse, error)
+	Decr(ctx context.Context, in *DecrRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Unlink(ctx context.Context, in *UnlinkRequest, opts ...grpc.CallOption) (*DelResponse, error)
 	FlushDb(ctx context.Context, in *FlushDbRequest, opts ...grpc.CallOption) (*StatusResponse, error)
 	DbSize(ctx context.Context, in *DbSizeRequest, opts ...grpc.CallOption) (*IntResponse, error)
 	Info(ctx context.Context, in *InfoRequest, opts ...grpc.CallOption) (*InfoResponse, error)
+	BgSave(ctx context.Context, in *BgSaveRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	BgRewriteAof(ctx context.Context, in *BgRewriteAofRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	SlowLogGet(ctx context.Context, in *SlowLogGetRequest, opts ...grpc.CallOption) (*SlowLogGetResponse, error)
+	SlowLogLen(ctx context.Context, in *SlowLogLenRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	SlowLogReset(ctx context.Context, in *SlowLogResetRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	Publish(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeEvent], error)
+	PubSubChannels(ctx context.Context, in *PubSubChannelsRequest, opts ...grpc.CallOption) (*KeysResponse, error)
+	PubSubNumSub(ctx context.Context, in *PubSubNumSubRequest, opts ...grpc.CallOption) (*PubSubNumSubResponse, error)
+	PubSubNumPat(ctx context.Context, in *PubSubNumPatRequest, opts ...grpc.CallOption) (*IntResponse, error)
 	Pipeline(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipelineRequest, PipelineResponse], error)
 }
 
@@ -719,6 +745,36 @@ func (c *emberCacheClient) Ping(ctx context.Context, in *PingRequest, opts ...gr
 	return out, nil
 }
 
+func (c *emberCacheClient) Echo(ctx context.Context, in *EchoRequest, opts ...grpc.CallOption) (*EchoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EchoResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Echo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Decr(ctx context.Context, in *DecrRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Decr_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Unlink(ctx context.Context, in *UnlinkRequest, opts ...grpc.CallOption) (*DelResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DelResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Unlink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *emberCacheClient) FlushDb(ctx context.Context, in *FlushDbRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(StatusResponse)
@@ -749,9 +805,118 @@ func (c *emberCacheClient) Info(ctx context.Context, in *InfoRequest, opts ...gr
 	return out, nil
 }
 
+func (c *emberCacheClient) BgSave(ctx context.Context, in *BgSaveRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatusResponse)
+	err := c.cc.Invoke(ctx, EmberCache_BgSave_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) BgRewriteAof(ctx context.Context, in *BgRewriteAofRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatusResponse)
+	err := c.cc.Invoke(ctx, EmberCache_BgRewriteAof_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SlowLogGet(ctx context.Context, in *SlowLogGetRequest, opts ...grpc.CallOption) (*SlowLogGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SlowLogGetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SlowLogGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SlowLogLen(ctx context.Context, in *SlowLogLenRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SlowLogLen_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SlowLogReset(ctx context.Context, in *SlowLogResetRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatusResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SlowLogReset_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Publish(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Publish_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &EmberCache_ServiceDesc.Streams[0], EmberCache_Subscribe_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[SubscribeRequest, SubscribeEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type EmberCache_SubscribeClient = grpc.ServerStreamingClient[SubscribeEvent]
+
+func (c *emberCacheClient) PubSubChannels(ctx context.Context, in *PubSubChannelsRequest, opts ...grpc.CallOption) (*KeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(KeysResponse)
+	err := c.cc.Invoke(ctx, EmberCache_PubSubChannels_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) PubSubNumSub(ctx context.Context, in *PubSubNumSubRequest, opts ...grpc.CallOption) (*PubSubNumSubResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PubSubNumSubResponse)
+	err := c.cc.Invoke(ctx, EmberCache_PubSubNumSub_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) PubSubNumPat(ctx context.Context, in *PubSubNumPatRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_PubSubNumPat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *emberCacheClient) Pipeline(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipelineRequest, PipelineResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &EmberCache_ServiceDesc.Streams[0], EmberCache_Pipeline_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &EmberCache_ServiceDesc.Streams[1], EmberCache_Pipeline_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -826,9 +991,22 @@ type EmberCacheServer interface {
 	VDim(context.Context, *VDimRequest) (*IntResponse, error)
 	VInfo(context.Context, *VInfoRequest) (*VInfoResponse, error)
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	Echo(context.Context, *EchoRequest) (*EchoResponse, error)
+	Decr(context.Context, *DecrRequest) (*IntResponse, error)
+	Unlink(context.Context, *UnlinkRequest) (*DelResponse, error)
 	FlushDb(context.Context, *FlushDbRequest) (*StatusResponse, error)
 	DbSize(context.Context, *DbSizeRequest) (*IntResponse, error)
 	Info(context.Context, *InfoRequest) (*InfoResponse, error)
+	BgSave(context.Context, *BgSaveRequest) (*StatusResponse, error)
+	BgRewriteAof(context.Context, *BgRewriteAofRequest) (*StatusResponse, error)
+	SlowLogGet(context.Context, *SlowLogGetRequest) (*SlowLogGetResponse, error)
+	SlowLogLen(context.Context, *SlowLogLenRequest) (*IntResponse, error)
+	SlowLogReset(context.Context, *SlowLogResetRequest) (*StatusResponse, error)
+	Publish(context.Context, *PublishRequest) (*IntResponse, error)
+	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeEvent]) error
+	PubSubChannels(context.Context, *PubSubChannelsRequest) (*KeysResponse, error)
+	PubSubNumSub(context.Context, *PubSubNumSubRequest) (*PubSubNumSubResponse, error)
+	PubSubNumPat(context.Context, *PubSubNumPatRequest) (*IntResponse, error)
 	Pipeline(grpc.BidiStreamingServer[PipelineRequest, PipelineResponse]) error
 	mustEmbedUnimplementedEmberCacheServer()
 }
@@ -1008,6 +1186,15 @@ func (UnimplementedEmberCacheServer) VInfo(context.Context, *VInfoRequest) (*VIn
 func (UnimplementedEmberCacheServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
 }
+func (UnimplementedEmberCacheServer) Echo(context.Context, *EchoRequest) (*EchoResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Echo not implemented")
+}
+func (UnimplementedEmberCacheServer) Decr(context.Context, *DecrRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Decr not implemented")
+}
+func (UnimplementedEmberCacheServer) Unlink(context.Context, *UnlinkRequest) (*DelResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Unlink not implemented")
+}
 func (UnimplementedEmberCacheServer) FlushDb(context.Context, *FlushDbRequest) (*StatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FlushDb not implemented")
 }
@@ -1016,6 +1203,36 @@ func (UnimplementedEmberCacheServer) DbSize(context.Context, *DbSizeRequest) (*I
 }
 func (UnimplementedEmberCacheServer) Info(context.Context, *InfoRequest) (*InfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Info not implemented")
+}
+func (UnimplementedEmberCacheServer) BgSave(context.Context, *BgSaveRequest) (*StatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BgSave not implemented")
+}
+func (UnimplementedEmberCacheServer) BgRewriteAof(context.Context, *BgRewriteAofRequest) (*StatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method BgRewriteAof not implemented")
+}
+func (UnimplementedEmberCacheServer) SlowLogGet(context.Context, *SlowLogGetRequest) (*SlowLogGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SlowLogGet not implemented")
+}
+func (UnimplementedEmberCacheServer) SlowLogLen(context.Context, *SlowLogLenRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SlowLogLen not implemented")
+}
+func (UnimplementedEmberCacheServer) SlowLogReset(context.Context, *SlowLogResetRequest) (*StatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SlowLogReset not implemented")
+}
+func (UnimplementedEmberCacheServer) Publish(context.Context, *PublishRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Publish not implemented")
+}
+func (UnimplementedEmberCacheServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeEvent]) error {
+	return status.Error(codes.Unimplemented, "method Subscribe not implemented")
+}
+func (UnimplementedEmberCacheServer) PubSubChannels(context.Context, *PubSubChannelsRequest) (*KeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PubSubChannels not implemented")
+}
+func (UnimplementedEmberCacheServer) PubSubNumSub(context.Context, *PubSubNumSubRequest) (*PubSubNumSubResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PubSubNumSub not implemented")
+}
+func (UnimplementedEmberCacheServer) PubSubNumPat(context.Context, *PubSubNumPatRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method PubSubNumPat not implemented")
 }
 func (UnimplementedEmberCacheServer) Pipeline(grpc.BidiStreamingServer[PipelineRequest, PipelineResponse]) error {
 	return status.Error(codes.Unimplemented, "method Pipeline not implemented")
@@ -2049,6 +2266,60 @@ func _EmberCache_Ping_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EmberCache_Echo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EchoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Echo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Echo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Echo(ctx, req.(*EchoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Decr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DecrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Decr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Decr_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Decr(ctx, req.(*DecrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Unlink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnlinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Unlink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Unlink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Unlink(ctx, req.(*UnlinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _EmberCache_FlushDb_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FlushDbRequest)
 	if err := dec(in); err != nil {
@@ -2099,6 +2370,179 @@ func _EmberCache_Info_Handler(srv interface{}, ctx context.Context, dec func(int
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(EmberCacheServer).Info(ctx, req.(*InfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_BgSave_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BgSaveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).BgSave(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_BgSave_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).BgSave(ctx, req.(*BgSaveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_BgRewriteAof_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BgRewriteAofRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).BgRewriteAof(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_BgRewriteAof_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).BgRewriteAof(ctx, req.(*BgRewriteAofRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SlowLogGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SlowLogGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SlowLogGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SlowLogGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SlowLogGet(ctx, req.(*SlowLogGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SlowLogLen_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SlowLogLenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SlowLogLen(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SlowLogLen_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SlowLogLen(ctx, req.(*SlowLogLenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SlowLogReset_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SlowLogResetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SlowLogReset(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SlowLogReset_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SlowLogReset(ctx, req.(*SlowLogResetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Publish_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Publish(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Publish_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Publish(ctx, req.(*PublishRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Subscribe_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(SubscribeRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(EmberCacheServer).Subscribe(m, &grpc.GenericServerStream[SubscribeRequest, SubscribeEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type EmberCache_SubscribeServer = grpc.ServerStreamingServer[SubscribeEvent]
+
+func _EmberCache_PubSubChannels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PubSubChannelsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).PubSubChannels(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_PubSubChannels_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).PubSubChannels(ctx, req.(*PubSubChannelsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_PubSubNumSub_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PubSubNumSubRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).PubSubNumSub(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_PubSubNumSub_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).PubSubNumSub(ctx, req.(*PubSubNumSubRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_PubSubNumPat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PubSubNumPatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).PubSubNumPat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_PubSubNumPat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).PubSubNumPat(ctx, req.(*PubSubNumPatRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2342,6 +2786,18 @@ var EmberCache_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _EmberCache_Ping_Handler,
 		},
 		{
+			MethodName: "Echo",
+			Handler:    _EmberCache_Echo_Handler,
+		},
+		{
+			MethodName: "Decr",
+			Handler:    _EmberCache_Decr_Handler,
+		},
+		{
+			MethodName: "Unlink",
+			Handler:    _EmberCache_Unlink_Handler,
+		},
+		{
 			MethodName: "FlushDb",
 			Handler:    _EmberCache_FlushDb_Handler,
 		},
@@ -2353,8 +2809,49 @@ var EmberCache_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Info",
 			Handler:    _EmberCache_Info_Handler,
 		},
+		{
+			MethodName: "BgSave",
+			Handler:    _EmberCache_BgSave_Handler,
+		},
+		{
+			MethodName: "BgRewriteAof",
+			Handler:    _EmberCache_BgRewriteAof_Handler,
+		},
+		{
+			MethodName: "SlowLogGet",
+			Handler:    _EmberCache_SlowLogGet_Handler,
+		},
+		{
+			MethodName: "SlowLogLen",
+			Handler:    _EmberCache_SlowLogLen_Handler,
+		},
+		{
+			MethodName: "SlowLogReset",
+			Handler:    _EmberCache_SlowLogReset_Handler,
+		},
+		{
+			MethodName: "Publish",
+			Handler:    _EmberCache_Publish_Handler,
+		},
+		{
+			MethodName: "PubSubChannels",
+			Handler:    _EmberCache_PubSubChannels_Handler,
+		},
+		{
+			MethodName: "PubSubNumSub",
+			Handler:    _EmberCache_PubSubNumSub_Handler,
+		},
+		{
+			MethodName: "PubSubNumPat",
+			Handler:    _EmberCache_PubSubNumPat_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "Subscribe",
+			Handler:       _EmberCache_Subscribe_Handler,
+			ServerStreams: true,
+		},
 		{
 			StreamName:    "Pipeline",
 			Handler:       _EmberCache_Pipeline_Handler,

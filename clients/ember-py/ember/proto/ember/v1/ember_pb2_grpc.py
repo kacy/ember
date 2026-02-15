@@ -318,6 +318,21 @@ class EmberCacheStub(object):
                 request_serializer=ember_dot_v1_dot_ember__pb2.PingRequest.SerializeToString,
                 response_deserializer=ember_dot_v1_dot_ember__pb2.PingResponse.FromString,
                 _registered_method=True)
+        self.Echo = channel.unary_unary(
+                '/ember.v1.EmberCache/Echo',
+                request_serializer=ember_dot_v1_dot_ember__pb2.EchoRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.EchoResponse.FromString,
+                _registered_method=True)
+        self.Decr = channel.unary_unary(
+                '/ember.v1.EmberCache/Decr',
+                request_serializer=ember_dot_v1_dot_ember__pb2.DecrRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Unlink = channel.unary_unary(
+                '/ember.v1.EmberCache/Unlink',
+                request_serializer=ember_dot_v1_dot_ember__pb2.UnlinkRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.DelResponse.FromString,
+                _registered_method=True)
         self.FlushDb = channel.unary_unary(
                 '/ember.v1.EmberCache/FlushDb',
                 request_serializer=ember_dot_v1_dot_ember__pb2.FlushDbRequest.SerializeToString,
@@ -332,6 +347,56 @@ class EmberCacheStub(object):
                 '/ember.v1.EmberCache/Info',
                 request_serializer=ember_dot_v1_dot_ember__pb2.InfoRequest.SerializeToString,
                 response_deserializer=ember_dot_v1_dot_ember__pb2.InfoResponse.FromString,
+                _registered_method=True)
+        self.BgSave = channel.unary_unary(
+                '/ember.v1.EmberCache/BgSave',
+                request_serializer=ember_dot_v1_dot_ember__pb2.BgSaveRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+                _registered_method=True)
+        self.BgRewriteAof = channel.unary_unary(
+                '/ember.v1.EmberCache/BgRewriteAof',
+                request_serializer=ember_dot_v1_dot_ember__pb2.BgRewriteAofRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+                _registered_method=True)
+        self.SlowLogGet = channel.unary_unary(
+                '/ember.v1.EmberCache/SlowLogGet',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SlowLogGetRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.SlowLogGetResponse.FromString,
+                _registered_method=True)
+        self.SlowLogLen = channel.unary_unary(
+                '/ember.v1.EmberCache/SlowLogLen',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SlowLogLenRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.SlowLogReset = channel.unary_unary(
+                '/ember.v1.EmberCache/SlowLogReset',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SlowLogResetRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+                _registered_method=True)
+        self.Publish = channel.unary_unary(
+                '/ember.v1.EmberCache/Publish',
+                request_serializer=ember_dot_v1_dot_ember__pb2.PublishRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Subscribe = channel.unary_stream(
+                '/ember.v1.EmberCache/Subscribe',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SubscribeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.SubscribeEvent.FromString,
+                _registered_method=True)
+        self.PubSubChannels = channel.unary_unary(
+                '/ember.v1.EmberCache/PubSubChannels',
+                request_serializer=ember_dot_v1_dot_ember__pb2.PubSubChannelsRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+                _registered_method=True)
+        self.PubSubNumSub = channel.unary_unary(
+                '/ember.v1.EmberCache/PubSubNumSub',
+                request_serializer=ember_dot_v1_dot_ember__pb2.PubSubNumSubRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.PubSubNumSubResponse.FromString,
+                _registered_method=True)
+        self.PubSubNumPat = channel.unary_unary(
+                '/ember.v1.EmberCache/PubSubNumPat',
+                request_serializer=ember_dot_v1_dot_ember__pb2.PubSubNumPatRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
                 _registered_method=True)
         self.Pipeline = channel.stream_stream(
                 '/ember.v1.EmberCache/Pipeline',
@@ -698,6 +763,24 @@ class EmberCacheServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Echo(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Decr(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Unlink(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def FlushDb(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -711,6 +794,70 @@ class EmberCacheServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Info(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BgSave(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def BgRewriteAof(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SlowLogGet(self, request, context):
+        """--- slowlog ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SlowLogLen(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SlowLogReset(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Publish(self, request, context):
+        """--- pub/sub ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Subscribe(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PubSubChannels(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PubSubNumSub(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PubSubNumPat(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -1008,6 +1155,21 @@ def add_EmberCacheServicer_to_server(servicer, server):
                     request_deserializer=ember_dot_v1_dot_ember__pb2.PingRequest.FromString,
                     response_serializer=ember_dot_v1_dot_ember__pb2.PingResponse.SerializeToString,
             ),
+            'Echo': grpc.unary_unary_rpc_method_handler(
+                    servicer.Echo,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.EchoRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.EchoResponse.SerializeToString,
+            ),
+            'Decr': grpc.unary_unary_rpc_method_handler(
+                    servicer.Decr,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.DecrRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Unlink': grpc.unary_unary_rpc_method_handler(
+                    servicer.Unlink,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.UnlinkRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.DelResponse.SerializeToString,
+            ),
             'FlushDb': grpc.unary_unary_rpc_method_handler(
                     servicer.FlushDb,
                     request_deserializer=ember_dot_v1_dot_ember__pb2.FlushDbRequest.FromString,
@@ -1022,6 +1184,56 @@ def add_EmberCacheServicer_to_server(servicer, server):
                     servicer.Info,
                     request_deserializer=ember_dot_v1_dot_ember__pb2.InfoRequest.FromString,
                     response_serializer=ember_dot_v1_dot_ember__pb2.InfoResponse.SerializeToString,
+            ),
+            'BgSave': grpc.unary_unary_rpc_method_handler(
+                    servicer.BgSave,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.BgSaveRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.StatusResponse.SerializeToString,
+            ),
+            'BgRewriteAof': grpc.unary_unary_rpc_method_handler(
+                    servicer.BgRewriteAof,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.BgRewriteAofRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.StatusResponse.SerializeToString,
+            ),
+            'SlowLogGet': grpc.unary_unary_rpc_method_handler(
+                    servicer.SlowLogGet,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SlowLogGetRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.SlowLogGetResponse.SerializeToString,
+            ),
+            'SlowLogLen': grpc.unary_unary_rpc_method_handler(
+                    servicer.SlowLogLen,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SlowLogLenRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'SlowLogReset': grpc.unary_unary_rpc_method_handler(
+                    servicer.SlowLogReset,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SlowLogResetRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.StatusResponse.SerializeToString,
+            ),
+            'Publish': grpc.unary_unary_rpc_method_handler(
+                    servicer.Publish,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.PublishRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Subscribe': grpc.unary_stream_rpc_method_handler(
+                    servicer.Subscribe,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SubscribeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.SubscribeEvent.SerializeToString,
+            ),
+            'PubSubChannels': grpc.unary_unary_rpc_method_handler(
+                    servicer.PubSubChannels,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.PubSubChannelsRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.KeysResponse.SerializeToString,
+            ),
+            'PubSubNumSub': grpc.unary_unary_rpc_method_handler(
+                    servicer.PubSubNumSub,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.PubSubNumSubRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.PubSubNumSubResponse.SerializeToString,
+            ),
+            'PubSubNumPat': grpc.unary_unary_rpc_method_handler(
+                    servicer.PubSubNumPat,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.PubSubNumPatRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
             ),
             'Pipeline': grpc.stream_stream_rpc_method_handler(
                     servicer.Pipeline,
@@ -2556,6 +2768,87 @@ class EmberCache(object):
             _registered_method=True)
 
     @staticmethod
+    def Echo(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Echo',
+            ember_dot_v1_dot_ember__pb2.EchoRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.EchoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Decr(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Decr',
+            ember_dot_v1_dot_ember__pb2.DecrRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Unlink(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Unlink',
+            ember_dot_v1_dot_ember__pb2.UnlinkRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.DelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def FlushDb(request,
             target,
             options=(),
@@ -2626,6 +2919,276 @@ class EmberCache(object):
             '/ember.v1.EmberCache/Info',
             ember_dot_v1_dot_ember__pb2.InfoRequest.SerializeToString,
             ember_dot_v1_dot_ember__pb2.InfoResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BgSave(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/BgSave',
+            ember_dot_v1_dot_ember__pb2.BgSaveRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def BgRewriteAof(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/BgRewriteAof',
+            ember_dot_v1_dot_ember__pb2.BgRewriteAofRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SlowLogGet(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SlowLogGet',
+            ember_dot_v1_dot_ember__pb2.SlowLogGetRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.SlowLogGetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SlowLogLen(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SlowLogLen',
+            ember_dot_v1_dot_ember__pb2.SlowLogLenRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SlowLogReset(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SlowLogReset',
+            ember_dot_v1_dot_ember__pb2.SlowLogResetRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Publish(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Publish',
+            ember_dot_v1_dot_ember__pb2.PublishRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Subscribe(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/ember.v1.EmberCache/Subscribe',
+            ember_dot_v1_dot_ember__pb2.SubscribeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.SubscribeEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PubSubChannels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/PubSubChannels',
+            ember_dot_v1_dot_ember__pb2.PubSubChannelsRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PubSubNumSub(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/PubSubNumSub',
+            ember_dot_v1_dot_ember__pb2.PubSubNumSubRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.PubSubNumSubResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PubSubNumPat(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/PubSubNumPat',
+            ember_dot_v1_dot_ember__pb2.PubSubNumPatRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
             options,
             channel_credentials,
             insecure,
