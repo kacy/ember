@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from ember.v1 import ember_pb2 as ember_dot_v1_dot_ember__pb2
+from ember.proto.ember.v1 import ember_pb2 as ember_dot_v1_dot_ember__pb2
 
 GRPC_GENERATED_VERSION = '1.78.0'
 GRPC_VERSION = grpc.__version__
