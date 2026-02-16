@@ -75,14 +75,13 @@ class EmberClient(VectorClient):
         self.conn.delete(self.key)
 
     def insert_batch(self, ids: list, vectors: np.ndarray):
-        pipe = self.conn.pipeline(transaction=False)
+        dim = vectors.shape[1]
+        args = [self.key, "DIM", str(dim)]
         for i, vid in enumerate(ids):
-            vec = vectors[i]
-            # VADD key element v1 v2 ... METRIC COSINE M 16 EF 64
-            args = [self.key, vid] + [str(float(v)) for v in vec]
-            args += ["METRIC", "COSINE", "M", "16", "EF", "64"]
-            pipe.execute_command("VADD", *args)
-        pipe.execute()
+            args.append(vid)
+            args.extend(str(float(v)) for v in vectors[i])
+        args += ["METRIC", "COSINE", "M", "16", "EF", "64"]
+        self.conn.execute_command("VADD_BATCH", *args)
 
     def query(self, vector: np.ndarray, k: int) -> list:
         args = [self.key] + [str(float(v)) for v in vector]
@@ -116,9 +115,8 @@ class EmberGrpcClient(VectorClient):
         self.client.flushdb()
 
     def insert_batch(self, ids: list, vectors: np.ndarray):
-        for i, vid in enumerate(ids):
-            vec = vectors[i].tolist()
-            self.client.vadd(self.key, vid, vec, metric="cosine", m=16, ef=64)
+        entries = [(vid, vectors[i].tolist()) for i, vid in enumerate(ids)]
+        self.client.vadd_batch(self.key, entries, metric="cosine", m=16, ef=64)
 
     def query(self, vector: np.ndarray, k: int) -> list:
         results = self.client.vsim(self.key, vector.tolist(), count=k)

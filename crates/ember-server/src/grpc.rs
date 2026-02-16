@@ -1387,6 +1387,110 @@ impl EmberCache for EmberService {
         }
     }
 
+    async fn v_add_batch(
+        &self,
+        request: Request<VAddBatchRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        #[cfg(not(feature = "vector"))]
+        {
+            let _ = request;
+            return Err(Status::unimplemented(
+                "vector commands require the 'vector' feature",
+            ));
+        }
+
+        #[cfg(feature = "vector")]
+        {
+            let start = Instant::now();
+            let req = request.into_inner();
+            validate_key(&req.key)?;
+
+            if req.entries.is_empty() {
+                return Ok(Response::new(IntResponse { value: 0 }));
+            }
+            if req.entries.len() > 10_000 {
+                return Err(Status::invalid_argument(format!(
+                    "batch size {} exceeds max 10000",
+                    req.entries.len()
+                )));
+            }
+
+            // validate all vectors have same dimensionality
+            let dim = req.entries[0].vector.len();
+            if dim == 0 || dim > MAX_VECTOR_DIMS {
+                return Err(Status::invalid_argument(format!(
+                    "vector dimensions {dim} out of range (1..{MAX_VECTOR_DIMS})"
+                )));
+            }
+            for entry in &req.entries {
+                if entry.vector.len() != dim {
+                    return Err(Status::invalid_argument(format!(
+                        "dimension mismatch: expected {dim}, element '{}' has {}",
+                        entry.element,
+                        entry.vector.len()
+                    )));
+                }
+            }
+
+            if let Some(m) = req.connectivity {
+                if m > MAX_HNSW_M {
+                    return Err(Status::invalid_argument(format!(
+                        "connectivity {m} exceeds max {MAX_HNSW_M}"
+                    )));
+                }
+            }
+            if let Some(ef) = req.ef_construction {
+                if ef > MAX_HNSW_EF {
+                    return Err(Status::invalid_argument(format!(
+                        "ef_construction {ef} exceeds max {MAX_HNSW_EF}"
+                    )));
+                }
+            }
+
+            let metric = match req.metric() {
+                VectorMetric::Cosine => 0,
+                VectorMetric::Euclidean => 1,
+                VectorMetric::InnerProduct => 2,
+            };
+            let quantization = match req.quantization() {
+                VectorQuantization::None => 0,
+                VectorQuantization::F16 => 1,
+                VectorQuantization::I8 => 2,
+            };
+
+            let entries: Vec<(String, Vec<f32>)> = req
+                .entries
+                .into_iter()
+                .map(|e| (e.element, e.vector))
+                .collect();
+
+            let resp = self
+                .route(
+                    &req.key,
+                    ShardRequest::VAddBatch {
+                        key: req.key.clone(),
+                        entries,
+                        dim,
+                        metric,
+                        quantization,
+                        connectivity: req.connectivity.unwrap_or(16),
+                        expansion_add: req.ef_construction.unwrap_or(64),
+                    },
+                )
+                .await?;
+            self.record_command(start, "VADD_BATCH");
+
+            match resp {
+                ShardResponse::VAddBatchResult { added_count, .. } => {
+                    Ok(Response::new(IntResponse {
+                        value: added_count as i64,
+                    }))
+                }
+                other => Err(unexpected_response(&other)),
+            }
+        }
+    }
+
     async fn v_sim(&self, request: Request<VSimRequest>) -> Result<Response<VSimResponse>, Status> {
         #[cfg(not(feature = "vector"))]
         {
@@ -2063,6 +2167,7 @@ async fn handle_pipeline_command(
 
         // vector commands
         Vadd      => v_add          => BoolVal,
+        VaddBatch => v_add_batch    => IntVal,
         Vsim      => v_sim          => Vsim,
         Vrem      => v_rem          => BoolVal,
         Vget      => v_get          => Vget,

@@ -242,10 +242,10 @@ elif [[ "$QDRANT" == "true" ]] && ! python3 -c "import qdrant_client" 2>/dev/nul
     pip install --quiet $REQUIRED_DEPS
 fi
 
-# install ember-py for gRPC benchmarks
+# install ember-py for gRPC benchmarks (also install base deps into venv)
 if [[ "$EMBER_GRPC" == "true" ]]; then
     ensure_venv
-    pip install --quiet ./clients/ember-py
+    pip install --quiet $REQUIRED_DEPS ./clients/ember-py
 fi
 
 # build ember if needed
