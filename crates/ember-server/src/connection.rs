@@ -110,6 +110,9 @@ enum ResponseTag {
     /// Vector VADD result
     #[cfg(feature = "vector")]
     VAddResult,
+    /// Vector VADD_BATCH result
+    #[cfg(feature = "vector")]
+    VAddBatchResult,
     /// Vector VSIM result
     #[cfg(feature = "vector")]
     VSimResult { with_scores: bool },
@@ -1039,6 +1042,30 @@ async fn dispatch_command(
             )
         }
         #[cfg(feature = "vector")]
+        Command::VAddBatch {
+            key,
+            entries,
+            dim,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => {
+            dispatch!(
+                key,
+                ShardRequest::VAddBatch {
+                    key,
+                    entries,
+                    dim,
+                    metric,
+                    quantization,
+                    connectivity,
+                    expansion_add
+                },
+                ResponseTag::VAddBatchResult
+            )
+        }
+        #[cfg(feature = "vector")]
         Command::VSim {
             key,
             query,
@@ -1448,6 +1475,16 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
         #[cfg(feature = "vector")]
+        ResponseTag::VAddBatchResult => match resp {
+            ShardResponse::VAddBatchResult { added_count, .. } => {
+                Frame::Integer(added_count as i64)
+            }
+            ShardResponse::WrongType => wrongtype_error(),
+            ShardResponse::OutOfMemory => oom_error(),
+            ShardResponse::Err(msg) => Frame::Error(format!("ERR {msg}")),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        #[cfg(feature = "vector")]
         ResponseTag::VSimResult { with_scores } => match resp {
             ShardResponse::VSimResult(results) => {
                 let mut frames = Vec::new();
@@ -1605,6 +1642,7 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
         | Command::ProtoSetField { ref key, .. }
         | Command::ProtoDelField { ref key, .. }
         | Command::VAdd { ref key, .. }
+        | Command::VAddBatch { ref key, .. }
         | Command::VSim { ref key, .. }
         | Command::VRem { ref key, .. }
         | Command::VGet { ref key, .. }
@@ -2690,6 +2728,38 @@ async fn execute(
         }
 
         #[cfg(feature = "vector")]
+        Command::VAddBatch {
+            key,
+            entries,
+            dim,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::VAddBatch {
+                key,
+                entries,
+                dim,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::VAddBatchResult { added_count, .. }) => {
+                    Frame::Integer(added_count as i64)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(format!("ERR {msg}")),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        #[cfg(feature = "vector")]
         Command::VSim {
             key,
             query,
@@ -2797,6 +2867,7 @@ async fn execute(
 
         #[cfg(not(feature = "vector"))]
         Command::VAdd { .. }
+        | Command::VAddBatch { .. }
         | Command::VSim { .. }
         | Command::VRem { .. }
         | Command::VGet { .. }
