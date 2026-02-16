@@ -11,8 +11,28 @@ set -e
 echo "=== installing system dependencies ==="
 
 sudo apt-get update
-sudo apt-get install -y build-essential git redis-server \
-    autoconf automake libpcre3-dev libevent-dev pkg-config zlib1g-dev libssl-dev
+sudo apt-get install -y build-essential git redis-server unzip \
+    autoconf automake libpcre3-dev libevent-dev pkg-config zlib1g-dev libssl-dev \
+    gcc-12 g++-12 python3-venv
+
+# prefer gcc-12 (needed for usearch SIMD in vector feature)
+if command -v gcc-12 &> /dev/null; then
+    sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 120 \
+        --slave /usr/bin/g++ g++ /usr/bin/g++-12 2>/dev/null || true
+fi
+
+# disable the redis systemd service — benchmarks manage their own redis instances
+sudo systemctl stop redis-server 2>/dev/null || true
+sudo systemctl disable redis-server 2>/dev/null || true
+
+# install modern protoc (needed for gRPC and protobuf features)
+if ! protoc --version 2>/dev/null | grep -q "29"; then
+    echo "installing protoc 29.3..."
+    curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v29.3/protoc-29.3-linux-x86_64.zip" -o /tmp/protoc.zip
+    sudo unzip -o /tmp/protoc.zip -d /usr/local
+    rm -f /tmp/protoc.zip
+    protoc --version
+fi
 
 echo ""
 echo "=== installing rust ==="
@@ -94,7 +114,22 @@ fi
 echo ""
 echo "=== building ember ==="
 
-cargo build --release --features jemalloc
+# detect available features
+FEATURES="jemalloc"
+if grep -q 'vector' crates/ember-server/Cargo.toml 2>/dev/null; then
+    FEATURES="$FEATURES,vector"
+fi
+if grep -q 'grpc' crates/ember-server/Cargo.toml 2>/dev/null; then
+    FEATURES="$FEATURES,grpc"
+fi
+if grep -q 'protobuf' crates/ember-server/Cargo.toml 2>/dev/null; then
+    FEATURES="$FEATURES,protobuf"
+fi
+if grep -q 'encryption' crates/ember-server/Cargo.toml 2>/dev/null; then
+    FEATURES="$FEATURES,encryption"
+fi
+echo "building with features: $FEATURES"
+cargo build --release -p ember-server --features "$FEATURES"
 
 echo ""
 echo "=== verifying ==="
