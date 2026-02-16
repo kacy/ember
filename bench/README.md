@@ -52,7 +52,7 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 dragonfly in particular offers features ember simply doesn't have:
 
-- full Redis API compatibility (200+ commands vs ember's ~106)
+- full Redis API compatibility (200+ commands vs ember's ~107)
 - sophisticated memory management (dashtable for ~25% of Redis memory usage)
 - transactional semantics (MULTI/EXEC, Lua scripting)
 - fork-free snapshotting
@@ -127,7 +127,7 @@ HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-
 | query p99 (ms) | 0.93ms | **0.83ms** | 2.76ms | 1.56ms | 1.88ms |
 | memory (MB) | **36 MB** | — | 122 MB | 179 MB | 121 MB |
 
-ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.1x qdrant, with 3-5x lower memory usage. gRPC queries are 16% faster than RESP due to lower serialization overhead. insert throughput is lower due to per-vector protocol overhead — qdrant's batch API gives it a significant edge on ingestion.
+ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.1x qdrant, with 3-5x lower memory usage. gRPC queries are 16% faster than RESP due to lower serialization overhead. insert throughput now uses VADD_BATCH (sends multiple vectors in a single command) to reduce per-vector protocol overhead on both RESP and gRPC paths.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 

@@ -326,18 +326,22 @@ dim = int(sys.argv[3])
 
 r = redis.Redis(host="127.0.0.1", port=port, decode_responses=True)
 
-for i in range(count):
-    vec = [random.gauss(0, 1) for _ in range(dim)]
-    norm = sum(v * v for v in vec) ** 0.5
-    vec = [v / norm for v in vec]
-
-    args = ["VADD", "vectors", f"v{i}"] + [str(v) for v in vec]
-    if i == 0:
+batch_size = 500
+for start in range(0, count, batch_size):
+    end = min(start + batch_size, count)
+    args = ["vectors", "DIM", str(dim)]
+    for i in range(start, end):
+        vec = [random.gauss(0, 1) for _ in range(dim)]
+        norm = sum(v * v for v in vec) ** 0.5
+        vec = [v / norm for v in vec]
+        args.append(f"v{i}")
+        args.extend(str(v) for v in vec)
+    if start == 0:
         args += ["METRIC", "COSINE"]
-    r.execute_command(*args)
+    r.execute_command("VADD_BATCH", *args)
 
-    if (i + 1) % 10000 == 0:
-        print(f"    inserted {i + 1}/{count} vectors", file=sys.stderr)
+    if end % 10000 == 0 or end == count:
+        print(f"    inserted {end}/{count} vectors", file=sys.stderr)
 PYEOF
 
         # vector requires sharded mode

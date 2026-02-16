@@ -302,6 +302,40 @@ class EmberClient:
         )
         return resp.value
 
+    def vadd_batch(
+        self,
+        key: str,
+        entries: list[tuple[str, list[float]]],
+        metric: str = "cosine",
+        m: int = 16,
+        ef: int = 64,
+    ) -> int:
+        """Add multiple vectors to a vector set. Returns count of newly added elements.
+
+        entries: list of (element, vector) tuples. All vectors must have the
+        same dimensionality.
+        """
+        metric_map = {
+            "cosine": ember_pb2.VECTOR_METRIC_COSINE,
+            "euclidean": ember_pb2.VECTOR_METRIC_EUCLIDEAN,
+            "ip": ember_pb2.VECTOR_METRIC_INNER_PRODUCT,
+        }
+        batch_entries = [
+            ember_pb2.VAddBatchEntry(element=elem, vector=vec)
+            for elem, vec in entries
+        ]
+        resp = self._stub.VAddBatch(
+            ember_pb2.VAddBatchRequest(
+                key=key,
+                entries=batch_entries,
+                metric=metric_map.get(metric, ember_pb2.VECTOR_METRIC_COSINE),
+                connectivity=m,
+                ef_construction=ef,
+            ),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
     def vsim(
         self,
         key: str,
