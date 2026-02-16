@@ -157,7 +157,7 @@ pub struct VAddBatchResult {
 
 /// Errors from vector write operations.
 #[cfg(feature = "vector")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum VectorWriteError {
     /// The key holds a different type than expected.
     WrongType,
@@ -165,6 +165,12 @@ pub enum VectorWriteError {
     OutOfMemory,
     /// usearch index error (dimension mismatch, capacity, etc).
     IndexError(String),
+    /// A batch insert partially succeeded before encountering an error.
+    /// The applied vectors should still be persisted to the AOF.
+    PartialBatch {
+        message: String,
+        applied: Vec<(String, Vec<f32>)>,
+    },
 }
 
 /// How the keyspace should handle writes when the memory limit is reached.
@@ -396,20 +402,14 @@ impl Keyspace {
 
     /// Measures entry size before and after a mutation, adjusting the
     /// memory tracker for the difference. Touches the entry afterwards.
-    fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> T {
-        let entry = self
-            .entries
-            .get_mut(key)
-            .expect("caller verified key exists");
+    fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
+        let entry = self.entries.get_mut(key)?;
         let old_size = memory::entry_size(key, &entry.value);
         let result = f(entry);
-        let entry = self
-            .entries
-            .get(key)
-            .expect("mutation should not remove key");
+        let entry = self.entries.get(key)?;
         let new_size = memory::entry_size(key, &entry.value);
         self.memory.adjust(old_size, new_size);
-        result
+        Some(result)
     }
 
     /// Adjusts the expiry count when replacing an entry whose TTL status
@@ -1042,7 +1042,7 @@ impl Keyspace {
                 return None;
             }
             let ttl_ms = match time::remaining_ms(entry.expires_at_ms) {
-                Some(ms) => ms as i64,
+                Some(ms) => ms.min(i64::MAX as u64) as i64,
                 None => -1,
             };
             Some((key.as_str(), &entry.value, ttl_ms))
@@ -1183,21 +1183,23 @@ impl Keyspace {
             self.insert_empty(key, Value::List(VecDeque::new()));
         }
 
-        let len = self.track_size(key, |entry| {
-            let Value::List(ref mut deque) = entry.value else {
-                unreachable!("type verified by ensure_collection_type");
-            };
-            for val in values {
-                if left {
-                    deque.push_front(val.clone());
-                } else {
-                    deque.push_back(val.clone());
+        let len = self
+            .track_size(key, |entry| {
+                let Value::List(ref mut deque) = entry.value else {
+                    unreachable!("type verified by ensure_collection_type");
+                };
+                for val in values {
+                    if left {
+                        deque.push_front(val.clone());
+                    } else {
+                        deque.push_back(val.clone());
+                    }
                 }
-            }
-            let len = deque.len();
-            entry.touch();
-            len
-        });
+                let len = deque.len();
+                entry.touch();
+                len
+            })
+            .unwrap_or(0);
 
         Ok(len)
     }
@@ -1263,28 +1265,30 @@ impl Keyspace {
             self.insert_empty(key, Value::SortedSet(SortedSet::new()));
         }
 
-        let (count, applied) = self.track_size(key, |entry| {
-            let Value::SortedSet(ref mut ss) = entry.value else {
-                unreachable!("type verified by ensure_collection_type");
-            };
-            let mut count = 0;
-            let mut applied = Vec::new();
-            for (score, member) in members {
-                let result = ss.add_with_flags(member.clone(), *score, flags);
-                if result.added || result.updated {
-                    applied.push((*score, member.clone()));
-                }
-                if flags.ch {
+        let (count, applied) = self
+            .track_size(key, |entry| {
+                let Value::SortedSet(ref mut ss) = entry.value else {
+                    unreachable!("type verified by ensure_collection_type");
+                };
+                let mut count = 0;
+                let mut applied = Vec::new();
+                for (score, member) in members {
+                    let result = ss.add_with_flags(member.clone(), *score, flags);
                     if result.added || result.updated {
+                        applied.push((*score, member.clone()));
+                    }
+                    if flags.ch {
+                        if result.added || result.updated {
+                            count += 1;
+                        }
+                    } else if result.added {
                         count += 1;
                     }
-                } else if result.added {
-                    count += 1;
                 }
-            }
-            entry.touch();
-            (count, applied)
-        });
+                entry.touch();
+                (count, applied)
+            })
+            .unwrap_or_default();
 
         // clean up if the set is still empty (e.g. XX flag on a new key)
         if let Some(entry) = self.entries.get(key) {
@@ -1452,19 +1456,21 @@ impl Keyspace {
             self.insert_empty(key, Value::Hash(HashMap::new()));
         }
 
-        let added = self.track_size(key, |entry| {
-            let Value::Hash(ref mut map) = entry.value else {
-                unreachable!("type verified by ensure_collection_type");
-            };
-            let mut added = 0;
-            for (field, value) in fields {
-                if map.insert(field.clone(), value.clone()).is_none() {
-                    added += 1;
+        let added = self
+            .track_size(key, |entry| {
+                let Value::Hash(ref mut map) = entry.value else {
+                    unreachable!("type verified by ensure_collection_type");
+                };
+                let mut added = 0;
+                for (field, value) in fields {
+                    if map.insert(field.clone(), value.clone()).is_none() {
+                        added += 1;
+                    }
                 }
-            }
-            entry.touch();
-            added
-        });
+                entry.touch();
+                added
+            })
+            .unwrap_or(0);
 
         Ok(added)
     }
@@ -1718,19 +1724,21 @@ impl Keyspace {
             self.insert_empty(key, Value::Set(std::collections::HashSet::new()));
         }
 
-        let added = self.track_size(key, |entry| {
-            let Value::Set(ref mut set) = entry.value else {
-                unreachable!("type verified by ensure_collection_type");
-            };
-            let mut added = 0;
-            for member in members {
-                if set.insert(member.clone()) {
-                    added += 1;
+        let added = self
+            .track_size(key, |entry| {
+                let Value::Set(ref mut set) = entry.value else {
+                    unreachable!("type verified by ensure_collection_type");
+                };
+                let mut added = 0;
+                for member in members {
+                    if set.insert(member.clone()) {
+                        added += 1;
+                    }
                 }
-            }
-            entry.touch();
-            added
-        });
+                entry.touch();
+                added
+            })
+            .unwrap_or(0);
 
         Ok(added)
     }
@@ -2048,16 +2056,19 @@ impl Keyspace {
                             applied.push((element.clone(), vector.clone()));
                         }
                         Err(e) => {
-                            // partial insert: return what we applied so far + error
-                            // caller should persist the applied vectors
+                            // partial insert: return applied vectors so they can
+                            // be persisted to AOF despite the error
                             entry.touch();
                             let new_entry_size = memory::entry_size(key, &entry.value);
                             self.memory.adjust(old_entry_size, new_entry_size);
-                            return Err(VectorWriteError::IndexError(format!(
-                                "error at element '{}': {e} ({} vectors applied before failure)",
-                                element,
-                                applied.len()
-                            )));
+                            return Err(VectorWriteError::PartialBatch {
+                                message: format!(
+                                    "error at element '{}': {e} ({} vectors applied before failure)",
+                                    element,
+                                    applied.len()
+                                ),
+                                applied,
+                            });
                         }
                     }
                 }
