@@ -324,13 +324,13 @@ declare -a D_P99=()
 
 # ember concurrent
 start_server "ember concurrent" "$EMBER_CONCURRENT_PORT" \
-    "$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent
+    "$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent --no-grpc
 run_server_tests "$EMBER_CONCURRENT_PORT" "ember concurrent" EC_OPS EC_P99
 stop_server
 
 # ember sharded
 start_server "ember sharded" "$EMBER_SHARDED_PORT" \
-    "$EMBER_BIN" --port "$EMBER_SHARDED_PORT"
+    "$EMBER_BIN" --port "$EMBER_SHARDED_PORT" --no-grpc
 run_server_tests "$EMBER_SHARDED_PORT" "ember sharded" ES_OPS ES_P99
 stop_server
 
