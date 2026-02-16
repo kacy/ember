@@ -68,6 +68,7 @@ const (
 	EmberCache_ZCard_FullMethodName          = "/ember.v1.EmberCache/ZCard"
 	EmberCache_ZRange_FullMethodName         = "/ember.v1.EmberCache/ZRange"
 	EmberCache_VAdd_FullMethodName           = "/ember.v1.EmberCache/VAdd"
+	EmberCache_VAddBatch_FullMethodName      = "/ember.v1.EmberCache/VAddBatch"
 	EmberCache_VSim_FullMethodName           = "/ember.v1.EmberCache/VSim"
 	EmberCache_VRem_FullMethodName           = "/ember.v1.EmberCache/VRem"
 	EmberCache_VGet_FullMethodName           = "/ember.v1.EmberCache/VGet"
@@ -151,6 +152,7 @@ type EmberCacheClient interface {
 	ZCard(ctx context.Context, in *ZCardRequest, opts ...grpc.CallOption) (*IntResponse, error)
 	ZRange(ctx context.Context, in *ZRangeRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
 	VAdd(ctx context.Context, in *VAddRequest, opts ...grpc.CallOption) (*BoolResponse, error)
+	VAddBatch(ctx context.Context, in *VAddBatchRequest, opts ...grpc.CallOption) (*IntResponse, error)
 	VSim(ctx context.Context, in *VSimRequest, opts ...grpc.CallOption) (*VSimResponse, error)
 	VRem(ctx context.Context, in *VRemRequest, opts ...grpc.CallOption) (*BoolResponse, error)
 	VGet(ctx context.Context, in *VGetRequest, opts ...grpc.CallOption) (*VGetResponse, error)
@@ -675,6 +677,16 @@ func (c *emberCacheClient) VAdd(ctx context.Context, in *VAddRequest, opts ...gr
 	return out, nil
 }
 
+func (c *emberCacheClient) VAddBatch(ctx context.Context, in *VAddBatchRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_VAddBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *emberCacheClient) VSim(ctx context.Context, in *VSimRequest, opts ...grpc.CallOption) (*VSimResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(VSimResponse)
@@ -984,6 +996,7 @@ type EmberCacheServer interface {
 	ZCard(context.Context, *ZCardRequest) (*IntResponse, error)
 	ZRange(context.Context, *ZRangeRequest) (*ZRangeResponse, error)
 	VAdd(context.Context, *VAddRequest) (*BoolResponse, error)
+	VAddBatch(context.Context, *VAddBatchRequest) (*IntResponse, error)
 	VSim(context.Context, *VSimRequest) (*VSimResponse, error)
 	VRem(context.Context, *VRemRequest) (*BoolResponse, error)
 	VGet(context.Context, *VGetRequest) (*VGetResponse, error)
@@ -1164,6 +1177,9 @@ func (UnimplementedEmberCacheServer) ZRange(context.Context, *ZRangeRequest) (*Z
 }
 func (UnimplementedEmberCacheServer) VAdd(context.Context, *VAddRequest) (*BoolResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VAdd not implemented")
+}
+func (UnimplementedEmberCacheServer) VAddBatch(context.Context, *VAddBatchRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method VAddBatch not implemented")
 }
 func (UnimplementedEmberCacheServer) VSim(context.Context, *VSimRequest) (*VSimResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method VSim not implemented")
@@ -2140,6 +2156,24 @@ func _EmberCache_VAdd_Handler(srv interface{}, ctx context.Context, dec func(int
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EmberCache_VAddBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VAddBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).VAddBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_VAddBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).VAddBatch(ctx, req.(*VAddBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _EmberCache_VSim_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(VSimRequest)
 	if err := dec(in); err != nil {
@@ -2756,6 +2790,10 @@ var EmberCache_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "VAdd",
 			Handler:    _EmberCache_VAdd_Handler,
+		},
+		{
+			MethodName: "VAddBatch",
+			Handler:    _EmberCache_VAddBatch_Handler,
 		},
 		{
 			MethodName: "VSim",

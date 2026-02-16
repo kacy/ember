@@ -159,6 +159,7 @@ cargo build --release --features vector
 | command | description |
 |---------|-------------|
 | `VADD key element f32 [f32 ...] [METRIC COSINE\|L2\|IP] [QUANT F32\|F16\|Q8] [M n] [EF n]` | add a vector to the set |
+| `VADD_BATCH key DIM n elem1 f32... elem2 f32... [METRIC\|QUANT\|M\|EF]` | add multiple vectors in one command |
 | `VSIM key f32 [f32 ...] COUNT k [EF n] [WITHSCORES]` | k nearest neighbors |
 | `VREM key element` | remove a vector |
 | `VGET key element` | retrieve stored vector values |
@@ -303,7 +304,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
 
-**current**: 106 commands, 796+ tests, ~31k lines of code (excluding tests)
+**current**: 107 commands, 796+ tests, ~31k lines of code (excluding tests)
 
 ## security
 

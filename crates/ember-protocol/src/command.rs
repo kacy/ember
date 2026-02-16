@@ -26,6 +26,11 @@ const MAX_VSIM_COUNT: u64 = 10_000;
 /// larger values cause worst-case O(n) graph traversal with no accuracy gain.
 const MAX_VSIM_EF: u64 = MAX_HNSW_PARAM;
 
+/// Maximum number of vectors in a single VADD_BATCH command. 10,000 keeps
+/// per-command latency bounded while still being large enough to amortize
+/// round-trip overhead for bulk inserts.
+const MAX_VADD_BATCH_SIZE: usize = 10_000;
+
 /// Expiration option for the SET command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetExpire {
@@ -355,6 +360,22 @@ pub enum Command {
         expansion_add: u32,
     },
 
+    /// VADD_BATCH key DIM n element1 f32... element2 f32... [METRIC COSINE|L2|IP]
+    /// [QUANT F32|F16|I8] [M n] [EF n]. Adds multiple vectors in a single command.
+    VAddBatch {
+        key: String,
+        entries: Vec<(String, Vec<f32>)>,
+        dim: usize,
+        /// 0 = cosine (default), 1 = l2, 2 = inner product
+        metric: u8,
+        /// 0 = f32 (default), 1 = f16, 2 = i8
+        quantization: u8,
+        /// HNSW connectivity parameter (default 16)
+        connectivity: u32,
+        /// HNSW construction beam width (default 64)
+        expansion_add: u32,
+    },
+
     /// VSIM key f32 [f32 ...] COUNT k [EF n] [WITHSCORES].
     /// Searches for k nearest neighbors.
     VSim {
@@ -552,6 +573,7 @@ impl Command {
             Command::PubSubNumSub { .. } => "pubsub",
             Command::PubSubNumPat => "pubsub",
             Command::VAdd { .. } => "vadd",
+            Command::VAddBatch { .. } => "vadd_batch",
             Command::VSim { .. } => "vsim",
             Command::VRem { .. } => "vrem",
             Command::VGet { .. } => "vget",
@@ -665,6 +687,7 @@ impl Command {
             "PUBLISH" => parse_publish(&frames[1..]),
             "PUBSUB" => parse_pubsub(&frames[1..]),
             "VADD" => parse_vadd(&frames[1..]),
+            "VADD_BATCH" => parse_vadd_batch(&frames[1..]),
             "VSIM" => parse_vsim(&frames[1..]),
             "VREM" => parse_vrem(&frames[1..]),
             "VGET" => parse_vget(&frames[1..]),
@@ -1952,6 +1975,180 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
         key,
         element,
         vector,
+        metric,
+        quantization,
+        connectivity,
+        expansion_add,
+    })
+}
+
+/// VADD_BATCH key DIM n element1 f32... element2 f32... [METRIC COSINE|L2|IP]
+/// [QUANT F32|F16|I8] [M n] [EF n]
+fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // minimum: key + DIM + n (even an empty batch needs the DIM declaration)
+    if args.len() < 3 {
+        return Err(ProtocolError::WrongArity("VADD_BATCH".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+
+    // require DIM keyword
+    let dim_kw = extract_string(&args[1])?.to_ascii_uppercase();
+    if dim_kw != "DIM" {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "VADD_BATCH: expected DIM keyword".into(),
+        ));
+    }
+
+    let dim = parse_u64(&args[2], "VADD_BATCH")? as usize;
+    if dim == 0 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "VADD_BATCH: DIM must be at least 1".into(),
+        ));
+    }
+    if dim > MAX_VECTOR_DIMS {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "VADD_BATCH: DIM {dim} exceeds max {MAX_VECTOR_DIMS}"
+        )));
+    }
+
+    // parse entries: each is element_name followed by exactly `dim` floats.
+    // stop when we see a known flag or run out of args.
+    let mut idx = 3;
+    let mut entries: Vec<(String, Vec<f32>)> = Vec::new();
+    let flags = ["METRIC", "QUANT", "M", "EF"];
+
+    while idx < args.len() {
+        let token = extract_string(&args[idx])?;
+        if flags.contains(&token.to_ascii_uppercase().as_str()) {
+            break;
+        }
+
+        // this token is an element name
+        let element = token;
+        idx += 1;
+
+        // read exactly `dim` floats
+        if idx + dim > args.len() {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "VADD_BATCH: not enough floats for element '{element}' (expected {dim})"
+            )));
+        }
+
+        let mut vector = Vec::with_capacity(dim);
+        for _ in 0..dim {
+            let s = extract_string(&args[idx])?;
+            let v = s.parse::<f32>().map_err(|_| {
+                ProtocolError::InvalidCommandFrame(format!(
+                    "VADD_BATCH: expected float, got '{s}'"
+                ))
+            })?;
+            vector.push(v);
+            idx += 1;
+        }
+
+        entries.push((element, vector));
+
+        if entries.len() > MAX_VADD_BATCH_SIZE {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "VADD_BATCH: batch size exceeds max {MAX_VADD_BATCH_SIZE}"
+            )));
+        }
+    }
+
+    // parse optional flags (same logic as parse_vadd)
+    let mut metric: u8 = 0;
+    let mut quantization: u8 = 0;
+    let mut connectivity: u32 = 16;
+    let mut expansion_add: u32 = 64;
+
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
+        match flag.as_str() {
+            "METRIC" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD_BATCH: METRIC requires a value".into(),
+                    ));
+                }
+                let val = extract_string(&args[idx])?.to_ascii_uppercase();
+                metric = match val.as_str() {
+                    "COSINE" => 0,
+                    "L2" => 1,
+                    "IP" => 2,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "VADD_BATCH: unknown metric '{val}'"
+                        )))
+                    }
+                };
+                idx += 1;
+            }
+            "QUANT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD_BATCH: QUANT requires a value".into(),
+                    ));
+                }
+                let val = extract_string(&args[idx])?.to_ascii_uppercase();
+                quantization = match val.as_str() {
+                    "F32" => 0,
+                    "F16" => 1,
+                    "I8" | "Q8" => 2,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "VADD_BATCH: unknown quantization '{val}'"
+                        )))
+                    }
+                };
+                idx += 1;
+            }
+            "M" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD_BATCH: M requires a value".into(),
+                    ));
+                }
+                let m = parse_u64(&args[idx], "VADD_BATCH")?;
+                if m > MAX_HNSW_PARAM {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VADD_BATCH: M value {m} exceeds max {MAX_HNSW_PARAM}"
+                    )));
+                }
+                connectivity = m as u32;
+                idx += 1;
+            }
+            "EF" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD_BATCH: EF requires a value".into(),
+                    ));
+                }
+                let ef = parse_u64(&args[idx], "VADD_BATCH")?;
+                if ef > MAX_HNSW_PARAM {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "VADD_BATCH: EF value {ef} exceeds max {MAX_HNSW_PARAM}"
+                    )));
+                }
+                expansion_add = ef as u32;
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "VADD_BATCH: unexpected argument '{flag}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::VAddBatch {
+        key,
+        entries,
+        dim,
         metric,
         quantization,
         connectivity,
@@ -4812,6 +5009,145 @@ mod tests {
     fn vadd_unknown_quantization() {
         let err =
             Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "QUANT", "F64"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- vadd_batch ---
+
+    #[test]
+    fn vadd_batch_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&[
+                "VADD_BATCH", "vecs", "DIM", "3", "a", "0.1", "0.2", "0.3", "b", "0.4", "0.5",
+                "0.6"
+            ]))
+            .unwrap(),
+            Command::VAddBatch {
+                key: "vecs".into(),
+                entries: vec![
+                    ("a".into(), vec![0.1, 0.2, 0.3]),
+                    ("b".into(), vec![0.4, 0.5, 0.6]),
+                ],
+                dim: 3,
+                metric: 0,
+                quantization: 0,
+                connectivity: 16,
+                expansion_add: 64,
+            },
+        );
+    }
+
+    #[test]
+    fn vadd_batch_with_options() {
+        assert_eq!(
+            Command::from_frame(cmd(&[
+                "VADD_BATCH", "vecs", "DIM", "2", "a", "1.0", "2.0", "METRIC", "L2", "QUANT",
+                "F16", "M", "32", "EF", "128"
+            ]))
+            .unwrap(),
+            Command::VAddBatch {
+                key: "vecs".into(),
+                entries: vec![("a".into(), vec![1.0, 2.0])],
+                dim: 2,
+                metric: 1,
+                quantization: 1,
+                connectivity: 32,
+                expansion_add: 128,
+            },
+        );
+    }
+
+    #[test]
+    fn vadd_batch_single_entry() {
+        assert_eq!(
+            Command::from_frame(cmd(&["VADD_BATCH", "vecs", "DIM", "1", "x", "3.14"])).unwrap(),
+            Command::VAddBatch {
+                key: "vecs".into(),
+                entries: vec![("x".into(), vec![3.14])],
+                dim: 1,
+                metric: 0,
+                quantization: 0,
+                connectivity: 16,
+                expansion_add: 64,
+            },
+        );
+    }
+
+    #[test]
+    fn vadd_batch_empty_entries() {
+        // key + DIM + n but no entries — valid, returns empty batch
+        assert_eq!(
+            Command::from_frame(cmd(&["VADD_BATCH", "vecs", "DIM", "3"])).unwrap(),
+            Command::VAddBatch {
+                key: "vecs".into(),
+                entries: vec![],
+                dim: 3,
+                metric: 0,
+                quantization: 0,
+                connectivity: 16,
+                expansion_add: 64,
+            },
+        );
+    }
+
+    #[test]
+    fn vadd_batch_wrong_arity() {
+        let err = Command::from_frame(cmd(&["VADD_BATCH"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["VADD_BATCH", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+
+        let err = Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn vadd_batch_missing_dim_keyword() {
+        let err =
+            Command::from_frame(cmd(&["VADD_BATCH", "key", "3", "a", "1.0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_batch_dim_zero() {
+        let err =
+            Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_batch_dim_exceeds_max() {
+        let err =
+            Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "99999"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_batch_insufficient_floats() {
+        // DIM=3 but only 2 floats for element "a"
+        let err = Command::from_frame(cmd(&[
+            "VADD_BATCH", "key", "DIM", "3", "a", "1.0", "2.0",
+        ]))
+        .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_batch_m_exceeds_max() {
+        let err = Command::from_frame(cmd(&[
+            "VADD_BATCH", "key", "DIM", "2", "a", "1.0", "2.0", "M", "9999",
+        ]))
+        .unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn vadd_batch_ef_exceeds_max() {
+        let err = Command::from_frame(cmd(&[
+            "VADD_BATCH", "key", "DIM", "2", "a", "1.0", "2.0", "EF", "9999",
+        ]))
+        .unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 

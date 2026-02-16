@@ -283,6 +283,11 @@ class EmberCacheStub(object):
                 request_serializer=ember_dot_v1_dot_ember__pb2.VAddRequest.SerializeToString,
                 response_deserializer=ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
                 _registered_method=True)
+        self.VAddBatch = channel.unary_unary(
+                '/ember.v1.EmberCache/VAddBatch',
+                request_serializer=ember_dot_v1_dot_ember__pb2.VAddBatchRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
         self.VSim = channel.unary_unary(
                 '/ember.v1.EmberCache/VSim',
                 request_serializer=ember_dot_v1_dot_ember__pb2.VSimRequest.SerializeToString,
@@ -719,6 +724,12 @@ class EmberCacheServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def VAddBatch(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def VSim(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -1119,6 +1130,11 @@ def add_EmberCacheServicer_to_server(servicer, server):
                     servicer.VAdd,
                     request_deserializer=ember_dot_v1_dot_ember__pb2.VAddRequest.FromString,
                     response_serializer=ember_dot_v1_dot_ember__pb2.BoolResponse.SerializeToString,
+            ),
+            'VAddBatch': grpc.unary_unary_rpc_method_handler(
+                    servicer.VAddBatch,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.VAddBatchRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
             ),
             'VSim': grpc.unary_unary_rpc_method_handler(
                     servicer.VSim,
@@ -2568,6 +2584,33 @@ class EmberCache(object):
             '/ember.v1.EmberCache/VAdd',
             ember_dot_v1_dot_ember__pb2.VAddRequest.SerializeToString,
             ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def VAddBatch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/VAddBatch',
+            ember_dot_v1_dot_ember__pb2.VAddBatchRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
             options,
             channel_credentials,
             insecure,

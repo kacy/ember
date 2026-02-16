@@ -144,6 +144,17 @@ pub struct VAddResult {
     pub added: bool,
 }
 
+/// Result of a VADD_BATCH operation.
+#[cfg(feature = "vector")]
+#[derive(Debug, Clone)]
+pub struct VAddBatchResult {
+    /// Number of newly added elements (not updates).
+    pub added_count: usize,
+    /// Elements that were actually inserted or updated, with their vectors.
+    /// Only these should be persisted to the AOF.
+    pub applied: Vec<(String, Vec<f32>)>,
+}
+
 /// Errors from vector write operations.
 #[cfg(feature = "vector")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1933,6 +1944,134 @@ impl Keyspace {
             element,
             vector,
             added,
+        })
+    }
+
+    /// Adds multiple vectors to a vector set in a single operation.
+    ///
+    /// All vectors are validated upfront (NaN/inf check) before any are inserted.
+    /// Memory is estimated for the entire batch with one `enforce_memory_limit` call.
+    /// On usearch error mid-batch, returns the error but already-applied vectors
+    /// are included in the result for AOF persistence.
+    #[cfg(feature = "vector")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn vadd_batch(
+        &mut self,
+        key: &str,
+        entries: &[(String, Vec<f32>)],
+        metric: crate::types::vector::DistanceMetric,
+        quantization: crate::types::vector::QuantizationType,
+        connectivity: usize,
+        expansion_add: usize,
+    ) -> Result<VAddBatchResult, VectorWriteError> {
+        use crate::types::vector::VectorSet;
+
+        if entries.is_empty() {
+            return Ok(VAddBatchResult {
+                added_count: 0,
+                applied: Vec::new(),
+            });
+        }
+
+        self.remove_if_expired(key);
+
+        // type check
+        let is_new = match self.entries.get(key) {
+            None => true,
+            Some(e) if matches!(e.value, Value::Vector(_)) => false,
+            Some(_) => return Err(VectorWriteError::WrongType),
+        };
+
+        // validate all vectors upfront — reject entire batch on NaN/inf
+        let dim = entries[0].1.len();
+        for (elem, vec) in entries {
+            if vec.len() != dim {
+                return Err(VectorWriteError::IndexError(format!(
+                    "dimension mismatch: expected {dim}, element '{elem}' has {}",
+                    vec.len()
+                )));
+            }
+            for &v in vec {
+                if v.is_nan() || v.is_infinite() {
+                    return Err(VectorWriteError::IndexError(format!(
+                        "element '{elem}' contains NaN or infinity"
+                    )));
+                }
+            }
+        }
+
+        // estimate total memory for all vectors
+        let per_vector = dim
+            .saturating_mul(quantization.bytes_per_element())
+            .saturating_add(connectivity.saturating_mul(16))
+            .saturating_add(80);
+        let total_elem_names: usize = entries.iter().map(|(e, _)| e.len()).sum();
+        let vectors_cost = entries
+            .len()
+            .saturating_mul(per_vector)
+            .saturating_add(total_elem_names);
+        let estimated_increase = if is_new {
+            memory::ENTRY_OVERHEAD + key.len() + VectorSet::BASE_OVERHEAD + vectors_cost
+        } else {
+            vectors_cost
+        };
+        if !self.enforce_memory_limit(estimated_increase) {
+            return Err(VectorWriteError::OutOfMemory);
+        }
+
+        // create vector set if new
+        if is_new {
+            let vs = VectorSet::new(dim, metric, quantization, connectivity, expansion_add)
+                .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
+            let value = Value::Vector(vs);
+            self.memory.add(key, &value);
+            self.entries.insert(key.to_owned(), Entry::new(value, None));
+        }
+
+        let entry = match self.entries.get_mut(key) {
+            Some(e) => e,
+            None => return Err(VectorWriteError::IndexError("entry missing".into())),
+        };
+        let old_entry_size = memory::entry_size(key, &entry.value);
+
+        let mut added_count = 0;
+        let mut applied = Vec::with_capacity(entries.len());
+
+        match entry.value {
+            Value::Vector(ref mut vs) => {
+                for (element, vector) in entries {
+                    match vs.add(element.clone(), vector) {
+                        Ok(added) => {
+                            if added {
+                                added_count += 1;
+                            }
+                            applied.push((element.clone(), vector.clone()));
+                        }
+                        Err(e) => {
+                            // partial insert: return what we applied so far + error
+                            // caller should persist the applied vectors
+                            entry.touch();
+                            let new_entry_size = memory::entry_size(key, &entry.value);
+                            self.memory.adjust(old_entry_size, new_entry_size);
+                            return Err(VectorWriteError::IndexError(format!(
+                                "error at element '{}': {e} ({} vectors applied before failure)",
+                                element,
+                                applied.len()
+                            )));
+                        }
+                    }
+                }
+            }
+            _ => return Err(VectorWriteError::WrongType),
+        }
+
+        entry.touch();
+        let new_entry_size = memory::entry_size(key, &entry.value);
+        self.memory.adjust(old_entry_size, new_entry_size);
+
+        Ok(VAddBatchResult {
+            added_count,
+            applied,
         })
     }
 
