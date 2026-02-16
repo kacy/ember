@@ -114,10 +114,10 @@ impl SlotRange {
     ///
     /// # Panics
     ///
-    /// Debug-panics if `start > end` or if `end >= SLOT_COUNT`.
+    /// Panics if `start > end` or if `end >= SLOT_COUNT`.
     pub fn new(start: u16, end: u16) -> Self {
-        debug_assert!(start <= end, "SlotRange requires start <= end");
-        debug_assert!(end < SLOT_COUNT, "slot must be < {SLOT_COUNT}");
+        assert!(start <= end, "SlotRange requires start <= end");
+        assert!(end < SLOT_COUNT, "slot must be < {SLOT_COUNT}");
         Self { start, end }
     }
 
