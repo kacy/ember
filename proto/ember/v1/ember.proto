@@ -77,6 +77,7 @@ service EmberCache {
   // only available when the server is built with the vector feature.
 
   rpc VAdd(VAddRequest) returns (BoolResponse);
+  rpc VAddBatch(VAddBatchRequest) returns (IntResponse);
   rpc VSim(VSimRequest) returns (VSimResponse);
   rpc VRem(VRemRequest) returns (BoolResponse);
   rpc VGet(VGetRequest) returns (VGetResponse);
@@ -505,6 +506,20 @@ message VAddRequest {
   optional uint32 ef_construction = 7;
 }
 
+message VAddBatchEntry {
+  string element = 1;
+  repeated float vector = 2 [packed = true];
+}
+
+message VAddBatchRequest {
+  string key = 1;
+  repeated VAddBatchEntry entries = 2;
+  VectorMetric metric = 3;
+  VectorQuantization quantization = 4;
+  optional uint32 connectivity = 5;
+  optional uint32 ef_construction = 6;
+}
+
 message VSimRequest {
   string key = 1;
   repeated float query = 2 [packed = true];
@@ -741,6 +756,7 @@ message PipelineRequest {
     PubSubChannelsRequest pubsub_channels = 69;
     PubSubNumSubRequest pubsub_numsub = 70;
     PubSubNumPatRequest pubsub_numpat = 71;
+    VAddBatchRequest vadd_batch = 72;
   }
 }
 

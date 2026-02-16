@@ -3743,6 +3743,142 @@ func (x *VAddRequest) GetEfConstruction() uint32 {
 	return 0
 }
 
+type VAddBatchEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Element       string                 `protobuf:"bytes,1,opt,name=element,proto3" json:"element,omitempty"`
+	Vector        []float32              `protobuf:"fixed32,2,rep,packed,name=vector,proto3" json:"vector,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VAddBatchEntry) Reset() {
+	*x = VAddBatchEntry{}
+	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VAddBatchEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VAddBatchEntry) ProtoMessage() {}
+
+func (x *VAddBatchEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VAddBatchEntry.ProtoReflect.Descriptor instead.
+func (*VAddBatchEntry) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *VAddBatchEntry) GetElement() string {
+	if x != nil {
+		return x.Element
+	}
+	return ""
+}
+
+func (x *VAddBatchEntry) GetVector() []float32 {
+	if x != nil {
+		return x.Vector
+	}
+	return nil
+}
+
+type VAddBatchRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Key            string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Entries        []*VAddBatchEntry      `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	Metric         VectorMetric           `protobuf:"varint,3,opt,name=metric,proto3,enum=ember.v1.VectorMetric" json:"metric,omitempty"`
+	Quantization   VectorQuantization     `protobuf:"varint,4,opt,name=quantization,proto3,enum=ember.v1.VectorQuantization" json:"quantization,omitempty"`
+	Connectivity   *uint32                `protobuf:"varint,5,opt,name=connectivity,proto3,oneof" json:"connectivity,omitempty"`
+	EfConstruction *uint32                `protobuf:"varint,6,opt,name=ef_construction,json=efConstruction,proto3,oneof" json:"ef_construction,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *VAddBatchRequest) Reset() {
+	*x = VAddBatchRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[73]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VAddBatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VAddBatchRequest) ProtoMessage() {}
+
+func (x *VAddBatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[73]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VAddBatchRequest.ProtoReflect.Descriptor instead.
+func (*VAddBatchRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{73}
+}
+
+func (x *VAddBatchRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *VAddBatchRequest) GetEntries() []*VAddBatchEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *VAddBatchRequest) GetMetric() VectorMetric {
+	if x != nil {
+		return x.Metric
+	}
+	return VectorMetric_VECTOR_METRIC_COSINE
+}
+
+func (x *VAddBatchRequest) GetQuantization() VectorQuantization {
+	if x != nil {
+		return x.Quantization
+	}
+	return VectorQuantization_VECTOR_QUANTIZATION_NONE
+}
+
+func (x *VAddBatchRequest) GetConnectivity() uint32 {
+	if x != nil && x.Connectivity != nil {
+		return *x.Connectivity
+	}
+	return 0
+}
+
+func (x *VAddBatchRequest) GetEfConstruction() uint32 {
+	if x != nil && x.EfConstruction != nil {
+		return *x.EfConstruction
+	}
+	return 0
+}
+
 type VSimRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -3755,7 +3891,7 @@ type VSimRequest struct {
 
 func (x *VSimRequest) Reset() {
 	*x = VSimRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	mi := &file_ember_v1_ember_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3767,7 +3903,7 @@ func (x *VSimRequest) String() string {
 func (*VSimRequest) ProtoMessage() {}
 
 func (x *VSimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	mi := &file_ember_v1_ember_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3780,7 +3916,7 @@ func (x *VSimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSimRequest.ProtoReflect.Descriptor instead.
 func (*VSimRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{72}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *VSimRequest) GetKey() string {
@@ -3820,7 +3956,7 @@ type VSimResponse struct {
 
 func (x *VSimResponse) Reset() {
 	*x = VSimResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[73]
+	mi := &file_ember_v1_ember_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3832,7 +3968,7 @@ func (x *VSimResponse) String() string {
 func (*VSimResponse) ProtoMessage() {}
 
 func (x *VSimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[73]
+	mi := &file_ember_v1_ember_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3845,7 +3981,7 @@ func (x *VSimResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSimResponse.ProtoReflect.Descriptor instead.
 func (*VSimResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{73}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *VSimResponse) GetResults() []*VSimResult {
@@ -3865,7 +4001,7 @@ type VSimResult struct {
 
 func (x *VSimResult) Reset() {
 	*x = VSimResult{}
-	mi := &file_ember_v1_ember_proto_msgTypes[74]
+	mi := &file_ember_v1_ember_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3877,7 +4013,7 @@ func (x *VSimResult) String() string {
 func (*VSimResult) ProtoMessage() {}
 
 func (x *VSimResult) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[74]
+	mi := &file_ember_v1_ember_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3890,7 +4026,7 @@ func (x *VSimResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSimResult.ProtoReflect.Descriptor instead.
 func (*VSimResult) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{74}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *VSimResult) GetElement() string {
@@ -3917,7 +4053,7 @@ type VRemRequest struct {
 
 func (x *VRemRequest) Reset() {
 	*x = VRemRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[75]
+	mi := &file_ember_v1_ember_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3929,7 +4065,7 @@ func (x *VRemRequest) String() string {
 func (*VRemRequest) ProtoMessage() {}
 
 func (x *VRemRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[75]
+	mi := &file_ember_v1_ember_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3942,7 +4078,7 @@ func (x *VRemRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VRemRequest.ProtoReflect.Descriptor instead.
 func (*VRemRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{75}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *VRemRequest) GetKey() string {
@@ -3969,7 +4105,7 @@ type VGetRequest struct {
 
 func (x *VGetRequest) Reset() {
 	*x = VGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[76]
+	mi := &file_ember_v1_ember_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3981,7 +4117,7 @@ func (x *VGetRequest) String() string {
 func (*VGetRequest) ProtoMessage() {}
 
 func (x *VGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[76]
+	mi := &file_ember_v1_ember_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3994,7 +4130,7 @@ func (x *VGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VGetRequest.ProtoReflect.Descriptor instead.
 func (*VGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{76}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *VGetRequest) GetKey() string {
@@ -4021,7 +4157,7 @@ type VGetResponse struct {
 
 func (x *VGetResponse) Reset() {
 	*x = VGetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[77]
+	mi := &file_ember_v1_ember_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4033,7 +4169,7 @@ func (x *VGetResponse) String() string {
 func (*VGetResponse) ProtoMessage() {}
 
 func (x *VGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[77]
+	mi := &file_ember_v1_ember_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4046,7 +4182,7 @@ func (x *VGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VGetResponse.ProtoReflect.Descriptor instead.
 func (*VGetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{77}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *VGetResponse) GetExists() bool {
@@ -4072,7 +4208,7 @@ type VCardRequest struct {
 
 func (x *VCardRequest) Reset() {
 	*x = VCardRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[78]
+	mi := &file_ember_v1_ember_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4084,7 +4220,7 @@ func (x *VCardRequest) String() string {
 func (*VCardRequest) ProtoMessage() {}
 
 func (x *VCardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[78]
+	mi := &file_ember_v1_ember_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4097,7 +4233,7 @@ func (x *VCardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VCardRequest.ProtoReflect.Descriptor instead.
 func (*VCardRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{78}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *VCardRequest) GetKey() string {
@@ -4116,7 +4252,7 @@ type VDimRequest struct {
 
 func (x *VDimRequest) Reset() {
 	*x = VDimRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[79]
+	mi := &file_ember_v1_ember_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4128,7 +4264,7 @@ func (x *VDimRequest) String() string {
 func (*VDimRequest) ProtoMessage() {}
 
 func (x *VDimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[79]
+	mi := &file_ember_v1_ember_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4141,7 +4277,7 @@ func (x *VDimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VDimRequest.ProtoReflect.Descriptor instead.
 func (*VDimRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{79}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *VDimRequest) GetKey() string {
@@ -4160,7 +4296,7 @@ type VInfoRequest struct {
 
 func (x *VInfoRequest) Reset() {
 	*x = VInfoRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[80]
+	mi := &file_ember_v1_ember_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4172,7 +4308,7 @@ func (x *VInfoRequest) String() string {
 func (*VInfoRequest) ProtoMessage() {}
 
 func (x *VInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[80]
+	mi := &file_ember_v1_ember_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4185,7 +4321,7 @@ func (x *VInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VInfoRequest.ProtoReflect.Descriptor instead.
 func (*VInfoRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{80}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *VInfoRequest) GetKey() string {
@@ -4205,7 +4341,7 @@ type VInfoResponse struct {
 
 func (x *VInfoResponse) Reset() {
 	*x = VInfoResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[81]
+	mi := &file_ember_v1_ember_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4217,7 +4353,7 @@ func (x *VInfoResponse) String() string {
 func (*VInfoResponse) ProtoMessage() {}
 
 func (x *VInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[81]
+	mi := &file_ember_v1_ember_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4230,7 +4366,7 @@ func (x *VInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VInfoResponse.ProtoReflect.Descriptor instead.
 func (*VInfoResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{81}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *VInfoResponse) GetExists() bool {
@@ -4256,7 +4392,7 @@ type PingRequest struct {
 
 func (x *PingRequest) Reset() {
 	*x = PingRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[82]
+	mi := &file_ember_v1_ember_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4268,7 +4404,7 @@ func (x *PingRequest) String() string {
 func (*PingRequest) ProtoMessage() {}
 
 func (x *PingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[82]
+	mi := &file_ember_v1_ember_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4281,7 +4417,7 @@ func (x *PingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingRequest.ProtoReflect.Descriptor instead.
 func (*PingRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{82}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *PingRequest) GetMessage() string {
@@ -4300,7 +4436,7 @@ type PingResponse struct {
 
 func (x *PingResponse) Reset() {
 	*x = PingResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[83]
+	mi := &file_ember_v1_ember_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4312,7 +4448,7 @@ func (x *PingResponse) String() string {
 func (*PingResponse) ProtoMessage() {}
 
 func (x *PingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[83]
+	mi := &file_ember_v1_ember_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4325,7 +4461,7 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
 func (*PingResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{83}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *PingResponse) GetMessage() string {
@@ -4344,7 +4480,7 @@ type FlushDbRequest struct {
 
 func (x *FlushDbRequest) Reset() {
 	*x = FlushDbRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[84]
+	mi := &file_ember_v1_ember_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4356,7 +4492,7 @@ func (x *FlushDbRequest) String() string {
 func (*FlushDbRequest) ProtoMessage() {}
 
 func (x *FlushDbRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[84]
+	mi := &file_ember_v1_ember_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4369,7 +4505,7 @@ func (x *FlushDbRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushDbRequest.ProtoReflect.Descriptor instead.
 func (*FlushDbRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{84}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *FlushDbRequest) GetAsync() bool {
@@ -4387,7 +4523,7 @@ type DbSizeRequest struct {
 
 func (x *DbSizeRequest) Reset() {
 	*x = DbSizeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[85]
+	mi := &file_ember_v1_ember_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4399,7 +4535,7 @@ func (x *DbSizeRequest) String() string {
 func (*DbSizeRequest) ProtoMessage() {}
 
 func (x *DbSizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[85]
+	mi := &file_ember_v1_ember_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4412,7 +4548,7 @@ func (x *DbSizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbSizeRequest.ProtoReflect.Descriptor instead.
 func (*DbSizeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{85}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{87}
 }
 
 type InfoRequest struct {
@@ -4424,7 +4560,7 @@ type InfoRequest struct {
 
 func (x *InfoRequest) Reset() {
 	*x = InfoRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[86]
+	mi := &file_ember_v1_ember_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4436,7 +4572,7 @@ func (x *InfoRequest) String() string {
 func (*InfoRequest) ProtoMessage() {}
 
 func (x *InfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[86]
+	mi := &file_ember_v1_ember_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4449,7 +4585,7 @@ func (x *InfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
 func (*InfoRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{86}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *InfoRequest) GetSection() string {
@@ -4468,7 +4604,7 @@ type InfoResponse struct {
 
 func (x *InfoResponse) Reset() {
 	*x = InfoResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[87]
+	mi := &file_ember_v1_ember_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4480,7 +4616,7 @@ func (x *InfoResponse) String() string {
 func (*InfoResponse) ProtoMessage() {}
 
 func (x *InfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[87]
+	mi := &file_ember_v1_ember_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4493,7 +4629,7 @@ func (x *InfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
 func (*InfoResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{87}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *InfoResponse) GetInfo() string {
@@ -4512,7 +4648,7 @@ type EchoRequest struct {
 
 func (x *EchoRequest) Reset() {
 	*x = EchoRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[88]
+	mi := &file_ember_v1_ember_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4524,7 +4660,7 @@ func (x *EchoRequest) String() string {
 func (*EchoRequest) ProtoMessage() {}
 
 func (x *EchoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[88]
+	mi := &file_ember_v1_ember_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4537,7 +4673,7 @@ func (x *EchoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EchoRequest.ProtoReflect.Descriptor instead.
 func (*EchoRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{88}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *EchoRequest) GetMessage() string {
@@ -4556,7 +4692,7 @@ type EchoResponse struct {
 
 func (x *EchoResponse) Reset() {
 	*x = EchoResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[89]
+	mi := &file_ember_v1_ember_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4568,7 +4704,7 @@ func (x *EchoResponse) String() string {
 func (*EchoResponse) ProtoMessage() {}
 
 func (x *EchoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[89]
+	mi := &file_ember_v1_ember_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4581,7 +4717,7 @@ func (x *EchoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EchoResponse.ProtoReflect.Descriptor instead.
 func (*EchoResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{89}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *EchoResponse) GetMessage() string {
@@ -4600,7 +4736,7 @@ type DecrRequest struct {
 
 func (x *DecrRequest) Reset() {
 	*x = DecrRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[90]
+	mi := &file_ember_v1_ember_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4612,7 +4748,7 @@ func (x *DecrRequest) String() string {
 func (*DecrRequest) ProtoMessage() {}
 
 func (x *DecrRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[90]
+	mi := &file_ember_v1_ember_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4625,7 +4761,7 @@ func (x *DecrRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecrRequest.ProtoReflect.Descriptor instead.
 func (*DecrRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{90}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *DecrRequest) GetKey() string {
@@ -4644,7 +4780,7 @@ type UnlinkRequest struct {
 
 func (x *UnlinkRequest) Reset() {
 	*x = UnlinkRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[91]
+	mi := &file_ember_v1_ember_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4656,7 +4792,7 @@ func (x *UnlinkRequest) String() string {
 func (*UnlinkRequest) ProtoMessage() {}
 
 func (x *UnlinkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[91]
+	mi := &file_ember_v1_ember_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4669,7 +4805,7 @@ func (x *UnlinkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnlinkRequest.ProtoReflect.Descriptor instead.
 func (*UnlinkRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{91}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *UnlinkRequest) GetKeys() []string {
@@ -4687,7 +4823,7 @@ type BgSaveRequest struct {
 
 func (x *BgSaveRequest) Reset() {
 	*x = BgSaveRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[92]
+	mi := &file_ember_v1_ember_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4699,7 +4835,7 @@ func (x *BgSaveRequest) String() string {
 func (*BgSaveRequest) ProtoMessage() {}
 
 func (x *BgSaveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[92]
+	mi := &file_ember_v1_ember_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4712,7 +4848,7 @@ func (x *BgSaveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BgSaveRequest.ProtoReflect.Descriptor instead.
 func (*BgSaveRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{92}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{94}
 }
 
 type BgRewriteAofRequest struct {
@@ -4723,7 +4859,7 @@ type BgRewriteAofRequest struct {
 
 func (x *BgRewriteAofRequest) Reset() {
 	*x = BgRewriteAofRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[93]
+	mi := &file_ember_v1_ember_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4735,7 +4871,7 @@ func (x *BgRewriteAofRequest) String() string {
 func (*BgRewriteAofRequest) ProtoMessage() {}
 
 func (x *BgRewriteAofRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[93]
+	mi := &file_ember_v1_ember_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4748,7 +4884,7 @@ func (x *BgRewriteAofRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BgRewriteAofRequest.ProtoReflect.Descriptor instead.
 func (*BgRewriteAofRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{93}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{95}
 }
 
 type SlowLogGetRequest struct {
@@ -4760,7 +4896,7 @@ type SlowLogGetRequest struct {
 
 func (x *SlowLogGetRequest) Reset() {
 	*x = SlowLogGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[94]
+	mi := &file_ember_v1_ember_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4772,7 +4908,7 @@ func (x *SlowLogGetRequest) String() string {
 func (*SlowLogGetRequest) ProtoMessage() {}
 
 func (x *SlowLogGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[94]
+	mi := &file_ember_v1_ember_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4785,7 +4921,7 @@ func (x *SlowLogGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogGetRequest.ProtoReflect.Descriptor instead.
 func (*SlowLogGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{94}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *SlowLogGetRequest) GetCount() uint32 {
@@ -4804,7 +4940,7 @@ type SlowLogGetResponse struct {
 
 func (x *SlowLogGetResponse) Reset() {
 	*x = SlowLogGetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[95]
+	mi := &file_ember_v1_ember_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4816,7 +4952,7 @@ func (x *SlowLogGetResponse) String() string {
 func (*SlowLogGetResponse) ProtoMessage() {}
 
 func (x *SlowLogGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[95]
+	mi := &file_ember_v1_ember_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4829,7 +4965,7 @@ func (x *SlowLogGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogGetResponse.ProtoReflect.Descriptor instead.
 func (*SlowLogGetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{95}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *SlowLogGetResponse) GetEntries() []*SlowLogEntry {
@@ -4851,7 +4987,7 @@ type SlowLogEntry struct {
 
 func (x *SlowLogEntry) Reset() {
 	*x = SlowLogEntry{}
-	mi := &file_ember_v1_ember_proto_msgTypes[96]
+	mi := &file_ember_v1_ember_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4863,7 +4999,7 @@ func (x *SlowLogEntry) String() string {
 func (*SlowLogEntry) ProtoMessage() {}
 
 func (x *SlowLogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[96]
+	mi := &file_ember_v1_ember_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4876,7 +5012,7 @@ func (x *SlowLogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogEntry.ProtoReflect.Descriptor instead.
 func (*SlowLogEntry) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{96}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *SlowLogEntry) GetId() uint64 {
@@ -4915,7 +5051,7 @@ type SlowLogLenRequest struct {
 
 func (x *SlowLogLenRequest) Reset() {
 	*x = SlowLogLenRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[97]
+	mi := &file_ember_v1_ember_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4927,7 +5063,7 @@ func (x *SlowLogLenRequest) String() string {
 func (*SlowLogLenRequest) ProtoMessage() {}
 
 func (x *SlowLogLenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[97]
+	mi := &file_ember_v1_ember_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4940,7 +5076,7 @@ func (x *SlowLogLenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogLenRequest.ProtoReflect.Descriptor instead.
 func (*SlowLogLenRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{97}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{99}
 }
 
 type SlowLogResetRequest struct {
@@ -4951,7 +5087,7 @@ type SlowLogResetRequest struct {
 
 func (x *SlowLogResetRequest) Reset() {
 	*x = SlowLogResetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[98]
+	mi := &file_ember_v1_ember_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4963,7 +5099,7 @@ func (x *SlowLogResetRequest) String() string {
 func (*SlowLogResetRequest) ProtoMessage() {}
 
 func (x *SlowLogResetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[98]
+	mi := &file_ember_v1_ember_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4976,7 +5112,7 @@ func (x *SlowLogResetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogResetRequest.ProtoReflect.Descriptor instead.
 func (*SlowLogResetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{98}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{100}
 }
 
 type PublishRequest struct {
@@ -4989,7 +5125,7 @@ type PublishRequest struct {
 
 func (x *PublishRequest) Reset() {
 	*x = PublishRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[99]
+	mi := &file_ember_v1_ember_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5001,7 +5137,7 @@ func (x *PublishRequest) String() string {
 func (*PublishRequest) ProtoMessage() {}
 
 func (x *PublishRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[99]
+	mi := &file_ember_v1_ember_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5014,7 +5150,7 @@ func (x *PublishRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishRequest.ProtoReflect.Descriptor instead.
 func (*PublishRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{99}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *PublishRequest) GetChannel() string {
@@ -5041,7 +5177,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[100]
+	mi := &file_ember_v1_ember_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5053,7 +5189,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[100]
+	mi := &file_ember_v1_ember_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5066,7 +5202,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{100}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *SubscribeRequest) GetChannels() []string {
@@ -5097,7 +5233,7 @@ type SubscribeEvent struct {
 
 func (x *SubscribeEvent) Reset() {
 	*x = SubscribeEvent{}
-	mi := &file_ember_v1_ember_proto_msgTypes[101]
+	mi := &file_ember_v1_ember_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5109,7 +5245,7 @@ func (x *SubscribeEvent) String() string {
 func (*SubscribeEvent) ProtoMessage() {}
 
 func (x *SubscribeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[101]
+	mi := &file_ember_v1_ember_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5122,7 +5258,7 @@ func (x *SubscribeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeEvent.ProtoReflect.Descriptor instead.
 func (*SubscribeEvent) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{101}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *SubscribeEvent) GetKind() string {
@@ -5162,7 +5298,7 @@ type PubSubChannelsRequest struct {
 
 func (x *PubSubChannelsRequest) Reset() {
 	*x = PubSubChannelsRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[102]
+	mi := &file_ember_v1_ember_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5174,7 +5310,7 @@ func (x *PubSubChannelsRequest) String() string {
 func (*PubSubChannelsRequest) ProtoMessage() {}
 
 func (x *PubSubChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[102]
+	mi := &file_ember_v1_ember_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5187,7 +5323,7 @@ func (x *PubSubChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubChannelsRequest.ProtoReflect.Descriptor instead.
 func (*PubSubChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{102}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *PubSubChannelsRequest) GetPattern() string {
@@ -5206,7 +5342,7 @@ type PubSubNumSubRequest struct {
 
 func (x *PubSubNumSubRequest) Reset() {
 	*x = PubSubNumSubRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[103]
+	mi := &file_ember_v1_ember_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5218,7 +5354,7 @@ func (x *PubSubNumSubRequest) String() string {
 func (*PubSubNumSubRequest) ProtoMessage() {}
 
 func (x *PubSubNumSubRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[103]
+	mi := &file_ember_v1_ember_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5231,7 +5367,7 @@ func (x *PubSubNumSubRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubNumSubRequest.ProtoReflect.Descriptor instead.
 func (*PubSubNumSubRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{103}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *PubSubNumSubRequest) GetChannels() []string {
@@ -5250,7 +5386,7 @@ type PubSubNumSubResponse struct {
 
 func (x *PubSubNumSubResponse) Reset() {
 	*x = PubSubNumSubResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[104]
+	mi := &file_ember_v1_ember_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5262,7 +5398,7 @@ func (x *PubSubNumSubResponse) String() string {
 func (*PubSubNumSubResponse) ProtoMessage() {}
 
 func (x *PubSubNumSubResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[104]
+	mi := &file_ember_v1_ember_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5275,7 +5411,7 @@ func (x *PubSubNumSubResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubNumSubResponse.ProtoReflect.Descriptor instead.
 func (*PubSubNumSubResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{104}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *PubSubNumSubResponse) GetCounts() []*ChannelCount {
@@ -5293,7 +5429,7 @@ type PubSubNumPatRequest struct {
 
 func (x *PubSubNumPatRequest) Reset() {
 	*x = PubSubNumPatRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[105]
+	mi := &file_ember_v1_ember_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5305,7 +5441,7 @@ func (x *PubSubNumPatRequest) String() string {
 func (*PubSubNumPatRequest) ProtoMessage() {}
 
 func (x *PubSubNumPatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[105]
+	mi := &file_ember_v1_ember_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5318,7 +5454,7 @@ func (x *PubSubNumPatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubNumPatRequest.ProtoReflect.Descriptor instead.
 func (*PubSubNumPatRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{105}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{107}
 }
 
 type ChannelCount struct {
@@ -5331,7 +5467,7 @@ type ChannelCount struct {
 
 func (x *ChannelCount) Reset() {
 	*x = ChannelCount{}
-	mi := &file_ember_v1_ember_proto_msgTypes[106]
+	mi := &file_ember_v1_ember_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5343,7 +5479,7 @@ func (x *ChannelCount) String() string {
 func (*ChannelCount) ProtoMessage() {}
 
 func (x *ChannelCount) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[106]
+	mi := &file_ember_v1_ember_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5356,7 +5492,7 @@ func (x *ChannelCount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelCount.ProtoReflect.Descriptor instead.
 func (*ChannelCount) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{106}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *ChannelCount) GetChannel() string {
@@ -5448,6 +5584,7 @@ type PipelineRequest struct {
 	//	*PipelineRequest_PubsubChannels
 	//	*PipelineRequest_PubsubNumsub
 	//	*PipelineRequest_PubsubNumpat
+	//	*PipelineRequest_VaddBatch
 	Command       isPipelineRequest_Command `protobuf_oneof:"command"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5455,7 +5592,7 @@ type PipelineRequest struct {
 
 func (x *PipelineRequest) Reset() {
 	*x = PipelineRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[107]
+	mi := &file_ember_v1_ember_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5467,7 +5604,7 @@ func (x *PipelineRequest) String() string {
 func (*PipelineRequest) ProtoMessage() {}
 
 func (x *PipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[107]
+	mi := &file_ember_v1_ember_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5480,7 +5617,7 @@ func (x *PipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineRequest.ProtoReflect.Descriptor instead.
 func (*PipelineRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{107}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *PipelineRequest) GetId() uint64 {
@@ -6127,6 +6264,15 @@ func (x *PipelineRequest) GetPubsubNumpat() *PubSubNumPatRequest {
 	return nil
 }
 
+func (x *PipelineRequest) GetVaddBatch() *VAddBatchRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_VaddBatch); ok {
+			return x.VaddBatch
+		}
+	}
+	return nil
+}
+
 type isPipelineRequest_Command interface {
 	isPipelineRequest_Command()
 }
@@ -6411,6 +6557,10 @@ type PipelineRequest_PubsubNumpat struct {
 	PubsubNumpat *PubSubNumPatRequest `protobuf:"bytes,71,opt,name=pubsub_numpat,json=pubsubNumpat,proto3,oneof"`
 }
 
+type PipelineRequest_VaddBatch struct {
+	VaddBatch *VAddBatchRequest `protobuf:"bytes,72,opt,name=vadd_batch,json=vaddBatch,proto3,oneof"`
+}
+
 func (*PipelineRequest_Get) isPipelineRequest_Command() {}
 
 func (*PipelineRequest_Set) isPipelineRequest_Command() {}
@@ -6551,6 +6701,8 @@ func (*PipelineRequest_PubsubNumsub) isPipelineRequest_Command() {}
 
 func (*PipelineRequest_PubsubNumpat) isPipelineRequest_Command() {}
 
+func (*PipelineRequest_VaddBatch) isPipelineRequest_Command() {}
+
 type PipelineResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -6591,7 +6743,7 @@ type PipelineResponse struct {
 
 func (x *PipelineResponse) Reset() {
 	*x = PipelineResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[108]
+	mi := &file_ember_v1_ember_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6603,7 +6755,7 @@ func (x *PipelineResponse) String() string {
 func (*PipelineResponse) ProtoMessage() {}
 
 func (x *PipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[108]
+	mi := &file_ember_v1_ember_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6616,7 +6768,7 @@ func (x *PipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineResponse.ProtoReflect.Descriptor instead.
 func (*PipelineResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{108}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *PipelineResponse) GetId() uint64 {
@@ -7067,7 +7219,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[109]
+	mi := &file_ember_v1_ember_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7079,7 +7231,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[109]
+	mi := &file_ember_v1_ember_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7092,7 +7244,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{109}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *ErrorResponse) GetMessage() string {
@@ -7320,6 +7472,18 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\fconnectivity\x18\x06 \x01(\rH\x00R\fconnectivity\x88\x01\x01\x12,\n" +
 	"\x0fef_construction\x18\a \x01(\rH\x01R\x0eefConstruction\x88\x01\x01B\x0f\n" +
 	"\r_connectivityB\x12\n" +
+	"\x10_ef_construction\"F\n" +
+	"\x0eVAddBatchEntry\x12\x18\n" +
+	"\aelement\x18\x01 \x01(\tR\aelement\x12\x1a\n" +
+	"\x06vector\x18\x02 \x03(\x02B\x02\x10\x01R\x06vector\"\xc6\x02\n" +
+	"\x10VAddBatchRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
+	"\aentries\x18\x02 \x03(\v2\x18.ember.v1.VAddBatchEntryR\aentries\x12.\n" +
+	"\x06metric\x18\x03 \x01(\x0e2\x16.ember.v1.VectorMetricR\x06metric\x12@\n" +
+	"\fquantization\x18\x04 \x01(\x0e2\x1c.ember.v1.VectorQuantizationR\fquantization\x12'\n" +
+	"\fconnectivity\x18\x05 \x01(\rH\x00R\fconnectivity\x88\x01\x01\x12,\n" +
+	"\x0fef_construction\x18\x06 \x01(\rH\x01R\x0eefConstruction\x88\x01\x01B\x0f\n" +
+	"\r_connectivityB\x12\n" +
 	"\x10_ef_construction\"\x7f\n" +
 	"\vVSimRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
@@ -7414,7 +7578,7 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x13PubSubNumPatRequest\">\n" +
 	"\fChannelCount\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
-	"\x05count\x18\x02 \x01(\x03R\x05count\"\xf6\x1b\n" +
+	"\x05count\x18\x02 \x01(\x03R\x05count\"\xb3\x1c\n" +
 	"\x0fPipelineRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12(\n" +
 	"\x03get\x18\x02 \x01(\v2\x14.ember.v1.GetRequestH\x00R\x03get\x12(\n" +
@@ -7489,7 +7653,9 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\apublish\x18D \x01(\v2\x18.ember.v1.PublishRequestH\x00R\apublish\x12J\n" +
 	"\x0fpubsub_channels\x18E \x01(\v2\x1f.ember.v1.PubSubChannelsRequestH\x00R\x0epubsubChannels\x12D\n" +
 	"\rpubsub_numsub\x18F \x01(\v2\x1d.ember.v1.PubSubNumSubRequestH\x00R\fpubsubNumsub\x12D\n" +
-	"\rpubsub_numpat\x18G \x01(\v2\x1d.ember.v1.PubSubNumPatRequestH\x00R\fpubsubNumpatB\t\n" +
+	"\rpubsub_numpat\x18G \x01(\v2\x1d.ember.v1.PubSubNumPatRequestH\x00R\fpubsubNumpat\x12;\n" +
+	"\n" +
+	"vadd_batch\x18H \x01(\v2\x1a.ember.v1.VAddBatchRequestH\x00R\tvaddBatchB\t\n" +
 	"\acommand\"\xcc\v\n" +
 	"\x10PipelineResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12)\n" +
@@ -7540,7 +7706,7 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x15ERROR_KIND_WRONG_TYPE\x10\x01\x12\x1c\n" +
 	"\x18ERROR_KIND_OUT_OF_MEMORY\x10\x02\x12\x17\n" +
 	"\x13ERROR_KIND_INTERNAL\x10\x03\x12\x1f\n" +
-	"\x1bERROR_KIND_INVALID_ARGUMENT\x10\x042\xe3!\n" +
+	"\x1bERROR_KIND_INVALID_ARGUMENT\x10\x042\xa3\"\n" +
 	"\n" +
 	"EmberCache\x122\n" +
 	"\x03Get\x12\x14.ember.v1.GetRequest\x1a\x15.ember.v1.GetResponse\x122\n" +
@@ -7591,7 +7757,8 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x05ZRank\x12\x16.ember.v1.ZRankRequest\x1a\x1d.ember.v1.OptionalIntResponse\x126\n" +
 	"\x05ZCard\x12\x16.ember.v1.ZCardRequest\x1a\x15.ember.v1.IntResponse\x12;\n" +
 	"\x06ZRange\x12\x17.ember.v1.ZRangeRequest\x1a\x18.ember.v1.ZRangeResponse\x125\n" +
-	"\x04VAdd\x12\x15.ember.v1.VAddRequest\x1a\x16.ember.v1.BoolResponse\x125\n" +
+	"\x04VAdd\x12\x15.ember.v1.VAddRequest\x1a\x16.ember.v1.BoolResponse\x12>\n" +
+	"\tVAddBatch\x12\x1a.ember.v1.VAddBatchRequest\x1a\x15.ember.v1.IntResponse\x125\n" +
 	"\x04VSim\x12\x15.ember.v1.VSimRequest\x1a\x16.ember.v1.VSimResponse\x125\n" +
 	"\x04VRem\x12\x15.ember.v1.VRemRequest\x1a\x16.ember.v1.BoolResponse\x125\n" +
 	"\x04VGet\x12\x15.ember.v1.VGetRequest\x1a\x16.ember.v1.VGetResponse\x126\n" +
@@ -7632,7 +7799,7 @@ func file_ember_v1_ember_proto_rawDescGZIP() []byte {
 }
 
 var file_ember_v1_ember_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_ember_v1_ember_proto_msgTypes = make([]protoimpl.MessageInfo, 110)
+var file_ember_v1_ember_proto_msgTypes = make([]protoimpl.MessageInfo, 112)
 var file_ember_v1_ember_proto_goTypes = []any{
 	(VectorMetric)(0),             // 0: ember.v1.VectorMetric
 	(VectorQuantization)(0),       // 1: ember.v1.VectorQuantization
@@ -7709,44 +7876,46 @@ var file_ember_v1_ember_proto_goTypes = []any{
 	(*ZRangeRequest)(nil),         // 72: ember.v1.ZRangeRequest
 	(*ZRangeResponse)(nil),        // 73: ember.v1.ZRangeResponse
 	(*VAddRequest)(nil),           // 74: ember.v1.VAddRequest
-	(*VSimRequest)(nil),           // 75: ember.v1.VSimRequest
-	(*VSimResponse)(nil),          // 76: ember.v1.VSimResponse
-	(*VSimResult)(nil),            // 77: ember.v1.VSimResult
-	(*VRemRequest)(nil),           // 78: ember.v1.VRemRequest
-	(*VGetRequest)(nil),           // 79: ember.v1.VGetRequest
-	(*VGetResponse)(nil),          // 80: ember.v1.VGetResponse
-	(*VCardRequest)(nil),          // 81: ember.v1.VCardRequest
-	(*VDimRequest)(nil),           // 82: ember.v1.VDimRequest
-	(*VInfoRequest)(nil),          // 83: ember.v1.VInfoRequest
-	(*VInfoResponse)(nil),         // 84: ember.v1.VInfoResponse
-	(*PingRequest)(nil),           // 85: ember.v1.PingRequest
-	(*PingResponse)(nil),          // 86: ember.v1.PingResponse
-	(*FlushDbRequest)(nil),        // 87: ember.v1.FlushDbRequest
-	(*DbSizeRequest)(nil),         // 88: ember.v1.DbSizeRequest
-	(*InfoRequest)(nil),           // 89: ember.v1.InfoRequest
-	(*InfoResponse)(nil),          // 90: ember.v1.InfoResponse
-	(*EchoRequest)(nil),           // 91: ember.v1.EchoRequest
-	(*EchoResponse)(nil),          // 92: ember.v1.EchoResponse
-	(*DecrRequest)(nil),           // 93: ember.v1.DecrRequest
-	(*UnlinkRequest)(nil),         // 94: ember.v1.UnlinkRequest
-	(*BgSaveRequest)(nil),         // 95: ember.v1.BgSaveRequest
-	(*BgRewriteAofRequest)(nil),   // 96: ember.v1.BgRewriteAofRequest
-	(*SlowLogGetRequest)(nil),     // 97: ember.v1.SlowLogGetRequest
-	(*SlowLogGetResponse)(nil),    // 98: ember.v1.SlowLogGetResponse
-	(*SlowLogEntry)(nil),          // 99: ember.v1.SlowLogEntry
-	(*SlowLogLenRequest)(nil),     // 100: ember.v1.SlowLogLenRequest
-	(*SlowLogResetRequest)(nil),   // 101: ember.v1.SlowLogResetRequest
-	(*PublishRequest)(nil),        // 102: ember.v1.PublishRequest
-	(*SubscribeRequest)(nil),      // 103: ember.v1.SubscribeRequest
-	(*SubscribeEvent)(nil),        // 104: ember.v1.SubscribeEvent
-	(*PubSubChannelsRequest)(nil), // 105: ember.v1.PubSubChannelsRequest
-	(*PubSubNumSubRequest)(nil),   // 106: ember.v1.PubSubNumSubRequest
-	(*PubSubNumSubResponse)(nil),  // 107: ember.v1.PubSubNumSubResponse
-	(*PubSubNumPatRequest)(nil),   // 108: ember.v1.PubSubNumPatRequest
-	(*ChannelCount)(nil),          // 109: ember.v1.ChannelCount
-	(*PipelineRequest)(nil),       // 110: ember.v1.PipelineRequest
-	(*PipelineResponse)(nil),      // 111: ember.v1.PipelineResponse
-	(*ErrorResponse)(nil),         // 112: ember.v1.ErrorResponse
+	(*VAddBatchEntry)(nil),        // 75: ember.v1.VAddBatchEntry
+	(*VAddBatchRequest)(nil),      // 76: ember.v1.VAddBatchRequest
+	(*VSimRequest)(nil),           // 77: ember.v1.VSimRequest
+	(*VSimResponse)(nil),          // 78: ember.v1.VSimResponse
+	(*VSimResult)(nil),            // 79: ember.v1.VSimResult
+	(*VRemRequest)(nil),           // 80: ember.v1.VRemRequest
+	(*VGetRequest)(nil),           // 81: ember.v1.VGetRequest
+	(*VGetResponse)(nil),          // 82: ember.v1.VGetResponse
+	(*VCardRequest)(nil),          // 83: ember.v1.VCardRequest
+	(*VDimRequest)(nil),           // 84: ember.v1.VDimRequest
+	(*VInfoRequest)(nil),          // 85: ember.v1.VInfoRequest
+	(*VInfoResponse)(nil),         // 86: ember.v1.VInfoResponse
+	(*PingRequest)(nil),           // 87: ember.v1.PingRequest
+	(*PingResponse)(nil),          // 88: ember.v1.PingResponse
+	(*FlushDbRequest)(nil),        // 89: ember.v1.FlushDbRequest
+	(*DbSizeRequest)(nil),         // 90: ember.v1.DbSizeRequest
+	(*InfoRequest)(nil),           // 91: ember.v1.InfoRequest
+	(*InfoResponse)(nil),          // 92: ember.v1.InfoResponse
+	(*EchoRequest)(nil),           // 93: ember.v1.EchoRequest
+	(*EchoResponse)(nil),          // 94: ember.v1.EchoResponse
+	(*DecrRequest)(nil),           // 95: ember.v1.DecrRequest
+	(*UnlinkRequest)(nil),         // 96: ember.v1.UnlinkRequest
+	(*BgSaveRequest)(nil),         // 97: ember.v1.BgSaveRequest
+	(*BgRewriteAofRequest)(nil),   // 98: ember.v1.BgRewriteAofRequest
+	(*SlowLogGetRequest)(nil),     // 99: ember.v1.SlowLogGetRequest
+	(*SlowLogGetResponse)(nil),    // 100: ember.v1.SlowLogGetResponse
+	(*SlowLogEntry)(nil),          // 101: ember.v1.SlowLogEntry
+	(*SlowLogLenRequest)(nil),     // 102: ember.v1.SlowLogLenRequest
+	(*SlowLogResetRequest)(nil),   // 103: ember.v1.SlowLogResetRequest
+	(*PublishRequest)(nil),        // 104: ember.v1.PublishRequest
+	(*SubscribeRequest)(nil),      // 105: ember.v1.SubscribeRequest
+	(*SubscribeEvent)(nil),        // 106: ember.v1.SubscribeEvent
+	(*PubSubChannelsRequest)(nil), // 107: ember.v1.PubSubChannelsRequest
+	(*PubSubNumSubRequest)(nil),   // 108: ember.v1.PubSubNumSubRequest
+	(*PubSubNumSubResponse)(nil),  // 109: ember.v1.PubSubNumSubResponse
+	(*PubSubNumPatRequest)(nil),   // 110: ember.v1.PubSubNumPatRequest
+	(*ChannelCount)(nil),          // 111: ember.v1.ChannelCount
+	(*PipelineRequest)(nil),       // 112: ember.v1.PipelineRequest
+	(*PipelineResponse)(nil),      // 113: ember.v1.PipelineResponse
+	(*ErrorResponse)(nil),         // 114: ember.v1.ErrorResponse
 }
 var file_ember_v1_ember_proto_depIdxs = []int32{
 	15,  // 0: ember.v1.MGetResponse.values:type_name -> ember.v1.OptionalValue
@@ -7758,260 +7927,266 @@ var file_ember_v1_ember_proto_depIdxs = []int32{
 	65,  // 6: ember.v1.ZRangeResponse.members:type_name -> ember.v1.ScoreMember
 	0,   // 7: ember.v1.VAddRequest.metric:type_name -> ember.v1.VectorMetric
 	1,   // 8: ember.v1.VAddRequest.quantization:type_name -> ember.v1.VectorQuantization
-	77,  // 9: ember.v1.VSimResponse.results:type_name -> ember.v1.VSimResult
-	47,  // 10: ember.v1.VInfoResponse.info:type_name -> ember.v1.FieldValue
-	99,  // 11: ember.v1.SlowLogGetResponse.entries:type_name -> ember.v1.SlowLogEntry
-	109, // 12: ember.v1.PubSubNumSubResponse.counts:type_name -> ember.v1.ChannelCount
-	7,   // 13: ember.v1.PipelineRequest.get:type_name -> ember.v1.GetRequest
-	9,   // 14: ember.v1.PipelineRequest.set:type_name -> ember.v1.SetRequest
-	11,  // 15: ember.v1.PipelineRequest.del:type_name -> ember.v1.DelRequest
-	25,  // 16: ember.v1.PipelineRequest.exists:type_name -> ember.v1.ExistsRequest
-	19,  // 17: ember.v1.PipelineRequest.incr:type_name -> ember.v1.IncrRequest
-	20,  // 18: ember.v1.PipelineRequest.incr_by:type_name -> ember.v1.IncrByRequest
-	21,  // 19: ember.v1.PipelineRequest.decr_by:type_name -> ember.v1.DecrByRequest
-	22,  // 20: ember.v1.PipelineRequest.incr_by_float:type_name -> ember.v1.IncrByFloatRequest
-	23,  // 21: ember.v1.PipelineRequest.append:type_name -> ember.v1.AppendRequest
-	24,  // 22: ember.v1.PipelineRequest.strlen:type_name -> ember.v1.StrlenRequest
-	26,  // 23: ember.v1.PipelineRequest.expire:type_name -> ember.v1.ExpireRequest
-	27,  // 24: ember.v1.PipelineRequest.pexpire:type_name -> ember.v1.PExpireRequest
-	28,  // 25: ember.v1.PipelineRequest.persist:type_name -> ember.v1.PersistRequest
-	29,  // 26: ember.v1.PipelineRequest.ttl:type_name -> ember.v1.TtlRequest
-	30,  // 27: ember.v1.PipelineRequest.pttl:type_name -> ember.v1.PTtlRequest
-	32,  // 28: ember.v1.PipelineRequest.type:type_name -> ember.v1.TypeRequest
-	39,  // 29: ember.v1.PipelineRequest.lpush:type_name -> ember.v1.LPushRequest
-	40,  // 30: ember.v1.PipelineRequest.rpush:type_name -> ember.v1.RPushRequest
-	41,  // 31: ember.v1.PipelineRequest.lpop:type_name -> ember.v1.LPopRequest
-	42,  // 32: ember.v1.PipelineRequest.rpop:type_name -> ember.v1.RPopRequest
-	43,  // 33: ember.v1.PipelineRequest.lrange:type_name -> ember.v1.LRangeRequest
-	45,  // 34: ember.v1.PipelineRequest.llen:type_name -> ember.v1.LLenRequest
-	46,  // 35: ember.v1.PipelineRequest.hset:type_name -> ember.v1.HSetRequest
-	48,  // 36: ember.v1.PipelineRequest.hget:type_name -> ember.v1.HGetRequest
-	49,  // 37: ember.v1.PipelineRequest.hgetall:type_name -> ember.v1.HGetAllRequest
-	51,  // 38: ember.v1.PipelineRequest.hdel:type_name -> ember.v1.HDelRequest
-	52,  // 39: ember.v1.PipelineRequest.hexists:type_name -> ember.v1.HExistsRequest
-	53,  // 40: ember.v1.PipelineRequest.hlen:type_name -> ember.v1.HLenRequest
-	54,  // 41: ember.v1.PipelineRequest.hincr_by:type_name -> ember.v1.HIncrByRequest
-	55,  // 42: ember.v1.PipelineRequest.hkeys:type_name -> ember.v1.HKeysRequest
-	56,  // 43: ember.v1.PipelineRequest.hvals:type_name -> ember.v1.HValsRequest
-	57,  // 44: ember.v1.PipelineRequest.hmget:type_name -> ember.v1.HMGetRequest
-	59,  // 45: ember.v1.PipelineRequest.sadd:type_name -> ember.v1.SAddRequest
-	60,  // 46: ember.v1.PipelineRequest.srem:type_name -> ember.v1.SRemRequest
-	61,  // 47: ember.v1.PipelineRequest.smembers:type_name -> ember.v1.SMembersRequest
-	62,  // 48: ember.v1.PipelineRequest.sismember:type_name -> ember.v1.SIsMemberRequest
-	63,  // 49: ember.v1.PipelineRequest.scard:type_name -> ember.v1.SCardRequest
-	64,  // 50: ember.v1.PipelineRequest.zadd:type_name -> ember.v1.ZAddRequest
-	66,  // 51: ember.v1.PipelineRequest.zrem:type_name -> ember.v1.ZRemRequest
-	67,  // 52: ember.v1.PipelineRequest.zscore:type_name -> ember.v1.ZScoreRequest
-	69,  // 53: ember.v1.PipelineRequest.zrank:type_name -> ember.v1.ZRankRequest
-	71,  // 54: ember.v1.PipelineRequest.zcard:type_name -> ember.v1.ZCardRequest
-	72,  // 55: ember.v1.PipelineRequest.zrange:type_name -> ember.v1.ZRangeRequest
-	74,  // 56: ember.v1.PipelineRequest.vadd:type_name -> ember.v1.VAddRequest
-	75,  // 57: ember.v1.PipelineRequest.vsim:type_name -> ember.v1.VSimRequest
-	78,  // 58: ember.v1.PipelineRequest.vrem:type_name -> ember.v1.VRemRequest
-	79,  // 59: ember.v1.PipelineRequest.vget:type_name -> ember.v1.VGetRequest
-	81,  // 60: ember.v1.PipelineRequest.vcard:type_name -> ember.v1.VCardRequest
-	82,  // 61: ember.v1.PipelineRequest.vdim:type_name -> ember.v1.VDimRequest
-	83,  // 62: ember.v1.PipelineRequest.vinfo:type_name -> ember.v1.VInfoRequest
-	85,  // 63: ember.v1.PipelineRequest.ping:type_name -> ember.v1.PingRequest
-	87,  // 64: ember.v1.PipelineRequest.flushdb:type_name -> ember.v1.FlushDbRequest
-	88,  // 65: ember.v1.PipelineRequest.dbsize:type_name -> ember.v1.DbSizeRequest
-	13,  // 66: ember.v1.PipelineRequest.mget:type_name -> ember.v1.MGetRequest
-	16,  // 67: ember.v1.PipelineRequest.mset:type_name -> ember.v1.MSetRequest
-	34,  // 68: ember.v1.PipelineRequest.keys:type_name -> ember.v1.KeysRequest
-	36,  // 69: ember.v1.PipelineRequest.rename:type_name -> ember.v1.RenameRequest
-	37,  // 70: ember.v1.PipelineRequest.scan:type_name -> ember.v1.ScanRequest
-	91,  // 71: ember.v1.PipelineRequest.echo:type_name -> ember.v1.EchoRequest
-	93,  // 72: ember.v1.PipelineRequest.decr:type_name -> ember.v1.DecrRequest
-	94,  // 73: ember.v1.PipelineRequest.unlink:type_name -> ember.v1.UnlinkRequest
-	95,  // 74: ember.v1.PipelineRequest.bgsave:type_name -> ember.v1.BgSaveRequest
-	96,  // 75: ember.v1.PipelineRequest.bgrewriteaof:type_name -> ember.v1.BgRewriteAofRequest
-	97,  // 76: ember.v1.PipelineRequest.slowlog_get:type_name -> ember.v1.SlowLogGetRequest
-	100, // 77: ember.v1.PipelineRequest.slowlog_len:type_name -> ember.v1.SlowLogLenRequest
-	101, // 78: ember.v1.PipelineRequest.slowlog_reset:type_name -> ember.v1.SlowLogResetRequest
-	102, // 79: ember.v1.PipelineRequest.publish:type_name -> ember.v1.PublishRequest
-	105, // 80: ember.v1.PipelineRequest.pubsub_channels:type_name -> ember.v1.PubSubChannelsRequest
-	106, // 81: ember.v1.PipelineRequest.pubsub_numsub:type_name -> ember.v1.PubSubNumSubRequest
-	108, // 82: ember.v1.PipelineRequest.pubsub_numpat:type_name -> ember.v1.PubSubNumPatRequest
-	8,   // 83: ember.v1.PipelineResponse.get:type_name -> ember.v1.GetResponse
-	10,  // 84: ember.v1.PipelineResponse.set:type_name -> ember.v1.SetResponse
-	12,  // 85: ember.v1.PipelineResponse.del:type_name -> ember.v1.DelResponse
-	3,   // 86: ember.v1.PipelineResponse.int_val:type_name -> ember.v1.IntResponse
-	4,   // 87: ember.v1.PipelineResponse.bool_val:type_name -> ember.v1.BoolResponse
-	5,   // 88: ember.v1.PipelineResponse.float_val:type_name -> ember.v1.FloatResponse
-	6,   // 89: ember.v1.PipelineResponse.status:type_name -> ember.v1.StatusResponse
-	31,  // 90: ember.v1.PipelineResponse.ttl:type_name -> ember.v1.TtlResponse
-	33,  // 91: ember.v1.PipelineResponse.type:type_name -> ember.v1.TypeResponse
-	44,  // 92: ember.v1.PipelineResponse.array:type_name -> ember.v1.ArrayResponse
-	50,  // 93: ember.v1.PipelineResponse.hash:type_name -> ember.v1.HashResponse
-	58,  // 94: ember.v1.PipelineResponse.optional_array:type_name -> ember.v1.OptionalArrayResponse
-	35,  // 95: ember.v1.PipelineResponse.keys:type_name -> ember.v1.KeysResponse
-	38,  // 96: ember.v1.PipelineResponse.scan:type_name -> ember.v1.ScanResponse
-	68,  // 97: ember.v1.PipelineResponse.optional_float:type_name -> ember.v1.OptionalFloatResponse
-	70,  // 98: ember.v1.PipelineResponse.optional_int:type_name -> ember.v1.OptionalIntResponse
-	73,  // 99: ember.v1.PipelineResponse.zrange:type_name -> ember.v1.ZRangeResponse
-	76,  // 100: ember.v1.PipelineResponse.vsim:type_name -> ember.v1.VSimResponse
-	80,  // 101: ember.v1.PipelineResponse.vget:type_name -> ember.v1.VGetResponse
-	84,  // 102: ember.v1.PipelineResponse.vinfo:type_name -> ember.v1.VInfoResponse
-	14,  // 103: ember.v1.PipelineResponse.mget:type_name -> ember.v1.MGetResponse
-	18,  // 104: ember.v1.PipelineResponse.mset:type_name -> ember.v1.MSetResponse
-	86,  // 105: ember.v1.PipelineResponse.ping:type_name -> ember.v1.PingResponse
-	112, // 106: ember.v1.PipelineResponse.error:type_name -> ember.v1.ErrorResponse
-	90,  // 107: ember.v1.PipelineResponse.info:type_name -> ember.v1.InfoResponse
-	92,  // 108: ember.v1.PipelineResponse.echo:type_name -> ember.v1.EchoResponse
-	98,  // 109: ember.v1.PipelineResponse.slowlog_get:type_name -> ember.v1.SlowLogGetResponse
-	107, // 110: ember.v1.PipelineResponse.pubsub_numsub:type_name -> ember.v1.PubSubNumSubResponse
-	2,   // 111: ember.v1.ErrorResponse.kind:type_name -> ember.v1.ErrorKind
-	7,   // 112: ember.v1.EmberCache.Get:input_type -> ember.v1.GetRequest
-	9,   // 113: ember.v1.EmberCache.Set:input_type -> ember.v1.SetRequest
-	11,  // 114: ember.v1.EmberCache.Del:input_type -> ember.v1.DelRequest
-	13,  // 115: ember.v1.EmberCache.MGet:input_type -> ember.v1.MGetRequest
-	16,  // 116: ember.v1.EmberCache.MSet:input_type -> ember.v1.MSetRequest
-	19,  // 117: ember.v1.EmberCache.Incr:input_type -> ember.v1.IncrRequest
-	20,  // 118: ember.v1.EmberCache.IncrBy:input_type -> ember.v1.IncrByRequest
-	21,  // 119: ember.v1.EmberCache.DecrBy:input_type -> ember.v1.DecrByRequest
-	22,  // 120: ember.v1.EmberCache.IncrByFloat:input_type -> ember.v1.IncrByFloatRequest
-	23,  // 121: ember.v1.EmberCache.Append:input_type -> ember.v1.AppendRequest
-	24,  // 122: ember.v1.EmberCache.Strlen:input_type -> ember.v1.StrlenRequest
-	25,  // 123: ember.v1.EmberCache.Exists:input_type -> ember.v1.ExistsRequest
-	26,  // 124: ember.v1.EmberCache.Expire:input_type -> ember.v1.ExpireRequest
-	27,  // 125: ember.v1.EmberCache.PExpire:input_type -> ember.v1.PExpireRequest
-	28,  // 126: ember.v1.EmberCache.Persist:input_type -> ember.v1.PersistRequest
-	29,  // 127: ember.v1.EmberCache.Ttl:input_type -> ember.v1.TtlRequest
-	30,  // 128: ember.v1.EmberCache.PTtl:input_type -> ember.v1.PTtlRequest
-	32,  // 129: ember.v1.EmberCache.Type:input_type -> ember.v1.TypeRequest
-	34,  // 130: ember.v1.EmberCache.Keys:input_type -> ember.v1.KeysRequest
-	36,  // 131: ember.v1.EmberCache.Rename:input_type -> ember.v1.RenameRequest
-	37,  // 132: ember.v1.EmberCache.Scan:input_type -> ember.v1.ScanRequest
-	39,  // 133: ember.v1.EmberCache.LPush:input_type -> ember.v1.LPushRequest
-	40,  // 134: ember.v1.EmberCache.RPush:input_type -> ember.v1.RPushRequest
-	41,  // 135: ember.v1.EmberCache.LPop:input_type -> ember.v1.LPopRequest
-	42,  // 136: ember.v1.EmberCache.RPop:input_type -> ember.v1.RPopRequest
-	43,  // 137: ember.v1.EmberCache.LRange:input_type -> ember.v1.LRangeRequest
-	45,  // 138: ember.v1.EmberCache.LLen:input_type -> ember.v1.LLenRequest
-	46,  // 139: ember.v1.EmberCache.HSet:input_type -> ember.v1.HSetRequest
-	48,  // 140: ember.v1.EmberCache.HGet:input_type -> ember.v1.HGetRequest
-	49,  // 141: ember.v1.EmberCache.HGetAll:input_type -> ember.v1.HGetAllRequest
-	51,  // 142: ember.v1.EmberCache.HDel:input_type -> ember.v1.HDelRequest
-	52,  // 143: ember.v1.EmberCache.HExists:input_type -> ember.v1.HExistsRequest
-	53,  // 144: ember.v1.EmberCache.HLen:input_type -> ember.v1.HLenRequest
-	54,  // 145: ember.v1.EmberCache.HIncrBy:input_type -> ember.v1.HIncrByRequest
-	55,  // 146: ember.v1.EmberCache.HKeys:input_type -> ember.v1.HKeysRequest
-	56,  // 147: ember.v1.EmberCache.HVals:input_type -> ember.v1.HValsRequest
-	57,  // 148: ember.v1.EmberCache.HMGet:input_type -> ember.v1.HMGetRequest
-	59,  // 149: ember.v1.EmberCache.SAdd:input_type -> ember.v1.SAddRequest
-	60,  // 150: ember.v1.EmberCache.SRem:input_type -> ember.v1.SRemRequest
-	61,  // 151: ember.v1.EmberCache.SMembers:input_type -> ember.v1.SMembersRequest
-	62,  // 152: ember.v1.EmberCache.SIsMember:input_type -> ember.v1.SIsMemberRequest
-	63,  // 153: ember.v1.EmberCache.SCard:input_type -> ember.v1.SCardRequest
-	64,  // 154: ember.v1.EmberCache.ZAdd:input_type -> ember.v1.ZAddRequest
-	66,  // 155: ember.v1.EmberCache.ZRem:input_type -> ember.v1.ZRemRequest
-	67,  // 156: ember.v1.EmberCache.ZScore:input_type -> ember.v1.ZScoreRequest
-	69,  // 157: ember.v1.EmberCache.ZRank:input_type -> ember.v1.ZRankRequest
-	71,  // 158: ember.v1.EmberCache.ZCard:input_type -> ember.v1.ZCardRequest
-	72,  // 159: ember.v1.EmberCache.ZRange:input_type -> ember.v1.ZRangeRequest
-	74,  // 160: ember.v1.EmberCache.VAdd:input_type -> ember.v1.VAddRequest
-	75,  // 161: ember.v1.EmberCache.VSim:input_type -> ember.v1.VSimRequest
-	78,  // 162: ember.v1.EmberCache.VRem:input_type -> ember.v1.VRemRequest
-	79,  // 163: ember.v1.EmberCache.VGet:input_type -> ember.v1.VGetRequest
-	81,  // 164: ember.v1.EmberCache.VCard:input_type -> ember.v1.VCardRequest
-	82,  // 165: ember.v1.EmberCache.VDim:input_type -> ember.v1.VDimRequest
-	83,  // 166: ember.v1.EmberCache.VInfo:input_type -> ember.v1.VInfoRequest
-	85,  // 167: ember.v1.EmberCache.Ping:input_type -> ember.v1.PingRequest
-	91,  // 168: ember.v1.EmberCache.Echo:input_type -> ember.v1.EchoRequest
-	93,  // 169: ember.v1.EmberCache.Decr:input_type -> ember.v1.DecrRequest
-	94,  // 170: ember.v1.EmberCache.Unlink:input_type -> ember.v1.UnlinkRequest
-	87,  // 171: ember.v1.EmberCache.FlushDb:input_type -> ember.v1.FlushDbRequest
-	88,  // 172: ember.v1.EmberCache.DbSize:input_type -> ember.v1.DbSizeRequest
-	89,  // 173: ember.v1.EmberCache.Info:input_type -> ember.v1.InfoRequest
-	95,  // 174: ember.v1.EmberCache.BgSave:input_type -> ember.v1.BgSaveRequest
-	96,  // 175: ember.v1.EmberCache.BgRewriteAof:input_type -> ember.v1.BgRewriteAofRequest
-	97,  // 176: ember.v1.EmberCache.SlowLogGet:input_type -> ember.v1.SlowLogGetRequest
-	100, // 177: ember.v1.EmberCache.SlowLogLen:input_type -> ember.v1.SlowLogLenRequest
-	101, // 178: ember.v1.EmberCache.SlowLogReset:input_type -> ember.v1.SlowLogResetRequest
-	102, // 179: ember.v1.EmberCache.Publish:input_type -> ember.v1.PublishRequest
-	103, // 180: ember.v1.EmberCache.Subscribe:input_type -> ember.v1.SubscribeRequest
-	105, // 181: ember.v1.EmberCache.PubSubChannels:input_type -> ember.v1.PubSubChannelsRequest
-	106, // 182: ember.v1.EmberCache.PubSubNumSub:input_type -> ember.v1.PubSubNumSubRequest
-	108, // 183: ember.v1.EmberCache.PubSubNumPat:input_type -> ember.v1.PubSubNumPatRequest
-	110, // 184: ember.v1.EmberCache.Pipeline:input_type -> ember.v1.PipelineRequest
-	8,   // 185: ember.v1.EmberCache.Get:output_type -> ember.v1.GetResponse
-	10,  // 186: ember.v1.EmberCache.Set:output_type -> ember.v1.SetResponse
-	12,  // 187: ember.v1.EmberCache.Del:output_type -> ember.v1.DelResponse
-	14,  // 188: ember.v1.EmberCache.MGet:output_type -> ember.v1.MGetResponse
-	18,  // 189: ember.v1.EmberCache.MSet:output_type -> ember.v1.MSetResponse
-	3,   // 190: ember.v1.EmberCache.Incr:output_type -> ember.v1.IntResponse
-	3,   // 191: ember.v1.EmberCache.IncrBy:output_type -> ember.v1.IntResponse
-	3,   // 192: ember.v1.EmberCache.DecrBy:output_type -> ember.v1.IntResponse
-	5,   // 193: ember.v1.EmberCache.IncrByFloat:output_type -> ember.v1.FloatResponse
-	3,   // 194: ember.v1.EmberCache.Append:output_type -> ember.v1.IntResponse
-	3,   // 195: ember.v1.EmberCache.Strlen:output_type -> ember.v1.IntResponse
-	3,   // 196: ember.v1.EmberCache.Exists:output_type -> ember.v1.IntResponse
-	4,   // 197: ember.v1.EmberCache.Expire:output_type -> ember.v1.BoolResponse
-	4,   // 198: ember.v1.EmberCache.PExpire:output_type -> ember.v1.BoolResponse
-	4,   // 199: ember.v1.EmberCache.Persist:output_type -> ember.v1.BoolResponse
-	31,  // 200: ember.v1.EmberCache.Ttl:output_type -> ember.v1.TtlResponse
-	31,  // 201: ember.v1.EmberCache.PTtl:output_type -> ember.v1.TtlResponse
-	33,  // 202: ember.v1.EmberCache.Type:output_type -> ember.v1.TypeResponse
-	35,  // 203: ember.v1.EmberCache.Keys:output_type -> ember.v1.KeysResponse
-	6,   // 204: ember.v1.EmberCache.Rename:output_type -> ember.v1.StatusResponse
-	38,  // 205: ember.v1.EmberCache.Scan:output_type -> ember.v1.ScanResponse
-	3,   // 206: ember.v1.EmberCache.LPush:output_type -> ember.v1.IntResponse
-	3,   // 207: ember.v1.EmberCache.RPush:output_type -> ember.v1.IntResponse
-	8,   // 208: ember.v1.EmberCache.LPop:output_type -> ember.v1.GetResponse
-	8,   // 209: ember.v1.EmberCache.RPop:output_type -> ember.v1.GetResponse
-	44,  // 210: ember.v1.EmberCache.LRange:output_type -> ember.v1.ArrayResponse
-	3,   // 211: ember.v1.EmberCache.LLen:output_type -> ember.v1.IntResponse
-	3,   // 212: ember.v1.EmberCache.HSet:output_type -> ember.v1.IntResponse
-	8,   // 213: ember.v1.EmberCache.HGet:output_type -> ember.v1.GetResponse
-	50,  // 214: ember.v1.EmberCache.HGetAll:output_type -> ember.v1.HashResponse
-	3,   // 215: ember.v1.EmberCache.HDel:output_type -> ember.v1.IntResponse
-	4,   // 216: ember.v1.EmberCache.HExists:output_type -> ember.v1.BoolResponse
-	3,   // 217: ember.v1.EmberCache.HLen:output_type -> ember.v1.IntResponse
-	3,   // 218: ember.v1.EmberCache.HIncrBy:output_type -> ember.v1.IntResponse
-	35,  // 219: ember.v1.EmberCache.HKeys:output_type -> ember.v1.KeysResponse
-	44,  // 220: ember.v1.EmberCache.HVals:output_type -> ember.v1.ArrayResponse
-	58,  // 221: ember.v1.EmberCache.HMGet:output_type -> ember.v1.OptionalArrayResponse
-	3,   // 222: ember.v1.EmberCache.SAdd:output_type -> ember.v1.IntResponse
-	3,   // 223: ember.v1.EmberCache.SRem:output_type -> ember.v1.IntResponse
-	35,  // 224: ember.v1.EmberCache.SMembers:output_type -> ember.v1.KeysResponse
-	4,   // 225: ember.v1.EmberCache.SIsMember:output_type -> ember.v1.BoolResponse
-	3,   // 226: ember.v1.EmberCache.SCard:output_type -> ember.v1.IntResponse
-	3,   // 227: ember.v1.EmberCache.ZAdd:output_type -> ember.v1.IntResponse
-	3,   // 228: ember.v1.EmberCache.ZRem:output_type -> ember.v1.IntResponse
-	68,  // 229: ember.v1.EmberCache.ZScore:output_type -> ember.v1.OptionalFloatResponse
-	70,  // 230: ember.v1.EmberCache.ZRank:output_type -> ember.v1.OptionalIntResponse
-	3,   // 231: ember.v1.EmberCache.ZCard:output_type -> ember.v1.IntResponse
-	73,  // 232: ember.v1.EmberCache.ZRange:output_type -> ember.v1.ZRangeResponse
-	4,   // 233: ember.v1.EmberCache.VAdd:output_type -> ember.v1.BoolResponse
-	76,  // 234: ember.v1.EmberCache.VSim:output_type -> ember.v1.VSimResponse
-	4,   // 235: ember.v1.EmberCache.VRem:output_type -> ember.v1.BoolResponse
-	80,  // 236: ember.v1.EmberCache.VGet:output_type -> ember.v1.VGetResponse
-	3,   // 237: ember.v1.EmberCache.VCard:output_type -> ember.v1.IntResponse
-	3,   // 238: ember.v1.EmberCache.VDim:output_type -> ember.v1.IntResponse
-	84,  // 239: ember.v1.EmberCache.VInfo:output_type -> ember.v1.VInfoResponse
-	86,  // 240: ember.v1.EmberCache.Ping:output_type -> ember.v1.PingResponse
-	92,  // 241: ember.v1.EmberCache.Echo:output_type -> ember.v1.EchoResponse
-	3,   // 242: ember.v1.EmberCache.Decr:output_type -> ember.v1.IntResponse
-	12,  // 243: ember.v1.EmberCache.Unlink:output_type -> ember.v1.DelResponse
-	6,   // 244: ember.v1.EmberCache.FlushDb:output_type -> ember.v1.StatusResponse
-	3,   // 245: ember.v1.EmberCache.DbSize:output_type -> ember.v1.IntResponse
-	90,  // 246: ember.v1.EmberCache.Info:output_type -> ember.v1.InfoResponse
-	6,   // 247: ember.v1.EmberCache.BgSave:output_type -> ember.v1.StatusResponse
-	6,   // 248: ember.v1.EmberCache.BgRewriteAof:output_type -> ember.v1.StatusResponse
-	98,  // 249: ember.v1.EmberCache.SlowLogGet:output_type -> ember.v1.SlowLogGetResponse
-	3,   // 250: ember.v1.EmberCache.SlowLogLen:output_type -> ember.v1.IntResponse
-	6,   // 251: ember.v1.EmberCache.SlowLogReset:output_type -> ember.v1.StatusResponse
-	3,   // 252: ember.v1.EmberCache.Publish:output_type -> ember.v1.IntResponse
-	104, // 253: ember.v1.EmberCache.Subscribe:output_type -> ember.v1.SubscribeEvent
-	35,  // 254: ember.v1.EmberCache.PubSubChannels:output_type -> ember.v1.KeysResponse
-	107, // 255: ember.v1.EmberCache.PubSubNumSub:output_type -> ember.v1.PubSubNumSubResponse
-	3,   // 256: ember.v1.EmberCache.PubSubNumPat:output_type -> ember.v1.IntResponse
-	111, // 257: ember.v1.EmberCache.Pipeline:output_type -> ember.v1.PipelineResponse
-	185, // [185:258] is the sub-list for method output_type
-	112, // [112:185] is the sub-list for method input_type
-	112, // [112:112] is the sub-list for extension type_name
-	112, // [112:112] is the sub-list for extension extendee
-	0,   // [0:112] is the sub-list for field type_name
+	75,  // 9: ember.v1.VAddBatchRequest.entries:type_name -> ember.v1.VAddBatchEntry
+	0,   // 10: ember.v1.VAddBatchRequest.metric:type_name -> ember.v1.VectorMetric
+	1,   // 11: ember.v1.VAddBatchRequest.quantization:type_name -> ember.v1.VectorQuantization
+	79,  // 12: ember.v1.VSimResponse.results:type_name -> ember.v1.VSimResult
+	47,  // 13: ember.v1.VInfoResponse.info:type_name -> ember.v1.FieldValue
+	101, // 14: ember.v1.SlowLogGetResponse.entries:type_name -> ember.v1.SlowLogEntry
+	111, // 15: ember.v1.PubSubNumSubResponse.counts:type_name -> ember.v1.ChannelCount
+	7,   // 16: ember.v1.PipelineRequest.get:type_name -> ember.v1.GetRequest
+	9,   // 17: ember.v1.PipelineRequest.set:type_name -> ember.v1.SetRequest
+	11,  // 18: ember.v1.PipelineRequest.del:type_name -> ember.v1.DelRequest
+	25,  // 19: ember.v1.PipelineRequest.exists:type_name -> ember.v1.ExistsRequest
+	19,  // 20: ember.v1.PipelineRequest.incr:type_name -> ember.v1.IncrRequest
+	20,  // 21: ember.v1.PipelineRequest.incr_by:type_name -> ember.v1.IncrByRequest
+	21,  // 22: ember.v1.PipelineRequest.decr_by:type_name -> ember.v1.DecrByRequest
+	22,  // 23: ember.v1.PipelineRequest.incr_by_float:type_name -> ember.v1.IncrByFloatRequest
+	23,  // 24: ember.v1.PipelineRequest.append:type_name -> ember.v1.AppendRequest
+	24,  // 25: ember.v1.PipelineRequest.strlen:type_name -> ember.v1.StrlenRequest
+	26,  // 26: ember.v1.PipelineRequest.expire:type_name -> ember.v1.ExpireRequest
+	27,  // 27: ember.v1.PipelineRequest.pexpire:type_name -> ember.v1.PExpireRequest
+	28,  // 28: ember.v1.PipelineRequest.persist:type_name -> ember.v1.PersistRequest
+	29,  // 29: ember.v1.PipelineRequest.ttl:type_name -> ember.v1.TtlRequest
+	30,  // 30: ember.v1.PipelineRequest.pttl:type_name -> ember.v1.PTtlRequest
+	32,  // 31: ember.v1.PipelineRequest.type:type_name -> ember.v1.TypeRequest
+	39,  // 32: ember.v1.PipelineRequest.lpush:type_name -> ember.v1.LPushRequest
+	40,  // 33: ember.v1.PipelineRequest.rpush:type_name -> ember.v1.RPushRequest
+	41,  // 34: ember.v1.PipelineRequest.lpop:type_name -> ember.v1.LPopRequest
+	42,  // 35: ember.v1.PipelineRequest.rpop:type_name -> ember.v1.RPopRequest
+	43,  // 36: ember.v1.PipelineRequest.lrange:type_name -> ember.v1.LRangeRequest
+	45,  // 37: ember.v1.PipelineRequest.llen:type_name -> ember.v1.LLenRequest
+	46,  // 38: ember.v1.PipelineRequest.hset:type_name -> ember.v1.HSetRequest
+	48,  // 39: ember.v1.PipelineRequest.hget:type_name -> ember.v1.HGetRequest
+	49,  // 40: ember.v1.PipelineRequest.hgetall:type_name -> ember.v1.HGetAllRequest
+	51,  // 41: ember.v1.PipelineRequest.hdel:type_name -> ember.v1.HDelRequest
+	52,  // 42: ember.v1.PipelineRequest.hexists:type_name -> ember.v1.HExistsRequest
+	53,  // 43: ember.v1.PipelineRequest.hlen:type_name -> ember.v1.HLenRequest
+	54,  // 44: ember.v1.PipelineRequest.hincr_by:type_name -> ember.v1.HIncrByRequest
+	55,  // 45: ember.v1.PipelineRequest.hkeys:type_name -> ember.v1.HKeysRequest
+	56,  // 46: ember.v1.PipelineRequest.hvals:type_name -> ember.v1.HValsRequest
+	57,  // 47: ember.v1.PipelineRequest.hmget:type_name -> ember.v1.HMGetRequest
+	59,  // 48: ember.v1.PipelineRequest.sadd:type_name -> ember.v1.SAddRequest
+	60,  // 49: ember.v1.PipelineRequest.srem:type_name -> ember.v1.SRemRequest
+	61,  // 50: ember.v1.PipelineRequest.smembers:type_name -> ember.v1.SMembersRequest
+	62,  // 51: ember.v1.PipelineRequest.sismember:type_name -> ember.v1.SIsMemberRequest
+	63,  // 52: ember.v1.PipelineRequest.scard:type_name -> ember.v1.SCardRequest
+	64,  // 53: ember.v1.PipelineRequest.zadd:type_name -> ember.v1.ZAddRequest
+	66,  // 54: ember.v1.PipelineRequest.zrem:type_name -> ember.v1.ZRemRequest
+	67,  // 55: ember.v1.PipelineRequest.zscore:type_name -> ember.v1.ZScoreRequest
+	69,  // 56: ember.v1.PipelineRequest.zrank:type_name -> ember.v1.ZRankRequest
+	71,  // 57: ember.v1.PipelineRequest.zcard:type_name -> ember.v1.ZCardRequest
+	72,  // 58: ember.v1.PipelineRequest.zrange:type_name -> ember.v1.ZRangeRequest
+	74,  // 59: ember.v1.PipelineRequest.vadd:type_name -> ember.v1.VAddRequest
+	77,  // 60: ember.v1.PipelineRequest.vsim:type_name -> ember.v1.VSimRequest
+	80,  // 61: ember.v1.PipelineRequest.vrem:type_name -> ember.v1.VRemRequest
+	81,  // 62: ember.v1.PipelineRequest.vget:type_name -> ember.v1.VGetRequest
+	83,  // 63: ember.v1.PipelineRequest.vcard:type_name -> ember.v1.VCardRequest
+	84,  // 64: ember.v1.PipelineRequest.vdim:type_name -> ember.v1.VDimRequest
+	85,  // 65: ember.v1.PipelineRequest.vinfo:type_name -> ember.v1.VInfoRequest
+	87,  // 66: ember.v1.PipelineRequest.ping:type_name -> ember.v1.PingRequest
+	89,  // 67: ember.v1.PipelineRequest.flushdb:type_name -> ember.v1.FlushDbRequest
+	90,  // 68: ember.v1.PipelineRequest.dbsize:type_name -> ember.v1.DbSizeRequest
+	13,  // 69: ember.v1.PipelineRequest.mget:type_name -> ember.v1.MGetRequest
+	16,  // 70: ember.v1.PipelineRequest.mset:type_name -> ember.v1.MSetRequest
+	34,  // 71: ember.v1.PipelineRequest.keys:type_name -> ember.v1.KeysRequest
+	36,  // 72: ember.v1.PipelineRequest.rename:type_name -> ember.v1.RenameRequest
+	37,  // 73: ember.v1.PipelineRequest.scan:type_name -> ember.v1.ScanRequest
+	93,  // 74: ember.v1.PipelineRequest.echo:type_name -> ember.v1.EchoRequest
+	95,  // 75: ember.v1.PipelineRequest.decr:type_name -> ember.v1.DecrRequest
+	96,  // 76: ember.v1.PipelineRequest.unlink:type_name -> ember.v1.UnlinkRequest
+	97,  // 77: ember.v1.PipelineRequest.bgsave:type_name -> ember.v1.BgSaveRequest
+	98,  // 78: ember.v1.PipelineRequest.bgrewriteaof:type_name -> ember.v1.BgRewriteAofRequest
+	99,  // 79: ember.v1.PipelineRequest.slowlog_get:type_name -> ember.v1.SlowLogGetRequest
+	102, // 80: ember.v1.PipelineRequest.slowlog_len:type_name -> ember.v1.SlowLogLenRequest
+	103, // 81: ember.v1.PipelineRequest.slowlog_reset:type_name -> ember.v1.SlowLogResetRequest
+	104, // 82: ember.v1.PipelineRequest.publish:type_name -> ember.v1.PublishRequest
+	107, // 83: ember.v1.PipelineRequest.pubsub_channels:type_name -> ember.v1.PubSubChannelsRequest
+	108, // 84: ember.v1.PipelineRequest.pubsub_numsub:type_name -> ember.v1.PubSubNumSubRequest
+	110, // 85: ember.v1.PipelineRequest.pubsub_numpat:type_name -> ember.v1.PubSubNumPatRequest
+	76,  // 86: ember.v1.PipelineRequest.vadd_batch:type_name -> ember.v1.VAddBatchRequest
+	8,   // 87: ember.v1.PipelineResponse.get:type_name -> ember.v1.GetResponse
+	10,  // 88: ember.v1.PipelineResponse.set:type_name -> ember.v1.SetResponse
+	12,  // 89: ember.v1.PipelineResponse.del:type_name -> ember.v1.DelResponse
+	3,   // 90: ember.v1.PipelineResponse.int_val:type_name -> ember.v1.IntResponse
+	4,   // 91: ember.v1.PipelineResponse.bool_val:type_name -> ember.v1.BoolResponse
+	5,   // 92: ember.v1.PipelineResponse.float_val:type_name -> ember.v1.FloatResponse
+	6,   // 93: ember.v1.PipelineResponse.status:type_name -> ember.v1.StatusResponse
+	31,  // 94: ember.v1.PipelineResponse.ttl:type_name -> ember.v1.TtlResponse
+	33,  // 95: ember.v1.PipelineResponse.type:type_name -> ember.v1.TypeResponse
+	44,  // 96: ember.v1.PipelineResponse.array:type_name -> ember.v1.ArrayResponse
+	50,  // 97: ember.v1.PipelineResponse.hash:type_name -> ember.v1.HashResponse
+	58,  // 98: ember.v1.PipelineResponse.optional_array:type_name -> ember.v1.OptionalArrayResponse
+	35,  // 99: ember.v1.PipelineResponse.keys:type_name -> ember.v1.KeysResponse
+	38,  // 100: ember.v1.PipelineResponse.scan:type_name -> ember.v1.ScanResponse
+	68,  // 101: ember.v1.PipelineResponse.optional_float:type_name -> ember.v1.OptionalFloatResponse
+	70,  // 102: ember.v1.PipelineResponse.optional_int:type_name -> ember.v1.OptionalIntResponse
+	73,  // 103: ember.v1.PipelineResponse.zrange:type_name -> ember.v1.ZRangeResponse
+	78,  // 104: ember.v1.PipelineResponse.vsim:type_name -> ember.v1.VSimResponse
+	82,  // 105: ember.v1.PipelineResponse.vget:type_name -> ember.v1.VGetResponse
+	86,  // 106: ember.v1.PipelineResponse.vinfo:type_name -> ember.v1.VInfoResponse
+	14,  // 107: ember.v1.PipelineResponse.mget:type_name -> ember.v1.MGetResponse
+	18,  // 108: ember.v1.PipelineResponse.mset:type_name -> ember.v1.MSetResponse
+	88,  // 109: ember.v1.PipelineResponse.ping:type_name -> ember.v1.PingResponse
+	114, // 110: ember.v1.PipelineResponse.error:type_name -> ember.v1.ErrorResponse
+	92,  // 111: ember.v1.PipelineResponse.info:type_name -> ember.v1.InfoResponse
+	94,  // 112: ember.v1.PipelineResponse.echo:type_name -> ember.v1.EchoResponse
+	100, // 113: ember.v1.PipelineResponse.slowlog_get:type_name -> ember.v1.SlowLogGetResponse
+	109, // 114: ember.v1.PipelineResponse.pubsub_numsub:type_name -> ember.v1.PubSubNumSubResponse
+	2,   // 115: ember.v1.ErrorResponse.kind:type_name -> ember.v1.ErrorKind
+	7,   // 116: ember.v1.EmberCache.Get:input_type -> ember.v1.GetRequest
+	9,   // 117: ember.v1.EmberCache.Set:input_type -> ember.v1.SetRequest
+	11,  // 118: ember.v1.EmberCache.Del:input_type -> ember.v1.DelRequest
+	13,  // 119: ember.v1.EmberCache.MGet:input_type -> ember.v1.MGetRequest
+	16,  // 120: ember.v1.EmberCache.MSet:input_type -> ember.v1.MSetRequest
+	19,  // 121: ember.v1.EmberCache.Incr:input_type -> ember.v1.IncrRequest
+	20,  // 122: ember.v1.EmberCache.IncrBy:input_type -> ember.v1.IncrByRequest
+	21,  // 123: ember.v1.EmberCache.DecrBy:input_type -> ember.v1.DecrByRequest
+	22,  // 124: ember.v1.EmberCache.IncrByFloat:input_type -> ember.v1.IncrByFloatRequest
+	23,  // 125: ember.v1.EmberCache.Append:input_type -> ember.v1.AppendRequest
+	24,  // 126: ember.v1.EmberCache.Strlen:input_type -> ember.v1.StrlenRequest
+	25,  // 127: ember.v1.EmberCache.Exists:input_type -> ember.v1.ExistsRequest
+	26,  // 128: ember.v1.EmberCache.Expire:input_type -> ember.v1.ExpireRequest
+	27,  // 129: ember.v1.EmberCache.PExpire:input_type -> ember.v1.PExpireRequest
+	28,  // 130: ember.v1.EmberCache.Persist:input_type -> ember.v1.PersistRequest
+	29,  // 131: ember.v1.EmberCache.Ttl:input_type -> ember.v1.TtlRequest
+	30,  // 132: ember.v1.EmberCache.PTtl:input_type -> ember.v1.PTtlRequest
+	32,  // 133: ember.v1.EmberCache.Type:input_type -> ember.v1.TypeRequest
+	34,  // 134: ember.v1.EmberCache.Keys:input_type -> ember.v1.KeysRequest
+	36,  // 135: ember.v1.EmberCache.Rename:input_type -> ember.v1.RenameRequest
+	37,  // 136: ember.v1.EmberCache.Scan:input_type -> ember.v1.ScanRequest
+	39,  // 137: ember.v1.EmberCache.LPush:input_type -> ember.v1.LPushRequest
+	40,  // 138: ember.v1.EmberCache.RPush:input_type -> ember.v1.RPushRequest
+	41,  // 139: ember.v1.EmberCache.LPop:input_type -> ember.v1.LPopRequest
+	42,  // 140: ember.v1.EmberCache.RPop:input_type -> ember.v1.RPopRequest
+	43,  // 141: ember.v1.EmberCache.LRange:input_type -> ember.v1.LRangeRequest
+	45,  // 142: ember.v1.EmberCache.LLen:input_type -> ember.v1.LLenRequest
+	46,  // 143: ember.v1.EmberCache.HSet:input_type -> ember.v1.HSetRequest
+	48,  // 144: ember.v1.EmberCache.HGet:input_type -> ember.v1.HGetRequest
+	49,  // 145: ember.v1.EmberCache.HGetAll:input_type -> ember.v1.HGetAllRequest
+	51,  // 146: ember.v1.EmberCache.HDel:input_type -> ember.v1.HDelRequest
+	52,  // 147: ember.v1.EmberCache.HExists:input_type -> ember.v1.HExistsRequest
+	53,  // 148: ember.v1.EmberCache.HLen:input_type -> ember.v1.HLenRequest
+	54,  // 149: ember.v1.EmberCache.HIncrBy:input_type -> ember.v1.HIncrByRequest
+	55,  // 150: ember.v1.EmberCache.HKeys:input_type -> ember.v1.HKeysRequest
+	56,  // 151: ember.v1.EmberCache.HVals:input_type -> ember.v1.HValsRequest
+	57,  // 152: ember.v1.EmberCache.HMGet:input_type -> ember.v1.HMGetRequest
+	59,  // 153: ember.v1.EmberCache.SAdd:input_type -> ember.v1.SAddRequest
+	60,  // 154: ember.v1.EmberCache.SRem:input_type -> ember.v1.SRemRequest
+	61,  // 155: ember.v1.EmberCache.SMembers:input_type -> ember.v1.SMembersRequest
+	62,  // 156: ember.v1.EmberCache.SIsMember:input_type -> ember.v1.SIsMemberRequest
+	63,  // 157: ember.v1.EmberCache.SCard:input_type -> ember.v1.SCardRequest
+	64,  // 158: ember.v1.EmberCache.ZAdd:input_type -> ember.v1.ZAddRequest
+	66,  // 159: ember.v1.EmberCache.ZRem:input_type -> ember.v1.ZRemRequest
+	67,  // 160: ember.v1.EmberCache.ZScore:input_type -> ember.v1.ZScoreRequest
+	69,  // 161: ember.v1.EmberCache.ZRank:input_type -> ember.v1.ZRankRequest
+	71,  // 162: ember.v1.EmberCache.ZCard:input_type -> ember.v1.ZCardRequest
+	72,  // 163: ember.v1.EmberCache.ZRange:input_type -> ember.v1.ZRangeRequest
+	74,  // 164: ember.v1.EmberCache.VAdd:input_type -> ember.v1.VAddRequest
+	76,  // 165: ember.v1.EmberCache.VAddBatch:input_type -> ember.v1.VAddBatchRequest
+	77,  // 166: ember.v1.EmberCache.VSim:input_type -> ember.v1.VSimRequest
+	80,  // 167: ember.v1.EmberCache.VRem:input_type -> ember.v1.VRemRequest
+	81,  // 168: ember.v1.EmberCache.VGet:input_type -> ember.v1.VGetRequest
+	83,  // 169: ember.v1.EmberCache.VCard:input_type -> ember.v1.VCardRequest
+	84,  // 170: ember.v1.EmberCache.VDim:input_type -> ember.v1.VDimRequest
+	85,  // 171: ember.v1.EmberCache.VInfo:input_type -> ember.v1.VInfoRequest
+	87,  // 172: ember.v1.EmberCache.Ping:input_type -> ember.v1.PingRequest
+	93,  // 173: ember.v1.EmberCache.Echo:input_type -> ember.v1.EchoRequest
+	95,  // 174: ember.v1.EmberCache.Decr:input_type -> ember.v1.DecrRequest
+	96,  // 175: ember.v1.EmberCache.Unlink:input_type -> ember.v1.UnlinkRequest
+	89,  // 176: ember.v1.EmberCache.FlushDb:input_type -> ember.v1.FlushDbRequest
+	90,  // 177: ember.v1.EmberCache.DbSize:input_type -> ember.v1.DbSizeRequest
+	91,  // 178: ember.v1.EmberCache.Info:input_type -> ember.v1.InfoRequest
+	97,  // 179: ember.v1.EmberCache.BgSave:input_type -> ember.v1.BgSaveRequest
+	98,  // 180: ember.v1.EmberCache.BgRewriteAof:input_type -> ember.v1.BgRewriteAofRequest
+	99,  // 181: ember.v1.EmberCache.SlowLogGet:input_type -> ember.v1.SlowLogGetRequest
+	102, // 182: ember.v1.EmberCache.SlowLogLen:input_type -> ember.v1.SlowLogLenRequest
+	103, // 183: ember.v1.EmberCache.SlowLogReset:input_type -> ember.v1.SlowLogResetRequest
+	104, // 184: ember.v1.EmberCache.Publish:input_type -> ember.v1.PublishRequest
+	105, // 185: ember.v1.EmberCache.Subscribe:input_type -> ember.v1.SubscribeRequest
+	107, // 186: ember.v1.EmberCache.PubSubChannels:input_type -> ember.v1.PubSubChannelsRequest
+	108, // 187: ember.v1.EmberCache.PubSubNumSub:input_type -> ember.v1.PubSubNumSubRequest
+	110, // 188: ember.v1.EmberCache.PubSubNumPat:input_type -> ember.v1.PubSubNumPatRequest
+	112, // 189: ember.v1.EmberCache.Pipeline:input_type -> ember.v1.PipelineRequest
+	8,   // 190: ember.v1.EmberCache.Get:output_type -> ember.v1.GetResponse
+	10,  // 191: ember.v1.EmberCache.Set:output_type -> ember.v1.SetResponse
+	12,  // 192: ember.v1.EmberCache.Del:output_type -> ember.v1.DelResponse
+	14,  // 193: ember.v1.EmberCache.MGet:output_type -> ember.v1.MGetResponse
+	18,  // 194: ember.v1.EmberCache.MSet:output_type -> ember.v1.MSetResponse
+	3,   // 195: ember.v1.EmberCache.Incr:output_type -> ember.v1.IntResponse
+	3,   // 196: ember.v1.EmberCache.IncrBy:output_type -> ember.v1.IntResponse
+	3,   // 197: ember.v1.EmberCache.DecrBy:output_type -> ember.v1.IntResponse
+	5,   // 198: ember.v1.EmberCache.IncrByFloat:output_type -> ember.v1.FloatResponse
+	3,   // 199: ember.v1.EmberCache.Append:output_type -> ember.v1.IntResponse
+	3,   // 200: ember.v1.EmberCache.Strlen:output_type -> ember.v1.IntResponse
+	3,   // 201: ember.v1.EmberCache.Exists:output_type -> ember.v1.IntResponse
+	4,   // 202: ember.v1.EmberCache.Expire:output_type -> ember.v1.BoolResponse
+	4,   // 203: ember.v1.EmberCache.PExpire:output_type -> ember.v1.BoolResponse
+	4,   // 204: ember.v1.EmberCache.Persist:output_type -> ember.v1.BoolResponse
+	31,  // 205: ember.v1.EmberCache.Ttl:output_type -> ember.v1.TtlResponse
+	31,  // 206: ember.v1.EmberCache.PTtl:output_type -> ember.v1.TtlResponse
+	33,  // 207: ember.v1.EmberCache.Type:output_type -> ember.v1.TypeResponse
+	35,  // 208: ember.v1.EmberCache.Keys:output_type -> ember.v1.KeysResponse
+	6,   // 209: ember.v1.EmberCache.Rename:output_type -> ember.v1.StatusResponse
+	38,  // 210: ember.v1.EmberCache.Scan:output_type -> ember.v1.ScanResponse
+	3,   // 211: ember.v1.EmberCache.LPush:output_type -> ember.v1.IntResponse
+	3,   // 212: ember.v1.EmberCache.RPush:output_type -> ember.v1.IntResponse
+	8,   // 213: ember.v1.EmberCache.LPop:output_type -> ember.v1.GetResponse
+	8,   // 214: ember.v1.EmberCache.RPop:output_type -> ember.v1.GetResponse
+	44,  // 215: ember.v1.EmberCache.LRange:output_type -> ember.v1.ArrayResponse
+	3,   // 216: ember.v1.EmberCache.LLen:output_type -> ember.v1.IntResponse
+	3,   // 217: ember.v1.EmberCache.HSet:output_type -> ember.v1.IntResponse
+	8,   // 218: ember.v1.EmberCache.HGet:output_type -> ember.v1.GetResponse
+	50,  // 219: ember.v1.EmberCache.HGetAll:output_type -> ember.v1.HashResponse
+	3,   // 220: ember.v1.EmberCache.HDel:output_type -> ember.v1.IntResponse
+	4,   // 221: ember.v1.EmberCache.HExists:output_type -> ember.v1.BoolResponse
+	3,   // 222: ember.v1.EmberCache.HLen:output_type -> ember.v1.IntResponse
+	3,   // 223: ember.v1.EmberCache.HIncrBy:output_type -> ember.v1.IntResponse
+	35,  // 224: ember.v1.EmberCache.HKeys:output_type -> ember.v1.KeysResponse
+	44,  // 225: ember.v1.EmberCache.HVals:output_type -> ember.v1.ArrayResponse
+	58,  // 226: ember.v1.EmberCache.HMGet:output_type -> ember.v1.OptionalArrayResponse
+	3,   // 227: ember.v1.EmberCache.SAdd:output_type -> ember.v1.IntResponse
+	3,   // 228: ember.v1.EmberCache.SRem:output_type -> ember.v1.IntResponse
+	35,  // 229: ember.v1.EmberCache.SMembers:output_type -> ember.v1.KeysResponse
+	4,   // 230: ember.v1.EmberCache.SIsMember:output_type -> ember.v1.BoolResponse
+	3,   // 231: ember.v1.EmberCache.SCard:output_type -> ember.v1.IntResponse
+	3,   // 232: ember.v1.EmberCache.ZAdd:output_type -> ember.v1.IntResponse
+	3,   // 233: ember.v1.EmberCache.ZRem:output_type -> ember.v1.IntResponse
+	68,  // 234: ember.v1.EmberCache.ZScore:output_type -> ember.v1.OptionalFloatResponse
+	70,  // 235: ember.v1.EmberCache.ZRank:output_type -> ember.v1.OptionalIntResponse
+	3,   // 236: ember.v1.EmberCache.ZCard:output_type -> ember.v1.IntResponse
+	73,  // 237: ember.v1.EmberCache.ZRange:output_type -> ember.v1.ZRangeResponse
+	4,   // 238: ember.v1.EmberCache.VAdd:output_type -> ember.v1.BoolResponse
+	3,   // 239: ember.v1.EmberCache.VAddBatch:output_type -> ember.v1.IntResponse
+	78,  // 240: ember.v1.EmberCache.VSim:output_type -> ember.v1.VSimResponse
+	4,   // 241: ember.v1.EmberCache.VRem:output_type -> ember.v1.BoolResponse
+	82,  // 242: ember.v1.EmberCache.VGet:output_type -> ember.v1.VGetResponse
+	3,   // 243: ember.v1.EmberCache.VCard:output_type -> ember.v1.IntResponse
+	3,   // 244: ember.v1.EmberCache.VDim:output_type -> ember.v1.IntResponse
+	86,  // 245: ember.v1.EmberCache.VInfo:output_type -> ember.v1.VInfoResponse
+	88,  // 246: ember.v1.EmberCache.Ping:output_type -> ember.v1.PingResponse
+	94,  // 247: ember.v1.EmberCache.Echo:output_type -> ember.v1.EchoResponse
+	3,   // 248: ember.v1.EmberCache.Decr:output_type -> ember.v1.IntResponse
+	12,  // 249: ember.v1.EmberCache.Unlink:output_type -> ember.v1.DelResponse
+	6,   // 250: ember.v1.EmberCache.FlushDb:output_type -> ember.v1.StatusResponse
+	3,   // 251: ember.v1.EmberCache.DbSize:output_type -> ember.v1.IntResponse
+	92,  // 252: ember.v1.EmberCache.Info:output_type -> ember.v1.InfoResponse
+	6,   // 253: ember.v1.EmberCache.BgSave:output_type -> ember.v1.StatusResponse
+	6,   // 254: ember.v1.EmberCache.BgRewriteAof:output_type -> ember.v1.StatusResponse
+	100, // 255: ember.v1.EmberCache.SlowLogGet:output_type -> ember.v1.SlowLogGetResponse
+	3,   // 256: ember.v1.EmberCache.SlowLogLen:output_type -> ember.v1.IntResponse
+	6,   // 257: ember.v1.EmberCache.SlowLogReset:output_type -> ember.v1.StatusResponse
+	3,   // 258: ember.v1.EmberCache.Publish:output_type -> ember.v1.IntResponse
+	106, // 259: ember.v1.EmberCache.Subscribe:output_type -> ember.v1.SubscribeEvent
+	35,  // 260: ember.v1.EmberCache.PubSubChannels:output_type -> ember.v1.KeysResponse
+	109, // 261: ember.v1.EmberCache.PubSubNumSub:output_type -> ember.v1.PubSubNumSubResponse
+	3,   // 262: ember.v1.EmberCache.PubSubNumPat:output_type -> ember.v1.IntResponse
+	113, // 263: ember.v1.EmberCache.Pipeline:output_type -> ember.v1.PipelineResponse
+	190, // [190:264] is the sub-list for method output_type
+	116, // [116:190] is the sub-list for method input_type
+	116, // [116:116] is the sub-list for extension type_name
+	116, // [116:116] is the sub-list for extension extendee
+	0,   // [0:116] is the sub-list for field type_name
 }
 
 func init() { file_ember_v1_ember_proto_init() }
@@ -8025,14 +8200,15 @@ func file_ember_v1_ember_proto_init() {
 	file_ember_v1_ember_proto_msgTypes[65].OneofWrappers = []any{}
 	file_ember_v1_ember_proto_msgTypes[67].OneofWrappers = []any{}
 	file_ember_v1_ember_proto_msgTypes[71].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[72].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[77].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[82].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[86].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[94].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[101].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[102].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[107].OneofWrappers = []any{
+	file_ember_v1_ember_proto_msgTypes[73].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[74].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[79].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[84].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[88].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[96].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[103].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[104].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[109].OneofWrappers = []any{
 		(*PipelineRequest_Get)(nil),
 		(*PipelineRequest_Set)(nil),
 		(*PipelineRequest_Del)(nil),
@@ -8103,8 +8279,9 @@ func file_ember_v1_ember_proto_init() {
 		(*PipelineRequest_PubsubChannels)(nil),
 		(*PipelineRequest_PubsubNumsub)(nil),
 		(*PipelineRequest_PubsubNumpat)(nil),
+		(*PipelineRequest_VaddBatch)(nil),
 	}
-	file_ember_v1_ember_proto_msgTypes[108].OneofWrappers = []any{
+	file_ember_v1_ember_proto_msgTypes[110].OneofWrappers = []any{
 		(*PipelineResponse_Get)(nil),
 		(*PipelineResponse_Set)(nil),
 		(*PipelineResponse_Del)(nil),
@@ -8140,7 +8317,7 @@ func file_ember_v1_ember_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ember_v1_ember_proto_rawDesc), len(file_ember_v1_ember_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   110,
+			NumMessages:   112,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
