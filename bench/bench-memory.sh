@@ -65,7 +65,7 @@ fi
 
 get_redis_memory() {
     local port=$1
-    redis-cli -p "$port" info memory 2>/dev/null | grep used_memory: | cut -d: -f2 | tr -d '\r'
+    redis-cli -p "$port" info memory 2>/dev/null | grep "^used_memory:" | cut -d: -f2 | tr -d '\r'
 }
 
 wait_for_server() {

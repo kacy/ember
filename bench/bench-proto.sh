@@ -90,7 +90,7 @@ echo "port:     $EMBER_PORT"
 echo ""
 
 echo "starting ember (with protobuf support) on port $EMBER_PORT..."
-"$EMBER_BIN" --port "$EMBER_PORT" > /dev/null 2>&1 &
+"$EMBER_BIN" --port "$EMBER_PORT" --protobuf > /dev/null 2>&1 &
 EMBER_PID=$!
 
 retries=50
