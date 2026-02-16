@@ -137,7 +137,7 @@ measure_ember_type() {
     local mem_after
     mem_after=$(get_redis_memory "$port")
     local keys
-    keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $2}' | tr -d '\r')
+    keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $NF}' | tr -d '\r')
 
     local used=$((mem_after - mem_before))
     local bytes_per_key=0
@@ -183,7 +183,7 @@ measure_redis_type() {
     local mem_after
     mem_after=$(get_redis_memory "$port")
     local keys
-    keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $2}' | tr -d '\r')
+    keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $NF}' | tr -d '\r')
 
     local used=$((mem_after - mem_before))
     local bytes_per_key=0
