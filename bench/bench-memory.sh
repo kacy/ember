@@ -185,7 +185,7 @@ TYPE_LABELS+=("string (${VALUE_SIZE}B)")
 
 # ember concurrent
 echo "  starting ember concurrent..."
-$EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent --no-grpc > /dev/null 2>&1 &
 EC_PID=$!
 wait_for_server $EMBER_CONCURRENT_PORT
 
@@ -198,7 +198,7 @@ sleep 0.5
 
 # ember sharded
 echo "  starting ember sharded..."
-$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_SHARDED_PORT --no-grpc > /dev/null 2>&1 &
 ES_PID=$!
 wait_for_server $EMBER_SHARDED_PORT
 
@@ -236,7 +236,7 @@ TYPE_LABELS+=("hash (5 fields)")
 EMBER_CONCURRENT_BYTES+=("—")
 
 echo "  starting ember sharded..."
-$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_SHARDED_PORT --no-grpc > /dev/null 2>&1 &
 ES_PID=$!
 wait_for_server $EMBER_SHARDED_PORT
 
@@ -272,7 +272,7 @@ TYPE_LABELS+=("sorted set")
 EMBER_CONCURRENT_BYTES+=("—")
 
 echo "  starting ember sharded..."
-$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_SHARDED_PORT --no-grpc > /dev/null 2>&1 &
 ES_PID=$!
 wait_for_server $EMBER_SHARDED_PORT
 
@@ -342,7 +342,7 @@ PYEOF
 
         # vector requires sharded mode
         echo "  starting ember sharded..."
-        $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+        $EMBER_BIN --port $EMBER_SHARDED_PORT --no-grpc > /dev/null 2>&1 &
         VEC_PID=$!
         wait_for_server $EMBER_SHARDED_PORT
 

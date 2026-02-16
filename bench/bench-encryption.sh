@@ -109,12 +109,12 @@ KEY_FILE=$(mktemp)
 dd if=/dev/urandom bs=32 count=1 2>/dev/null > "$KEY_FILE"
 
 echo "starting plaintext server on port $PLAINTEXT_PORT..."
-$EMBER_BIN --port "$PLAINTEXT_PORT" --data-dir "$TMPDIR_PLAIN" --appendonly > /dev/null 2>&1 &
+$EMBER_BIN --port "$PLAINTEXT_PORT" --data-dir "$TMPDIR_PLAIN" --appendonly --no-grpc > /dev/null 2>&1 &
 PLAINTEXT_PID=$!
 wait_for_server "$PLAINTEXT_PORT" "ember (plaintext)"
 
 echo "starting encrypted server on port $ENCRYPTED_PORT..."
-$EMBER_BIN --port "$ENCRYPTED_PORT" --data-dir "$TMPDIR_ENC" --appendonly --encryption-key-file "$KEY_FILE" > /dev/null 2>&1 &
+$EMBER_BIN --port "$ENCRYPTED_PORT" --data-dir "$TMPDIR_ENC" --appendonly --encryption-key-file "$KEY_FILE" --no-grpc > /dev/null 2>&1 &
 ENCRYPTED_PID=$!
 wait_for_server "$ENCRYPTED_PORT" "ember (encrypted)"
 
