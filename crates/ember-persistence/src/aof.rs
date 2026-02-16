@@ -790,12 +790,16 @@ impl AofWriter {
     }
 
     /// Truncates the AOF file back to just the header.
-    /// Used after a successful snapshot to reset the log.
+    ///
+    /// Uses write-to-temp-then-rename for crash safety: the old AOF
+    /// remains intact until the new file (with only a header) is fully
+    /// synced and atomically renamed into place.
     pub fn truncate(&mut self) -> Result<(), FormatError> {
-        // flush and drop the old writer
+        // flush the old writer so no data is in the BufWriter
         self.writer.flush()?;
 
-        // reopen the file with truncation, write fresh header
+        // write a fresh header to a temp file next to the real AOF
+        let tmp_path = self.path.with_extension("aof.tmp");
         let mut opts = OpenOptions::new();
         opts.create(true).write(true).truncate(true);
         #[cfg(unix)]
@@ -803,26 +807,31 @@ impl AofWriter {
             use std::os::unix::fs::OpenOptionsExt;
             opts.mode(0o600);
         }
-        let file = opts.open(&self.path)?;
-        let mut writer = BufWriter::new(file);
+        let tmp_file = opts.open(&tmp_path)?;
+        let mut tmp_writer = BufWriter::new(tmp_file);
 
         #[cfg(feature = "encryption")]
         if self.encryption_key.is_some() {
             format::write_header_versioned(
-                &mut writer,
+                &mut tmp_writer,
                 format::AOF_MAGIC,
                 format::FORMAT_VERSION_ENCRYPTED,
             )?;
         } else {
-            format::write_header(&mut writer, format::AOF_MAGIC)?;
+            format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
         }
         #[cfg(not(feature = "encryption"))]
-        format::write_header(&mut writer, format::AOF_MAGIC)?;
+        format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
 
-        writer.flush()?;
-        // ensure the fresh header is durable before we start appending
-        writer.get_ref().sync_all()?;
-        self.writer = writer;
+        tmp_writer.flush()?;
+        tmp_writer.get_ref().sync_all()?;
+
+        // atomic rename: old AOF is replaced only after new file is durable
+        std::fs::rename(&tmp_path, &self.path)?;
+
+        // reopen for appending
+        let file = OpenOptions::new().append(true).open(&self.path)?;
+        self.writer = BufWriter::new(file);
         Ok(())
     }
 }
@@ -1102,6 +1111,12 @@ impl AofReader {
                 let element = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &element)?;
                 let dim = format::read_u32(&mut self.reader)?;
+                if dim > format::MAX_PERSISTED_VECTOR_DIMS {
+                    return Err(FormatError::InvalidData(format!(
+                        "AOF VADD dimension {dim} exceeds max {}",
+                        format::MAX_PERSISTED_VECTOR_DIMS
+                    )));
+                }
                 format::write_u32(&mut payload, dim)?;
                 for _ in 0..dim {
                     let v = format::read_f32(&mut self.reader)?;

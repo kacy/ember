@@ -139,6 +139,7 @@ pub async fn run(
         );
         info!("gRPC listening on {grpc_addr}");
         let server = tonic::transport::Server::builder()
+            .concurrency_limit_per_connection(256)
             .add_service(svc.into_service())
             .serve(grpc_addr);
         Some(tokio::spawn(async move {
@@ -408,6 +409,7 @@ pub async fn run_concurrent(
         );
         info!("gRPC listening on {grpc_addr}");
         let server = tonic::transport::Server::builder()
+            .concurrency_limit_per_connection(256)
             .add_service(svc.into_service())
             .serve(grpc_addr);
         Some(tokio::spawn(async move {

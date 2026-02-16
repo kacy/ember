@@ -23,6 +23,11 @@ use tracing::{debug, info, trace, warn};
 use crate::message::{GossipMessage, MemberInfo, NodeUpdate};
 use crate::{NodeId, SlotRange};
 
+/// Maximum allowed incarnation value. Rejects gossip updates with
+/// incarnation numbers beyond this to prevent a malicious node from
+/// sending u64::MAX and permanently disabling suspicion refutation.
+const MAX_INCARNATION: u64 = u64::MAX / 2;
+
 /// Configuration for the gossip protocol.
 #[derive(Debug, Clone)]
 pub struct GossipConfig {
@@ -377,6 +382,13 @@ impl GossipEngine {
                     addr,
                     incarnation,
                 } => {
+                    if *incarnation > MAX_INCARNATION {
+                        warn!(
+                            "rejecting alive update for {} with excessive incarnation {}",
+                            node, incarnation
+                        );
+                        continue;
+                    }
                     if *node == self.local_id {
                         // Someone thinks we're alive, good
                         continue;
@@ -419,6 +431,13 @@ impl GossipEngine {
                 }
 
                 NodeUpdate::Suspect { node, incarnation } => {
+                    if *incarnation > MAX_INCARNATION {
+                        warn!(
+                            "rejecting suspect update for {} with excessive incarnation {}",
+                            node, incarnation
+                        );
+                        continue;
+                    }
                     if *node == self.local_id {
                         // Refute suspicion by incrementing our incarnation
                         if *incarnation >= self.incarnation {
@@ -445,6 +464,13 @@ impl GossipEngine {
                 }
 
                 NodeUpdate::Dead { node, incarnation } => {
+                    if *incarnation > MAX_INCARNATION {
+                        warn!(
+                            "rejecting dead update for {} with excessive incarnation {}",
+                            node, incarnation
+                        );
+                        continue;
+                    }
                     if *node == self.local_id {
                         // Refute death claim
                         self.incarnation = incarnation.saturating_add(1);

@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
-    MAX_BUF_SIZE, MAX_PATTERN_LEN, MAX_SUBSCRIPTIONS_PER_CONN,
+    MAX_BUF_SIZE, MAX_PATTERN_LEN, MAX_PIPELINE_DEPTH, MAX_SUBSCRIPTIONS_PER_CONN,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
@@ -200,6 +200,9 @@ where
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     frames.push(frame);
+                    if frames.len() >= MAX_PIPELINE_DEPTH {
+                        break; // process this batch, remaining data stays in buf
+                    }
                 }
                 Ok(None) => break, // need more data
                 Err(e) => {

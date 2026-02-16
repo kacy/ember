@@ -170,8 +170,9 @@ impl GossipMessage {
             GossipMessage::Welcome { sender, members } => {
                 buf.put_u8(MSG_WELCOME);
                 encode_node_id(buf, sender);
-                buf.put_u16_le(members.len() as u16);
-                for member in members {
+                let count = members.len().min(MAX_COLLECTION_COUNT);
+                buf.put_u16_le(count as u16);
+                for member in &members[..count] {
                     encode_member_info(buf, member);
                 }
             }
@@ -324,8 +325,9 @@ fn decode_socket_addr(buf: &mut &[u8]) -> io::Result<SocketAddr> {
 }
 
 fn encode_updates(buf: &mut BytesMut, updates: &[NodeUpdate]) {
-    buf.put_u16_le(updates.len() as u16);
-    for update in updates {
+    let count = updates.len().min(MAX_COLLECTION_COUNT);
+    buf.put_u16_le(count as u16);
+    for update in &updates[..count] {
         encode_update(buf, update);
     }
 }
@@ -413,8 +415,9 @@ fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
     encode_socket_addr(buf, &member.addr);
     buf.put_u64_le(member.incarnation);
     buf.put_u8(if member.is_primary { 1 } else { 0 });
-    buf.put_u16_le(member.slots.len() as u16);
-    for slot in &member.slots {
+    let slot_count = member.slots.len().min(MAX_COLLECTION_COUNT);
+    buf.put_u16_le(slot_count as u16);
+    for slot in &member.slots[..slot_count] {
         buf.put_u16_le(slot.start);
         buf.put_u16_le(slot.end);
     }

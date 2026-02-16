@@ -38,7 +38,9 @@ pub const MEMORY_SAFETY_MARGIN_PERCENT: usize = 90;
 /// Returns the number of bytes at which writes should be rejected or
 /// eviction should begin — always less than the raw configured limit.
 pub fn effective_limit(max_bytes: usize) -> usize {
-    max_bytes * MEMORY_SAFETY_MARGIN_PERCENT / 100
+    // use u128 intermediate to avoid overflow on large max_bytes values
+    // while preserving precision for small values
+    ((max_bytes as u128) * (MEMORY_SAFETY_MARGIN_PERCENT as u128) / 100) as usize
 }
 
 /// Estimated overhead per entry in the HashMap.
