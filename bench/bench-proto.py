@@ -102,7 +102,7 @@ def compute_stats(elapsed, latencies, count):
 def bench_raw_set(r, keys, value, warmup=1000):
     """raw SET throughput (no validation)."""
     for i in range(warmup):
-        r.set(f"warmup:{i}", value)
+        r.set(f"raw_warmup:{i}", value)
 
     latencies = []
     start = time.perf_counter()
@@ -117,7 +117,7 @@ def bench_raw_set(r, keys, value, warmup=1000):
 def bench_raw_get(r, keys, warmup=1000):
     """raw GET throughput."""
     for i in range(warmup):
-        r.get(f"warmup:{i}")
+        r.get(f"raw_warmup:{i}")
 
     latencies = []
     start = time.perf_counter()
@@ -132,7 +132,7 @@ def bench_raw_get(r, keys, warmup=1000):
 def bench_proto_set(r, keys, value, type_name, warmup=1000):
     """PROTO.SET throughput (schema-validated)."""
     for i in range(warmup):
-        r.execute_command("PROTO.SET", f"warmup:{i}", type_name, value)
+        r.execute_command("PROTO.SET", f"proto_warmup:{i}", type_name, value)
 
     latencies = []
     start = time.perf_counter()
@@ -147,7 +147,7 @@ def bench_proto_set(r, keys, value, type_name, warmup=1000):
 def bench_proto_get(r, keys, warmup=1000):
     """PROTO.GET throughput."""
     for i in range(warmup):
-        r.execute_command("PROTO.GET", f"warmup:{i}")
+        r.execute_command("PROTO.GET", f"proto_warmup:{i}")
 
     latencies = []
     start = time.perf_counter()
@@ -162,7 +162,7 @@ def bench_proto_get(r, keys, warmup=1000):
 def bench_proto_getfield(r, keys, field, warmup=1000):
     """PROTO.GETFIELD throughput (single field read)."""
     for i in range(warmup):
-        r.execute_command("PROTO.GETFIELD", f"warmup:{i}", field)
+        r.execute_command("PROTO.GETFIELD", f"proto_warmup:{i}", field)
 
     latencies = []
     start = time.perf_counter()
@@ -177,7 +177,7 @@ def bench_proto_getfield(r, keys, field, warmup=1000):
 def bench_proto_setfield(r, keys, field, value, warmup=1000):
     """PROTO.SETFIELD throughput (single field update)."""
     for i in range(warmup):
-        r.execute_command("PROTO.SETFIELD", f"warmup:{i}", field, value)
+        r.execute_command("PROTO.SETFIELD", f"proto_warmup:{i}", field, value)
 
     latencies = []
     start = time.perf_counter()
