@@ -144,7 +144,7 @@ fn recover_shard_impl(
     // step 1: load snapshot
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
     if snap_path.exists() {
-        match load_snapshot(&snap_path, encryption_key) {
+        match load_snapshot(&snap_path, shard_id, encryption_key) {
             Ok(entries) => {
                 for (key, value, ttl_ms) in entries {
                     map.insert(key, (RecoveredValue::from(value), ttl_ms));
@@ -209,6 +209,7 @@ fn recover_shard_impl(
 /// Returns (key, value, ttl_ms) where ttl_ms is -1 for no expiry.
 fn load_snapshot(
     path: &Path,
+    expected_shard_id: u16,
     #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
 ) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
     #[cfg(feature = "encryption")]
@@ -219,6 +220,13 @@ fn load_snapshot(
     };
     #[cfg(not(feature = "encryption"))]
     let mut reader = SnapshotReader::open(path)?;
+
+    if reader.shard_id != expected_shard_id {
+        return Err(FormatError::InvalidData(format!(
+            "snapshot shard_id {} does not match expected {}",
+            reader.shard_id, expected_shard_id
+        )));
+    }
 
     let mut entries = Vec::new();
 

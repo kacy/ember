@@ -25,9 +25,23 @@ pub const TAG_SIZE: usize = 16;
 ///
 /// The key is stored inline — no heap allocation. Implements `Clone`
 /// but not `Debug` to avoid accidentally logging key material.
+/// On drop, the key bytes are zeroed to prevent key material from
+/// lingering in freed memory.
 #[derive(Clone)]
 pub struct EncryptionKey {
     bytes: [u8; 32],
+}
+
+impl Drop for EncryptionKey {
+    fn drop(&mut self) {
+        // Use a volatile write to prevent the compiler from optimizing
+        // away the zeroing of key material.
+        for byte in &mut self.bytes {
+            // SAFETY: this is a regular mutable reference write, using
+            // write_volatile to prevent dead-store elimination.
+            unsafe { std::ptr::write_volatile(byte, 0) };
+        }
+    }
 }
 
 impl fmt::Debug for EncryptionKey {
