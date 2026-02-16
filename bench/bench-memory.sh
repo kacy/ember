@@ -2,8 +2,8 @@
 #
 # memory usage comparison between ember and redis across data types.
 #
-# tests both ember modes (concurrent + sharded) and measures per-key
-# memory overhead for strings, hashes, sorted sets, and optionally vectors.
+# tests both ember modes (concurrent for strings, sharded for all types)
+# and measures per-key/per-member memory overhead.
 #
 # usage:
 #   ./bench/bench-memory.sh              # string, hash, sorted set (ember + redis)
@@ -81,6 +81,39 @@ wait_for_server() {
     done
 }
 
+# python helper for bulk loading hash and sorted set data.
+# redis-cli --pipe doesn't work reliably with ember, so we use
+# redis-py pipelining instead.
+BULK_LOADER=$(mktemp /tmp/bench_bulk_load_XXXXXX.py)
+cat > "$BULK_LOADER" << 'PYEOF'
+import redis
+import sys
+
+port = int(sys.argv[1])
+data_type = sys.argv[2]
+count = int(sys.argv[3])
+
+r = redis.Redis(host="127.0.0.1", port=port)
+pipe = r.pipeline(transaction=False)
+batch = 1000
+
+for i in range(count):
+    if data_type == "hash":
+        pipe.hset(f"hash:{i}", mapping={
+            "f1": "value001", "f2": "value002", "f3": "value003",
+            "f4": "value004", "f5": "value005",
+        })
+    elif data_type == "zset":
+        pipe.zadd("myzset", {f"member:{i}": float(i % 100000)})
+
+    if (i + 1) % batch == 0:
+        pipe.execute()
+        pipe = r.pipeline(transaction=False)
+
+pipe.execute()
+r.close()
+PYEOF
+
 cleanup
 
 echo "============================================="
@@ -102,9 +135,9 @@ declare -a EMBER_CONCURRENT_BYTES=()
 declare -a EMBER_SHARDED_BYTES=()
 declare -a REDIS_BYTES=()
 
-# --- measure ember memory for one data type ---
+# --- measure memory for one data type on one server ---
 
-measure_ember_type() {
+measure_type() {
     local port=$1
     local type=$2
     local count=$3
@@ -116,19 +149,8 @@ measure_ember_type() {
         string)
             redis-benchmark -p "$port" -t set -n "$count" -r "$count" -d "$VALUE_SIZE" -q > /dev/null 2>&1
             ;;
-        hash)
-            {
-                for i in $(seq 1 "$count"); do
-                    echo "HSET hash:$i f1 value001 f2 value002 f3 value003 f4 value004 f5 value005"
-                done
-            } | redis-cli -p "$port" --pipe > /dev/null 2>&1
-            ;;
-        zset)
-            {
-                for i in $(seq 1 "$count"); do
-                    echo "ZADD myzset $((RANDOM % 100000)) member:$i"
-                done
-            } | redis-cli -p "$port" --pipe > /dev/null 2>&1
+        hash|zset)
+            python3 "$BULK_LOADER" "$port" "$type" "$count"
             ;;
     esac
 
@@ -136,131 +158,147 @@ measure_ember_type() {
 
     local mem_after
     mem_after=$(get_redis_memory "$port")
-    local keys
-    keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $NF}' | tr -d '\r')
 
-    local used=$((mem_after - mem_before))
-    local bytes_per_key=0
-    if [[ "${keys:-0}" -gt 0 ]] 2>/dev/null; then
-        bytes_per_key=$((used / keys))
-    fi
-
-    echo "$bytes_per_key"
-}
-
-# --- measure redis memory for one data type ---
-
-measure_redis_type() {
-    local port=$1
-    local type=$2
-    local count=$3
-
-    local mem_before
-    mem_before=$(get_redis_memory "$port")
-
-    case "$type" in
-        string)
-            redis-benchmark -p "$port" -t set -n "$count" -r "$count" -d "$VALUE_SIZE" -q > /dev/null 2>&1
-            ;;
-        hash)
-            {
-                for i in $(seq 1 "$count"); do
-                    echo "HSET hash:$i f1 value001 f2 value002 f3 value003 f4 value004 f5 value005"
-                done
-            } | redis-cli -p "$port" --pipe > /dev/null 2>&1
-            ;;
-        zset)
-            {
-                for i in $(seq 1 "$count"); do
-                    echo "ZADD myzset $((RANDOM % 100000)) member:$i"
-                done
-            } | redis-cli -p "$port" --pipe > /dev/null 2>&1
-            ;;
-    esac
-
-    sleep 1
-
-    local mem_after
-    mem_after=$(get_redis_memory "$port")
-    local keys
-    keys=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $NF}' | tr -d '\r')
-
-    local used=$((mem_after - mem_before))
-    local bytes_per_key=0
-    if [[ "${keys:-0}" -gt 0 ]] 2>/dev/null; then
-        bytes_per_key=$((used / keys))
-    fi
-
-    echo "$bytes_per_key"
-}
-
-# --- run benchmarks for one type across all servers ---
-
-run_type_benchmark() {
-    local label=$1
-    local type=$2
-    local count=$3
-    local skip_redis=${4:-false}
-
-    echo "--- $label ($count keys) ---"
-    echo ""
-
-    TYPE_LABELS+=("$label")
-
-    # ember concurrent
-    echo "  starting ember concurrent..."
-    $EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent > /dev/null 2>&1 &
-    local ec_pid=$!
-    wait_for_server $EMBER_CONCURRENT_PORT
-
-    local ec_bytes
-    ec_bytes=$(measure_ember_type "$EMBER_CONCURRENT_PORT" "$type" "$count")
-    EMBER_CONCURRENT_BYTES+=("$ec_bytes")
-    echo "  ember concurrent: ${ec_bytes} bytes/key"
-
-    kill "$ec_pid" 2>/dev/null && wait "$ec_pid" 2>/dev/null || true
-    sleep 0.5
-
-    # ember sharded
-    echo "  starting ember sharded..."
-    $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
-    local es_pid=$!
-    wait_for_server $EMBER_SHARDED_PORT
-
-    local es_bytes
-    es_bytes=$(measure_ember_type "$EMBER_SHARDED_PORT" "$type" "$count")
-    EMBER_SHARDED_BYTES+=("$es_bytes")
-    echo "  ember sharded:    ${es_bytes} bytes/key"
-
-    kill "$es_pid" 2>/dev/null && wait "$es_pid" 2>/dev/null || true
-    sleep 0.5
-
-    # redis
-    if [[ "$HAS_REDIS" == "true" ]] && [[ "$skip_redis" == "false" ]]; then
-        echo "  starting redis..."
-        redis-server --port $REDIS_PORT --save "" --appendonly no --loglevel warning > /dev/null 2>&1 &
-        sleep 1
-        wait_for_server $REDIS_PORT
-
-        local r_bytes
-        r_bytes=$(measure_redis_type "$REDIS_PORT" "$type" "$count")
-        REDIS_BYTES+=("$r_bytes")
-        echo "  redis:            ${r_bytes} bytes/key"
-
-        redis-cli -p $REDIS_PORT shutdown nosave 2>/dev/null || true
-        sleep 0.5
+    # for sorted sets, all members go into one key so DBSIZE=1.
+    # divide by member count instead.
+    local divisor
+    if [[ "$type" == "zset" ]]; then
+        divisor=$count
     else
-        REDIS_BYTES+=("—")
+        divisor=$(redis-cli -p "$port" DBSIZE 2>/dev/null | awk '{print $NF}' | tr -d '\r')
     fi
 
-    echo ""
+    local used=$((mem_after - mem_before))
+    local bytes_per_key=0
+    if [[ "${divisor:-0}" -gt 0 ]] 2>/dev/null; then
+        bytes_per_key=$((used / divisor))
+    fi
+
+    echo "$bytes_per_key"
 }
 
-# --- run each data type ---
+# --- string benchmark (concurrent + sharded + redis) ---
 
-run_type_benchmark "string (${VALUE_SIZE}B)" "string" "$STRING_KEYS"
-run_type_benchmark "hash (5 fields)" "hash" "$COMPLEX_KEYS"
-run_type_benchmark "sorted set" "zset" "$COMPLEX_KEYS"
+echo "--- string (${VALUE_SIZE}B) ($STRING_KEYS keys) ---"
+echo ""
+TYPE_LABELS+=("string (${VALUE_SIZE}B)")
+
+# ember concurrent
+echo "  starting ember concurrent..."
+$EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent > /dev/null 2>&1 &
+EC_PID=$!
+wait_for_server $EMBER_CONCURRENT_PORT
+
+ec_bytes=$(measure_type "$EMBER_CONCURRENT_PORT" "string" "$STRING_KEYS")
+EMBER_CONCURRENT_BYTES+=("$ec_bytes")
+echo "  ember concurrent: ${ec_bytes} B/key"
+
+kill "$EC_PID" 2>/dev/null && wait "$EC_PID" 2>/dev/null || true
+sleep 0.5
+
+# ember sharded
+echo "  starting ember sharded..."
+$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+ES_PID=$!
+wait_for_server $EMBER_SHARDED_PORT
+
+es_bytes=$(measure_type "$EMBER_SHARDED_PORT" "string" "$STRING_KEYS")
+EMBER_SHARDED_BYTES+=("$es_bytes")
+echo "  ember sharded:    ${es_bytes} B/key"
+
+kill "$ES_PID" 2>/dev/null && wait "$ES_PID" 2>/dev/null || true
+sleep 0.5
+
+# redis
+if [[ "$HAS_REDIS" == "true" ]]; then
+    echo "  starting redis..."
+    redis-server --port $REDIS_PORT --save "" --appendonly no --loglevel warning > /dev/null 2>&1 &
+    sleep 1
+    wait_for_server $REDIS_PORT
+
+    r_bytes=$(measure_type "$REDIS_PORT" "string" "$STRING_KEYS")
+    REDIS_BYTES+=("$r_bytes")
+    echo "  redis:            ${r_bytes} B/key"
+
+    redis-cli -p $REDIS_PORT shutdown nosave 2>/dev/null || true
+    sleep 0.5
+else
+    REDIS_BYTES+=("—")
+fi
+echo ""
+
+# --- hash benchmark (sharded only + redis) ---
+# hash/zset commands are only supported in sharded mode
+
+echo "--- hash (5 fields) ($COMPLEX_KEYS keys) ---"
+echo ""
+TYPE_LABELS+=("hash (5 fields)")
+EMBER_CONCURRENT_BYTES+=("—")
+
+echo "  starting ember sharded..."
+$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+ES_PID=$!
+wait_for_server $EMBER_SHARDED_PORT
+
+es_bytes=$(measure_type "$EMBER_SHARDED_PORT" "hash" "$COMPLEX_KEYS")
+EMBER_SHARDED_BYTES+=("$es_bytes")
+echo "  ember sharded:    ${es_bytes} B/key"
+
+kill "$ES_PID" 2>/dev/null && wait "$ES_PID" 2>/dev/null || true
+sleep 0.5
+
+if [[ "$HAS_REDIS" == "true" ]]; then
+    echo "  starting redis..."
+    redis-server --port $REDIS_PORT --save "" --appendonly no --loglevel warning > /dev/null 2>&1 &
+    sleep 1
+    wait_for_server $REDIS_PORT
+
+    r_bytes=$(measure_type "$REDIS_PORT" "hash" "$COMPLEX_KEYS")
+    REDIS_BYTES+=("$r_bytes")
+    echo "  redis:            ${r_bytes} B/key"
+
+    redis-cli -p $REDIS_PORT shutdown nosave 2>/dev/null || true
+    sleep 0.5
+else
+    REDIS_BYTES+=("—")
+fi
+echo ""
+
+# --- sorted set benchmark (sharded only + redis) ---
+
+echo "--- sorted set ($COMPLEX_KEYS members) ---"
+echo ""
+TYPE_LABELS+=("sorted set")
+EMBER_CONCURRENT_BYTES+=("—")
+
+echo "  starting ember sharded..."
+$EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
+ES_PID=$!
+wait_for_server $EMBER_SHARDED_PORT
+
+es_bytes=$(measure_type "$EMBER_SHARDED_PORT" "zset" "$COMPLEX_KEYS")
+EMBER_SHARDED_BYTES+=("$es_bytes")
+echo "  ember sharded:    ${es_bytes} B/member"
+
+kill "$ES_PID" 2>/dev/null && wait "$ES_PID" 2>/dev/null || true
+sleep 0.5
+
+if [[ "$HAS_REDIS" == "true" ]]; then
+    echo "  starting redis..."
+    redis-server --port $REDIS_PORT --save "" --appendonly no --loglevel warning > /dev/null 2>&1 &
+    sleep 1
+    wait_for_server $REDIS_PORT
+
+    r_bytes=$(measure_type "$REDIS_PORT" "zset" "$COMPLEX_KEYS")
+    REDIS_BYTES+=("$r_bytes")
+    echo "  redis:            ${r_bytes} B/member"
+
+    redis-cli -p $REDIS_PORT shutdown nosave 2>/dev/null || true
+    sleep 0.5
+else
+    REDIS_BYTES+=("—")
+fi
+echo ""
 
 # --- vector (ember only, requires python3) ---
 
@@ -302,7 +340,7 @@ for i in range(count):
         print(f"    inserted {i + 1}/{count} vectors", file=sys.stderr)
 PYEOF
 
-        # vector requires sharded mode (full type support)
+        # vector requires sharded mode
         echo "  starting ember sharded..."
         $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
         VEC_PID=$!
@@ -319,7 +357,7 @@ PYEOF
         EMBER_CONCURRENT_BYTES+=("—")
         EMBER_SHARDED_BYTES+=("$VEC_BYTES")
         REDIS_BYTES+=("—")
-        echo "  ember sharded:    ${VEC_BYTES} bytes/vector"
+        echo "  ember sharded:    ${VEC_BYTES} B/vector"
 
         kill "$VEC_PID" 2>/dev/null && wait "$VEC_PID" 2>/dev/null || true
         rm -f "$VECTOR_HELPER"
@@ -327,6 +365,9 @@ PYEOF
 
     echo ""
 fi
+
+# --- cleanup temp files ---
+rm -f "$BULK_LOADER"
 
 # --- summary table ---
 
