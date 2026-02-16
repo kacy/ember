@@ -121,13 +121,13 @@ HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-
 
 | metric | ember (RESP) | ember (gRPC) | chromadb | pgvector | qdrant |
 |--------|-------------|-------------|----------|----------|--------|
-| insert (vectors/sec) | 963 | 1,009 | **3,891** | 1,617 | **7,747** |
-| query (queries/sec) | 1,264 | **1,462** | 390 | 831 | 596 |
-| query p50 (ms) | 0.79ms | **0.68ms** | 2.56ms | 1.18ms | 1.67ms |
-| query p99 (ms) | 0.93ms | **0.83ms** | 2.76ms | 1.56ms | 1.88ms |
-| memory (MB) | **36 MB** | — | 122 MB | 179 MB | 121 MB |
+| insert (vectors/sec) | 1,483 | 2,374 | 3,679 | 1,513 | **7,382** |
+| query (queries/sec) | 1,212 | **1,452** | 383 | 843 | 589 |
+| query p50 (ms) | 0.82ms | **0.68ms** | 2.60ms | 1.16ms | 1.69ms |
+| query p99 (ms) | 1.00ms | **0.86ms** | 2.82ms | 1.61ms | 1.93ms |
+| memory (MB) | **38 MB** | — | 123 MB | 179 MB | 122 MB |
 
-ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.1x qdrant, with 3-5x lower memory usage. gRPC queries are 16% faster than RESP due to lower serialization overhead. insert throughput now uses VADD_BATCH (sends multiple vectors in a single command) to reduce per-vector protocol overhead on both RESP and gRPC paths.
+ember's query throughput is 3.2x chromadb, 1.4x pgvector, and 2.1x qdrant, with 3-5x lower memory usage. gRPC queries are 20% faster than RESP due to lower serialization overhead. insert throughput uses VADD_BATCH (batches of 500 vectors per command) — the gRPC path benefits most since packed floats avoid string parsing entirely.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 
