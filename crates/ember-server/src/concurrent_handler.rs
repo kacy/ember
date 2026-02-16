@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
-    MAX_BUF_SIZE,
+    MAX_BUF_SIZE, MAX_PIPELINE_DEPTH,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
@@ -69,10 +69,15 @@ where
         }
 
         out.clear();
+        let mut pipeline_count: usize = 0;
         loop {
+            if pipeline_count >= MAX_PIPELINE_DEPTH {
+                break; // process this batch, remaining data stays in buf
+            }
             match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
+                    pipeline_count += 1;
 
                     if !authenticated {
                         if is_auth_frame(&frame) {

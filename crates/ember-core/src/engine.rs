@@ -56,6 +56,10 @@ impl Engine {
     /// Panics if `shard_count` is zero.
     pub fn with_config(shard_count: usize, config: EngineConfig) -> Self {
         assert!(shard_count > 0, "shard count must be at least 1");
+        assert!(
+            shard_count <= u16::MAX as usize,
+            "shard count must fit in u16"
+        );
 
         let drop_handle = DropHandle::spawn();
 

@@ -1073,7 +1073,8 @@ fn dispatch(
                 },
                 Err(crate::keyspace::VectorWriteError::WrongType) => ShardResponse::WrongType,
                 Err(crate::keyspace::VectorWriteError::OutOfMemory) => ShardResponse::OutOfMemory,
-                Err(crate::keyspace::VectorWriteError::IndexError(e)) => {
+                Err(crate::keyspace::VectorWriteError::IndexError(e))
+                | Err(crate::keyspace::VectorWriteError::PartialBatch { message: e, .. }) => {
                     ShardResponse::Err(format!("ERR vector index: {e}"))
                 }
             }
@@ -1105,6 +1106,13 @@ fn dispatch(
                 Err(crate::keyspace::VectorWriteError::OutOfMemory) => ShardResponse::OutOfMemory,
                 Err(crate::keyspace::VectorWriteError::IndexError(e)) => {
                     ShardResponse::Err(format!("ERR vector index: {e}"))
+                }
+                Err(crate::keyspace::VectorWriteError::PartialBatch { applied, .. }) => {
+                    // partial success: return applied vectors for AOF persistence
+                    ShardResponse::VAddBatchResult {
+                        added_count: applied.len(),
+                        applied,
+                    }
                 }
             }
         }

@@ -9,13 +9,21 @@ use bytes::BytesMut;
 
 use crate::types::Frame;
 
+/// Maximum nesting depth for serialization. Matches the parser's limit.
+const MAX_SERIALIZE_DEPTH: usize = 64;
+
 impl Frame {
     /// Serializes this frame into the provided buffer.
     ///
     /// Writes the full RESP3 wire representation, including type prefix
-    /// and trailing `\r\n` delimiters.
+    /// and trailing `\r\n` delimiters. Nested structures are bounded to
+    /// [`MAX_SERIALIZE_DEPTH`] levels to prevent stack overflow.
     #[inline]
     pub fn serialize(&self, dst: &mut BytesMut) {
+        self.serialize_inner(dst, 0);
+    }
+
+    fn serialize_inner(&self, dst: &mut BytesMut, depth: usize) {
         use crate::types::wire;
 
         match self {
@@ -51,23 +59,32 @@ impl Frame {
                 dst.put_slice(b"\r\n");
             }
             Frame::Array(items) => {
+                if depth >= MAX_SERIALIZE_DEPTH {
+                    // emit an error frame instead of overflowing the stack
+                    dst.put_slice(b"-ERR nesting too deep\r\n");
+                    return;
+                }
                 dst.put_u8(b'*');
                 write_i64(items.len() as i64, dst);
                 dst.put_slice(b"\r\n");
                 for item in items {
-                    item.serialize(dst);
+                    item.serialize_inner(dst, depth + 1);
                 }
             }
             Frame::Null => {
                 dst.put_slice(wire::NULL);
             }
             Frame::Map(pairs) => {
+                if depth >= MAX_SERIALIZE_DEPTH {
+                    dst.put_slice(b"-ERR nesting too deep\r\n");
+                    return;
+                }
                 dst.put_u8(b'%');
                 write_i64(pairs.len() as i64, dst);
                 dst.put_slice(b"\r\n");
                 for (key, val) in pairs {
-                    key.serialize(dst);
-                    val.serialize(dst);
+                    key.serialize_inner(dst, depth + 1);
+                    val.serialize_inner(dst, depth + 1);
                 }
             }
         }

@@ -87,7 +87,14 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
                     continue;
                 }
 
-                let _ = rl.add_history_entry(trimmed);
+                // don't save AUTH commands to history — they contain passwords
+                if !trimmed
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|w| w.eq_ignore_ascii_case("auth"))
+                {
+                    let _ = rl.add_history_entry(trimmed);
+                }
 
                 // handle local commands
                 let first_word = trimmed.split_whitespace().next().unwrap_or("");
@@ -157,6 +164,13 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
 
     if let Some(ref path) = history_path {
         let _ = rl.save_history(path);
+        // restrict history file permissions — it may contain key names
+        // and values from previous sessions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
     }
 
     // graceful shutdown — send QUIT and close the TCP stream

@@ -20,13 +20,40 @@ pub fn format_response(frame: &Frame) -> String {
     format_frame(frame, 0)
 }
 
+/// Strips ANSI escape sequences and other control characters from
+/// server-supplied strings to prevent terminal manipulation attacks.
+/// Retains printable ASCII, tabs, and newlines (CR/LF).
+fn sanitize(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // skip the ESC and the rest of the ANSI sequence
+            if let Some(next) = chars.next() {
+                if next == '[' {
+                    // CSI sequence — consume until a letter
+                    for c in chars.by_ref() {
+                        if c.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+                // else: single-char escape, already consumed
+            }
+        } else if ch == '\t' || ch == '\n' || ch == '\r' || !ch.is_control() {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn format_frame(frame: &Frame, indent: usize) -> String {
     let prefix = " ".repeat(indent);
 
     match frame {
-        Frame::Simple(s) => format!("{prefix}{}", s.green()),
+        Frame::Simple(s) => format!("{prefix}{}", sanitize(s).green()),
 
-        Frame::Error(e) => format!("{prefix}{} {}", "(error)".red(), e.red()),
+        Frame::Error(e) => format!("{prefix}{} {}", "(error)".red(), sanitize(e).red()),
 
         Frame::Integer(n) => format!(
             "{prefix}{} {}",
@@ -38,9 +65,9 @@ fn format_frame(frame: &Frame, indent: usize) -> String {
             match std::str::from_utf8(data) {
                 Ok(s) if s.contains("\r\n") || s.contains('\n') => {
                     // multiline output (like INFO) — print unquoted
-                    format!("{prefix}{}", s.green())
+                    format!("{prefix}{}", sanitize(s).green())
                 }
-                Ok(s) => format!("{prefix}{}", format!("\"{}\"", s).green()),
+                Ok(s) => format!("{prefix}{}", format!("\"{}\"", sanitize(s)).green()),
                 Err(_) => {
                     // binary data — show as hex
                     let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
@@ -186,5 +213,26 @@ mod tests {
             )]))
         });
         assert_eq!(out, "1) key => (integer) 1");
+    }
+
+    #[test]
+    fn sanitize_strips_ansi_escapes() {
+        assert_eq!(sanitize("hello\x1b[31mworld\x1b[0m"), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_strips_control_chars() {
+        assert_eq!(sanitize("hello\x07\x08world"), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_preserves_tabs_and_newlines() {
+        assert_eq!(sanitize("line1\nline2\ttab"), "line1\nline2\ttab");
+    }
+
+    #[test]
+    fn sanitize_server_response_with_escape() {
+        let out = no_color(|| format_response(&Frame::Simple("\x1b[31mfake-error\x1b[0m".into())));
+        assert_eq!(out, "fake-error");
     }
 }

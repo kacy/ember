@@ -18,6 +18,7 @@ use openraft::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::slots::SLOT_COUNT;
 use crate::{NodeId, SlotRange};
 
 /// Type configuration for openraft.
@@ -178,6 +179,17 @@ impl Storage {
             }
 
             ClusterCommand::AssignSlots { node_id, slots } => {
+                // validate all slot ranges before applying
+                for range in slots {
+                    if range.start > range.end || range.end >= SLOT_COUNT {
+                        return ClusterResponse::Error(format!(
+                            "invalid slot range {}..={} (max {})",
+                            range.start,
+                            range.end,
+                            SLOT_COUNT - 1
+                        ));
+                    }
+                }
                 let key = node_id.0.to_string();
                 if let Some(node) = state.nodes.get_mut(&key) {
                     node.slots = slots.clone();
@@ -203,6 +215,12 @@ impl Storage {
             }
 
             ClusterCommand::BeginMigration { slot, from, to } => {
+                if *slot >= SLOT_COUNT {
+                    return ClusterResponse::Error(format!(
+                        "slot {slot} out of range (max {})",
+                        SLOT_COUNT - 1
+                    ));
+                }
                 state.migrations.insert(
                     *slot,
                     MigrationState {
@@ -214,6 +232,11 @@ impl Storage {
             }
 
             ClusterCommand::CompleteMigration { slot, new_owner } => {
+                if !state.migrations.contains_key(slot) {
+                    return ClusterResponse::Error(format!(
+                        "no migration in progress for slot {slot}"
+                    ));
+                }
                 state.migrations.remove(slot);
                 let key = new_owner.0.to_string();
                 state.slots.insert(*slot, key);
@@ -562,6 +585,112 @@ mod tests {
             assert!(!state.migrations.contains_key(&100));
             assert_eq!(state.slots.get(&100), Some(&node2.0.to_string()));
         }
+    }
+
+    #[tokio::test]
+    async fn assign_slots_rejects_invalid_range() {
+        let storage = Arc::new(Storage::new());
+        let mut s = Arc::clone(&storage);
+
+        let node_id = NodeId::new();
+        let add = Entry {
+            log_id: log_id(1, 1),
+            payload: EntryPayload::Normal(ClusterCommand::AddNode {
+                node_id,
+                raft_id: 1,
+                addr: "127.0.0.1:6379".into(),
+                is_primary: true,
+            }),
+        };
+        s.apply_to_state_machine(&[add]).await.unwrap();
+
+        // craft a SlotRange with start > end (bypassing SlotRange::new)
+        let bad_range = SlotRange {
+            start: 100,
+            end: 50,
+        };
+        let assign = Entry {
+            log_id: log_id(1, 2),
+            payload: EntryPayload::Normal(ClusterCommand::AssignSlots {
+                node_id,
+                slots: vec![bad_range],
+            }),
+        };
+        let results = s.apply_to_state_machine(&[assign]).await.unwrap();
+        assert!(
+            matches!(&results[0], ClusterResponse::Error(msg) if msg.contains("invalid slot range"))
+        );
+    }
+
+    #[tokio::test]
+    async fn assign_slots_rejects_out_of_range() {
+        let storage = Arc::new(Storage::new());
+        let mut s = Arc::clone(&storage);
+
+        let node_id = NodeId::new();
+        let add = Entry {
+            log_id: log_id(1, 1),
+            payload: EntryPayload::Normal(ClusterCommand::AddNode {
+                node_id,
+                raft_id: 1,
+                addr: "127.0.0.1:6379".into(),
+                is_primary: true,
+            }),
+        };
+        s.apply_to_state_machine(&[add]).await.unwrap();
+
+        // slot end >= SLOT_COUNT
+        let bad_range = SlotRange {
+            start: 0,
+            end: 16384,
+        };
+        let assign = Entry {
+            log_id: log_id(1, 2),
+            payload: EntryPayload::Normal(ClusterCommand::AssignSlots {
+                node_id,
+                slots: vec![bad_range],
+            }),
+        };
+        let results = s.apply_to_state_machine(&[assign]).await.unwrap();
+        assert!(
+            matches!(&results[0], ClusterResponse::Error(msg) if msg.contains("invalid slot range"))
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_migration_without_begin_errors() {
+        let storage = Arc::new(Storage::new());
+        let mut s = Arc::clone(&storage);
+
+        let node_id = NodeId::new();
+        let complete = Entry {
+            log_id: log_id(1, 1),
+            payload: EntryPayload::Normal(ClusterCommand::CompleteMigration {
+                slot: 100,
+                new_owner: node_id,
+            }),
+        };
+        let results = s.apply_to_state_machine(&[complete]).await.unwrap();
+        assert!(matches!(&results[0], ClusterResponse::Error(msg) if msg.contains("no migration")));
+    }
+
+    #[tokio::test]
+    async fn begin_migration_rejects_invalid_slot() {
+        let storage = Arc::new(Storage::new());
+        let mut s = Arc::clone(&storage);
+
+        let node1 = NodeId::new();
+        let node2 = NodeId::new();
+        let begin = Entry {
+            log_id: log_id(1, 1),
+            payload: EntryPayload::Normal(ClusterCommand::BeginMigration {
+                slot: 16384,
+                from: node1,
+                to: node2,
+            }),
+        };
+        let results = s.apply_to_state_machine(&[begin]).await.unwrap();
+        assert!(matches!(&results[0], ClusterResponse::Error(msg) if msg.contains("out of range")));
     }
 
     #[tokio::test]
