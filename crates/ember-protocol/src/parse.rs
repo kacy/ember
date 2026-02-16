@@ -34,6 +34,12 @@ const MAX_ARRAY_ELEMENTS: usize = 1_048_576;
 /// Maximum length of a bulk string in bytes (512 MB, matching Redis).
 const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 
+/// Cap for Vec::with_capacity in array/map parsing. A declared count of
+/// 1M elements with capacity pre-allocation costs ~72 MB upfront even
+/// before any child data is parsed. This cap limits the initial allocation
+/// while still letting the Vec grow organically as elements are parsed.
+const PREALLOC_CAP: usize = 1024;
+
 /// Checks whether `buf` contains a complete RESP3 frame and parses it.
 ///
 /// Returns `Ok(Some(frame))` if a complete frame was parsed,
@@ -128,7 +134,7 @@ fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, Protocol
             }
 
             let count = count as usize;
-            let mut frames = Vec::with_capacity(count);
+            let mut frames = Vec::with_capacity(count.min(PREALLOC_CAP));
             for _ in 0..count {
                 frames.push(try_parse(cursor, next_depth)?);
             }
@@ -154,7 +160,7 @@ fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, Protocol
             }
 
             let count = count as usize;
-            let mut pairs = Vec::with_capacity(count);
+            let mut pairs = Vec::with_capacity(count.min(PREALLOC_CAP));
             for _ in 0..count {
                 let key = try_parse(cursor, next_depth)?;
                 let val = try_parse(cursor, next_depth)?;

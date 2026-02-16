@@ -31,6 +31,10 @@ const MAX_VSIM_EF: u64 = MAX_HNSW_PARAM;
 /// round-trip overhead for bulk inserts.
 const MAX_VADD_BATCH_SIZE: usize = 10_000;
 
+/// Maximum value for SCAN COUNT. Prevents clients from requesting a scan
+/// hint so large it causes pre-allocation issues.
+const MAX_SCAN_COUNT: u64 = 10_000_000;
+
 /// Expiration option for the SET command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetExpire {
@@ -1120,6 +1124,11 @@ fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
                     return Err(ProtocolError::WrongArity("SCAN".into()));
                 }
                 let n = parse_u64(&args[idx], "SCAN")?;
+                if n > MAX_SCAN_COUNT {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "SCAN COUNT {n} exceeds max {MAX_SCAN_COUNT}"
+                    )));
+                }
                 count = Some(n as usize);
                 idx += 1;
             }
@@ -1869,6 +1878,11 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         let s = extract_string(&args[idx])?;
         if let Ok(v) = s.parse::<f32>() {
+            if v.is_nan() || v.is_infinite() {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "VADD: vector components must be finite (no NaN/infinity)".into(),
+                ));
+            }
             vector.push(v);
             idx += 1;
         } else {
@@ -2013,27 +2027,30 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     // parse entries: each is element_name followed by exactly `dim` floats.
-    // stop when we see a known flag or run out of args.
+    // we detect the end of entries by checking whether enough args remain
+    // for a full entry (1 name + dim floats). this avoids misinterpreting
+    // element names like "metric" as flags.
     let mut idx = 3;
     let mut entries: Vec<(String, Vec<f32>)> = Vec::new();
-    let flags = ["METRIC", "QUANT", "M", "EF"];
+    let entry_len = 1 + dim; // element name + dim floats
 
     while idx < args.len() {
-        let token = extract_string(&args[idx])?;
-        if flags.contains(&token.to_ascii_uppercase().as_str()) {
+        // not enough remaining args for a full entry — must be flags
+        if idx + entry_len > args.len() {
             break;
         }
 
-        // this token is an element name
-        let element = token;
-        idx += 1;
-
-        // read exactly `dim` floats
-        if idx + dim > args.len() {
-            return Err(ProtocolError::InvalidCommandFrame(format!(
-                "VADD_BATCH: not enough floats for element '{element}' (expected {dim})"
-            )));
+        // peek: if the token after the element name isn't a valid float,
+        // we've reached the flags section
+        if dim > 0 {
+            let peek = extract_string(&args[idx + 1])?;
+            if peek.parse::<f32>().is_err() {
+                break;
+            }
         }
+
+        let element = extract_string(&args[idx])?;
+        idx += 1;
 
         let mut vector = Vec::with_capacity(dim);
         for _ in 0..dim {
@@ -2041,13 +2058,18 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
             let v = s.parse::<f32>().map_err(|_| {
                 ProtocolError::InvalidCommandFrame(format!("VADD_BATCH: expected float, got '{s}'"))
             })?;
+            if v.is_nan() || v.is_infinite() {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "VADD_BATCH: vector components must be finite (no NaN/infinity)".into(),
+                ));
+            }
             vector.push(v);
             idx += 1;
         }
 
         entries.push((element, vector));
 
-        if entries.len() > MAX_VADD_BATCH_SIZE {
+        if entries.len() >= MAX_VADD_BATCH_SIZE {
             return Err(ProtocolError::InvalidCommandFrame(format!(
                 "VADD_BATCH: batch size exceeds max {MAX_VADD_BATCH_SIZE}"
             )));
@@ -2174,6 +2196,11 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         let s = extract_string(&args[idx])?;
         if let Ok(v) = s.parse::<f32>() {
+            if v.is_nan() || v.is_infinite() {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "VSIM: query components must be finite (no NaN/infinity)".into(),
+                ));
+            }
             query.push(v);
             idx += 1;
         } else {
