@@ -41,6 +41,12 @@ pub const MAX_SUBSCRIPTIONS_PER_CONN: usize = 10_000;
 /// reasonable channel naming scheme.
 pub const MAX_PATTERN_LEN: usize = 256;
 
+/// Maximum number of commands parsed from a single read buffer before
+/// flushing responses. Prevents a huge pipeline from consuming unbounded
+/// memory for pending responses. 10,000 is generous for legitimate
+/// pipelining (Redis typically handles hundreds at a time).
+pub const MAX_PIPELINE_DEPTH: usize = 10_000;
+
 /// Checks if a raw frame is an AUTH command (before full parsing).
 ///
 /// Peeks at the first bulk element to avoid a full `Command::from_frame`

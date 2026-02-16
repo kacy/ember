@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
+use subtle::ConstantTimeEq;
 use tokio_stream::wrappers::ReceiverStream;
+use tonic::service::interceptor::InterceptedService;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::pubsub::PubSubManager;
@@ -48,11 +50,22 @@ impl EmberService {
         }
     }
 
-    /// Build this service into a tonic router, optionally with auth.
-    pub fn into_service(self) -> proto::ember_cache_server::EmberCacheServer<Self> {
-        proto::ember_cache_server::EmberCacheServer::new(self)
+    /// Build this service into a tonic router with optional authentication.
+    ///
+    /// When `requirepass` is configured on the server, every gRPC request
+    /// must carry a matching `authorization` metadata header. Comparison
+    /// uses constant-time equality to prevent timing side-channels.
+    pub fn into_service(
+        self,
+    ) -> InterceptedService<proto::ember_cache_server::EmberCacheServer<Self>, AuthInterceptor>
+    {
+        let interceptor = AuthInterceptor {
+            requirepass: self.ctx.requirepass.clone(),
+        };
+        let svc = proto::ember_cache_server::EmberCacheServer::new(self)
             .max_decoding_message_size(4 * 1024 * 1024) // 4 MB
-            .max_encoding_message_size(4 * 1024 * 1024)
+            .max_encoding_message_size(4 * 1024 * 1024);
+        InterceptedService::new(svc, interceptor)
     }
 
     /// Routes a single-key request through the engine.
@@ -79,6 +92,34 @@ impl EmberService {
         self.ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
         let elapsed = start.elapsed();
         self.slow_log.maybe_record(elapsed, cmd);
+    }
+}
+
+/// gRPC authentication interceptor.
+///
+/// When `requirepass` is `Some`, every request must include an
+/// `authorization` metadata header whose value matches the password.
+/// Uses constant-time comparison to prevent timing side-channels.
+/// When `requirepass` is `None`, all requests pass through.
+#[derive(Clone)]
+pub struct AuthInterceptor {
+    requirepass: Option<String>,
+}
+
+impl tonic::service::Interceptor for AuthInterceptor {
+    fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
+        let password = match &self.requirepass {
+            Some(pw) => pw,
+            None => return Ok(req),
+        };
+        let token = req
+            .metadata()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok());
+        match token {
+            Some(t) if bool::from(t.as_bytes().ct_eq(password.as_bytes())) => Ok(req),
+            _ => Err(Status::unauthenticated("authentication required")),
+        }
     }
 }
 
@@ -1943,6 +1984,24 @@ impl EmberCache for EmberService {
             return Err(Status::invalid_argument(
                 "at least one channel or pattern required",
             ));
+        }
+
+        let total_subs = req.channels.len() + req.patterns.len();
+        if total_subs > crate::connection_common::MAX_SUBSCRIPTIONS_PER_CONN {
+            return Err(Status::invalid_argument(format!(
+                "too many subscriptions ({total_subs}), max {}",
+                crate::connection_common::MAX_SUBSCRIPTIONS_PER_CONN
+            )));
+        }
+
+        for pat in &req.patterns {
+            if pat.len() > crate::connection_common::MAX_PATTERN_LEN {
+                return Err(Status::invalid_argument(format!(
+                    "pattern too long ({} bytes), max {}",
+                    pat.len(),
+                    crate::connection_common::MAX_PATTERN_LEN
+                )));
+            }
         }
 
         let (tx, rx) = tokio::sync::mpsc::channel(256);
