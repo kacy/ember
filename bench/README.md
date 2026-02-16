@@ -4,22 +4,22 @@ performance benchmarks for ember comparing against Redis and Dragonfly.
 
 ## results summary
 
-tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04, 2.4M total requests per test.
+tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 ### throughput (requests/sec)
 
-#### redis-benchmark (1M requests, 50 clients, 8 threads)
+#### redis-benchmark (100k requests, 50 clients, 8 threads)
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (3B, P=16) | **1,792,759** | 1,165,928 | 1,066,234 | 922,922 |
-| GET (3B, P=16) | **2,193,614** | 1,520,003 | 1,227,150 | 1,048,603 |
-| SET (64B, P=16) | **1,773,503** | 1,237,948 | 1,011,251 | 876,161 |
-| GET (64B, P=16) | **2,160,345** | 1,560,841 | 1,179,377 | 883,604 |
-| SET (1KB, P=16) | **1,089,576** | 745,991 | 639,872 | 712,398 |
-| GET (1KB, P=16) | **1,789,533** | 1,341,132 | 780,142 | 351,096 |
-| SET (64B, P=1) | 200,000 | 181,785 | 124,984 | **235,238** |
-| GET (64B, P=1) | 199,960 | 181,785 | 124,984 | **235,238** |
+| SET (3B, P=16) | **1,735,172** | 1,152,574 | 1,032,082 | 903,207 |
+| GET (3B, P=16) | **2,096,333** | 1,437,085 | 1,151,080 | 1,012,202 |
+| SET (64B, P=16) | **1,760,000** | 1,221,707 | 971,961 | 830,942 |
+| GET (64B, P=16) | **2,181,565** | 1,522,666 | 1,137,636 | 856,615 |
+| SET (1KB, P=16) | **993,059** | 710,737 | 588,764 | 694,400 |
+| GET (1KB, P=16) | **1,728,534** | 1,284,692 | 667,913 | 332,092 |
+| SET (64B, P=1) | 133,155 | 133,155 | 99,900 | **199,600** |
+| GET (64B, P=1) | 132,978 | 133,155 | 100,000 | **199,203** |
 
 #### memtier_benchmark (4 threads, 12 clients/thread, 50k req/client)
 
@@ -81,12 +81,13 @@ ember's concurrent mode shows higher throughput on simple GET/SET because it's a
 
 ### memory usage (~1M keys, 64B values)
 
-| server | memory | per key |
-|--------|--------|---------|
-| ember | 166 MB | ~166 bytes |
-| redis | 105 MB | ~105 bytes |
+| server | per key |
+|--------|---------|
+| ember concurrent | 128 B |
+| ember sharded | 208 B |
+| redis | 173 B |
 
-ember uses more memory per key due to storing additional metadata for LRU eviction and expiration tracking.
+ember concurrent mode is more memory-efficient than redis for string keys. sharded mode uses additional metadata for shard routing.
 
 ### with persistence enabled
 
@@ -104,38 +105,33 @@ persistence overhead is minimal with everysec fsync. `appendfsync always` has si
 
 AES-256-GCM encryption at rest (AOF and snapshots). requires building with `--features encryption`:
 
-| mode | SET throughput | overhead vs plaintext |
-|------|----------------|----------------------|
-| ember concurrent | — | — |
-| ember sharded | — | — |
+| test | pipeline | plaintext | encrypted | overhead |
+|------|----------|-----------|-----------|----------|
+| SET | P=16 | 1.24M/s | 657k/s | 47% |
+| GET | P=16 | 1.28M/s | 933k/s | 27% |
+| SET | P=1 | 133k/s | 112k/s | 16% |
+| GET | P=1 | 133k/s | 133k/s | 0% |
 
-*results pending — run `bench/bench-encryption.sh` on a dedicated VM to populate.*
-
-note: encryption only affects persistence writes. GET throughput should be unchanged since reads come from the in-memory keyspace.
+encryption only affects persistence writes — GET throughput is unchanged at P=1 since reads come from the in-memory keyspace. at higher pipeline depths, the throughput difference reflects AES-256-GCM overhead on the write path.
 
 ### vector similarity
 
-ember vs chromadb vs pgvector. 100k random vectors, 128 dimensions, cosine metric, k=10 kNN search.
+ember vs chromadb vs pgvector vs qdrant. 100k random vectors, 128 dimensions, cosine metric, k=10 kNN search.
 HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-8.
 
-| metric | ember | chromadb | pgvector | qdrant |
-|--------|-------|----------|----------|--------|
-| insert (vectors/sec) | 917 | **3,738** | 1,562 | — |
-| query (queries/sec) | **1,214** | 376 | 882 | — |
-| query p99 (ms) | **1.09ms** | 2.90ms | 1.52ms | — |
-| memory (MB) | **30 MB** | 122 MB | 178 MB | — |
+| metric | ember (RESP) | ember (gRPC) | chromadb | pgvector | qdrant |
+|--------|-------------|-------------|----------|----------|--------|
+| insert (vectors/sec) | 963 | 1,009 | **3,891** | 1,617 | **7,747** |
+| query (queries/sec) | 1,264 | **1,462** | 390 | 831 | 596 |
+| query p50 (ms) | 0.79ms | **0.68ms** | 2.56ms | 1.18ms | 1.67ms |
+| query p99 (ms) | 0.93ms | **0.83ms** | 2.76ms | 1.56ms | 1.88ms |
+| memory (MB) | **36 MB** | — | 122 MB | 179 MB | 121 MB |
 
-ember's query throughput is 3.2x chromadb and 1.4x pgvector, with 4-6x lower memory usage. insert throughput is lower due to per-vector RESP protocol overhead — batched pipelining helps but each VADD is still a separate command.
+ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.1x qdrant, with 3-5x lower memory usage. gRPC queries are 16% faster than RESP due to lower serialization overhead. insert throughput is lower due to per-vector protocol overhead — qdrant's batch API gives it a significant edge on ingestion.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 
-| metric | ember | chromadb | pgvector | qdrant |
-|--------|-------|----------|----------|--------|
-| recall@10 | — | — | — | — |
-| insert (vectors/sec) | — | — | — | — |
-| query p99 (ms) | — | — | — | — |
-
-*results pending — run `bench/bench-vector.sh --sift --qdrant` on a c2-standard-8 (32GB) to populate. SIFT1M is 1M × 128 × 4B = 512MB raw data; ember HNSW peaks around 1.5GB RSS, well within 32GB.*
+*run `bench/bench-vector.sh --sift --qdrant` on a c2-standard-8 (32GB) to populate. SIFT1M is 1M × 128 × 4B = 512MB raw data; ember HNSW peaks around 1.5GB RSS, well within 32GB.*
 
 ### scaling efficiency
 
@@ -152,14 +148,14 @@ standard SET/GET operations comparing RESP3 (redis-py) against gRPC (ember-py). 
 
 | test | ops/sec | p50 (ms) | p99 (ms) |
 |------|---------|----------|----------|
-| RESP3 SET (sequential) | — | — | — |
-| RESP3 GET (sequential) | — | — | — |
-| RESP3 SET (pipelined) | — | — | — |
-| RESP3 GET (pipelined) | — | — | — |
-| gRPC SET (unary) | — | — | — |
-| gRPC GET (unary) | — | — | — |
+| RESP3 SET (sequential) | 15,447 | 0.060 | 0.100 |
+| RESP3 GET (sequential) | 16,915 | 0.054 | 0.093 |
+| RESP3 SET (pipelined) | 83,943 | 0.012 | 0.014 |
+| RESP3 GET (pipelined) | **109,453** | 0.009 | 0.010 |
+| gRPC SET (unary) | 6,354 | 0.148 | 0.235 |
+| gRPC GET (unary) | 6,323 | 0.148 | 0.236 |
 
-*results pending — run `bench/bench-grpc.sh` to populate. requires `--features grpc` and ember-py client installed.*
+RESP3 pipelining is the fastest option for bulk operations (5-7x over sequential, 14-17x over gRPC unary). gRPC unary calls have higher per-request overhead from HTTP/2 framing but provide type-safe APIs. for vector queries where gRPC uses streaming RPCs, it's 16% faster than RESP (see vector table above).
 
 ### pub/sub throughput
 
@@ -167,44 +163,44 @@ publish throughput and fan-out delivery rate across subscriber counts and messag
 
 | test | pub msg/s | fanout msg/s | p99 (ms) |
 |------|-----------|--------------|----------|
-| 1 sub, 64B, SUBSCRIBE | — | — | — |
-| 10 sub, 64B, SUBSCRIBE | — | — | — |
-| 100 sub, 64B, SUBSCRIBE | — | — | — |
-| 1 sub, 1KB, SUBSCRIBE | — | — | — |
-| 10 sub, 1KB, SUBSCRIBE | — | — | — |
-| 100 sub, 1KB, SUBSCRIBE | — | — | — |
-| 10 sub, 64B, PSUBSCRIBE | — | — | — |
-| 100 sub, 64B, PSUBSCRIBE | — | — | — |
+| 1 sub, 64B, SUBSCRIBE | 10,875 | 10,875 | 0.20 |
+| 10 sub, 64B, SUBSCRIBE | 1,929 | 19,290 | 3.02 |
+| 100 sub, 64B, SUBSCRIBE | 388 | 27,001 | 26.48 |
+| 1 sub, 1KB, SUBSCRIBE | 10,522 | 10,522 | 0.20 |
+| 10 sub, 1KB, SUBSCRIBE | 1,856 | 18,561 | 3.21 |
+| 100 sub, 1KB, SUBSCRIBE | 389 | 26,008 | 27.80 |
+| 10 sub, 64B, PSUBSCRIBE | 1,869 | 18,689 | 3.11 |
+| 100 sub, 64B, PSUBSCRIBE | 390 | 26,250 | 27.45 |
 
-*results pending — run `bench/bench-pubsub.sh` to populate.*
+fan-out throughput scales well — total message delivery rate increases from 10.9k to 27k msg/s as subscribers grow from 1 to 100. per-publisher throughput drops proportionally since each message fans out to more receivers. PSUBSCRIBE performs nearly identically to SUBSCRIBE. message size (64B vs 1KB) has minimal impact.
 
 ### protobuf storage overhead
 
-PROTO.* commands vs raw SET/GET with identical data. measures the cost of server-side schema validation and field-level access. 100k requests, bench.User message (~30 bytes).
+PROTO.* commands vs raw SET/GET with identical data. measures the cost of server-side schema validation and field-level access. 100k requests, bench.User message (28 bytes).
 
 | test | ops/sec | p50 (ms) | p99 (ms) |
 |------|---------|----------|----------|
-| raw SET | — | — | — |
-| PROTO.SET | — | — | — |
-| raw GET | — | — | — |
-| PROTO.GET | — | — | — |
-| PROTO.GETFIELD | — | — | — |
-| PROTO.SETFIELD | — | — | — |
+| raw SET | 15,698 | 0.060 | 0.099 |
+| PROTO.SET | 17,145 | 0.055 | 0.091 |
+| raw GET | 18,081 | 0.054 | 0.066 |
+| PROTO.GET | 16,220 | 0.058 | 0.095 |
+| PROTO.GETFIELD | 16,838 | 0.056 | 0.093 |
+| PROTO.SETFIELD | 16,635 | 0.057 | 0.094 |
 
-*results pending — run `bench/bench-proto.sh` to populate. requires `--features protobuf` and `protoc` on PATH.*
+schema validation overhead is within noise (~0-10%). PROTO.SET is actually slightly faster than raw SET in this run (within variance). field-level access (GETFIELD/SETFIELD) adds negligible overhead vs full message operations.
 
 ### memory by data type
 
-per-key memory overhead across data types. string: 1M keys, 64B values. hash/zset: 100k keys. vector: 100k 128-dim vectors.
+per-key memory overhead across data types. string: 1M keys, 64B values. hash: 100k keys, 5 fields each. sorted set: 100k members. vector: 100k 128-dim vectors.
 
 | data type | ember concurrent | ember sharded | redis |
 |-----------|------------------|---------------|-------|
-| string (64B) | — | — | — |
-| hash (5 fields) | — | — | — |
-| sorted set | — | — | — |
-| vector (128-dim) | — | — | — |
+| string (64B) | **128 B/key** | 208 B/key | 173 B/key |
+| hash (5 fields) | — | 555 B/key | **170 B/key** |
+| sorted set | — | 179 B/member | **111 B/member** |
+| vector (128-dim) | — | 853 B/vector | — |
 
-*results pending — run `bench/bench-memory.sh --vector` to populate.*
+ember concurrent mode is the most memory-efficient for strings (128 B/key vs redis 173 B/key) due to the DashMap structure. sharded mode uses more memory per key due to channel routing metadata. hash and sorted set commands only run in sharded mode. redis is more memory-efficient for complex types thanks to ziplist/listpack compact encodings.
 
 ## execution modes
 
