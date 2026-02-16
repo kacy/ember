@@ -2039,9 +2039,7 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
         for _ in 0..dim {
             let s = extract_string(&args[idx])?;
             let v = s.parse::<f32>().map_err(|_| {
-                ProtocolError::InvalidCommandFrame(format!(
-                    "VADD_BATCH: expected float, got '{s}'"
-                ))
+                ProtocolError::InvalidCommandFrame(format!("VADD_BATCH: expected float, got '{s}'"))
             })?;
             vector.push(v);
             idx += 1;
@@ -5018,7 +5016,17 @@ mod tests {
     fn vadd_batch_basic() {
         assert_eq!(
             Command::from_frame(cmd(&[
-                "VADD_BATCH", "vecs", "DIM", "3", "a", "0.1", "0.2", "0.3", "b", "0.4", "0.5",
+                "VADD_BATCH",
+                "vecs",
+                "DIM",
+                "3",
+                "a",
+                "0.1",
+                "0.2",
+                "0.3",
+                "b",
+                "0.4",
+                "0.5",
                 "0.6"
             ]))
             .unwrap(),
@@ -5041,8 +5049,21 @@ mod tests {
     fn vadd_batch_with_options() {
         assert_eq!(
             Command::from_frame(cmd(&[
-                "VADD_BATCH", "vecs", "DIM", "2", "a", "1.0", "2.0", "METRIC", "L2", "QUANT",
-                "F16", "M", "32", "EF", "128"
+                "VADD_BATCH",
+                "vecs",
+                "DIM",
+                "2",
+                "a",
+                "1.0",
+                "2.0",
+                "METRIC",
+                "L2",
+                "QUANT",
+                "F16",
+                "M",
+                "32",
+                "EF",
+                "128"
             ]))
             .unwrap(),
             Command::VAddBatch {
@@ -5104,39 +5125,42 @@ mod tests {
 
     #[test]
     fn vadd_batch_missing_dim_keyword() {
-        let err =
-            Command::from_frame(cmd(&["VADD_BATCH", "key", "3", "a", "1.0"])).unwrap_err();
+        let err = Command::from_frame(cmd(&["VADD_BATCH", "key", "3", "a", "1.0"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
     #[test]
     fn vadd_batch_dim_zero() {
-        let err =
-            Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "0"])).unwrap_err();
+        let err = Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "0"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
     #[test]
     fn vadd_batch_dim_exceeds_max() {
-        let err =
-            Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "99999"])).unwrap_err();
+        let err = Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "99999"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
     #[test]
     fn vadd_batch_insufficient_floats() {
         // DIM=3 but only 2 floats for element "a"
-        let err = Command::from_frame(cmd(&[
-            "VADD_BATCH", "key", "DIM", "3", "a", "1.0", "2.0",
-        ]))
-        .unwrap_err();
+        let err = Command::from_frame(cmd(&["VADD_BATCH", "key", "DIM", "3", "a", "1.0", "2.0"]))
+            .unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
     #[test]
     fn vadd_batch_m_exceeds_max() {
         let err = Command::from_frame(cmd(&[
-            "VADD_BATCH", "key", "DIM", "2", "a", "1.0", "2.0", "M", "9999",
+            "VADD_BATCH",
+            "key",
+            "DIM",
+            "2",
+            "a",
+            "1.0",
+            "2.0",
+            "M",
+            "9999",
         ]))
         .unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
@@ -5145,7 +5169,15 @@ mod tests {
     #[test]
     fn vadd_batch_ef_exceeds_max() {
         let err = Command::from_frame(cmd(&[
-            "VADD_BATCH", "key", "DIM", "2", "a", "1.0", "2.0", "EF", "9999",
+            "VADD_BATCH",
+            "key",
+            "DIM",
+            "2",
+            "a",
+            "1.0",
+            "2.0",
+            "EF",
+            "9999",
         ]))
         .unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
