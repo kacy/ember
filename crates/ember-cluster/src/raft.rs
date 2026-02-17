@@ -157,7 +157,7 @@ impl Storage {
                 addr,
                 is_primary,
             } => {
-                let key = node_id.0.to_string();
+                let key = node_id.as_key();
                 state.nodes.insert(
                     key.clone(),
                     NodeInfo {
@@ -172,7 +172,7 @@ impl Storage {
             }
 
             ClusterCommand::RemoveNode { node_id } => {
-                let key = node_id.0.to_string();
+                let key = node_id.as_key();
                 state.nodes.remove(&key);
                 state.slots.retain(|_, owner| owner != &key);
                 ClusterResponse::Ok
@@ -190,7 +190,7 @@ impl Storage {
                         ));
                     }
                 }
-                let key = node_id.0.to_string();
+                let key = node_id.as_key();
                 if let Some(node) = state.nodes.get_mut(&key) {
                     node.slots = slots.clone();
                     for slot_range in slots {
@@ -205,7 +205,7 @@ impl Storage {
             }
 
             ClusterCommand::PromoteReplica { replica_id } => {
-                let key = replica_id.0.to_string();
+                let key = replica_id.as_key();
                 if let Some(node) = state.nodes.get_mut(&key) {
                     node.is_primary = true;
                     ClusterResponse::Ok
@@ -224,8 +224,8 @@ impl Storage {
                 state.migrations.insert(
                     *slot,
                     MigrationState {
-                        from: from.0.to_string(),
-                        to: to.0.to_string(),
+                        from: from.as_key(),
+                        to: to.as_key(),
                     },
                 );
                 ClusterResponse::Ok
@@ -238,7 +238,7 @@ impl Storage {
                     ));
                 }
                 state.migrations.remove(slot);
-                let key = new_owner.0.to_string();
+                let key = new_owner.as_key();
                 state.slots.insert(*slot, key);
                 ClusterResponse::Ok
             }
@@ -474,7 +474,7 @@ mod tests {
 
         let state_arc = storage.state();
         let state = state_arc.read().await;
-        assert!(state.nodes.contains_key(&node_id.0.to_string()));
+        assert!(state.nodes.contains_key(&node_id.as_key()));
     }
 
     #[tokio::test]
@@ -515,8 +515,8 @@ mod tests {
 
         let state_arc = storage.state();
         let state = state_arc.read().await;
-        assert_eq!(state.slots.get(&0), Some(&node_id.0.to_string()));
-        assert_eq!(state.slots.get(&5460), Some(&node_id.0.to_string()));
+        assert_eq!(state.slots.get(&0), Some(&node_id.as_key()));
+        assert_eq!(state.slots.get(&5460), Some(&node_id.as_key()));
     }
 
     #[tokio::test]

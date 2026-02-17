@@ -374,6 +374,17 @@ impl GossipEngine {
         });
     }
 
+    /// Sends a gossip event to the external event channel.
+    ///
+    /// Logs a warning when the channel is closed (receiver dropped). This
+    /// normally only happens during shutdown, so seeing the message in steady
+    /// state indicates a bug in the event consumer.
+    async fn emit(&self, event: GossipEvent) {
+        if self.event_tx.send(event).await.is_err() {
+            warn!("gossip event channel closed, dropping event");
+        }
+    }
+
     async fn apply_updates(&mut self, updates: &[NodeUpdate]) {
         for update in updates {
             match update {
@@ -400,14 +411,7 @@ impl GossipEngine {
                             if member.state != MemberStatus::Alive {
                                 member.state = MemberStatus::Alive;
                                 member.state_change = Instant::now();
-                                if self
-                                    .event_tx
-                                    .send(GossipEvent::MemberAlive(*node))
-                                    .await
-                                    .is_err()
-                                {
-                                    warn!("event channel closed, cannot send MemberAlive event");
-                                }
+                                self.emit(GossipEvent::MemberAlive(*node)).await;
                             }
                         }
                     } else {
@@ -423,10 +427,7 @@ impl GossipEngine {
                                 slots: Vec::new(),
                             },
                         );
-                        let _ = self
-                            .event_tx
-                            .send(GossipEvent::MemberJoined(*node, *addr))
-                            .await;
+                        self.emit(GossipEvent::MemberJoined(*node, *addr)).await;
                     }
                 }
 
@@ -455,10 +456,7 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Suspect;
                             member.state_change = Instant::now();
-                            let _ = self
-                                .event_tx
-                                .send(GossipEvent::MemberSuspected(*node))
-                                .await;
+                            self.emit(GossipEvent::MemberSuspected(*node)).await;
                         }
                     }
                 }
@@ -486,14 +484,7 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Dead;
                             member.state_change = Instant::now();
-                            if self
-                                .event_tx
-                                .send(GossipEvent::MemberFailed(*node))
-                                .await
-                                .is_err()
-                            {
-                                warn!("event channel closed, cannot send MemberFailed event");
-                            }
+                            self.emit(GossipEvent::MemberFailed(*node)).await;
                         }
                     }
                 }
@@ -506,14 +497,7 @@ impl GossipEngine {
                         if member.state != MemberStatus::Left {
                             member.state = MemberStatus::Left;
                             member.state_change = Instant::now();
-                            if self
-                                .event_tx
-                                .send(GossipEvent::MemberLeft(*node))
-                                .await
-                                .is_err()
-                            {
-                                warn!("event channel closed, cannot send MemberLeft event");
-                            }
+                            self.emit(GossipEvent::MemberLeft(*node)).await;
                         }
                     }
                 }
@@ -526,14 +510,7 @@ impl GossipEngine {
             if member.state == MemberStatus::Suspect {
                 member.state = MemberStatus::Alive;
                 member.state_change = Instant::now();
-                if self
-                    .event_tx
-                    .send(GossipEvent::MemberAlive(node))
-                    .await
-                    .is_err()
-                {
-                    warn!("event channel closed, cannot send MemberAlive event");
-                }
+                self.emit(GossipEvent::MemberAlive(node)).await;
             }
         }
     }
@@ -603,7 +580,10 @@ impl GossipEngine {
 
     fn queue_update(&mut self, update: NodeUpdate) {
         self.pending_updates.push(update);
-        // Keep bounded
+        // When the queue overflows, drop the oldest pending updates.
+        // This is safe: gossip convergence doesn't require every update to be
+        // delivered. Members re-gossip their state on each protocol period, so
+        // a dropped update will be re-sent in the next round.
         if self.pending_updates.len() > self.config.max_piggyback * 2 {
             self.pending_updates.drain(0..self.config.max_piggyback);
         }
