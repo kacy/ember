@@ -164,29 +164,39 @@ struct Args {
     cluster_node_timeout: u64,
 }
 
+/// Prints `msg` to stderr and exits with code 1.
+///
+/// Used throughout `main` to normalize the error-and-exit pattern for
+/// argument validation failures. The `!` return type lets the compiler
+/// verify that call sites don't need to produce a value after the call.
+fn exit_err(msg: impl std::fmt::Display) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(1);
+}
+
 /// Resolves the password from either `--requirepass` or `--requirepass-file`.
 /// The two options are mutually exclusive. Exits on error.
 fn resolve_password(args: &mut Args) {
     if args.requirepass.is_some() && args.requirepass_file.is_some() {
-        eprintln!("error: --requirepass and --requirepass-file are mutually exclusive");
-        std::process::exit(1);
+        exit_err("error: --requirepass and --requirepass-file are mutually exclusive");
     }
     if let Some(ref path) = args.requirepass_file {
         match std::fs::read_to_string(path) {
             Ok(contents) => {
                 let password = contents.trim_end().to_string();
                 if password.is_empty() {
-                    eprintln!("error: --requirepass-file is empty: {}", path.display());
-                    std::process::exit(1);
+                    exit_err(format!(
+                        "error: --requirepass-file is empty: {}",
+                        path.display()
+                    ));
                 }
                 args.requirepass = Some(password);
             }
             Err(e) => {
-                eprintln!(
+                exit_err(format!(
                     "error: failed to read --requirepass-file '{}': {e}",
                     path.display()
-                );
-                std::process::exit(1);
+                ));
             }
         }
     }
@@ -198,11 +208,10 @@ fn parse_bind_addr(host: &str, port: u16, label: &str) -> SocketAddr {
         Ok(a) => a,
         Err(e) => {
             if label.is_empty() {
-                eprintln!("invalid bind address '{host}:{port}': {e}");
+                exit_err(format!("invalid bind address '{host}:{port}': {e}"));
             } else {
-                eprintln!("invalid {label} bind address '{host}:{port}': {e}");
+                exit_err(format!("invalid {label} bind address '{host}:{port}': {e}"));
             }
-            std::process::exit(1);
         }
     }
 }
@@ -221,16 +230,13 @@ fn build_persistence_config(
 
     let data_dir = args.data_dir.take().unwrap_or_else(|| {
         if args.appendonly {
-            eprintln!("--data-dir is required when --appendonly is set");
-            std::process::exit(1);
+            exit_err("--data-dir is required when --appendonly is set");
         }
         PathBuf::from(".")
     });
 
-    let fsync_policy = parse_fsync_policy(&args.appendfsync).unwrap_or_else(|e| {
-        eprintln!("invalid --appendfsync value: {e}");
-        std::process::exit(1);
-    });
+    let fsync_policy = parse_fsync_policy(&args.appendfsync)
+        .unwrap_or_else(|e| exit_err(format!("invalid --appendfsync value: {e}")));
 
     Some(ShardPersistenceConfig {
         data_dir,
@@ -257,16 +263,11 @@ async fn main() {
     let addr = parse_bind_addr(&args.host, args.port, "");
 
     let max_memory = args.max_memory.as_deref().map(|s| {
-        parse_byte_size(s).unwrap_or_else(|e| {
-            eprintln!("invalid --max-memory value: {e}");
-            std::process::exit(1);
-        })
+        parse_byte_size(s).unwrap_or_else(|e| exit_err(format!("invalid --max-memory value: {e}")))
     });
 
-    let eviction_policy = parse_eviction_policy(&args.eviction_policy).unwrap_or_else(|e| {
-        eprintln!("invalid --eviction-policy value: {e}");
-        std::process::exit(1);
-    });
+    let eviction_policy = parse_eviction_policy(&args.eviction_policy)
+        .unwrap_or_else(|e| exit_err(format!("invalid --eviction-policy value: {e}")));
 
     let shard_count = args.shards.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -275,8 +276,7 @@ async fn main() {
     });
 
     if shard_count == 0 {
-        eprintln!("--shards must be at least 1");
-        std::process::exit(1);
+        exit_err("--shards must be at least 1");
     }
 
     // load encryption key if configured
@@ -284,10 +284,7 @@ async fn main() {
     let encryption_key = if let Some(ref key_path) = args.encryption_key_file {
         match ember_persistence::encryption::EncryptionKey::from_file(key_path) {
             Ok(key) => Some(key),
-            Err(e) => {
-                eprintln!("failed to load encryption key: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => exit_err(format!("failed to load encryption key: {e}")),
         }
     } else {
         None
@@ -295,8 +292,7 @@ async fn main() {
 
     #[cfg(feature = "encryption")]
     if encryption_key.is_some() && !args.appendonly && args.data_dir.is_none() {
-        eprintln!("--encryption-key-file requires --data-dir and --appendonly");
-        std::process::exit(1);
+        exit_err("--encryption-key-file requires --data-dir and --appendonly");
     }
 
     let persistence = build_persistence_config(
@@ -348,8 +344,7 @@ async fn main() {
     if let Some(metrics_port) = args.metrics_port {
         let metrics_addr = parse_bind_addr(&args.host, metrics_port, "metrics");
         if let Err(e) = metrics::install_exporter(metrics_addr) {
-            eprintln!("failed to start metrics exporter: {e}");
-            std::process::exit(1);
+            exit_err(format!("failed to start metrics exporter: {e}"));
         }
     }
 
@@ -371,22 +366,17 @@ async fn main() {
 
     // build TLS config if --tls-port is set
     let tls_config = if let Some(tls_port) = args.tls_port {
-        let cert_file = args.tls_cert_file.unwrap_or_else(|| {
-            eprintln!("--tls-port requires --tls-cert-file and --tls-key-file");
-            std::process::exit(1);
-        });
-        let key_file = args.tls_key_file.unwrap_or_else(|| {
-            eprintln!("--tls-port requires --tls-cert-file and --tls-key-file");
-            std::process::exit(1);
-        });
+        let cert_file = args
+            .tls_cert_file
+            .unwrap_or_else(|| exit_err("--tls-port requires --tls-cert-file and --tls-key-file"));
+        let key_file = args
+            .tls_key_file
+            .unwrap_or_else(|| exit_err("--tls-port requires --tls-cert-file and --tls-key-file"));
 
         let auth_clients = match args.tls_auth_clients.to_lowercase().as_str() {
             "yes" | "true" | "1" => true,
             "no" | "false" | "0" => false,
-            _ => {
-                eprintln!("--tls-auth-clients must be 'yes' or 'no'");
-                std::process::exit(1);
-            }
+            _ => exit_err("--tls-auth-clients must be 'yes' or 'no'"),
         };
 
         let tls_addr = parse_bind_addr(&args.host, tls_port, "TLS");
@@ -412,23 +402,20 @@ async fn main() {
 
     // validate cluster mode
     if args.cluster_enabled && args.concurrent {
-        eprintln!("error: --cluster-enabled and --concurrent are mutually exclusive");
-        std::process::exit(1);
+        exit_err("error: --cluster-enabled and --concurrent are mutually exclusive");
     }
 
     if args.cluster_bootstrap && !args.cluster_enabled {
-        eprintln!("error: --cluster-bootstrap requires --cluster-enabled");
-        std::process::exit(1);
+        exit_err("error: --cluster-bootstrap requires --cluster-enabled");
     }
 
     // build cluster coordinator if cluster mode is enabled
     let cluster: Option<Arc<ClusterCoordinator>> = if args.cluster_enabled {
         if args.port.checked_add(args.cluster_port_offset).is_none() {
-            eprintln!(
+            exit_err(format!(
                 "error: port {} + cluster-port-offset {} exceeds u16 range",
                 args.port, args.cluster_port_offset
-            );
-            std::process::exit(1);
+            ));
         }
 
         let local_id = NodeId::new();
