@@ -487,6 +487,10 @@ impl Command {
     ///
     /// Used for metrics labels and slow log entries. Zero allocation —
     /// returns a `&'static str` for every known variant.
+    ///
+    /// The match is explicit rather than derive-generated: a proc macro would
+    /// obscure the string mappings, which are the thing most worth seeing at
+    /// a glance when auditing command names.
     pub fn command_name(&self) -> &'static str {
         match self {
             Command::Ping(_) => "ping",

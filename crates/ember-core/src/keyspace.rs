@@ -435,6 +435,7 @@ impl Keyspace {
             Some(e) => match &e.value {
                 Value::String(_) => {
                     e.touch();
+                    // Value::String wraps Bytes — clone is a cheap refcount increment.
                     Ok(Some(e.value.clone()))
                 }
                 _ => Err(WrongType),
