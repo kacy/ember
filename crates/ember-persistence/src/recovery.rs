@@ -181,7 +181,12 @@ fn recover_shard_impl(
         }
     }
 
-    // step 3: filter out expired entries (ttl_ms == 0) and build result
+    // step 3: filter out expired entries (ttl_ms == 0) and build result.
+    //
+    // TTL values are preserved as-is during replay. Keys that expired while
+    // the server was down (ttl_ms == 0 after decrement in replay_aof) are
+    // skipped here. Any keys with positive remaining TTL will be lazily evicted
+    // on first access after startup.
     let entries = map
         .into_iter()
         .filter(|(_, (_, ttl_ms))| *ttl_ms != 0) // 0 means expired, -1 means no expiry
@@ -240,11 +245,16 @@ fn load_snapshot(
 }
 
 /// Applies an increment/decrement to a recovered entry. If the key doesn't
-/// exist, initializes it to "0" first. Non-integer values are silently skipped.
+/// exist, initializes it to "0" first.
+///
+/// Emits a warning and leaves the entry unchanged if the stored value is not
+/// a valid integer. This matches the liveness policy used at runtime (an error
+/// response rather than a crash), and gives operators a signal that the AOF
+/// contains unexpected data.
 fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, delta: i64) {
     // -1 means no expiry
     let entry = map
-        .entry(key)
+        .entry(key.clone())
         .or_insert_with(|| (RecoveredValue::String(Bytes::from("0")), -1));
     if let RecoveredValue::String(ref mut data) = entry.0 {
         let current = std::str::from_utf8(data)
@@ -254,6 +264,8 @@ fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, del
             if let Some(new_val) = n.checked_add(delta) {
                 *data = Bytes::from(new_val.to_string());
             }
+        } else {
+            warn!(key = %key, "skipping INCR replay: value is not an integer");
         }
     }
 }

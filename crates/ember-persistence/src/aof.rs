@@ -191,6 +191,14 @@ pub enum AofRecord {
 }
 
 impl AofRecord {
+    // IMPORTANT: each variant has three match arms that must stay in sync:
+    //   - `tag()`: the one-byte discriminant written to disk
+    //   - `estimated_size()`: the capacity hint for the serialization buffer
+    //   - `to_bytes()`: the actual serialized payload
+    //
+    // When adding a new variant, update all three in that order.
+    // The binary format is stable — tag byte values must never be reused.
+
     /// Returns the on-disk tag byte for this record variant.
     fn tag(&self) -> u8 {
         match self {
