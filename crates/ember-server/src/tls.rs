@@ -63,6 +63,18 @@ pub enum TlsError {
     VerifierError(String),
 }
 
+/// Returns `Err` if `path` does not exist on disk.
+///
+/// The `make_err` closure maps the path string to the appropriate error variant,
+/// keeping the three existence checks in `load_tls_acceptor` as one-liners.
+fn require_file(path: &Path, make_err: impl FnOnce(String) -> TlsError) -> Result<(), TlsError> {
+    if path.exists() {
+        Ok(())
+    } else {
+        Err(make_err(path.to_string_lossy().into_owned()))
+    }
+}
+
 /// Loads TLS configuration and creates a `TlsAcceptor`.
 ///
 /// Reads certificates and private key from PEM files. If `ca_cert_file` is
@@ -71,9 +83,7 @@ pub enum TlsError {
 pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
     // load server certificates
     let cert_path = Path::new(&config.cert_file);
-    if !cert_path.exists() {
-        return Err(TlsError::CertFileNotFound(config.cert_file.clone()));
-    }
+    require_file(cert_path, TlsError::CertFileNotFound)?;
 
     let cert_file = File::open(cert_path).map_err(TlsError::CertReadError)?;
     let cert_reader = BufReader::new(cert_file);
@@ -87,9 +97,7 @@ pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
 
     // load private key
     let key_path = Path::new(&config.key_file);
-    if !key_path.exists() {
-        return Err(TlsError::KeyFileNotFound(config.key_file.clone()));
-    }
+    require_file(key_path, TlsError::KeyFileNotFound)?;
 
     let key_file = File::open(key_path).map_err(TlsError::KeyReadError)?;
     let key_reader = BufReader::new(key_file);
@@ -100,9 +108,7 @@ pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
     let server_config = if let Some(ref ca_path) = config.ca_cert_file {
         // load CA cert for client verification
         let ca_cert_path = Path::new(ca_path);
-        if !ca_cert_path.exists() {
-            return Err(TlsError::CaCertFileNotFound(ca_path.clone()));
-        }
+        require_file(ca_cert_path, TlsError::CaCertFileNotFound)?;
 
         let ca_file = File::open(ca_cert_path).map_err(TlsError::CaCertReadError)?;
         let ca_reader = BufReader::new(ca_file);

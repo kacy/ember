@@ -98,16 +98,7 @@ pub async fn run(
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
 
-    // set up TLS listener if configured
-    let tls_listener: Option<(TcpListener, TlsAcceptor)> = if let Some((tls_addr, tls_config)) = tls
-    {
-        let acceptor = crate::tls::load_tls_acceptor(&tls_config)?;
-        let tls_tcp = TcpListener::bind(tls_addr).await?;
-        info!("TLS listening on {tls_addr}");
-        Some((tls_tcp, acceptor))
-    } else {
-        None
-    };
+    let tls_listener = setup_tls_listener(tls).await?;
 
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
@@ -368,16 +359,7 @@ pub async fn run_concurrent(
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
 
-    // set up TLS listener if configured
-    let tls_listener: Option<(TcpListener, TlsAcceptor)> = if let Some((tls_addr, tls_config)) = tls
-    {
-        let acceptor = crate::tls::load_tls_acceptor(&tls_config)?;
-        let tls_tcp = TcpListener::bind(tls_addr).await?;
-        info!("TLS listening on {tls_addr}");
-        Some((tls_tcp, acceptor))
-    } else {
-        None
-    };
+    let tls_listener = setup_tls_listener(tls).await?;
 
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
@@ -514,6 +496,24 @@ pub async fn run_concurrent(
 
     drain_connections(&semaphore, max_conn).await;
     Ok(())
+}
+
+/// Binds a TLS listener if TLS is configured, otherwise returns `None`.
+///
+/// Extracted to avoid repeating the same bind + acceptor creation in both
+/// `run` and `run_concurrent`.
+async fn setup_tls_listener(
+    tls: Option<(SocketAddr, TlsConfig)>,
+) -> Result<Option<(TcpListener, TlsAcceptor)>, Box<dyn std::error::Error>> {
+    match tls {
+        Some((tls_addr, tls_config)) => {
+            let acceptor = crate::tls::load_tls_acceptor(&tls_config)?;
+            let listener = TcpListener::bind(tls_addr).await?;
+            info!("TLS listening on {tls_addr}");
+            Ok(Some((listener, acceptor)))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Returns true if the connection should be rejected by protected mode.
