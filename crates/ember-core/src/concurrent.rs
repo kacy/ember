@@ -150,15 +150,8 @@ impl ConcurrentKeyspace {
 
         // Update memory tracking
         if let Some(old) = self.data.insert(key.clone(), entry) {
-            // Replace: adjust memory
-            let old_size = old.size(key.len());
-            let diff = entry_size as isize - old_size as isize;
-            if diff > 0 {
-                self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
-            } else {
-                self.memory_used
-                    .fetch_sub((-diff) as usize, Ordering::Relaxed);
-            }
+            // Replace: adjust memory for the size difference
+            self.adjust_memory(old.size(key.len()), entry_size);
         } else {
             self.memory_used.fetch_add(entry_size, Ordering::Relaxed);
         }
@@ -255,14 +248,7 @@ impl ConcurrentKeyspace {
                 let key_len = entry.key().len();
                 let old_size = entry.size(key_len);
                 entry.value = new_bytes;
-                let new_size = entry.size(key_len);
-                let diff = new_size as isize - old_size as isize;
-                if diff > 0 {
-                    self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
-                } else if diff < 0 {
-                    self.memory_used
-                        .fetch_sub((-diff) as usize, Ordering::Relaxed);
-                }
+                self.adjust_memory(old_size, entry.size(key_len));
                 return Ok(new_val);
             }
         }
@@ -301,14 +287,7 @@ impl ConcurrentKeyspace {
                 let key_len = entry.key().len();
                 let old_size = entry.size(key_len);
                 entry.value = new_bytes;
-                let new_size = entry.size(key_len);
-                let diff = new_size as isize - old_size as isize;
-                if diff > 0 {
-                    self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
-                } else if diff < 0 {
-                    self.memory_used
-                        .fetch_sub((-diff) as usize, Ordering::Relaxed);
-                }
+                self.adjust_memory(old_size, entry.size(key_len));
                 return Ok(new_val);
             }
         }
@@ -337,14 +316,7 @@ impl ConcurrentKeyspace {
                 let key_len = entry.key().len();
                 let old_size = entry.size(key_len);
                 entry.value = Bytes::from(new_data);
-                let new_size = entry.size(key_len);
-                let diff = new_size as isize - old_size as isize;
-                if diff > 0 {
-                    self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
-                } else if diff < 0 {
-                    self.memory_used
-                        .fetch_sub((-diff) as usize, Ordering::Relaxed);
-                }
+                self.adjust_memory(old_size, entry.size(key_len));
                 return new_len;
             }
             // expired — remove and fall through to create
@@ -533,6 +505,21 @@ impl ConcurrentKeyspace {
     pub fn clear(&self) {
         self.data.clear();
         self.memory_used.store(0, Ordering::Relaxed);
+    }
+
+    /// Adjusts `memory_used` after an in-place value replacement.
+    ///
+    /// Computes the signed difference between old and new sizes and applies it
+    /// atomically. Called wherever a key's value changes without removing the key.
+    #[inline]
+    fn adjust_memory(&self, old_size: usize, new_size: usize) {
+        let diff = new_size as isize - old_size as isize;
+        if diff > 0 {
+            self.memory_used.fetch_add(diff as usize, Ordering::Relaxed);
+        } else if diff < 0 {
+            self.memory_used
+                .fetch_sub((-diff) as usize, Ordering::Relaxed);
+        }
     }
 
     /// Simple eviction: remove approximately `needed` bytes worth of entries.
