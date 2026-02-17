@@ -193,19 +193,25 @@ impl PubSubManager {
 /// - `[abc]` matches any character in the set
 /// - `\x` escapes the next character
 ///
-/// This matches Redis behavior for PSUBSCRIBE patterns.
+/// Matching is byte-wise, which is correct for Redis-compatible pub/sub:
+/// Redis treats patterns as raw byte sequences, and all metacharacters
+/// (`*`, `?`, `[`, `\`) are ASCII so byte comparison is unambiguous.
+/// This avoids allocating `Vec<char>` on every match call.
 fn glob_match(pattern: &str, input: &str) -> bool {
-    let pat: Vec<char> = pattern.chars().collect();
-    let inp: Vec<char> = input.chars().collect();
-    glob_match_inner(&pat, &inp)
+    glob_match_inner(pattern.as_bytes(), input.as_bytes())
 }
 
-fn glob_match_inner(pat: &[char], inp: &[char]) -> bool {
+/// Inner backtracking glob matcher operating on byte slices.
+///
+/// The algorithm tracks the last `*` position in both the pattern and
+/// input. On a mismatch it rewinds to that checkpoint and advances the
+/// input by one byte — standard linear-time glob matching.
+fn glob_match_inner(pat: &[u8], inp: &[u8]) -> bool {
     let (mut pi, mut ii) = (0, 0);
     let (mut star_pi, mut star_ii) = (usize::MAX, usize::MAX);
 
     while ii < inp.len() {
-        if pi < pat.len() && pat[pi] == '\\' && pi + 1 < pat.len() {
+        if pi < pat.len() && pat[pi] == b'\\' && pi + 1 < pat.len() {
             // escaped character — must match literally
             pi += 1;
             if inp[ii] == pat[pi] {
@@ -213,16 +219,16 @@ fn glob_match_inner(pat: &[char], inp: &[char]) -> bool {
                 ii += 1;
                 continue;
             }
-        } else if pi < pat.len() && pat[pi] == '?' {
+        } else if pi < pat.len() && pat[pi] == b'?' {
             pi += 1;
             ii += 1;
             continue;
-        } else if pi < pat.len() && pat[pi] == '*' {
+        } else if pi < pat.len() && pat[pi] == b'*' {
             star_pi = pi;
             star_ii = ii;
             pi += 1;
             continue;
-        } else if pi < pat.len() && pat[pi] == '[' {
+        } else if pi < pat.len() && pat[pi] == b'[' {
             // character class
             if let Some((matched, end)) = match_char_class(&pat[pi..], inp[ii]) {
                 if matched {
@@ -249,22 +255,22 @@ fn glob_match_inner(pat: &[char], inp: &[char]) -> bool {
     }
 
     // consume trailing stars
-    while pi < pat.len() && pat[pi] == '*' {
+    while pi < pat.len() && pat[pi] == b'*' {
         pi += 1;
     }
 
     pi == pat.len()
 }
 
-/// Matches a `[...]` character class. Returns (matched, chars_consumed)
-/// if the bracket expression is valid.
-fn match_char_class(pat: &[char], ch: char) -> Option<(bool, usize)> {
-    if pat.is_empty() || pat[0] != '[' {
+/// Matches a `[...]` character class against a single byte.
+/// Returns `(matched, bytes_consumed_from_pat)` when the bracket is valid.
+fn match_char_class(pat: &[u8], ch: u8) -> Option<(bool, usize)> {
+    if pat.is_empty() || pat[0] != b'[' {
         return None;
     }
 
     let mut i = 1;
-    let negate = if i < pat.len() && pat[i] == '^' {
+    let negate = if i < pat.len() && pat[i] == b'^' {
         i += 1;
         true
     } else {
@@ -272,8 +278,8 @@ fn match_char_class(pat: &[char], ch: char) -> Option<(bool, usize)> {
     };
 
     let mut matched = false;
-    while i < pat.len() && pat[i] != ']' {
-        if i + 2 < pat.len() && pat[i + 1] == '-' {
+    while i < pat.len() && pat[i] != b']' {
+        if i + 2 < pat.len() && pat[i + 1] == b'-' {
             // range: [a-z]
             if ch >= pat[i] && ch <= pat[i + 2] {
                 matched = true;
@@ -287,7 +293,7 @@ fn match_char_class(pat: &[char], ch: char) -> Option<(bool, usize)> {
         }
     }
 
-    if i < pat.len() && pat[i] == ']' {
+    if i < pat.len() && pat[i] == b']' {
         Some((matched ^ negate, i + 1))
     } else {
         None // unterminated bracket
