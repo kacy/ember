@@ -11,6 +11,7 @@ use ember_protocol::parse::parse_frame;
 use ember_protocol::types::Frame;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::connection::auth_frame;
 use crate::tls::{self, MaybeTlsStream, TlsClientConfig};
 
 /// Read buffer size for benchmark connections (256 KiB).
@@ -49,10 +50,7 @@ impl BenchConnection {
 
     /// Authenticates with the server using AUTH.
     pub async fn authenticate(&mut self, password: &str) -> Result<(), String> {
-        let frame = Frame::Array(vec![
-            Frame::Bulk(Bytes::from_static(b"AUTH")),
-            Frame::Bulk(Bytes::from(password.to_string())),
-        ]);
+        let frame = auth_frame(password);
         let mut buf = BytesMut::new();
         frame.serialize(&mut buf);
 

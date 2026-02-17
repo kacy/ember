@@ -23,6 +23,14 @@ use crate::connection::{Connection, ConnectionError};
 use crate::format::format_response;
 use crate::tls::TlsClientConfig;
 
+// ANSI escape sequences for terminal coloring. Defined as constants so a
+// color change requires updating one place rather than grep-and-replace.
+const RESET: &str = "\x1b[0m";
+const GREEN: &str = "\x1b[32m";
+const RED: &str = "\x1b[31m";
+const BOLD_CYAN: &str = "\x1b[1;36m";
+const DIM: &str = "\x1b[2m";
+
 /// Runs the interactive REPL loop.
 ///
 /// Blocks the calling thread. Uses `tokio::runtime::Runtime` internally
@@ -449,9 +457,9 @@ impl Highlighter for EmberHelper {
             || LOCAL_COMMANDS.iter().any(|c| c.eq_ignore_ascii_case(first));
 
         let highlighted_cmd = if is_known {
-            format!("\x1b[1;36m{first}\x1b[0m") // bold cyan
+            format!("{BOLD_CYAN}{first}{RESET}") // bold cyan
         } else {
-            format!("\x1b[31m{first}\x1b[0m") // red
+            format!("{RED}{first}{RESET}") // red
         };
 
         // highlight quoted strings in rest
@@ -474,7 +482,7 @@ impl Highlighter for EmberHelper {
     }
 
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
-        Cow::Owned(format!("\x1b[2m{hint}\x1b[0m")) // dim
+        Cow::Owned(format!("{DIM}{hint}{RESET}")) // dim
     }
 
     fn highlight_char(
@@ -495,7 +503,8 @@ fn highlight_quotes(s: &str) -> String {
     while let Some(ch) = chars.next() {
         match ch {
             '"' => {
-                out.push_str("\x1b[32m\""); // green
+                out.push_str(GREEN);
+                out.push('"');
                 loop {
                     match chars.next() {
                         None => break,
@@ -512,10 +521,11 @@ fn highlight_quotes(s: &str) -> String {
                         Some(c) => out.push(c),
                     }
                 }
-                out.push_str("\x1b[0m"); // reset
+                out.push_str(RESET);
             }
             '\'' => {
-                out.push_str("\x1b[32m'"); // green
+                out.push_str(GREEN);
+                out.push('\'');
                 loop {
                     match chars.next() {
                         None => break,
@@ -526,7 +536,7 @@ fn highlight_quotes(s: &str) -> String {
                         Some(c) => out.push(c),
                     }
                 }
-                out.push_str("\x1b[0m"); // reset
+                out.push_str(RESET);
             }
             _ => out.push(ch),
         }
