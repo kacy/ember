@@ -29,6 +29,15 @@ impl NodeId {
     pub fn parse(s: &str) -> Result<Self, uuid::Error> {
         Ok(Self(Uuid::parse_str(s)?))
     }
+
+    /// Returns the full UUID string for use as a map key.
+    ///
+    /// Note: `Display` for `NodeId` shows only the first 8 characters (for
+    /// readability in logs). This method returns the full UUID needed when
+    /// `NodeId` is used as a key in `BTreeMap<String, ...>` storage.
+    pub(crate) fn as_key(&self) -> String {
+        self.0.to_string()
+    }
 }
 
 impl Default for NodeId {
@@ -243,6 +252,12 @@ impl ClusterNode {
         .to_string()
     }
 
+    /// Formats the node flags for the CLUSTER NODES wire response.
+    ///
+    /// Intentionally diverges from `NodeFlags::Display` in two ways:
+    /// 1. Role (`master`/`slave`) is included here but is not a flag field.
+    /// 2. `pfail` renders as `fail?` per the Redis cluster protocol spec,
+    ///    whereas `NodeFlags::Display` uses the field name `pfail`.
     fn format_flags(&self) -> String {
         let mut flags = Vec::new();
 
