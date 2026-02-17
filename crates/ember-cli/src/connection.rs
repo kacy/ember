@@ -100,8 +100,12 @@ impl Connection {
 
     /// Authenticates with the server using the AUTH command.
     pub async fn authenticate(&mut self, password: &str) -> Result<(), ConnectionError> {
-        let tokens = vec!["AUTH".to_string(), password.to_string()];
-        let response = self.send_command(&tokens).await?;
+        let frame = auth_frame(password);
+        self.write_buf.clear();
+        frame.serialize(&mut self.write_buf);
+        self.stream.write_all(&self.write_buf).await?;
+        self.stream.flush().await?;
+        let response = self.read_response().await?;
 
         match &response {
             Frame::Simple(s) if s == "OK" => Ok(()),
@@ -166,4 +170,15 @@ impl Connection {
             }
         }
     }
+}
+
+/// Builds an AUTH command frame from a password string.
+///
+/// Shared by the interactive REPL connection and the benchmark connection so
+/// the AUTH wire format is defined in exactly one place.
+pub fn auth_frame(password: &str) -> Frame {
+    Frame::Array(vec![
+        Frame::Bulk(bytes::Bytes::from_static(b"AUTH")),
+        Frame::Bulk(bytes::Bytes::from(password.to_string())),
+    ])
 }
