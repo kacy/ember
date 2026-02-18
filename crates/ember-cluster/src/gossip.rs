@@ -158,6 +158,14 @@ impl GossipEngine {
         self.incarnation
     }
 
+    /// Restores the incarnation number from a previous session.
+    ///
+    /// Used when loading persisted config so the node doesn't regress
+    /// to a lower incarnation, which would make it lose suspicion refutations.
+    pub fn set_incarnation(&mut self, n: u64) {
+        self.incarnation = n;
+    }
+
     /// Returns all known members.
     pub fn members(&self) -> impl Iterator<Item = &MemberState> {
         self.members.values()

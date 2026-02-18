@@ -13,6 +13,25 @@ use uuid::Uuid;
 use crate::slots::{SlotMap, SlotRange, SLOT_COUNT};
 use crate::ClusterError;
 
+/// Error returned when parsing a `nodes.conf` file fails.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigParseError {
+    #[error("missing vars header line")]
+    MissingVarsLine,
+    #[error("invalid vars line: {0}")]
+    InvalidVarsLine(String),
+    #[error("no node with 'myself' flag found")]
+    NoMyselfNode,
+    #[error("invalid node line: {0}")]
+    InvalidNodeLine(String),
+    #[error("invalid node id: {0}")]
+    InvalidNodeId(String),
+    #[error("invalid address: {0}")]
+    InvalidAddress(String),
+    #[error("invalid slot range: {0}")]
+    InvalidSlotRange(String),
+}
+
 /// Unique identifier for a cluster node.
 ///
 /// Wraps a UUID v4 for guaranteed uniqueness across the cluster.
@@ -474,6 +493,217 @@ impl ClusterState {
             .ok_or(ClusterError::SlotNotAssigned(slot))?;
         Ok((slot, node.addr))
     }
+
+    /// Serializes the cluster state to the `nodes.conf` format.
+    ///
+    /// The output consists of a comment header, a `vars` line with the current
+    /// epoch and gossip incarnation, followed by one line per node in the
+    /// standard `CLUSTER NODES` format.
+    pub fn to_nodes_conf(&self, incarnation: u64) -> String {
+        let mut out = String::new();
+        out.push_str("# ember cluster config — do not edit\n");
+        out.push_str(&format!(
+            "vars currentEpoch {} lastIncarnation {}\n",
+            self.config_epoch, incarnation
+        ));
+
+        // sort by node id for deterministic output
+        let mut nodes: Vec<&ClusterNode> = self.nodes.values().collect();
+        nodes.sort_by_key(|n| n.id.0);
+
+        for node in nodes {
+            out.push_str(&node.to_cluster_nodes_line(&self.slot_map));
+            out.push('\n');
+        }
+
+        out
+    }
+
+    /// Parses a `nodes.conf` file and reconstructs the cluster state.
+    ///
+    /// Returns the reconstructed state and the saved gossip incarnation number.
+    /// `Instant` fields on nodes are initialized to `Instant::now()` since
+    /// wall-clock timestamps aren't persisted.
+    pub fn from_nodes_conf(data: &str) -> Result<(Self, u64), ConfigParseError> {
+        let mut config_epoch = 0u64;
+        let mut incarnation = 0u64;
+        let mut found_vars = false;
+        let mut local_id = None;
+        let mut nodes = HashMap::new();
+        let mut slot_map = SlotMap::new();
+
+        for line in data.lines() {
+            let line = line.trim();
+
+            // skip blank lines and comments
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // parse the vars header
+            if line.starts_with("vars ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // vars currentEpoch <n> lastIncarnation <n>
+                if parts.len() < 5 {
+                    return Err(ConfigParseError::InvalidVarsLine(line.to_string()));
+                }
+                config_epoch = parts[2]
+                    .parse()
+                    .map_err(|_| ConfigParseError::InvalidVarsLine(line.to_string()))?;
+                incarnation = parts[4]
+                    .parse()
+                    .map_err(|_| ConfigParseError::InvalidVarsLine(line.to_string()))?;
+                found_vars = true;
+                continue;
+            }
+
+            // parse a node line:
+            // <id> <ip:port@bus-port> <flags> <master-id> <ping-sent> <pong-recv> <config-epoch> <link-state> [slots...]
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 8 {
+                return Err(ConfigParseError::InvalidNodeLine(line.to_string()));
+            }
+
+            let node_id = NodeId::parse(parts[0])
+                .map_err(|_| ConfigParseError::InvalidNodeId(parts[0].to_string()))?;
+
+            // parse address: "ip:port@bus-port"
+            let addr_str = parts[1];
+            let (client_addr, bus_port) = parse_addr_field(addr_str)?;
+
+            let flags_str = parts[2];
+            let is_myself = flags_str.contains("myself");
+            let is_replica = flags_str.contains("slave");
+
+            let replicates = if parts[3] == "-" {
+                None
+            } else {
+                Some(
+                    NodeId::parse(parts[3])
+                        .map_err(|_| ConfigParseError::InvalidNodeId(parts[3].to_string()))?,
+                )
+            };
+
+            let node_config_epoch: u64 = parts[6]
+                .parse()
+                .map_err(|_| ConfigParseError::InvalidNodeLine(line.to_string()))?;
+
+            // parse slot ranges (fields 8+)
+            let mut slot_ranges = Vec::new();
+            for part in &parts[8..] {
+                let range = parse_slot_range(part)?;
+                slot_ranges.push(range);
+            }
+
+            // assign slots in the slot map
+            for range in &slot_ranges {
+                for slot in range.iter() {
+                    slot_map.assign(slot, node_id);
+                }
+            }
+
+            let bus_addr = SocketAddr::new(client_addr.ip(), bus_port);
+            let role = if is_replica {
+                NodeRole::Replica
+            } else {
+                NodeRole::Primary
+            };
+
+            let node = ClusterNode {
+                id: node_id,
+                addr: client_addr,
+                cluster_bus_addr: bus_addr,
+                role,
+                slots: slot_ranges,
+                replicates,
+                replicas: Vec::new(),
+                last_seen: Instant::now(),
+                last_ping_sent: None,
+                last_pong_received: None,
+                flags: NodeFlags {
+                    myself: is_myself,
+                    ..NodeFlags::default()
+                },
+                config_epoch: node_config_epoch,
+            };
+
+            if is_myself {
+                local_id = Some(node_id);
+            }
+
+            nodes.insert(node_id, node);
+        }
+
+        if !found_vars {
+            return Err(ConfigParseError::MissingVarsLine);
+        }
+
+        let local_id = local_id.ok_or(ConfigParseError::NoMyselfNode)?;
+
+        // rebuild replica links
+        let replica_links: Vec<(NodeId, NodeId)> = nodes
+            .values()
+            .filter_map(|n| n.replicates.map(|primary| (primary, n.id)))
+            .collect();
+
+        for (primary_id, replica_id) in replica_links {
+            if let Some(primary) = nodes.get_mut(&primary_id) {
+                primary.replicas.push(replica_id);
+            }
+        }
+
+        let mut state = ClusterState {
+            nodes,
+            local_id,
+            config_epoch,
+            slot_map,
+            state: ClusterHealth::Unknown,
+        };
+        state.update_health();
+
+        Ok((state, incarnation))
+    }
+}
+
+/// Parses the `ip:port@bus-port` field from a nodes.conf line.
+fn parse_addr_field(s: &str) -> Result<(SocketAddr, u16), ConfigParseError> {
+    // format: "ip:port@bus-port"
+    let at_pos = s
+        .find('@')
+        .ok_or_else(|| ConfigParseError::InvalidAddress(s.to_string()))?;
+
+    let client_part = &s[..at_pos];
+    let bus_part = &s[at_pos + 1..];
+
+    let client_addr: SocketAddr = client_part
+        .parse()
+        .map_err(|_| ConfigParseError::InvalidAddress(s.to_string()))?;
+
+    let bus_port: u16 = bus_part
+        .parse()
+        .map_err(|_| ConfigParseError::InvalidAddress(s.to_string()))?;
+
+    Ok((client_addr, bus_port))
+}
+
+/// Parses a slot range string like "0-5460" or "100".
+fn parse_slot_range(s: &str) -> Result<SlotRange, ConfigParseError> {
+    if let Some((start_str, end_str)) = s.split_once('-') {
+        let start: u16 = start_str
+            .parse()
+            .map_err(|_| ConfigParseError::InvalidSlotRange(s.to_string()))?;
+        let end: u16 = end_str
+            .parse()
+            .map_err(|_| ConfigParseError::InvalidSlotRange(s.to_string()))?;
+        SlotRange::try_new(start, end)
+            .map_err(|_| ConfigParseError::InvalidSlotRange(s.to_string()))
+    } else {
+        let slot: u16 = s
+            .parse()
+            .map_err(|_| ConfigParseError::InvalidSlotRange(s.to_string()))?;
+        SlotRange::try_new(slot, slot)
+            .map_err(|_| ConfigParseError::InvalidSlotRange(s.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -602,6 +832,120 @@ mod tests {
         let (slot, addr) = state.moved_redirect(100).unwrap();
         assert_eq!(slot, 100);
         assert_eq!(addr.port(), 6379);
+    }
+
+    #[test]
+    fn nodes_conf_roundtrip_single_node() {
+        let id = NodeId::new();
+        let mut node = ClusterNode::new_primary(id, test_addr(6379));
+        node.set_myself();
+
+        let state = ClusterState::single_node(node);
+        let conf = state.to_nodes_conf(42);
+
+        let (restored, incarnation) = ClusterState::from_nodes_conf(&conf).unwrap();
+        assert_eq!(incarnation, 42);
+        assert_eq!(restored.local_id, id);
+        assert_eq!(restored.config_epoch, 1);
+        assert!(restored.owns_slot(0));
+        assert!(restored.owns_slot(16383));
+        assert_eq!(restored.nodes.len(), 1);
+        assert!(restored.nodes[&id].flags.myself);
+    }
+
+    #[test]
+    fn nodes_conf_roundtrip_multi_node() {
+        let id1 = NodeId::new();
+        let id2 = NodeId::new();
+
+        let mut node1 = ClusterNode::new_primary(id1, test_addr(6379));
+        node1.set_myself();
+
+        let mut state = ClusterState::new(id1);
+        state.add_node(node1);
+
+        let node2 = ClusterNode::new_primary(id2, test_addr(6380));
+        state.add_node(node2);
+
+        // assign slots to each
+        for slot in 0..8192 {
+            state.slot_map.assign(slot, id1);
+        }
+        for slot in 8192..16384 {
+            state.slot_map.assign(slot, id2);
+        }
+        if let Some(n) = state.nodes.get_mut(&id1) {
+            n.slots = state.slot_map.slots_for_node(id1);
+        }
+        if let Some(n) = state.nodes.get_mut(&id2) {
+            n.slots = state.slot_map.slots_for_node(id2);
+        }
+        state.config_epoch = 5;
+        state.update_health();
+
+        let conf = state.to_nodes_conf(10);
+        let (restored, incarnation) = ClusterState::from_nodes_conf(&conf).unwrap();
+
+        assert_eq!(incarnation, 10);
+        assert_eq!(restored.config_epoch, 5);
+        assert_eq!(restored.local_id, id1);
+        assert_eq!(restored.nodes.len(), 2);
+        assert_eq!(restored.slot_map.owner(0), Some(id1));
+        assert_eq!(restored.slot_map.owner(8192), Some(id2));
+        assert_eq!(restored.slot_map.owner(16383), Some(id2));
+        assert_eq!(restored.state, ClusterHealth::Ok);
+    }
+
+    #[test]
+    fn nodes_conf_roundtrip_with_replica() {
+        let primary_id = NodeId::new();
+        let replica_id = NodeId::new();
+
+        let mut primary = ClusterNode::new_primary(primary_id, test_addr(6379));
+        primary.set_myself();
+
+        let mut state = ClusterState::single_node(primary);
+
+        let replica = ClusterNode::new_replica(replica_id, test_addr(6380), primary_id);
+        state.add_node(replica);
+
+        // add replica to primary's replica list
+        if let Some(p) = state.nodes.get_mut(&primary_id) {
+            p.replicas.push(replica_id);
+        }
+
+        let conf = state.to_nodes_conf(1);
+        let (restored, _) = ClusterState::from_nodes_conf(&conf).unwrap();
+
+        assert_eq!(restored.nodes.len(), 2);
+        let restored_replica = &restored.nodes[&replica_id];
+        assert_eq!(restored_replica.role, NodeRole::Replica);
+        assert_eq!(restored_replica.replicates, Some(primary_id));
+
+        // replica links are rebuilt
+        let restored_primary = &restored.nodes[&primary_id];
+        assert!(restored_primary.replicas.contains(&replica_id));
+    }
+
+    #[test]
+    fn nodes_conf_parse_errors() {
+        // missing vars line
+        let result = ClusterState::from_nodes_conf("# comment\n");
+        assert!(result.is_err());
+
+        // no myself flag
+        let result = ClusterState::from_nodes_conf(
+            "vars currentEpoch 0 lastIncarnation 0\n\
+             00000000-0000-0000-0000-000000000001 127.0.0.1:6379@16379 master - 0 0 0 connected\n",
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            ConfigParseError::NoMyselfNode
+        ));
+
+        // malformed vars
+        let result = ClusterState::from_nodes_conf("vars bad\n");
+        assert!(result.is_err());
     }
 
     #[test]
