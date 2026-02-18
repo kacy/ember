@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use ember_cluster::{GossipConfig, NodeId};
+use ember_cluster::{GossipConfig, NodeId, RaftNode, RaftStorage, raft_id_from_node_id};
 use ember_core::ShardPersistenceConfig;
 use tracing::info;
 #[cfg(feature = "protobuf")]
@@ -158,6 +158,11 @@ struct Args {
     /// port offset for the cluster gossip bus (data_port + offset)
     #[arg(long, default_value_t = 10000, env = "EMBER_CLUSTER_PORT_OFFSET")]
     cluster_port_offset: u16,
+
+    /// port offset for the Raft TCP listener (data_port + offset).
+    /// defaults to cluster_port_offset + 1 (e.g. 10001)
+    #[arg(long, env = "EMBER_CLUSTER_RAFT_PORT_OFFSET")]
+    cluster_raft_port_offset: Option<u16>,
 
     /// node timeout in milliseconds for failure detection
     #[arg(long, default_value_t = 5000, env = "EMBER_CLUSTER_NODE_TIMEOUT")]
@@ -418,6 +423,10 @@ async fn main() {
             ));
         }
 
+        let raft_port_offset = args
+            .cluster_raft_port_offset
+            .unwrap_or_else(|| args.cluster_port_offset.saturating_add(1));
+
         // cluster requires a data directory for nodes.conf persistence.
         // persistence may have already consumed args.data_dir via .take(),
         // so we read from the engine config's copy instead.
@@ -437,17 +446,18 @@ async fn main() {
 
         let conf_path = cluster_data_dir.join("nodes.conf");
 
-        let (coordinator, event_rx) = if conf_path.exists() {
+        let (coordinator, event_rx, local_id, is_bootstrap) = if conf_path.exists() {
             // restore from saved config
             let data = std::fs::read_to_string(&conf_path)
                 .unwrap_or_else(|e| exit_err(format!("failed to read nodes.conf: {e}")));
 
             let (coord, rx) =
-                ClusterCoordinator::from_config(&data, addr, gossip_config, cluster_data_dir)
+                ClusterCoordinator::from_config(&data, addr, gossip_config, cluster_data_dir.clone())
                     .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
 
             info!("cluster mode: restored from nodes.conf");
-            (coord, rx)
+            let id = coord.local_id();
+            (coord, rx, id, false)
         } else if args.cluster_bootstrap {
             let local_id = NodeId::new();
             let (coord, rx) = ClusterCoordinator::new(
@@ -455,10 +465,10 @@ async fn main() {
                 addr,
                 gossip_config,
                 true,
-                Some(cluster_data_dir),
+                Some(cluster_data_dir.clone()),
             );
             info!("cluster mode: bootstrapped with all 16384 slots");
-            (coord, rx)
+            (coord, rx, local_id, true)
         } else {
             let local_id = NodeId::new();
             let (coord, rx) = ClusterCoordinator::new(
@@ -466,13 +476,53 @@ async fn main() {
                 addr,
                 gossip_config,
                 false,
-                Some(cluster_data_dir),
+                Some(cluster_data_dir.clone()),
             );
             info!("cluster mode: waiting for CLUSTER MEET");
-            (coord, rx)
+            (coord, rx, local_id, false)
         };
 
         let coordinator = Arc::new(coordinator);
+
+        // start the Raft node and attach it to the coordinator
+        let raft_port = addr
+            .port()
+            .checked_add(raft_port_offset)
+            .unwrap_or_else(|| exit_err("error: raft port offset overflows u16"));
+        let raft_addr = std::net::SocketAddr::new(addr.ip(), raft_port);
+        let raft_id = raft_id_from_node_id(local_id);
+
+        let (storage, state_rx) = RaftStorage::new();
+        let raft_node = match RaftNode::start(raft_id, raft_addr, storage.clone()).await {
+            Ok(node) => Arc::new(node),
+            Err(e) => exit_err(format!("failed to start raft node: {e}")),
+        };
+
+        if is_bootstrap {
+            // first boot of a brand-new cluster: initialize single-member raft
+            // and add this node to the application state machine
+            if let Err(e) = raft_node.bootstrap_single().await {
+                exit_err(format!("failed to bootstrap raft: {e}"));
+            }
+            // give raft a moment to elect itself leader before proposing
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+            if let Err(e) = raft_node
+                .propose(ember_cluster::ClusterCommand::AddNode {
+                    node_id: local_id,
+                    raft_id,
+                    addr: addr.to_string(),
+                    is_primary: true,
+                })
+                .await
+            {
+                // non-fatal: the node will be added via reconciliation later
+                tracing::warn!("bootstrap AddNode proposal failed: {e}");
+            }
+        }
+
+        coordinator.attach_raft(Arc::clone(&raft_node));
+        coordinator.spawn_raft_reconciliation(state_rx);
 
         // spawn gossip networking tasks
         coordinator.spawn_gossip(addr, event_rx).await;
