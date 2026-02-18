@@ -83,7 +83,7 @@ pub enum MemberStatus {
 #[derive(Debug, Clone)]
 pub enum GossipEvent {
     /// A new node joined the cluster.
-    MemberJoined(NodeId, SocketAddr),
+    MemberJoined(NodeId, SocketAddr, Vec<SlotRange>),
     /// A node is suspected to be failing.
     MemberSuspected(NodeId),
     /// A node has been confirmed dead.
@@ -92,6 +92,8 @@ pub enum GossipEvent {
     MemberLeft(NodeId),
     /// A node that was suspected is now alive.
     MemberAlive(NodeId),
+    /// A node's slot ownership changed.
+    SlotsChanged(NodeId, Vec<SlotRange>),
 }
 
 /// The gossip engine manages cluster membership and failure detection.
@@ -114,6 +116,8 @@ pub struct GossipEngine {
     pending_probes: HashMap<u64, PendingProbe>,
     /// Channel for emitting events.
     event_tx: mpsc::Sender<GossipEvent>,
+    /// Slot ranges owned by the local node, included in Welcome replies.
+    local_slots: Vec<SlotRange>,
 }
 
 struct PendingProbe {
@@ -140,12 +144,18 @@ impl GossipEngine {
             next_seq: 1,
             pending_probes: HashMap::new(),
             event_tx,
+            local_slots: Vec::new(),
         }
     }
 
     /// Returns the local node ID.
     pub fn local_id(&self) -> NodeId {
         self.local_id
+    }
+
+    /// Returns the local node's incarnation number.
+    pub fn local_incarnation(&self) -> u64 {
+        self.incarnation
     }
 
     /// Returns all known members.
@@ -159,6 +169,27 @@ impl GossipEngine {
             .values()
             .filter(|m| m.state == MemberStatus::Alive)
             .count()
+    }
+
+    /// Updates the local node's slot ownership.
+    ///
+    /// Called after ADDSLOTS/DELSLOTS/SETSLOT NODE to keep the gossip
+    /// engine's view in sync. The updated slots are included in Welcome
+    /// replies so joining nodes learn the full slot map.
+    pub fn set_local_slots(&mut self, slots: Vec<SlotRange>) {
+        self.local_slots = slots;
+    }
+
+    /// Queues a slot ownership update for gossip propagation.
+    ///
+    /// The update will be piggybacked on the next outgoing Ping or Ack
+    /// message, spreading to the cluster via epidemic dissemination.
+    pub fn queue_slots_update(&mut self, node: NodeId, incarnation: u64, slots: Vec<SlotRange>) {
+        self.queue_update(NodeUpdate::SlotsChanged {
+            node,
+            incarnation,
+            slots,
+        });
     }
 
     /// Adds a seed node to bootstrap cluster discovery.
@@ -256,8 +287,8 @@ impl GossipEngine {
                     incarnation: 1,
                 });
 
-                // Send welcome with current members
-                let members: Vec<MemberInfo> = self
+                // send welcome with current members, including ourselves
+                let mut members: Vec<MemberInfo> = self
                     .members
                     .values()
                     .filter(|m| m.state == MemberStatus::Alive)
@@ -269,6 +300,15 @@ impl GossipEngine {
                         slots: m.slots.clone(),
                     })
                     .collect();
+
+                // include our own slot info so the joiner learns the full map
+                members.push(MemberInfo {
+                    id: self.local_id,
+                    addr: self.local_addr,
+                    incarnation: self.incarnation,
+                    is_primary: true,
+                    slots: self.local_slots.clone(),
+                });
 
                 Some(GossipMessage::Welcome {
                     sender: self.local_id,
@@ -285,18 +325,24 @@ impl GossipEngine {
                 self.ensure_member(sender, from);
 
                 for member in members {
-                    if member.id != self.local_id {
-                        self.members
-                            .entry(member.id)
-                            .or_insert_with(|| MemberState {
-                                id: member.id,
-                                addr: member.addr,
-                                incarnation: member.incarnation,
-                                state: MemberStatus::Alive,
-                                state_change: Instant::now(),
-                                is_primary: member.is_primary,
-                                slots: member.slots,
-                            });
+                    if member.id == self.local_id {
+                        continue;
+                    }
+                    let slots = member.slots.clone();
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        self.members.entry(member.id)
+                    {
+                        e.insert(MemberState {
+                            id: member.id,
+                            addr: member.addr,
+                            incarnation: member.incarnation,
+                            state: MemberStatus::Alive,
+                            state_change: Instant::now(),
+                            is_primary: member.is_primary,
+                            slots: slots.clone(),
+                        });
+                        self.emit(GossipEvent::MemberJoined(member.id, member.addr, slots))
+                            .await;
                     }
                 }
                 None
@@ -427,7 +473,8 @@ impl GossipEngine {
                                 slots: Vec::new(),
                             },
                         );
-                        self.emit(GossipEvent::MemberJoined(*node, *addr)).await;
+                        self.emit(GossipEvent::MemberJoined(*node, *addr, Vec::new()))
+                            .await;
                     }
                 }
 
@@ -498,6 +545,31 @@ impl GossipEngine {
                             member.state = MemberStatus::Left;
                             member.state_change = Instant::now();
                             self.emit(GossipEvent::MemberLeft(*node)).await;
+                        }
+                    }
+                }
+
+                NodeUpdate::SlotsChanged {
+                    node,
+                    incarnation,
+                    slots,
+                } => {
+                    if *incarnation > MAX_INCARNATION {
+                        warn!(
+                            "rejecting slots update for {} with excessive incarnation {}",
+                            node, incarnation
+                        );
+                        continue;
+                    }
+                    if *node == self.local_id {
+                        continue;
+                    }
+                    if let Some(member) = self.members.get_mut(node) {
+                        // only accept if incarnation is at least as recent
+                        if *incarnation >= member.incarnation {
+                            member.slots = slots.clone();
+                            self.emit(GossipEvent::SlotsChanged(*node, slots.clone()))
+                                .await;
                         }
                     }
                 }
@@ -699,6 +771,142 @@ mod tests {
                 assert_eq!(sender_addr, addr);
             }
             _ => panic!("expected Join message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_slots_changed_updates_member() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let remote = NodeId::new();
+        engine.add_seed(remote, test_addr(6380));
+
+        let slots = vec![SlotRange::new(0, 5460)];
+        let updates = vec![NodeUpdate::SlotsChanged {
+            node: remote,
+            incarnation: 1,
+            slots: slots.clone(),
+        }];
+
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: remote,
+            updates,
+        };
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        // member should have updated slots
+        let member = engine.members.get(&remote).unwrap();
+        assert_eq!(member.slots, slots);
+
+        // should have emitted a SlotsChanged event
+        let event = rx.try_recv().unwrap();
+        assert!(matches!(event, GossipEvent::SlotsChanged(id, _) if id == remote));
+    }
+
+    #[tokio::test]
+    async fn stale_slots_changed_ignored() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let remote = NodeId::new();
+        // add member with incarnation 5
+        engine.members.insert(
+            remote,
+            MemberState {
+                id: remote,
+                addr: test_addr(6380),
+                incarnation: 5,
+                state: MemberStatus::Alive,
+                state_change: Instant::now(),
+                is_primary: true,
+                slots: vec![SlotRange::new(0, 5460)],
+            },
+        );
+
+        // send slots update with stale incarnation (lower)
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: remote,
+            updates: vec![NodeUpdate::SlotsChanged {
+                node: remote,
+                incarnation: 3, // stale
+                slots: vec![],
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        // slots should NOT have been cleared
+        let member = engine.members.get(&remote).unwrap();
+        assert_eq!(member.slots.len(), 1);
+
+        // no SlotsChanged event should have been emitted
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn welcome_includes_local_slots() {
+        let (tx, _rx) = mpsc::channel(16);
+        let local_id = NodeId::new();
+        let mut engine = GossipEngine::new(local_id, test_addr(6379), GossipConfig::default(), tx);
+
+        engine.set_local_slots(vec![SlotRange::new(0, 16383)]);
+
+        let joiner = NodeId::new();
+        let msg = GossipMessage::Join {
+            sender: joiner,
+            sender_addr: test_addr(6380),
+        };
+
+        let response = engine.handle_message(msg, test_addr(6380)).await;
+        match response {
+            Some(GossipMessage::Welcome { members, .. }) => {
+                let local_member = members.iter().find(|m| m.id == local_id);
+                assert!(local_member.is_some(), "welcome should include local node");
+                assert_eq!(local_member.unwrap().slots, vec![SlotRange::new(0, 16383)]);
+            }
+            other => panic!("expected Welcome, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn welcome_propagates_member_slots() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let sender = NodeId::new();
+        let member_id = NodeId::new();
+        let slots = vec![SlotRange::new(0, 5460)];
+
+        let msg = GossipMessage::Welcome {
+            sender,
+            members: vec![MemberInfo {
+                id: member_id,
+                addr: test_addr(6381),
+                incarnation: 1,
+                is_primary: true,
+                slots: slots.clone(),
+            }],
+        };
+
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        // member should be added with slots
+        let member = engine.members.get(&member_id).unwrap();
+        assert_eq!(member.slots, slots);
+
+        // should emit MemberJoined with slots
+        let event = rx.try_recv().unwrap();
+        match event {
+            GossipEvent::MemberJoined(id, _, s) => {
+                assert_eq!(id, member_id);
+                assert_eq!(s, slots);
+            }
+            other => panic!("expected MemberJoined, got {other:?}"),
         }
     }
 }
