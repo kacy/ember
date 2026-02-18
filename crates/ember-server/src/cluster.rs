@@ -3,6 +3,10 @@
 //! Wraps the ember-cluster crate's types into a server-integrated
 //! coordinator that handles gossip networking, cluster commands,
 //! and slot ownership validation.
+//!
+//! When a `RaftNode` is attached, topology mutations (ADDSLOTS, DELSLOTS,
+//! SETSLOT, FORGET) are proposed through Raft consensus before returning OK.
+//! Read-only commands and node-local migration state skip Raft entirely.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -10,18 +14,21 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use ember_cluster::{
-    key_slot, ClusterNode, ClusterState, ConfigParseError, GossipConfig, GossipEngine, GossipEvent,
-    GossipMessage, MigrationManager, NodeId, SlotRange, SLOT_COUNT,
+    key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterState,
+    ClusterStateData, ConfigParseError, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
+    MigrationManager, NodeId, RaftNode, RaftProposalError, SlotRange, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Integration struct wrapping cluster crate types for the running server.
 ///
 /// Thread-safe via interior mutability: `RwLock` for state (many readers,
 /// rare writers) and `Mutex` for gossip (single writer during ticks).
+///
+/// Call `attach_raft` after wrapping in `Arc` to enable Raft-backed mutations.
 pub struct ClusterCoordinator {
     state: RwLock<ClusterState>,
     gossip: Mutex<GossipEngine>,
@@ -32,6 +39,8 @@ pub struct ClusterCoordinator {
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
     /// directory for nodes.conf persistence (None disables saving)
     data_dir: Option<PathBuf>,
+    /// raft node for linearizable topology mutations; set once after startup
+    raft_node: std::sync::OnceLock<Arc<RaftNode>>,
 }
 
 impl std::fmt::Debug for ClusterCoordinator {
@@ -85,6 +94,7 @@ impl ClusterCoordinator {
             gossip_port_offset: port_offset,
             udp_socket: Mutex::new(None),
             data_dir,
+            raft_node: std::sync::OnceLock::new(),
         };
 
         (coordinator, event_rx)
@@ -136,9 +146,122 @@ impl ClusterCoordinator {
             gossip_port_offset: port_offset,
             udp_socket: Mutex::new(None),
             data_dir: Some(data_dir),
+            raft_node: std::sync::OnceLock::new(),
         };
 
         Ok((coordinator, event_rx))
+    }
+
+    /// Returns the local node ID.
+    pub fn local_id(&self) -> NodeId {
+        self.local_id
+    }
+
+    // -- raft integration --
+
+    /// Attaches a `RaftNode` so topology mutations go through consensus.
+    ///
+    /// Must be called at most once, after the coordinator is wrapped in `Arc`.
+    /// If not called, all commands fall back to direct writes (useful in tests).
+    pub fn attach_raft(&self, node: Arc<RaftNode>) {
+        // ignore the error — it just means attach_raft was called twice
+        let _ = self.raft_node.set(node);
+    }
+
+    /// Spawns a background task that reconciles `ClusterState` with the Raft
+    /// state machine whenever committed entries are applied.
+    ///
+    /// The watch receiver fires after every `apply_to_state_machine` call on
+    /// the Raft storage. The task rebuilds the routing table from the canonical
+    /// Raft view.
+    pub fn spawn_raft_reconciliation(
+        self: &Arc<Self>,
+        mut state_rx: watch::Receiver<ClusterStateData>,
+    ) {
+        let coordinator = Arc::clone(self);
+        tokio::spawn(async move {
+            while state_rx.changed().await.is_ok() {
+                let data = state_rx.borrow().clone();
+                coordinator.apply_raft_state(&data).await;
+            }
+        });
+    }
+
+    /// Reconciles the local routing table with a committed Raft state snapshot.
+    async fn apply_raft_state(&self, data: &ClusterStateData) {
+        let mut state = self.state.write().await;
+
+        // add nodes that are in raft state but not yet in the routing table
+        for (key, info) in &data.nodes {
+            let node_id = match NodeId::parse(key).ok() {
+                Some(id) => id,
+                None => continue,
+            };
+            if !state.nodes.contains_key(&node_id) {
+                let addr: SocketAddr = match info.addr.parse() {
+                    Ok(a) => a,
+                    Err(_) => continue,
+                };
+                let node = ClusterNode::new_primary_with_offset(
+                    node_id,
+                    addr,
+                    self.gossip_port_offset,
+                );
+                state.add_node(node);
+            }
+        }
+
+        // remove nodes that raft has dropped (never remove ourselves)
+        let raft_ids: std::collections::HashSet<NodeId> =
+            data.nodes.keys().filter_map(|k| NodeId::parse(k).ok()).collect();
+        let to_remove: Vec<NodeId> = state
+            .nodes
+            .keys()
+            .filter(|id| !raft_ids.contains(*id) && **id != self.local_id)
+            .copied()
+            .collect();
+        for id in to_remove {
+            state.nodes.remove(&id);
+        }
+
+        // reconcile slot assignments from the raft slot map
+        for slot in 0..SLOT_COUNT {
+            let raft_owner =
+                data.slots.get(&slot).and_then(|k| NodeId::parse(k).ok());
+            let current_owner = state.slot_map.owner(slot);
+            if raft_owner != current_owner {
+                match raft_owner {
+                    Some(owner) => state.slot_map.assign(slot, owner),
+                    None => state.slot_map.unassign(slot),
+                }
+            }
+        }
+
+        // rebuild each node's slot list from the updated slot map
+        let all_ids: Vec<NodeId> = state.nodes.keys().copied().collect();
+        for id in all_ids {
+            let slots = state.slot_map.slots_for_node(id);
+            if let Some(node) = state.nodes.get_mut(&id) {
+                node.slots = slots;
+            }
+        }
+
+        state.update_health();
+        drop(state);
+        self.save_config().await;
+    }
+
+    /// Returns an error `Frame` for the given `RaftProposalError`.
+    fn raft_error_frame(e: RaftProposalError) -> Frame {
+        match e {
+            RaftProposalError::NotLeader(Some(node)) => {
+                Frame::Error(format!("ERR not leader, leader at {}", node.addr))
+            }
+            RaftProposalError::NotLeader(None) => {
+                Frame::Error("ERR no leader elected, retry shortly".into())
+            }
+            RaftProposalError::Fatal(msg) => Frame::Error(format!("ERR raft error: {msg}")),
+        }
     }
 
     // -- cluster command handlers --
@@ -234,11 +357,13 @@ impl ClusterCoordinator {
             }
         }
 
-        // add to cluster state and persist — gossip and socket locks are released
-        let mut state = self.state.write().await;
-        let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
-        state.add_node(node);
-        drop(state);
+        // add a placeholder to the routing table so MOVED redirects work
+        // immediately — the real node ID arrives via gossip and replaces this
+        {
+            let mut state = self.state.write().await;
+            let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
+            state.add_node(node);
+        }
 
         self.save_config().await;
 
@@ -247,10 +372,9 @@ impl ClusterCoordinator {
 
     /// CLUSTER ADDSLOTS slot [slot ...]
     pub async fn cluster_addslots(&self, slots: &[u16]) -> Frame {
-        let new_slots = {
-            let mut state = self.state.write().await;
-
-            // validate: all slots must be unassigned
+        // validate inputs against the current routing state
+        {
+            let state = self.state.read().await;
             for &slot in slots {
                 if slot >= SLOT_COUNT {
                     return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
@@ -259,35 +383,43 @@ impl ClusterCoordinator {
                     return Frame::Error(format!("ERR Slot {slot} is already busy"));
                 }
             }
+        }
 
-            // assign all slots to local node
-            for &slot in slots {
-                state.slot_map.assign(slot, self.local_id);
+        if let Some(raft) = self.raft_node.get() {
+            let slot_ranges = compact_slots(slots);
+            let cmd = ClusterCommand::AssignSlots {
+                node_id: self.local_id,
+                slots: slot_ranges,
+            };
+            match raft.propose(cmd).await {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Self::raft_error_frame(e),
             }
-
-            // update node.slots from slot_map
-            let new_slots = state.slot_map.slots_for_node(self.local_id);
-            if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                node.slots = new_slots.clone();
-            }
-
-            state.update_health();
-            new_slots
-        };
-
-        // propagate via gossip (lock ordering: state released, then gossip)
-        self.broadcast_local_slots(new_slots).await;
-        self.save_config().await;
-
-        Frame::Simple("OK".into())
+        } else {
+            // direct write path (single-node / test mode)
+            let new_slots = {
+                let mut state = self.state.write().await;
+                for &slot in slots {
+                    state.slot_map.assign(slot, self.local_id);
+                }
+                let new_slots = state.slot_map.slots_for_node(self.local_id);
+                if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                    node.slots = new_slots.clone();
+                }
+                state.update_health();
+                new_slots
+            };
+            self.broadcast_local_slots(new_slots).await;
+            self.save_config().await;
+            Frame::Simple("OK".into())
+        }
     }
 
     /// CLUSTER DELSLOTS slot [slot ...]
     pub async fn cluster_delslots(&self, slots: &[u16]) -> Frame {
-        let new_slots = {
-            let mut state = self.state.write().await;
-
-            // validate: all slots must be owned by us
+        // validate
+        {
+            let state = self.state.read().await;
             for &slot in slots {
                 if slot >= SLOT_COUNT {
                     return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
@@ -302,26 +434,35 @@ impl ClusterCoordinator {
                     _ => {}
                 }
             }
+        }
 
-            for &slot in slots {
-                state.slot_map.unassign(slot);
+        if let Some(raft) = self.raft_node.get() {
+            let slot_ranges = compact_slots(slots);
+            let cmd = ClusterCommand::RemoveSlots {
+                node_id: self.local_id,
+                slots: slot_ranges,
+            };
+            match raft.propose(cmd).await {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Self::raft_error_frame(e),
             }
-
-            // update node.slots from slot_map
-            let new_slots = state.slot_map.slots_for_node(self.local_id);
-            if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                node.slots = new_slots.clone();
-            }
-
-            state.update_health();
-            new_slots
-        };
-
-        // propagate via gossip (lock ordering: state released, then gossip)
-        self.broadcast_local_slots(new_slots).await;
-        self.save_config().await;
-
-        Frame::Simple("OK".into())
+        } else {
+            let new_slots = {
+                let mut state = self.state.write().await;
+                for &slot in slots {
+                    state.slot_map.unassign(slot);
+                }
+                let new_slots = state.slot_map.slots_for_node(self.local_id);
+                if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                    node.slots = new_slots.clone();
+                }
+                state.update_health();
+                new_slots
+            };
+            self.broadcast_local_slots(new_slots).await;
+            self.save_config().await;
+            Frame::Simple("OK".into())
+        }
     }
 
     /// CLUSTER FORGET node-id
@@ -335,14 +476,30 @@ impl ClusterCoordinator {
             return Frame::Error("ERR I tried hard but I can't forget myself...".into());
         }
 
-        let mut state = self.state.write().await;
-        match state.remove_node(node_id) {
-            Some(_) => {
-                drop(state);
-                self.save_config().await;
-                Frame::Simple("OK".into())
+        // verify the node exists before proposing
+        {
+            let state = self.state.read().await;
+            if !state.nodes.contains_key(&node_id) {
+                return Frame::Error("ERR Unknown node ID".into());
             }
-            None => Frame::Error("ERR Unknown node ID".into()),
+        }
+
+        if let Some(raft) = self.raft_node.get() {
+            let cmd = ClusterCommand::RemoveNode { node_id };
+            match raft.propose(cmd).await {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Self::raft_error_frame(e),
+            }
+        } else {
+            let mut state = self.state.write().await;
+            match state.remove_node(node_id) {
+                Some(_) => {
+                    drop(state);
+                    self.save_config().await;
+                    Frame::Simple("OK".into())
+                }
+                None => Frame::Error("ERR Unknown node ID".into()),
+            }
         }
     }
 
@@ -395,11 +552,30 @@ impl ClusterCoordinator {
             }
         }
 
-        let mut migration = self.migration.lock().await;
-        match migration.start_migrate(slot, self.local_id, target_id) {
-            Ok(_) => Frame::Simple("OK".into()),
-            Err(e) => Frame::Error(format!("ERR {e}")),
+        // record in-node migration state so ASK redirects work during transfer
+        {
+            let mut migration = self.migration.lock().await;
+            if let Err(e) = migration.start_migrate(slot, self.local_id, target_id) {
+                return Frame::Error(format!("ERR {e}"));
+            }
         }
+
+        // persist intent through raft so all nodes agree on the pending migration
+        if let Some(raft) = self.raft_node.get() {
+            let cmd = ClusterCommand::BeginMigration {
+                slot,
+                from: self.local_id,
+                to: target_id,
+            };
+            if let Err(e) = raft.propose(cmd).await {
+                // raft failure: roll back local migration state
+                let mut migration = self.migration.lock().await;
+                migration.abort_migration(slot);
+                return Self::raft_error_frame(e);
+            }
+        }
+
+        Frame::Simple("OK".into())
     }
 
     /// CLUSTER SETSLOT <slot> NODE <node-id>
@@ -415,39 +591,51 @@ impl ClusterCoordinator {
             Err(_) => return Frame::Error("ERR Invalid node ID".into()),
         };
 
-        // complete any in-progress migration for this slot
-        {
-            let mut migration = self.migration.lock().await;
-            migration.complete_migration(slot);
-        }
-
-        let local_slots = {
-            let mut state = self.state.write().await;
-            state.slot_map.assign(slot, node_id);
-
-            // update the node's slot list
-            let new_slots = state.slot_map.slots_for_node(node_id);
-            if let Some(node) = state.nodes.get_mut(&node_id) {
-                node.slots = new_slots;
-            }
-
-            // also update the local node's slot list if it changed
-            let local_slots = state.slot_map.slots_for_node(self.local_id);
-            if node_id != self.local_id {
-                if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                    node.slots = local_slots.clone();
+        if let Some(raft) = self.raft_node.get() {
+            let cmd = ClusterCommand::CompleteMigration {
+                slot,
+                new_owner: node_id,
+            };
+            match raft.propose(cmd).await {
+                Ok(_) => {
+                    // clean up local migration tracking (node-local, not replicated)
+                    let mut migration = self.migration.lock().await;
+                    migration.complete_migration(slot);
+                    Frame::Simple("OK".into())
                 }
+                Err(e) => Self::raft_error_frame(e),
+            }
+        } else {
+            // direct write path
+            {
+                let mut migration = self.migration.lock().await;
+                migration.complete_migration(slot);
             }
 
-            state.update_health();
-            local_slots
-        };
+            let local_slots = {
+                let mut state = self.state.write().await;
+                state.slot_map.assign(slot, node_id);
 
-        // propagate our updated slot ownership via gossip
-        self.broadcast_local_slots(local_slots).await;
-        self.save_config().await;
+                let new_slots = state.slot_map.slots_for_node(node_id);
+                if let Some(node) = state.nodes.get_mut(&node_id) {
+                    node.slots = new_slots;
+                }
 
-        Frame::Simple("OK".into())
+                let local_slots = state.slot_map.slots_for_node(self.local_id);
+                if node_id != self.local_id {
+                    if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                        node.slots = local_slots.clone();
+                    }
+                }
+
+                state.update_health();
+                local_slots
+            };
+
+            self.broadcast_local_slots(local_slots).await;
+            self.save_config().await;
+            Frame::Simple("OK".into())
+        }
     }
 
     /// CLUSTER SETSLOT <slot> STABLE
@@ -720,6 +908,55 @@ impl ClusterCoordinator {
                                 node.slots = slots;
                                 state.add_node(node);
                                 state.update_health();
+
+                                // replicate the new node into raft state and update
+                                // raft membership if we are the current leader
+                                if let Some(raft) = coordinator.raft_node.get() {
+                                    let raft = Arc::clone(raft);
+                                    let raft_id = raft_id_from_node_id(id);
+                                    let data_addr_str = data_addr.to_string();
+                                    let raft_port_offset = coordinator.gossip_port_offset + 1;
+                                    let raft_addr = SocketAddr::new(
+                                        data_addr.ip(),
+                                        data_addr.port().saturating_add(raft_port_offset),
+                                    );
+                                    tokio::spawn(async move {
+                                        // add to application state machine
+                                        let _ = raft
+                                            .propose(ClusterCommand::AddNode {
+                                                node_id: id,
+                                                raft_id,
+                                                addr: data_addr_str,
+                                                is_primary: true,
+                                            })
+                                            .await;
+
+                                        // add to raft membership if we're the leader
+                                        if raft.is_leader() {
+                                            let node = BasicNode {
+                                                addr: raft_addr.to_string(),
+                                            };
+                                            let handle = raft.raft_handle();
+                                            if let Ok(_) =
+                                                handle.add_learner(raft_id, node, true).await
+                                            {
+                                                let m = handle.metrics().borrow().clone();
+                                                let mut new_members: std::collections::BTreeSet<
+                                                    u64,
+                                                > = m
+                                                    .membership_config
+                                                    .membership()
+                                                    .voter_ids()
+                                                    .collect();
+                                                new_members.insert(raft_id);
+                                                let _ = handle
+                                                    .change_membership(new_members, false)
+                                                    .await;
+                                            }
+                                        }
+                                    });
+                                }
+
                                 true
                             }
                         }
@@ -789,6 +1026,27 @@ impl ClusterCoordinator {
             }
         });
     }
+}
+
+/// Compacts a flat list of slot numbers into contiguous `SlotRange` values.
+fn compact_slots(slots: &[u16]) -> Vec<SlotRange> {
+    let mut sorted: Vec<u16> = slots.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i < sorted.len() {
+        let start = sorted[i];
+        let mut end = start;
+        while i + 1 < sorted.len() && sorted[i + 1] == end + 1 {
+            i += 1;
+            end = sorted[i];
+        }
+        ranges.push(SlotRange::new(start, end));
+        i += 1;
+    }
+    ranges
 }
 
 /// Writes data to a temporary file and atomically renames it to the target path.
