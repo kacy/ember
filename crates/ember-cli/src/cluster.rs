@@ -134,7 +134,47 @@ pub enum SetslotAction {
     Stable,
 }
 
+/// Maximum valid hash slot index.
+const MAX_SLOT: u16 = 16383;
+
 impl ClusterCommand {
+    /// Validates command arguments before sending to the server.
+    ///
+    /// Catches obvious input errors (slot numbers ≥ 16384) early so the CLI
+    /// can show a clear message instead of a server-side ERR response.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Addslots { slots } | Self::Delslots { slots } => {
+                for &slot in slots {
+                    if slot > MAX_SLOT {
+                        return Err(format!(
+                            "invalid slot {slot}: hash slots must be in the range 0-{MAX_SLOT}"
+                        ));
+                    }
+                }
+            }
+            Self::Addslotsrange { start, end } => {
+                for (label, &slot) in [("start", start), ("end", end)] {
+                    if slot > MAX_SLOT {
+                        return Err(format!(
+                            "invalid {label} slot {slot}: hash slots must be in the range 0-{MAX_SLOT}"
+                        ));
+                    }
+                }
+                if start > end {
+                    return Err(format!("start slot {start} must not exceed end slot {end}"));
+                }
+            }
+            Self::Setslot { slot, .. } if *slot > MAX_SLOT => {
+                return Err(format!(
+                    "invalid slot {slot}: hash slots must be in the range 0-{MAX_SLOT}"
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Converts the typed command into RESP3 command tokens.
     ///
     /// Returns a vec like `["CLUSTER", "MEET", "10.0.0.1", "6379"]` that
@@ -236,6 +276,11 @@ pub fn run_cluster(
         }
     };
 
+    if let Err(msg) = cmd.validate() {
+        eprintln!("{}", format!("error: {msg}").red());
+        return ExitCode::FAILURE;
+    }
+
     rt.block_on(async {
         let mut conn = match Connection::connect(host, port, tls).await {
             Ok(c) => c,
@@ -336,7 +381,10 @@ mod tests {
 
     #[test]
     fn addslotsrange_tokens() {
-        let cmd = ClusterCommand::Addslotsrange { start: 0, end: 5460 };
+        let cmd = ClusterCommand::Addslotsrange {
+            start: 0,
+            end: 5460,
+        };
         assert_eq!(
             cmd.to_tokens(),
             vec!["CLUSTER", "ADDSLOTSRANGE", "0", "5460"]
