@@ -55,6 +55,14 @@ pub enum ClusterCommand {
         slots: Vec<u16>,
     },
 
+    /// Assign a contiguous range of hash slots to this node.
+    Addslotsrange {
+        /// First slot in the range (inclusive).
+        start: u16,
+        /// Last slot in the range (inclusive).
+        end: u16,
+    },
+
     /// Remove hash slots from this node.
     Delslots {
         /// Slot numbers to remove.
@@ -154,6 +162,12 @@ impl ClusterCommand {
                 tokens.extend(slots.iter().map(|s| s.to_string()));
                 tokens
             }
+            Self::Addslotsrange { start, end } => vec![
+                "CLUSTER".into(),
+                "ADDSLOTSRANGE".into(),
+                start.to_string(),
+                end.to_string(),
+            ],
             Self::Delslots { slots } => {
                 let mut tokens = vec!["CLUSTER".into(), "DELSLOTS".into()];
                 tokens.extend(slots.iter().map(|s| s.to_string()));
@@ -318,6 +332,15 @@ mod tests {
             slots: vec![0, 1, 2],
         };
         assert_eq!(cmd.to_tokens(), vec!["CLUSTER", "ADDSLOTS", "0", "1", "2"]);
+    }
+
+    #[test]
+    fn addslotsrange_tokens() {
+        let cmd = ClusterCommand::Addslotsrange { start: 0, end: 5460 };
+        assert_eq!(
+            cmd.to_tokens(),
+            vec!["CLUSTER", "ADDSLOTSRANGE", "0", "5460"]
+        );
     }
 
     #[test]
