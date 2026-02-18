@@ -5,12 +5,13 @@
 //! and slot ownership validation.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use ember_cluster::{
-    key_slot, ClusterNode, ClusterState, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
-    MigrationManager, NodeId, SlotRange, SLOT_COUNT,
+    key_slot, ClusterNode, ClusterState, ConfigParseError, GossipConfig, GossipEngine,
+    GossipEvent, GossipMessage, MigrationManager, NodeId, SlotRange, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
@@ -29,6 +30,8 @@ pub struct ClusterCoordinator {
     gossip_port_offset: u16,
     /// bound UDP socket for gossip, set after spawn_gossip
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
+    /// directory for nodes.conf persistence (None disables saving)
+    data_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ClusterCoordinator {
@@ -49,6 +52,7 @@ impl ClusterCoordinator {
         bind_addr: SocketAddr,
         gossip_config: GossipConfig,
         bootstrap: bool,
+        data_dir: Option<PathBuf>,
     ) -> (Self, mpsc::Receiver<GossipEvent>) {
         let (event_tx, event_rx) = mpsc::channel(256);
 
@@ -80,9 +84,61 @@ impl ClusterCoordinator {
             local_id,
             gossip_port_offset: port_offset,
             udp_socket: Mutex::new(None),
+            data_dir,
         };
 
         (coordinator, event_rx)
+    }
+
+    /// Restores a cluster coordinator from a previously saved `nodes.conf`.
+    ///
+    /// The gossip engine is seeded with peer addresses from the loaded state
+    /// so it can reconnect to existing cluster members.
+    pub fn from_config(
+        data: &str,
+        bind_addr: SocketAddr,
+        gossip_config: GossipConfig,
+        data_dir: PathBuf,
+    ) -> Result<(Self, mpsc::Receiver<GossipEvent>), ConfigParseError> {
+        let (state, incarnation) = ClusterState::from_nodes_conf(data)?;
+        let local_id = state.local_id;
+        let port_offset = gossip_config.gossip_port_offset;
+
+        let (event_tx, event_rx) = mpsc::channel(256);
+
+        let gossip_port = bind_addr
+            .port()
+            .checked_add(port_offset)
+            .expect("gossip port offset overflows u16");
+        let gossip_addr = SocketAddr::new(bind_addr.ip(), gossip_port);
+
+        let mut gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
+
+        // restore incarnation so we don't regress
+        gossip.set_incarnation(incarnation);
+
+        // seed gossip with known peers so it can reconnect
+        for node in state.nodes.values() {
+            if node.id != local_id {
+                gossip.add_seed(node.id, node.cluster_bus_addr);
+            }
+        }
+
+        // set local slots in gossip engine
+        let local_slots = state.slot_map.slots_for_node(local_id);
+        gossip.set_local_slots(local_slots);
+
+        let coordinator = Self {
+            state: RwLock::new(state),
+            gossip: Mutex::new(gossip),
+            migration: Mutex::new(MigrationManager::new()),
+            local_id,
+            gossip_port_offset: port_offset,
+            udp_socket: Mutex::new(None),
+            data_dir: Some(data_dir),
+        };
+
+        Ok((coordinator, event_rx))
     }
 
     // -- cluster command handlers --
@@ -179,6 +235,9 @@ impl ClusterCoordinator {
         let mut state = self.state.write().await;
         let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
         state.add_node(node);
+        drop(state);
+
+        self.save_config().await;
 
         Frame::Simple("OK".into())
     }
@@ -215,6 +274,7 @@ impl ClusterCoordinator {
 
         // propagate via gossip (lock ordering: state released, then gossip)
         self.broadcast_local_slots(new_slots).await;
+        self.save_config().await;
 
         Frame::Simple("OK".into())
     }
@@ -256,6 +316,7 @@ impl ClusterCoordinator {
 
         // propagate via gossip (lock ordering: state released, then gossip)
         self.broadcast_local_slots(new_slots).await;
+        self.save_config().await;
 
         Frame::Simple("OK".into())
     }
@@ -273,7 +334,11 @@ impl ClusterCoordinator {
 
         let mut state = self.state.write().await;
         match state.remove_node(node_id) {
-            Some(_) => Frame::Simple("OK".into()),
+            Some(_) => {
+                drop(state);
+                self.save_config().await;
+                Frame::Simple("OK".into())
+            }
             None => Frame::Error("ERR Unknown node ID".into()),
         }
     }
@@ -377,6 +442,7 @@ impl ClusterCoordinator {
 
         // propagate our updated slot ownership via gossip
         self.broadcast_local_slots(local_slots).await;
+        self.save_config().await;
 
         Frame::Simple("OK".into())
     }
@@ -472,6 +538,30 @@ impl ClusterCoordinator {
         gossip.queue_slots_update(self.local_id, incarnation, slots);
     }
 
+    /// Persists the current cluster state to `nodes.conf` in the data directory.
+    ///
+    /// Uses atomic write (write to tmp, then rename) to avoid corruption
+    /// from crashes mid-write. This is called after every topology mutation.
+    pub async fn save_config(&self) {
+        let Some(ref dir) = self.data_dir else {
+            return;
+        };
+
+        let state = self.state.read().await;
+        let gossip = self.gossip.lock().await;
+        let incarnation = gossip.local_incarnation();
+        let content = state.to_nodes_conf(incarnation);
+        drop(gossip);
+        drop(state);
+
+        let conf_path = dir.join("nodes.conf");
+        let tmp_path = dir.join("nodes.conf.tmp");
+
+        if let Err(e) = write_atomic(&tmp_path, &conf_path, content.as_bytes()) {
+            error!("failed to save nodes.conf: {e}");
+        }
+    }
+
     // -- gossip networking --
 
     /// Spawns the gossip network tasks: UDP send/receive and event consumer.
@@ -555,83 +645,115 @@ impl ClusterCoordinator {
         let coordinator = Arc::clone(self);
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                let mut state = coordinator.state.write().await;
-                match event {
-                    GossipEvent::MemberJoined(id, addr, slots) => {
-                        info!("cluster: node {} joined at {}", id, addr);
-                        if !state.nodes.contains_key(&id) {
-                            let mut node = ClusterNode::new_primary_with_offset(
+                let needs_save = {
+                    let mut state = coordinator.state.write().await;
+                    match event {
+                        GossipEvent::MemberJoined(id, addr, slots) => {
+                            info!("cluster: node {} joined at {}", id, addr);
+                            if !state.nodes.contains_key(&id) {
+                                let mut node = ClusterNode::new_primary_with_offset(
+                                    id,
+                                    addr,
+                                    coordinator.gossip_port_offset,
+                                );
+                                // apply slot ranges from gossip
+                                for range in &slots {
+                                    for slot in range.iter() {
+                                        state.slot_map.assign(slot, id);
+                                    }
+                                }
+                                node.slots = slots;
+                                state.add_node(node);
+                                state.update_health();
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        GossipEvent::MemberSuspected(id) => {
+                            info!("cluster: node {} suspected", id);
+                            if let Some(node) = state.nodes.get_mut(&id) {
+                                node.flags.pfail = true;
+                            }
+                            state.update_health();
+                            false // suspicion is transient, don't persist
+                        }
+                        GossipEvent::MemberFailed(id) => {
+                            warn!("cluster: node {} confirmed failed", id);
+                            if let Some(node) = state.nodes.get_mut(&id) {
+                                node.flags.fail = true;
+                                node.flags.pfail = false;
+                            }
+                            state.update_health();
+                            true
+                        }
+                        GossipEvent::MemberLeft(id) => {
+                            info!("cluster: node {} left", id);
+                            state.remove_node(id);
+                            state.update_health();
+                            true
+                        }
+                        GossipEvent::MemberAlive(id) => {
+                            debug!("cluster: node {} alive", id);
+                            if let Some(node) = state.nodes.get_mut(&id) {
+                                node.flags.pfail = false;
+                                node.flags.fail = false;
+                            }
+                            state.update_health();
+                            false
+                        }
+                        GossipEvent::SlotsChanged(id, slots) => {
+                            debug!(
+                                "cluster: node {} slots changed ({} ranges)",
                                 id,
-                                addr,
-                                coordinator.gossip_port_offset,
+                                slots.len()
                             );
-                            // apply slot ranges from gossip
+                            // clear old slot assignments for this node
+                            let old_ranges = state.slot_map.slots_for_node(id);
+                            for range in &old_ranges {
+                                for slot in range.iter() {
+                                    state.slot_map.unassign(slot);
+                                }
+                            }
+                            // apply new slot assignments
                             for range in &slots {
                                 for slot in range.iter() {
                                     state.slot_map.assign(slot, id);
                                 }
                             }
-                            node.slots = slots;
-                            state.add_node(node);
+                            if let Some(node) = state.nodes.get_mut(&id) {
+                                node.slots = slots;
+                            }
                             state.update_health();
+                            true
                         }
                     }
-                    GossipEvent::MemberSuspected(id) => {
-                        info!("cluster: node {} suspected", id);
-                        if let Some(node) = state.nodes.get_mut(&id) {
-                            node.flags.pfail = true;
-                        }
-                        state.update_health();
-                    }
-                    GossipEvent::MemberFailed(id) => {
-                        warn!("cluster: node {} confirmed failed", id);
-                        if let Some(node) = state.nodes.get_mut(&id) {
-                            node.flags.fail = true;
-                            node.flags.pfail = false;
-                        }
-                        state.update_health();
-                    }
-                    GossipEvent::MemberLeft(id) => {
-                        info!("cluster: node {} left", id);
-                        state.remove_node(id);
-                        state.update_health();
-                    }
-                    GossipEvent::MemberAlive(id) => {
-                        debug!("cluster: node {} alive", id);
-                        if let Some(node) = state.nodes.get_mut(&id) {
-                            node.flags.pfail = false;
-                            node.flags.fail = false;
-                        }
-                        state.update_health();
-                    }
-                    GossipEvent::SlotsChanged(id, slots) => {
-                        debug!(
-                            "cluster: node {} slots changed ({} ranges)",
-                            id,
-                            slots.len()
-                        );
-                        // clear old slot assignments for this node
-                        let old_ranges = state.slot_map.slots_for_node(id);
-                        for range in &old_ranges {
-                            for slot in range.iter() {
-                                state.slot_map.unassign(slot);
-                            }
-                        }
-                        // apply new slot assignments
-                        for range in &slots {
-                            for slot in range.iter() {
-                                state.slot_map.assign(slot, id);
-                            }
-                        }
-                        if let Some(node) = state.nodes.get_mut(&id) {
-                            node.slots = slots;
-                        }
-                        state.update_health();
-                    }
+                };
+
+                if needs_save {
+                    coordinator.save_config().await;
                 }
             }
         });
     }
+}
+
+/// Writes data to a temporary file and atomically renames it to the target path.
+///
+/// Ensures the file is fully flushed before rename so a crash mid-write
+/// never leaves a partial `nodes.conf`.
+fn write_atomic(
+    tmp_path: &std::path::Path,
+    target_path: &std::path::Path,
+    data: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut f = std::fs::File::create(tmp_path)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    std::fs::rename(tmp_path, target_path)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -643,7 +765,7 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        ClusterCoordinator::new(local_id, addr, config, false)
+        ClusterCoordinator::new(local_id, addr, config, false, None)
     }
 
     /// Creates a test coordinator bootstrapped with all 16384 slots.
@@ -651,7 +773,7 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        ClusterCoordinator::new(local_id, addr, config, true)
+        ClusterCoordinator::new(local_id, addr, config, true, None)
     }
 
     #[tokio::test]
@@ -955,6 +1077,64 @@ mod tests {
             }
             other => panic!("expected CLUSTERDOWN error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn save_config_writes_readable_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
+        let config = GossipConfig::default();
+        let (coord, _rx) = ClusterCoordinator::new(
+            local_id,
+            addr,
+            config,
+            true,
+            Some(dir.path().to_path_buf()),
+        );
+
+        // add some slots and save
+        coord.save_config().await;
+
+        let content = std::fs::read_to_string(dir.path().join("nodes.conf")).unwrap();
+        let (restored, _) = ClusterState::from_nodes_conf(&content).unwrap();
+
+        assert_eq!(restored.local_id, local_id);
+        assert!(restored.owns_slot(0));
+        assert!(restored.owns_slot(16383));
+    }
+
+    #[tokio::test]
+    async fn from_config_restores_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
+        let config = GossipConfig::default();
+        let (coord, _rx) = ClusterCoordinator::new(
+            local_id,
+            addr,
+            config.clone(),
+            true,
+            Some(dir.path().to_path_buf()),
+        );
+
+        coord.save_config().await;
+
+        let content = std::fs::read_to_string(dir.path().join("nodes.conf")).unwrap();
+        let (restored_coord, _rx) = ClusterCoordinator::from_config(
+            &content,
+            addr,
+            config,
+            dir.path().to_path_buf(),
+        )
+        .unwrap();
+
+        assert_eq!(restored_coord.local_id, local_id);
+
+        // verify slots are intact
+        let state = restored_coord.state.read().await;
+        assert!(state.owns_slot(0));
+        assert!(state.owns_slot(16383));
     }
 
     #[tokio::test]
