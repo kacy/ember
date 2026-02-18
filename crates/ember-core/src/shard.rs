@@ -260,6 +260,17 @@ pub enum ShardRequest {
         slot: u16,
         count: usize,
     },
+    /// Dumps a key's value as serialized bytes for MIGRATE.
+    DumpKey {
+        key: String,
+    },
+    /// Restores a key from serialized bytes (received via MIGRATE).
+    RestoreKey {
+        key: String,
+        ttl_ms: u64,
+        data: bytes::Bytes,
+        replace: bool,
+    },
     /// Adds a vector to a vector set.
     #[cfg(feature = "vector")]
     VAdd {
@@ -414,6 +425,8 @@ pub enum ShardResponse {
     HDelLen { count: usize, removed: Vec<String> },
     /// Array of strings (e.g. HKEYS).
     StringArray(Vec<String>),
+    /// Serialized key dump with remaining TTL (for MIGRATE/DUMP).
+    KeyDump { data: Vec<u8>, ttl_ms: i64 },
     /// HMGET result: array of optional values.
     OptionalArray(Vec<Option<Bytes>>),
     /// VADD result: element, vector, and whether it was newly added.
@@ -1046,6 +1059,37 @@ fn dispatch(
         ShardRequest::GetKeysInSlot { slot, count } => {
             ShardResponse::StringArray(ks.get_keys_in_slot(*slot, *count))
         }
+        ShardRequest::DumpKey { key } => match ks.dump(key) {
+            Some((value, ttl_ms)) => {
+                let snap = value_to_snap(value);
+                let data = snapshot::serialize_snap_value(&snap);
+                ShardResponse::KeyDump { data, ttl_ms }
+            }
+            None => ShardResponse::Value(None),
+        },
+        ShardRequest::RestoreKey {
+            key,
+            ttl_ms,
+            data,
+            replace,
+        } => match snapshot::deserialize_snap_value(data) {
+            Ok(snap) => {
+                let exists = ks.exists(key);
+                if exists && !replace {
+                    ShardResponse::Err("ERR Target key name already exists".into())
+                } else {
+                    let value = snap_to_value(snap);
+                    let ttl = if *ttl_ms == 0 {
+                        None
+                    } else {
+                        Some(Duration::from_millis(*ttl_ms))
+                    };
+                    ks.restore(key.clone(), value, ttl);
+                    ShardResponse::Ok
+                }
+            }
+            Err(e) => ShardResponse::Err(format!("ERR DUMP payload corrupted: {e}")),
+        },
         #[cfg(feature = "vector")]
         ShardRequest::VAdd {
             key,
@@ -1630,6 +1674,87 @@ fn handle_rewrite(
     }
 }
 
+/// Converts a `Value` reference to a `SnapValue` for serialization.
+fn value_to_snap(value: &Value) -> SnapValue {
+    match value {
+        Value::String(data) => SnapValue::String(data.clone()),
+        Value::List(deque) => SnapValue::List(deque.clone()),
+        Value::SortedSet(ss) => {
+            let members: Vec<(f64, String)> = ss
+                .iter()
+                .map(|(member, score)| (score, member.to_owned()))
+                .collect();
+            SnapValue::SortedSet(members)
+        }
+        Value::Hash(map) => SnapValue::Hash(map.clone()),
+        Value::Set(set) => SnapValue::Set(set.clone()),
+        #[cfg(feature = "vector")]
+        Value::Vector(ref vs) => {
+            let mut elements = Vec::with_capacity(vs.len());
+            for name in vs.elements() {
+                if let Some(vec) = vs.get(name) {
+                    elements.push((name.to_owned(), vec));
+                }
+            }
+            SnapValue::Vector {
+                metric: vs.metric().into(),
+                quantization: vs.quantization().into(),
+                connectivity: vs.connectivity() as u32,
+                expansion_add: vs.expansion_add() as u32,
+                dim: vs.dim() as u32,
+                elements,
+            }
+        }
+        #[cfg(feature = "protobuf")]
+        Value::Proto { type_name, data } => SnapValue::Proto {
+            type_name: type_name.clone(),
+            data: data.clone(),
+        },
+    }
+}
+
+/// Converts a `SnapValue` into a `Value` for insertion into the keyspace.
+fn snap_to_value(snap: SnapValue) -> Value {
+    match snap {
+        SnapValue::String(data) => Value::String(data),
+        SnapValue::List(deque) => Value::List(deque),
+        SnapValue::SortedSet(members) => {
+            let mut ss = crate::types::sorted_set::SortedSet::new();
+            for (score, member) in members {
+                ss.add(member, score);
+            }
+            Value::SortedSet(ss)
+        }
+        SnapValue::Hash(map) => Value::Hash(map),
+        SnapValue::Set(set) => Value::Set(set),
+        #[cfg(feature = "vector")]
+        SnapValue::Vector {
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+            elements,
+            ..
+        } => {
+            use crate::types::vector::{DistanceMetric, QuantizationType, VectorSet};
+            let dim = elements.first().map(|(_, v)| v.len()).unwrap_or(0);
+            let dm = DistanceMetric::from_u8(metric);
+            let qt = QuantizationType::from_u8(quantization);
+            match VectorSet::new(dim, dm, qt, connectivity as usize, expansion_add as usize) {
+                Ok(mut vs) => {
+                    for (name, vec) in elements {
+                        let _ = vs.add(name, &vec);
+                    }
+                    Value::Vector(vs)
+                }
+                Err(_) => Value::String(Bytes::new()),
+            }
+        }
+        #[cfg(feature = "protobuf")]
+        SnapValue::Proto { type_name, data } => Value::Proto { type_name, data },
+    }
+}
+
 /// Iterates the keyspace and writes all live entries to a snapshot file.
 fn write_snapshot(
     keyspace: &Keyspace,
@@ -1650,44 +1775,9 @@ fn write_snapshot(
     let mut count = 0u32;
 
     for (key, value, ttl_ms) in keyspace.iter_entries() {
-        let snap_value = match value {
-            Value::String(data) => SnapValue::String(data.clone()),
-            Value::List(deque) => SnapValue::List(deque.clone()),
-            Value::SortedSet(ss) => {
-                let members: Vec<(f64, String)> = ss
-                    .iter()
-                    .map(|(member, score)| (score, member.to_owned()))
-                    .collect();
-                SnapValue::SortedSet(members)
-            }
-            Value::Hash(map) => SnapValue::Hash(map.clone()),
-            Value::Set(set) => SnapValue::Set(set.clone()),
-            #[cfg(feature = "vector")]
-            Value::Vector(ref vs) => {
-                let mut elements = Vec::with_capacity(vs.len());
-                for name in vs.elements() {
-                    if let Some(vec) = vs.get(name) {
-                        elements.push((name.to_owned(), vec));
-                    }
-                }
-                SnapValue::Vector {
-                    metric: vs.metric().into(),
-                    quantization: vs.quantization().into(),
-                    connectivity: vs.connectivity() as u32,
-                    expansion_add: vs.expansion_add() as u32,
-                    dim: vs.dim() as u32,
-                    elements,
-                }
-            }
-            #[cfg(feature = "protobuf")]
-            Value::Proto { type_name, data } => SnapValue::Proto {
-                type_name: type_name.clone(),
-                data: data.clone(),
-            },
-        };
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
-            value: snap_value,
+            value: value_to_snap(value),
             expire_ms: ttl_ms,
         })?;
         count += 1;
@@ -2790,5 +2880,173 @@ mod tests {
                 other => panic!("expected VAdd, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn dump_key_returns_serialized_value() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "greeting".into(),
+            Bytes::from("hello"),
+            Some(Duration::from_secs(60)),
+        );
+
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::DumpKey {
+                key: "greeting".into(),
+            },
+        );
+        match resp {
+            ShardResponse::KeyDump { data, ttl_ms } => {
+                assert!(!data.is_empty());
+                assert!(ttl_ms > 0);
+                // verify the data round-trips
+                let snap = snapshot::deserialize_snap_value(&data).unwrap();
+                assert!(matches!(snap, SnapValue::String(ref b) if b == &Bytes::from("hello")));
+            }
+            other => panic!("expected KeyDump, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dump_key_missing_returns_none() {
+        let mut ks = Keyspace::new();
+        let resp = test_dispatch(&mut ks, &ShardRequest::DumpKey { key: "nope".into() });
+        assert!(matches!(resp, ShardResponse::Value(None)));
+    }
+
+    #[test]
+    fn restore_key_inserts_value() {
+        let mut ks = Keyspace::new();
+        let snap = SnapValue::String(Bytes::from("restored"));
+        let data = snapshot::serialize_snap_value(&snap);
+
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::RestoreKey {
+                key: "mykey".into(),
+                ttl_ms: 0,
+                data: Bytes::from(data),
+                replace: false,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        assert_eq!(
+            ks.get("mykey").unwrap(),
+            Some(Value::String(Bytes::from("restored")))
+        );
+    }
+
+    #[test]
+    fn restore_key_with_ttl() {
+        let mut ks = Keyspace::new();
+        let snap = SnapValue::String(Bytes::from("temp"));
+        let data = snapshot::serialize_snap_value(&snap);
+
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::RestoreKey {
+                key: "ttlkey".into(),
+                ttl_ms: 30_000,
+                data: Bytes::from(data),
+                replace: false,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        match ks.pttl("ttlkey") {
+            TtlResult::Milliseconds(ms) => assert!(ms > 29_000 && ms <= 30_000),
+            other => panic!("expected Milliseconds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restore_key_rejects_duplicate_without_replace() {
+        let mut ks = Keyspace::new();
+        ks.set("existing".into(), Bytes::from("old"), None);
+
+        let snap = SnapValue::String(Bytes::from("new"));
+        let data = snapshot::serialize_snap_value(&snap);
+
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::RestoreKey {
+                key: "existing".into(),
+                ttl_ms: 0,
+                data: Bytes::from(data),
+                replace: false,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Err(_)));
+        // original value unchanged
+        assert_eq!(
+            ks.get("existing").unwrap(),
+            Some(Value::String(Bytes::from("old")))
+        );
+    }
+
+    #[test]
+    fn restore_key_replace_overwrites() {
+        let mut ks = Keyspace::new();
+        ks.set("existing".into(), Bytes::from("old"), None);
+
+        let snap = SnapValue::String(Bytes::from("new"));
+        let data = snapshot::serialize_snap_value(&snap);
+
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::RestoreKey {
+                key: "existing".into(),
+                ttl_ms: 0,
+                data: Bytes::from(data),
+                replace: true,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+        assert_eq!(
+            ks.get("existing").unwrap(),
+            Some(Value::String(Bytes::from("new")))
+        );
+    }
+
+    #[test]
+    fn dump_and_restore_hash_roundtrip() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "myhash",
+            &[
+                ("f1".into(), Bytes::from("v1")),
+                ("f2".into(), Bytes::from("v2")),
+            ],
+        )
+        .unwrap();
+
+        // dump
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::DumpKey {
+                key: "myhash".into(),
+            },
+        );
+        let (data, _ttl) = match resp {
+            ShardResponse::KeyDump { data, ttl_ms } => (data, ttl_ms),
+            other => panic!("expected KeyDump, got {other:?}"),
+        };
+
+        // restore to a new key
+        let resp = test_dispatch(
+            &mut ks,
+            &ShardRequest::RestoreKey {
+                key: "myhash2".into(),
+                ttl_ms: 0,
+                data: Bytes::from(data),
+                replace: false,
+            },
+        );
+        assert!(matches!(resp, ShardResponse::Ok));
+
+        // verify fields
+        assert_eq!(ks.hget("myhash2", "f1").unwrap(), Some(Bytes::from("v1")));
+        assert_eq!(ks.hget("myhash2", "f2").unwrap(), Some(Bytes::from("v2")));
     }
 }
