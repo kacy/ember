@@ -1,0 +1,3 @@
+ember-py @ ../../clients/ember-py
+grpcio-tools>=1.60
+protobuf>=4.25
