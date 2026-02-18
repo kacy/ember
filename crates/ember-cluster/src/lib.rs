@@ -34,6 +34,7 @@ mod gossip;
 mod message;
 mod migration;
 mod raft;
+mod raft_transport;
 mod slots;
 mod topology;
 
@@ -44,9 +45,10 @@ pub use migration::{
     Migration, MigrationBatch, MigrationConfig, MigrationEntry, MigrationError, MigrationId,
     MigrationManager, MigrationRedirect, MigrationState,
 };
+pub use openraft::BasicNode;
 pub use raft::{
-    ClusterCommand, ClusterResponse, ClusterSnapshot, ClusterStateData, Storage as RaftStorage,
-    TypeConfig,
+    raft_id_from_node_id, ClusterCommand, ClusterResponse, ClusterSnapshot, ClusterStateData,
+    NodeInfo, RaftNetworkFactory, RaftNode, RaftProposalError, Storage as RaftStorage, TypeConfig,
 };
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
 pub use topology::{
