@@ -2595,6 +2595,14 @@ async fn execute(
             None => Frame::Error("ERR This instance has cluster support disabled".into()),
         },
 
+        Command::ClusterAddSlotsRange { ranges } => match &ctx.cluster {
+            Some(c) => {
+                let slots: Vec<u16> = ranges.iter().flat_map(|&(s, e)| s..=e).collect();
+                c.cluster_addslots(&slots).await
+            }
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
+
         Command::ClusterDelSlots { slots } => match &ctx.cluster {
             Some(c) => c.cluster_delslots(&slots).await,
             None => Frame::Error("ERR This instance has cluster support disabled".into()),
