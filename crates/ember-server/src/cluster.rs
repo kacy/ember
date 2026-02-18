@@ -535,10 +535,34 @@ impl ClusterCoordinator {
     /// Pushes the local node's current slot ownership into the gossip engine
     /// so it propagates to the rest of the cluster.
     async fn broadcast_local_slots(&self, slots: Vec<SlotRange>) {
-        let mut gossip = self.gossip.lock().await;
-        gossip.set_local_slots(slots.clone());
-        let incarnation = gossip.local_incarnation();
-        gossip.queue_slots_update(self.local_id, incarnation, slots);
+        // Gather peer addresses and build the announce message while holding
+        // the gossip lock, then release it before taking the socket lock.
+        let (peer_addrs, encoded) = {
+            let mut gossip = self.gossip.lock().await;
+            gossip.set_local_slots(slots.clone());
+            let incarnation = gossip.local_incarnation();
+            // Queue for piggybacking on future ticks as a fallback.
+            gossip.queue_slots_update(self.local_id, incarnation, slots.clone());
+
+            // Build an eager push to every known peer so they learn immediately
+            // rather than waiting for the probabilistic gossip tick to select them.
+            let msg = GossipMessage::SlotsAnnounce {
+                sender: self.local_id,
+                incarnation,
+                slots,
+            };
+            (gossip.alive_member_addrs(), msg.encode())
+        };
+
+        // Send directly to all alive peers (gossip lock released).
+        let socket = self.udp_socket.lock().await;
+        if let Some(ref sock) = *socket {
+            for addr in &peer_addrs {
+                if let Err(e) = sock.send_to(&encoded, addr).await {
+                    debug!("slot broadcast to {addr} failed: {e}");
+                }
+            }
+        }
     }
 
     /// Persists the current cluster state to `nodes.conf` in the data directory.
@@ -651,12 +675,40 @@ impl ClusterCoordinator {
                 let needs_save = {
                     let mut state = coordinator.state.write().await;
                     match event {
-                        GossipEvent::MemberJoined(id, addr, slots) => {
-                            info!("cluster: node {} joined at {}", id, addr);
-                            if !state.nodes.contains_key(&id) {
+                        GossipEvent::MemberJoined(id, gossip_addr, slots) => {
+                            info!("cluster: node {} joined at {}", id, gossip_addr);
+                            if state.nodes.contains_key(&id) {
+                                false
+                            } else {
+                                // cluster_meet creates a placeholder with a random fake ID
+                                // but the correct data address. Find it by matching the
+                                // gossip port (cluster_bus_addr == gossip_addr).
+                                let stale_id = state
+                                    .nodes
+                                    .values()
+                                    .find(|n| {
+                                        !n.flags.myself
+                                            && n.id != id
+                                            && n.cluster_bus_addr.port() == gossip_addr.port()
+                                    })
+                                    .map(|n| n.id);
+
+                                let data_addr = if let Some(stale) = stale_id {
+                                    // Preserve the data-port address from the placeholder.
+                                    let saved = state.nodes[&stale].addr;
+                                    state.nodes.remove(&stale);
+                                    saved
+                                } else {
+                                    // No placeholder — derive data addr from gossip port.
+                                    let data_port = gossip_addr
+                                        .port()
+                                        .saturating_sub(coordinator.gossip_port_offset);
+                                    SocketAddr::new(gossip_addr.ip(), data_port)
+                                };
+
                                 let mut node = ClusterNode::new_primary_with_offset(
                                     id,
-                                    addr,
+                                    data_addr,
                                     coordinator.gossip_port_offset,
                                 );
                                 // apply slot ranges from gossip
@@ -669,8 +721,6 @@ impl ClusterCoordinator {
                                 state.add_node(node);
                                 state.update_health();
                                 true
-                            } else {
-                                false
                             }
                         }
                         GossipEvent::MemberSuspected(id) => {

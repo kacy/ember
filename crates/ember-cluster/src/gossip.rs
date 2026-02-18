@@ -184,6 +184,15 @@ impl GossipEngine {
         self.members.values()
     }
 
+    /// Returns gossip addresses for all currently alive members.
+    pub fn alive_member_addrs(&self) -> Vec<std::net::SocketAddr> {
+        self.members
+            .values()
+            .filter(|m| m.state == MemberStatus::Alive || m.state == MemberStatus::Suspect)
+            .map(|m| m.addr)
+            .collect()
+    }
+
     /// Returns the number of alive members (excluding self).
     pub fn alive_count(&self) -> usize {
         self.members
@@ -340,7 +349,12 @@ impl GossipEngine {
                 sender_addr,
             } => {
                 info!("node {} joining from {}", sender, sender_addr);
+                let sender_is_new = !self.members.contains_key(&sender);
                 self.ensure_member(sender, sender_addr);
+                if sender_is_new {
+                    self.emit(GossipEvent::MemberJoined(sender, sender_addr, Vec::new()))
+                        .await;
+                }
 
                 // Broadcast alive update
                 self.queue_update(NodeUpdate::Alive {
@@ -387,7 +401,17 @@ impl GossipEngine {
                     sender,
                     members.len()
                 );
+                let sender_is_new = !self.members.contains_key(&sender);
                 self.ensure_member(sender, from);
+                if sender_is_new {
+                    let sender_slots = self
+                        .members
+                        .get(&sender)
+                        .map(|m| m.slots.clone())
+                        .unwrap_or_default();
+                    self.emit(GossipEvent::MemberJoined(sender, from, sender_slots))
+                        .await;
+                }
 
                 for member in members {
                     if member.id == self.local_id {
@@ -410,6 +434,22 @@ impl GossipEngine {
                             .await;
                     }
                 }
+                vec![]
+            }
+
+            GossipMessage::SlotsAnnounce {
+                sender,
+                incarnation,
+                slots,
+            } => {
+                // Treat as a piggybacked SlotsChanged update from the sender.
+                self.ensure_member(sender, from);
+                self.apply_updates(&[NodeUpdate::SlotsChanged {
+                    node: sender,
+                    incarnation,
+                    slots,
+                }])
+                .await;
                 vec![]
             }
         }
@@ -454,7 +494,18 @@ impl GossipEngine {
         let seq = self.next_seq;
         self.next_seq += 1;
 
-        let updates = self.collect_updates();
+        let mut updates = self.collect_updates();
+
+        // Always piggyback local slot state so peers converge even if they
+        // missed the one-shot SlotsChanged queued by broadcast_local_slots.
+        if !self.local_slots.is_empty() {
+            updates.push(NodeUpdate::SlotsChanged {
+                node: self.local_id,
+                incarnation: self.incarnation,
+                slots: self.local_slots.clone(),
+            });
+        }
+
         let msg = GossipMessage::Ping {
             seq,
             sender: self.local_id,
@@ -1080,15 +1131,20 @@ mod tests {
         let member = engine.members.get(&member_id).unwrap();
         assert_eq!(member.slots, slots);
 
-        // should emit MemberJoined with slots
-        let event = rx.try_recv().unwrap();
-        match event {
-            GossipEvent::MemberJoined(id, _, s) => {
-                assert_eq!(id, member_id);
-                assert_eq!(s, slots);
+        // Fix 1: the handler now emits MemberJoined for the sender first,
+        // then for each new member in the members list.
+        // Drain until we find the one for member_id.
+        let mut found = false;
+        while let Ok(event) = rx.try_recv() {
+            if let GossipEvent::MemberJoined(id, _, s) = event {
+                if id == member_id {
+                    assert_eq!(s, slots);
+                    found = true;
+                    break;
+                }
             }
-            other => panic!("expected MemberJoined, got {other:?}"),
         }
+        assert!(found, "expected MemberJoined for member_id with slots");
     }
 
     #[tokio::test]
