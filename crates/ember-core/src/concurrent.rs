@@ -524,26 +524,19 @@ impl ConcurrentKeyspace {
 
     /// Simple eviction: remove approximately `needed` bytes worth of entries.
     fn evict_entries(&self, needed: usize) {
-        let mut freed = 0usize;
-        let mut keys_to_remove = Vec::new();
-
-        // Collect keys to remove (can't remove while iterating)
-        for entry in self.data.iter() {
-            if freed >= needed {
-                break;
+        // Use retain to remove entries in a single pass without collecting keys.
+        // The closure returns false for entries we want to evict, updating the
+        // memory counter as we go. Once we've freed enough bytes we stop evicting.
+        let freed = std::sync::atomic::AtomicUsize::new(0);
+        self.data.retain(|k, v| {
+            if freed.load(Ordering::Relaxed) >= needed {
+                return true; // enough freed — keep the rest
             }
-            let key_len = entry.key().len();
-            keys_to_remove.push(entry.key().clone());
-            freed += entry.value().size(key_len);
-        }
-
-        // Remove collected keys
-        for key in keys_to_remove {
-            if let Some((k, removed)) = self.data.remove(&key) {
-                self.memory_used
-                    .fetch_sub(removed.size(k.len()), Ordering::Relaxed);
-            }
-        }
+            let entry_bytes = v.size(k.len());
+            freed.fetch_add(entry_bytes, Ordering::Relaxed);
+            self.memory_used.fetch_sub(entry_bytes, Ordering::Relaxed);
+            false // evict this entry
+        });
     }
 }
 
