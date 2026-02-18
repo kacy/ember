@@ -2286,7 +2286,7 @@ async fn recv_any_channel(
                 Ok(msg) => {
                     return Some(SubscribeEvent {
                         kind: "message".to_string(),
-                        channel: msg.channel,
+                        channel: msg.channel.to_string(),
                         data: msg.data.to_vec(),
                         pattern: None,
                     });
@@ -2320,7 +2320,7 @@ async fn recv_any_pattern(
                 Ok(msg) => {
                     return Some(SubscribeEvent {
                         kind: "pmessage".to_string(),
-                        channel: msg.channel,
+                        channel: msg.channel.to_string(),
                         data: msg.data.to_vec(),
                         pattern: Some(pat.clone()),
                     });
