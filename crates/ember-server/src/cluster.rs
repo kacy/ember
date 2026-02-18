@@ -202,18 +202,18 @@ impl ClusterCoordinator {
                     Ok(a) => a,
                     Err(_) => continue,
                 };
-                let node = ClusterNode::new_primary_with_offset(
-                    node_id,
-                    addr,
-                    self.gossip_port_offset,
-                );
+                let node =
+                    ClusterNode::new_primary_with_offset(node_id, addr, self.gossip_port_offset);
                 state.add_node(node);
             }
         }
 
         // remove nodes that raft has dropped (never remove ourselves)
-        let raft_ids: std::collections::HashSet<NodeId> =
-            data.nodes.keys().filter_map(|k| NodeId::parse(k).ok()).collect();
+        let raft_ids: std::collections::HashSet<NodeId> = data
+            .nodes
+            .keys()
+            .filter_map(|k| NodeId::parse(k).ok())
+            .collect();
         let to_remove: Vec<NodeId> = state
             .nodes
             .keys()
@@ -226,8 +226,7 @@ impl ClusterCoordinator {
 
         // reconcile slot assignments from the raft slot map
         for slot in 0..SLOT_COUNT {
-            let raft_owner =
-                data.slots.get(&slot).and_then(|k| NodeId::parse(k).ok());
+            let raft_owner = data.slots.get(&slot).and_then(|k| NodeId::parse(k).ok());
             let current_owner = state.slot_map.owner(slot);
             if raft_owner != current_owner {
                 match raft_owner {
@@ -937,8 +936,10 @@ impl ClusterCoordinator {
                                                 addr: raft_addr.to_string(),
                                             };
                                             let handle = raft.raft_handle();
-                                            if let Ok(_) =
-                                                handle.add_learner(raft_id, node, true).await
+                                            if handle
+                                                .add_learner(raft_id, node, true)
+                                                .await
+                                                .is_ok()
                                             {
                                                 let m = handle.metrics().borrow().clone();
                                                 let mut new_members: std::collections::BTreeSet<
