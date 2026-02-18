@@ -359,14 +359,15 @@ impl AofRecord {
                 format::write_i64(&mut buf, *expire_ms)?;
             }
 
-            // key + i64
+            // key + i64 (seconds/milliseconds are capped at i64::MAX on write
+            // so that deserialization can safely cast back to u64)
             AofRecord::Expire { key, seconds } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_i64(&mut buf, *seconds as i64)?;
+                format::write_i64(&mut buf, (*seconds).min(i64::MAX as u64) as i64)?;
             }
             AofRecord::Pexpire { key, milliseconds } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
-                format::write_i64(&mut buf, *milliseconds as i64)?;
+                format::write_i64(&mut buf, (*milliseconds).min(i64::MAX as u64) as i64)?;
             }
             AofRecord::IncrBy { key, delta } | AofRecord::DecrBy { key, delta } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
@@ -508,7 +509,12 @@ impl AofRecord {
             }
             TAG_EXPIRE => {
                 let key = read_string(&mut cursor, "key")?;
-                let seconds = format::read_i64(&mut cursor)? as u64;
+                let raw = format::read_i64(&mut cursor)?;
+                let seconds = u64::try_from(raw).map_err(|_| {
+                    FormatError::InvalidData(format!(
+                        "EXPIRE seconds is negative ({raw}) in AOF record"
+                    ))
+                })?;
                 Ok(AofRecord::Expire { key, seconds })
             }
             TAG_LPUSH | TAG_RPUSH => {
@@ -556,7 +562,12 @@ impl AofRecord {
             }
             TAG_PEXPIRE => {
                 let key = read_string(&mut cursor, "key")?;
-                let milliseconds = format::read_i64(&mut cursor)? as u64;
+                let raw = format::read_i64(&mut cursor)?;
+                let milliseconds = u64::try_from(raw).map_err(|_| {
+                    FormatError::InvalidData(format!(
+                        "PEXPIRE milliseconds is negative ({raw}) in AOF record"
+                    ))
+                })?;
                 Ok(AofRecord::Pexpire { key, milliseconds })
             }
             TAG_INCR => {
