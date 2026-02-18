@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use ember_cluster::{
-    key_slot, ClusterNode, ClusterState, ConfigParseError, GossipConfig, GossipEngine,
-    GossipEvent, GossipMessage, MigrationManager, NodeId, SlotRange, SLOT_COUNT,
+    key_slot, ClusterNode, ClusterState, ConfigParseError, GossipConfig, GossipEngine, GossipEvent,
+    GossipMessage, MigrationManager, NodeId, SlotRange, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
@@ -1085,13 +1085,8 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        let (coord, _rx) = ClusterCoordinator::new(
-            local_id,
-            addr,
-            config,
-            true,
-            Some(dir.path().to_path_buf()),
-        );
+        let (coord, _rx) =
+            ClusterCoordinator::new(local_id, addr, config, true, Some(dir.path().to_path_buf()));
 
         // add some slots and save
         coord.save_config().await;
@@ -1121,13 +1116,9 @@ mod tests {
         coord.save_config().await;
 
         let content = std::fs::read_to_string(dir.path().join("nodes.conf")).unwrap();
-        let (restored_coord, _rx) = ClusterCoordinator::from_config(
-            &content,
-            addr,
-            config,
-            dir.path().to_path_buf(),
-        )
-        .unwrap();
+        let (restored_coord, _rx) =
+            ClusterCoordinator::from_config(&content, addr, config, dir.path().to_path_buf())
+                .unwrap();
 
         assert_eq!(restored_coord.local_id, local_id);
 

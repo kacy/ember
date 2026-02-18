@@ -418,11 +418,16 @@ async fn main() {
             ));
         }
 
-        // cluster requires a data directory for nodes.conf persistence
-        let cluster_data_dir = match args.data_dir {
-            Some(ref d) => d.clone(),
-            None => exit_err("error: --data-dir is required when --cluster-enabled is set"),
-        };
+        // cluster requires a data directory for nodes.conf persistence.
+        // persistence may have already consumed args.data_dir via .take(),
+        // so we read from the engine config's copy instead.
+        let cluster_data_dir = engine_config
+            .persistence
+            .as_ref()
+            .map(|p| p.data_dir.clone())
+            .unwrap_or_else(|| {
+                exit_err("error: --data-dir is required when --cluster-enabled is set")
+            });
 
         let gossip_config = GossipConfig {
             gossip_port_offset: args.cluster_port_offset,
@@ -437,13 +442,9 @@ async fn main() {
             let data = std::fs::read_to_string(&conf_path)
                 .unwrap_or_else(|e| exit_err(format!("failed to read nodes.conf: {e}")));
 
-            let (coord, rx) = ClusterCoordinator::from_config(
-                &data,
-                addr,
-                gossip_config,
-                cluster_data_dir,
-            )
-            .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
+            let (coord, rx) =
+                ClusterCoordinator::from_config(&data, addr, gossip_config, cluster_data_dir)
+                    .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
 
             info!("cluster mode: restored from nodes.conf");
             (coord, rx)
