@@ -237,7 +237,8 @@ where
                         }
                     }
                 } else if is_allowed_before_auth(&frame) {
-                    let response = process(frame, &engine, ctx, slow_log, pubsub).await;
+                    let response =
+                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
                     response.serialize(&mut out);
                 } else {
                     Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
@@ -260,7 +261,8 @@ where
                 if is_subscribe_frame(&frame) {
                     sub_frames.push(frame);
                 } else {
-                    let response = process(frame, &engine, ctx, slow_log, pubsub).await;
+                    let response =
+                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
                     response.serialize(&mut out);
                 }
             }
@@ -655,9 +657,19 @@ async fn process(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    asking: &mut bool,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
+            // handle ASKING: set the flag and return OK immediately
+            if matches!(cmd, Command::Asking) {
+                *asking = true;
+                return Frame::Simple("OK".into());
+            }
+
+            // consume the asking flag for this command
+            let was_asking = std::mem::take(asking);
+
             let cmd_name = cmd.command_name();
             let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
             let start = if needs_timing {
@@ -666,7 +678,7 @@ async fn process(
                 None
             };
 
-            let response = execute(cmd, engine, ctx, slow_log, pubsub).await;
+            let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking).await;
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
@@ -1253,7 +1265,7 @@ async fn dispatch_command(
 
         // -- everything else falls back to the full execute() path --
         cmd => {
-            let response = execute(cmd, engine, ctx, slow_log, pubsub).await;
+            let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking).await;
             PendingResponse::Immediate(response)
         }
     }
@@ -1735,10 +1747,11 @@ async fn execute(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    asking: bool,
 ) -> Frame {
-    // cluster slot validation — the process() code path doesn't track
-    // ASKING state, so pass false. ASKING only matters in pipelined mode.
-    if let Some(redirect) = cluster_slot_check(ctx, &cmd, false).await {
+    // cluster slot validation — check whether we own the slot for this key.
+    // when `asking` is true, importing slots are allowed through.
+    if let Some(redirect) = cluster_slot_check(ctx, &cmd, asking).await {
         return redirect;
     }
 
@@ -2572,8 +2585,6 @@ async fn execute(
             None => Frame::Error("ERR This instance has cluster support disabled".into()),
         },
 
-        Command::Asking => Frame::Simple("OK".into()),
-
         Command::ClusterMeet { ip, port } => match &ctx.cluster {
             Some(c) => c.cluster_meet(&ip, port).await,
             None => Frame::Error("ERR This instance has cluster support disabled".into()),
@@ -3284,6 +3295,10 @@ async fn execute(
         },
 
         Command::Quit => Frame::Simple("OK".into()),
+
+        // ASKING is intercepted by process() and dispatch_command() before
+        // reaching here, but the match must be exhaustive.
+        Command::Asking => Frame::Simple("OK".into()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
