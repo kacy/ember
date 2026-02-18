@@ -310,6 +310,15 @@ pub enum Command {
         replace: bool,
     },
 
+    /// RESTORE `key` `ttl` `serialized-value` \[REPLACE\].
+    /// Insert a key from serialized data (used by MIGRATE).
+    Restore {
+        key: String,
+        ttl_ms: u64,
+        data: Bytes,
+        replace: bool,
+    },
+
     /// ASKING. Signals that the next command is for a migrating slot.
     Asking,
 
@@ -568,6 +577,7 @@ impl Command {
             Command::ClusterCountKeysInSlot { .. } => "cluster_countkeysinslot",
             Command::ClusterGetKeysInSlot { .. } => "cluster_getkeysinslot",
             Command::Migrate { .. } => "migrate",
+            Command::Restore { .. } => "restore",
             Command::Asking => "asking",
             Command::SlowLogGet { .. } => "slowlog",
             Command::SlowLogLen => "slowlog",
@@ -687,6 +697,7 @@ impl Command {
             "CLUSTER" => parse_cluster(&frames[1..]),
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
+            "RESTORE" => parse_restore(&frames[1..]),
             "SLOWLOG" => parse_slowlog(&frames[1..]),
             "SUBSCRIBE" => parse_subscribe(&frames[1..]),
             "UNSUBSCRIBE" => parse_unsubscribe(&frames[1..]),
@@ -1791,6 +1802,39 @@ fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
         db,
         timeout_ms,
         copy,
+        replace,
+    })
+}
+
+fn parse_restore(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // RESTORE key ttl serialized-value [REPLACE]
+    if args.len() < 3 {
+        return Err(ProtocolError::WrongArity("RESTORE".into()));
+    }
+
+    let key = extract_string(&args[0])?;
+    let ttl_str = extract_string(&args[1])?;
+    let ttl_ms: u64 = ttl_str
+        .parse()
+        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid ttl".into()))?;
+    let data = extract_bytes(&args[2])?;
+
+    let mut replace = false;
+    for arg in &args[3..] {
+        let opt = extract_string(arg)?.to_ascii_uppercase();
+        if opt == "REPLACE" {
+            replace = true;
+        } else {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "unknown RESTORE option '{opt}'"
+            )));
+        }
+    }
+
+    Ok(Command::Restore {
+        key,
+        ttl_ms,
+        data,
         replace,
     })
 }
@@ -5358,6 +5402,38 @@ mod tests {
     #[test]
     fn vinfo_wrong_arity() {
         let err = Command::from_frame(cmd(&["VINFO"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn restore_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["RESTORE", "mykey", "5000", "serialized"])).unwrap(),
+            Command::Restore {
+                key: "mykey".into(),
+                ttl_ms: 5000,
+                data: Bytes::from("serialized"),
+                replace: false,
+            },
+        );
+    }
+
+    #[test]
+    fn restore_with_replace() {
+        assert_eq!(
+            Command::from_frame(cmd(&["RESTORE", "mykey", "0", "data", "REPLACE"])).unwrap(),
+            Command::Restore {
+                key: "mykey".into(),
+                ttl_ms: 0,
+                data: Bytes::from("data"),
+                replace: true,
+            },
+        );
+    }
+
+    #[test]
+    fn restore_wrong_arity() {
+        let err = Command::from_frame(cmd(&["RESTORE", "key"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

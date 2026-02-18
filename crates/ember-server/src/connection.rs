@@ -7,6 +7,7 @@
 //! collected in order.
 
 use std::collections::HashMap;
+use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -2661,7 +2662,114 @@ async fn execute(
 
         Command::ClusterFailover { .. } => Frame::Error("ERR FAILOVER not yet supported".into()),
 
-        Command::Migrate { .. } => Frame::Error("ERR not yet implemented".into()),
+        Command::Migrate {
+            host,
+            port,
+            key,
+            timeout_ms,
+            replace,
+            ..
+        } => {
+            // dump the key from the local shard
+            let idx = engine.shard_for_key(&key);
+            let dump_req = ShardRequest::DumpKey { key: key.clone() };
+            let dump_resp = match engine.send_to_shard(idx, dump_req).await {
+                Ok(r) => r,
+                Err(e) => return Frame::Error(format!("ERR {e}")),
+            };
+
+            let (data, ttl_ms) = match dump_resp {
+                ShardResponse::KeyDump { data, ttl_ms } => (data, ttl_ms),
+                ShardResponse::Value(None) => {
+                    return Frame::Error("ERR no such key".into());
+                }
+                _ => return Frame::Error("ERR internal error".into()),
+            };
+
+            // send RESTORE to the target node
+            let ttl_arg = if ttl_ms < 0 { 0u64 } else { ttl_ms as u64 };
+            let timeout = Duration::from_millis(timeout_ms.max(1000));
+            let addr = format!("{host}:{port}");
+
+            let result = tokio::time::timeout(timeout, async {
+                let mut stream = tokio::net::TcpStream::connect(&addr).await?;
+
+                // build RESTORE command as RESP3 array
+                let mut parts = vec![
+                    Frame::Bulk(Bytes::from("RESTORE")),
+                    Frame::Bulk(Bytes::from(key.clone())),
+                    Frame::Bulk(Bytes::from(ttl_arg.to_string())),
+                    Frame::Bulk(Bytes::from(data)),
+                ];
+                if replace {
+                    parts.push(Frame::Bulk(Bytes::from("REPLACE")));
+                }
+                let cmd_frame = Frame::Array(parts);
+
+                let mut buf = BytesMut::new();
+                cmd_frame.serialize(&mut buf);
+                stream.write_all(&buf).await?;
+
+                // read response
+                let mut read_buf = BytesMut::with_capacity(256);
+                loop {
+                    let n = stream.read_buf(&mut read_buf).await?;
+                    if n == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "connection closed by target",
+                        ));
+                    }
+                    match parse_frame(&read_buf) {
+                        Ok(Some((frame, _))) => return Ok(frame),
+                        Ok(None) => {} // need more data
+                        Err(e) => {
+                            return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+                        }
+                    }
+                }
+            })
+            .await;
+
+            match result {
+                Ok(Ok(Frame::Simple(_))) => {
+                    // success — delete local key and mark as migrated
+                    let del_req = ShardRequest::Del { key: key.clone() };
+                    let _ = engine.send_to_shard(idx, del_req).await;
+
+                    if let Some(c) = &ctx.cluster {
+                        let slot = ember_cluster::key_slot(key.as_bytes());
+                        c.mark_key_migrated(slot, key.as_bytes()).await;
+                    }
+                    Frame::Simple("OK".into())
+                }
+                Ok(Ok(Frame::Error(e))) => Frame::Error(format!("ERR target error: {e}")),
+                Ok(Ok(_)) => Frame::Error("ERR unexpected response from target".into()),
+                Ok(Err(e)) => Frame::Error(format!("ERR {e}")),
+                Err(_) => Frame::Error("ERR timeout connecting to target".into()),
+            }
+        }
+
+        Command::Restore {
+            key,
+            ttl_ms,
+            data,
+            replace,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::RestoreKey {
+                key,
+                ttl_ms,
+                data,
+                replace,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::Err(e)) => Frame::Error(e),
+                Ok(_) => Frame::Error("ERR internal error".into()),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
 
         // -- slow log commands --
         Command::SlowLogGet { count } => {

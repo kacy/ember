@@ -1034,6 +1034,23 @@ impl Keyspace {
         (0, keys)
     }
 
+    /// Returns the value and remaining TTL in milliseconds for a single key.
+    ///
+    /// Returns `None` if the key doesn't exist or is expired. TTL is -1 for
+    /// entries with no expiration. Used by MIGRATE/DUMP to serialize a key
+    /// for transfer to another node.
+    pub fn dump(&mut self, key: &str) -> Option<(&Value, i64)> {
+        if self.remove_if_expired(key) {
+            return None;
+        }
+        let entry = self.entries.get(key)?;
+        let ttl_ms = match time::remaining_ms(entry.expires_at_ms) {
+            Some(ms) => ms.min(i64::MAX as u64) as i64,
+            None => -1,
+        };
+        Some((&entry.value, ttl_ms))
+    }
+
     /// Iterates over all live (non-expired) entries, yielding the key, a
     /// clone of the value, and the remaining TTL in milliseconds (-1 for
     /// entries with no expiration). Used by snapshot and AOF rewrite.
