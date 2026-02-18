@@ -10,6 +10,12 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use tokio::sync::broadcast;
 
+/// Maximum allowed byte length for a pub/sub pattern.
+///
+/// Longer patterns provide no real-world value and allow clients to
+/// force repeated glob-match work on every PUBLISH call.
+const MAX_PATTERN_LEN: usize = 512;
+
 /// Maximum number of buffered messages per subscription before
 /// slow consumers start missing messages. This is per-channel,
 /// not global — a subscriber that falls behind on one busy channel
@@ -68,8 +74,13 @@ impl PubSubManager {
 
     /// Subscribe to a glob pattern. Returns a receiver for messages
     /// matching the pattern.
-    pub fn psubscribe(&self, pattern: &str) -> broadcast::Receiver<PubMessage> {
-        self.subscribe_to(&self.patterns, pattern)
+    ///
+    /// Returns `None` if the pattern exceeds `MAX_PATTERN_LEN` bytes.
+    pub fn psubscribe(&self, pattern: &str) -> Option<broadcast::Receiver<PubMessage>> {
+        if pattern.len() > MAX_PATTERN_LEN {
+            return None;
+        }
+        Some(self.subscribe_to(&self.patterns, pattern))
     }
 
     /// Unsubscribe from a pattern. Returns true if the pattern existed
@@ -382,7 +393,7 @@ mod tests {
     #[test]
     fn pattern_subscribe_and_publish() {
         let mgr = PubSubManager::new();
-        let mut rx = mgr.psubscribe("news.*");
+        let mut rx = mgr.psubscribe("news.*").unwrap();
 
         let count = mgr.publish("news.sports", Bytes::from("goal!"));
         assert_eq!(count, 1);
@@ -400,7 +411,7 @@ mod tests {
     fn exact_and_pattern_both_receive() {
         let mgr = PubSubManager::new();
         let mut rx_exact = mgr.subscribe("news.sports");
-        let mut rx_pattern = mgr.psubscribe("news.*");
+        let mut rx_pattern = mgr.psubscribe("news.*").unwrap();
 
         let count = mgr.publish("news.sports", Bytes::from("goal!"));
         assert_eq!(count, 2);
@@ -427,9 +438,22 @@ mod tests {
 
         let _rx1 = mgr.subscribe("a");
         let _rx2 = mgr.subscribe("b");
-        let _rx3 = mgr.psubscribe("c.*");
+        let _rx3 = mgr.psubscribe("c.*").unwrap();
         assert_eq!(mgr.total_subscriptions(), 3);
         assert_eq!(mgr.channel_names(None).len(), 2);
         assert_eq!(mgr.active_patterns(), 1);
+    }
+
+    #[test]
+    fn psubscribe_rejects_oversized_pattern() {
+        let mgr = PubSubManager::new();
+        let long_pattern = "*".repeat(MAX_PATTERN_LEN + 1);
+        assert!(
+            mgr.psubscribe(&long_pattern).is_none(),
+            "oversized pattern should be rejected"
+        );
+        // a pattern right at the limit is allowed
+        let ok_pattern = "*".repeat(MAX_PATTERN_LEN);
+        assert!(mgr.psubscribe(&ok_pattern).is_some());
     }
 }

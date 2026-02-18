@@ -1588,7 +1588,7 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         "ADDSLOTSRANGE" => {
             // arguments are pairs: start1 end1 [start2 end2 ...]
-            if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+            if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
                 return Err(ProtocolError::WrongArity("CLUSTER ADDSLOTSRANGE".into()));
             }
             let mut ranges = Vec::new();
@@ -4357,16 +4357,14 @@ mod tests {
 
     #[test]
     fn cluster_addslotsrange_invalid_range() {
-        let err =
-            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "100", "50"])).unwrap_err();
+        let err = Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "100", "50"])).unwrap_err();
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 
     #[test]
     fn cluster_addslotsrange_wrong_arity() {
         // odd number of slot args
-        let err =
-            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0"])).unwrap_err();
+        let err = Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 

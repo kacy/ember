@@ -11,7 +11,6 @@ use std::net::SocketAddr;
 use std::ops::RangeBounds;
 use std::sync::Arc;
 
-
 use openraft::error::{
     ClientWriteError, InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable,
 };
@@ -22,9 +21,8 @@ use openraft::raft::{
 };
 use openraft::storage::{Adaptor, LogState, RaftLogReader, RaftSnapshotBuilder, Snapshot};
 use openraft::{
-    BasicNode, Config, Entry, EntryPayload, LogId, OptionalSend, Raft, RaftStorage,
-    RaftTypeConfig, ServerState, SnapshotMeta, StorageError, StorageIOError, StoredMembership,
-    Vote,
+    BasicNode, Config, Entry, EntryPayload, LogId, OptionalSend, Raft, RaftStorage, RaftTypeConfig,
+    ServerState, SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
@@ -703,9 +701,9 @@ pub(crate) fn spawn_raft_listener(raft: Raft<TypeConfig>, bind_addr: SocketAddr)
                             snapshot: Box::new(Cursor::new(data)),
                         };
                         match raft.install_full_snapshot(vote, snapshot).await {
-                            Ok(r) => RaftRpcResponse::InstallSnapshot(
-                                InstallSnapshotResponse { vote: r.vote },
-                            ),
+                            Ok(r) => RaftRpcResponse::InstallSnapshot(InstallSnapshotResponse {
+                                vote: r.vote,
+                            }),
                             Err(e) => {
                                 debug!("install_snapshot error: {e}");
                                 return;
@@ -779,8 +777,14 @@ impl RaftNode {
 
         let (log_store, state_machine) = Adaptor::new(Arc::clone(&storage));
 
-        let raft = Raft::new(local_raft_id, config, RaftNetworkFactory, log_store, state_machine)
-            .await?;
+        let raft = Raft::new(
+            local_raft_id,
+            config,
+            RaftNetworkFactory,
+            log_store,
+            state_machine,
+        )
+        .await?;
 
         spawn_raft_listener(raft.clone(), raft_addr);
 
@@ -814,10 +818,7 @@ impl RaftNode {
     ///
     /// Blocks until the entry is committed and applied to the state machine
     /// on a quorum of nodes. Returns `NotLeader` if this node is not the leader.
-    pub async fn propose(
-        &self,
-        cmd: ClusterCommand,
-    ) -> Result<ClusterResponse, RaftProposalError> {
+    pub async fn propose(&self, cmd: ClusterCommand) -> Result<ClusterResponse, RaftProposalError> {
         match self.raft.client_write(cmd).await {
             Ok(resp) => Ok(resp.data),
             Err(e) => match e {
@@ -866,7 +867,7 @@ pub fn raft_id_from_node_id(node_id: NodeId) -> u64 {
 }
 
 fn io_error(msg: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, msg)
+    std::io::Error::other(msg)
 }
 
 #[cfg(test)]
@@ -1214,7 +1215,10 @@ mod tests {
 
         s.apply_to_state_machine(&[entry]).await.unwrap();
 
-        assert!(rx.changed().await.is_ok(), "watch channel should have fired");
+        assert!(
+            rx.changed().await.is_ok(),
+            "watch channel should have fired"
+        );
         let data = rx.borrow();
         assert!(data.nodes.contains_key(&node_id.as_key()));
     }

@@ -513,7 +513,14 @@ fn handle_sub_command(
                         .serialize(out);
                     continue;
                 }
-                let rx = pubsub.psubscribe(&pat);
+                // psubscribe returns None if the pattern exceeds its internal
+                // length cap — this is a backstop; the check above should have
+                // already rejected oversized patterns.
+                let Some(rx) = pubsub.psubscribe(&pat) else {
+                    Frame::Error(format!("ERR pattern too long ({} bytes)", pat.len()))
+                        .serialize(out);
+                    continue;
+                };
                 pattern_rxs.insert(pat.clone(), rx);
                 let count = channel_rxs.len() + pattern_rxs.len();
                 serialize_sub_response(b"psubscribe", &pat, count, out);
