@@ -263,7 +263,7 @@ async fn cluster_failover_stub() {
 }
 
 #[tokio::test]
-async fn cluster_migrate_stub() {
+async fn cluster_migrate_missing_key() {
     let server = cluster_server();
     let mut c = server.connect().await;
 
@@ -271,8 +271,8 @@ async fn cluster_migrate_stub() {
         .err(&["MIGRATE", "127.0.0.1", "6380", "key", "0", "1000"])
         .await;
     assert!(
-        err.contains("not yet implemented"),
-        "expected stub error, got: {err}"
+        err.contains("no such key"),
+        "expected missing key error, got: {err}"
     );
 }
 

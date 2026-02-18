@@ -435,6 +435,15 @@ impl ClusterCoordinator {
         }
     }
 
+    /// Marks a key as migrated during slot migration.
+    ///
+    /// Called after MIGRATE successfully transfers a key to the target node.
+    /// Subsequent accesses for this key on the source will return ASK redirects.
+    pub async fn mark_key_migrated(&self, slot: u16, key: &[u8]) {
+        let mut migration = self.migration.lock().await;
+        migration.key_migrated(slot, key.to_vec());
+    }
+
     /// Checks that all keys hash to the same slot.
     ///
     /// Returns `Ok(())` if all keys are in the same slot.
@@ -945,6 +954,48 @@ mod tests {
                 );
             }
             other => panic!("expected CLUSTERDOWN error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mark_key_migrated_triggers_ask_redirect() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+
+        // set up a migration: slot 12182 (hash of "foo") migrating to a target
+        let target = NodeId::new();
+        let target_addr: SocketAddr = "127.0.0.1:6380".parse().unwrap();
+
+        // add target node to state
+        {
+            let mut state = coord.state.write().await;
+            state.add_node(ClusterNode::new_primary(target, target_addr));
+        }
+
+        // start migrating slot 12182
+        coord
+            .cluster_setslot_migrating(12182, &target.0.to_string())
+            .await;
+
+        // before marking the key, it should be served locally
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        assert!(
+            result.is_none(),
+            "key should be served locally before migration"
+        );
+
+        // mark the key as migrated
+        coord.mark_key_migrated(12182, b"foo").await;
+
+        // now it should return ASK
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        match result {
+            Some(Frame::Error(msg)) => {
+                assert!(
+                    msg.starts_with("ASK 12182"),
+                    "expected ASK redirect, got: {msg}"
+                );
+            }
+            other => panic!("expected ASK redirect, got {other:?}"),
         }
     }
 }
