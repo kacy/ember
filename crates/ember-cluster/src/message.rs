@@ -75,6 +75,15 @@ pub enum GossipMessage {
         sender: NodeId,
         members: Vec<MemberInfo>,
     },
+
+    /// Direct slot announcement: the sender is telling peers its current slot
+    /// ownership without going through the normal piggybacking mechanism.
+    /// Used by `broadcast_local_slots` to eagerly push slot state to all peers.
+    SlotsAnnounce {
+        sender: NodeId,
+        incarnation: u64,
+        slots: Vec<SlotRange>,
+    },
 }
 
 /// A state update about a node, piggybacked on protocol messages.
@@ -116,6 +125,7 @@ const MSG_PING_REQ: u8 = 2;
 const MSG_ACK: u8 = 3;
 const MSG_JOIN: u8 = 4;
 const MSG_WELCOME: u8 = 5;
+const MSG_SLOTS_ANNOUNCE: u8 = 6;
 
 const UPDATE_ALIVE: u8 = 1;
 const UPDATE_SUSPECT: u8 = 2;
@@ -181,6 +191,21 @@ impl GossipMessage {
                 buf.put_u16_le(count as u16);
                 for member in &members[..count] {
                     encode_member_info(buf, member);
+                }
+            }
+            GossipMessage::SlotsAnnounce {
+                sender,
+                incarnation,
+                slots,
+            } => {
+                buf.put_u8(MSG_SLOTS_ANNOUNCE);
+                encode_node_id(buf, sender);
+                buf.put_u64_le(*incarnation);
+                let count = slots.len().min(MAX_COLLECTION_COUNT);
+                buf.put_u16_le(count as u16);
+                for slot in &slots[..count] {
+                    buf.put_u16_le(slot.start);
+                    buf.put_u16_le(slot.end);
                 }
             }
         }
@@ -251,6 +276,28 @@ impl GossipMessage {
                     members.push(decode_member_info(&mut buf)?);
                 }
                 Ok(GossipMessage::Welcome { sender, members })
+            }
+            MSG_SLOTS_ANNOUNCE => {
+                let sender = decode_node_id(&mut buf)?;
+                let incarnation = safe_get_u64_le(&mut buf)?;
+                let count = safe_get_u16_le(&mut buf)? as usize;
+                if count > MAX_COLLECTION_COUNT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("slot range count {count} exceeds limit"),
+                    ));
+                }
+                let mut slots = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let start = safe_get_u16_le(&mut buf)?;
+                    let end = safe_get_u16_le(&mut buf)?;
+                    slots.push(SlotRange::try_new(start, end)?);
+                }
+                Ok(GossipMessage::SlotsAnnounce {
+                    sender,
+                    incarnation,
+                    slots,
+                })
             }
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
