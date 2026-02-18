@@ -5,6 +5,7 @@
 //! Thread-safe via DashMap for lock-free concurrent access.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -23,15 +24,19 @@ const MAX_PATTERN_LEN: usize = 512;
 const CHANNEL_CAPACITY: usize = 256;
 
 /// A message published to a channel.
+///
+/// `channel` and `pattern` are stored as `Arc<str>` so multiple subscribers
+/// receiving the same publish share a single allocation rather than each
+/// getting their own `String` copy.
 #[derive(Debug, Clone)]
 pub struct PubMessage {
     /// The channel the message was published to.
-    pub channel: String,
+    pub channel: Arc<str>,
     /// The raw message data.
     pub data: Bytes,
     /// For pattern subscriptions, the pattern that matched.
     /// None for exact channel subscriptions.
-    pub pattern: Option<String>,
+    pub pattern: Option<Arc<str>>,
 }
 
 /// Manages pub/sub state: channel subscriptions, pattern subscriptions,
@@ -127,10 +132,13 @@ impl PubSubManager {
     pub fn publish(&self, channel: &str, data: Bytes) -> usize {
         let mut count = 0;
 
+        // allocate the channel name once; all PubMessage clones share the Arc
+        let channel_arc: Arc<str> = Arc::from(channel);
+
         // send to exact channel subscribers
         if let Some(tx) = self.channels.get(channel) {
             let msg = PubMessage {
-                channel: channel.to_string(),
+                channel: Arc::clone(&channel_arc),
                 data: data.clone(),
                 pattern: None,
             };
@@ -142,10 +150,12 @@ impl PubSubManager {
         for entry in self.patterns.iter() {
             let pattern = entry.key();
             if glob_match(pattern, channel) {
+                // allocate the pattern string once per matching entry
+                let pattern_arc: Arc<str> = Arc::from(pattern.as_str());
                 let msg = PubMessage {
-                    channel: channel.to_string(),
+                    channel: Arc::clone(&channel_arc),
                     data: data.clone(),
-                    pattern: Some(pattern.clone()),
+                    pattern: Some(pattern_arc),
                 };
                 count += entry.value().send(msg).unwrap_or(0);
             }
@@ -365,7 +375,7 @@ mod tests {
         assert_eq!(count, 1);
 
         let msg = rx.try_recv().unwrap();
-        assert_eq!(msg.channel, "test");
+        assert_eq!(msg.channel.as_ref(), "test");
         assert_eq!(msg.data, Bytes::from("hello"));
         assert!(msg.pattern.is_none());
     }
@@ -399,8 +409,8 @@ mod tests {
         assert_eq!(count, 1);
 
         let msg = rx.try_recv().unwrap();
-        assert_eq!(msg.channel, "news.sports");
-        assert_eq!(msg.pattern, Some("news.*".to_string()));
+        assert_eq!(msg.channel.as_ref(), "news.sports");
+        assert_eq!(msg.pattern.as_deref(), Some("news.*"));
 
         // shouldn't match
         let count = mgr.publish("old.news", Bytes::from("nope"));
