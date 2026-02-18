@@ -58,7 +58,7 @@ impl TestServer {
         cmd.arg("--host").arg("127.0.0.1");
         cmd.arg("--shards")
             .arg(opts.shards.unwrap_or(2).to_string());
-        // suppress tracing output in tests
+        // use info for cluster tests so we can see gossip startup
         cmd.env("RUST_LOG", "error");
 
         if let Some(ref pass) = opts.requirepass {
@@ -309,6 +309,76 @@ fn server_binary() -> PathBuf {
 /// Locates the ember-cli binary in the cargo target directory.
 pub fn cli_binary() -> PathBuf {
     find_binary("ember-cli")
+}
+
+/// A 3-node local cluster for multi-node integration tests.
+///
+/// Slot distribution after `init()`:
+/// - node 0: slots 0–5460
+/// - node 1: slots 5461–10922
+/// - node 2: slots 10923–16383
+pub struct TestCluster {
+    pub nodes: [TestServer; 3],
+}
+
+impl TestCluster {
+    /// Starts 3 cluster-enabled nodes. Call `init().await` next to form
+    /// the cluster and assign slots.
+    pub fn start() -> Self {
+        let make = || {
+            TestServer::start_with(ServerOptions {
+                cluster_enabled: true,
+                ..Default::default()
+            })
+        };
+        Self {
+            nodes: [make(), make(), make()],
+        }
+    }
+
+    /// Issues CLUSTER MEET and CLUSTER ADDSLOTSRANGE to form a working
+    /// 3-node cluster, then sleeps long enough for gossip to propagate
+    /// slot assignments to all nodes.
+    pub async fn init(&self) {
+        let mut c0 = self.connect(0).await;
+        let mut c1 = self.connect(1).await;
+        let mut c2 = self.connect(2).await;
+
+        // introduce node 1 and 2 to node 0
+        c0.ok(&[
+            "CLUSTER",
+            "MEET",
+            "127.0.0.1",
+            &self.nodes[1].port.to_string(),
+        ])
+        .await;
+        c0.ok(&[
+            "CLUSTER",
+            "MEET",
+            "127.0.0.1",
+            &self.nodes[2].port.to_string(),
+        ])
+        .await;
+
+        // assign slots via ADDSLOTSRANGE
+        c0.ok(&["CLUSTER", "ADDSLOTSRANGE", "0", "5460"]).await;
+        c1.ok(&["CLUSTER", "ADDSLOTSRANGE", "5461", "10922"]).await;
+        c2.ok(&["CLUSTER", "ADDSLOTSRANGE", "10923", "16383"]).await;
+
+        // wait for gossip to deliver slot assignments across all nodes;
+        // the protocol period is 1 second so we allow two full periods
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    }
+
+    /// Connects a test client to the node at `idx` (0–2).
+    pub async fn connect(&self, idx: usize) -> TestClient {
+        self.nodes[idx].connect().await
+    }
+
+    /// Returns the data port for node `idx`.
+    pub fn port(&self, idx: usize) -> u16 {
+        self.nodes[idx].port
+    }
 }
 
 /// Runs the CLI binary with the given args and captures output.

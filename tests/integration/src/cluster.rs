@@ -2,7 +2,7 @@
 
 use ember_protocol::Frame;
 
-use crate::helpers::{ServerOptions, TestServer};
+use crate::helpers::{ServerOptions, TestCluster, TestServer};
 
 /// Starts a single-node cluster server (all 16384 slots assigned).
 fn cluster_server() -> TestServer {
@@ -304,4 +304,186 @@ async fn cluster_meet_invalid() {
     // invalid port
     let err = c.err(&["CLUSTER", "MEET", "127.0.0.1", "99999"]).await;
     assert!(!err.is_empty(), "expected error for invalid meet address");
+}
+
+// -- CLUSTER ADDSLOTSRANGE --
+
+#[tokio::test]
+async fn cluster_addslotsrange() {
+    let server = cluster_server_empty();
+    let mut c = server.connect().await;
+
+    c.ok(&["CLUSTER", "ADDSLOTSRANGE", "0", "5460"]).await;
+
+    let info = c.cmd(&["CLUSTER", "INFO"]).await;
+    let text = match &info {
+        Frame::Bulk(data) => String::from_utf8_lossy(data).to_string(),
+        other => panic!("expected Bulk, got {other:?}"),
+    };
+    assert!(
+        text.contains("cluster_slots_assigned:5461"),
+        "expected 5461 slots, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_addslotsrange_multiple_ranges() {
+    let server = cluster_server_empty();
+    let mut c = server.connect().await;
+
+    // two non-contiguous ranges: 0–100 (101 slots) + 200–299 (100 slots) = 201
+    c.ok(&["CLUSTER", "ADDSLOTSRANGE", "0", "100", "200", "299"])
+        .await;
+
+    let info = c.cmd(&["CLUSTER", "INFO"]).await;
+    let text = match &info {
+        Frame::Bulk(data) => String::from_utf8_lossy(data).to_string(),
+        other => panic!("expected Bulk, got {other:?}"),
+    };
+    assert!(
+        text.contains("cluster_slots_assigned:201"),
+        "expected 201 slots, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_addslotsrange_wrong_arity() {
+    let server = cluster_server_empty();
+    let mut c = server.connect().await;
+
+    // a single slot arg — odd count, should fail
+    let err = c.err(&["CLUSTER", "ADDSLOTSRANGE", "0"]).await;
+    assert!(!err.is_empty(), "expected error for odd arg count");
+}
+
+#[tokio::test]
+async fn cluster_addslotsrange_invalid_range() {
+    let server = cluster_server_empty();
+    let mut c = server.connect().await;
+
+    // start > end
+    let err = c.err(&["CLUSTER", "ADDSLOTSRANGE", "100", "50"]).await;
+    assert!(
+        err.contains("ERR") || err.contains("invalid"),
+        "expected error for start > end, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_addslotsrange_out_of_bounds() {
+    let server = cluster_server_empty();
+    let mut c = server.connect().await;
+
+    // slot 16384 is one past the valid maximum (0–16383)
+    let err = c.err(&["CLUSTER", "ADDSLOTSRANGE", "0", "16384"]).await;
+    assert!(
+        err.contains("ERR") || err.contains("invalid"),
+        "expected error for out-of-bounds slot, got: {err}"
+    );
+}
+
+// -- multi-node tests --
+
+#[tokio::test]
+async fn cluster_meet_adds_peer() {
+    let a = TestServer::start_with(ServerOptions {
+        cluster_enabled: true,
+        ..Default::default()
+    });
+    let b = TestServer::start_with(ServerOptions {
+        cluster_enabled: true,
+        ..Default::default()
+    });
+
+    let mut ca = a.connect().await;
+
+    // introduce b to a
+    ca.ok(&[
+        "CLUSTER",
+        "MEET",
+        "127.0.0.1",
+        &b.port.to_string(),
+    ])
+    .await;
+
+    // node a should immediately see b in its local state
+    let resp = ca.cmd(&["CLUSTER", "NODES"]).await;
+    let text = match resp {
+        Frame::Bulk(data) => String::from_utf8_lossy(&data).to_string(),
+        other => panic!("expected Bulk, got {other:?}"),
+    };
+    assert_eq!(
+        text.lines().count(),
+        2,
+        "expected 2 nodes after MEET, got:\n{text}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_moved_redirect() {
+    let cluster = TestCluster::start();
+    cluster.init().await;
+
+    // inspect what node 0 actually knows about the cluster
+    let mut c0 = cluster.connect(0).await;
+    let nodes_resp = c0.cmd(&["CLUSTER", "NODES"]).await;
+    eprintln!("CLUSTER NODES on node 0:\n{nodes_resp:?}");
+    let slots_resp = c0.cmd(&["CLUSTER", "SLOTS"]).await;
+    eprintln!("CLUSTER SLOTS on node 0:\n{slots_resp:?}");
+
+    // "foo" hashes to slot 12352, which is in node 2's range (10923–16383).
+    // Sending SET to node 0 should yield a MOVED redirect.
+    let resp = c0.cmd(&["SET", "foo", "bar"]).await;
+    match resp {
+        Frame::Error(msg) => {
+            assert!(
+                msg.starts_with("MOVED"),
+                "expected MOVED redirect, got: {msg}"
+            );
+            // the redirect port must be one of our cluster nodes
+            let redirected_port: u16 = msg
+                .split(':')
+                .last()
+                .and_then(|p| p.parse().ok())
+                .expect("MOVED should include a valid port");
+            assert!(
+                [cluster.port(0), cluster.port(1), cluster.port(2)].contains(&redirected_port),
+                "MOVED points to unknown port {redirected_port}"
+            );
+        }
+        other => panic!("expected MOVED error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn cluster_redirect_followthrough() {
+    let cluster = TestCluster::start();
+    cluster.init().await;
+
+    // use KEYSLOT to determine which node owns "testkey", then verify
+    // that a non-owner returns MOVED and the owner accepts the write.
+    let mut c0 = cluster.connect(0).await;
+    let slot = c0.get_int(&["CLUSTER", "KEYSLOT", "testkey"]).await;
+
+    let (owner_idx, other_idx) = if slot <= 5460 {
+        (0usize, 1usize)
+    } else if slot <= 10922 {
+        (1, 0)
+    } else {
+        (2, 0)
+    };
+
+    // non-owner should refuse with MOVED
+    let mut c_other = cluster.connect(other_idx).await;
+    let resp = c_other.cmd(&["SET", "testkey", "value"]).await;
+    assert!(
+        matches!(resp, Frame::Error(ref msg) if msg.starts_with("MOVED")),
+        "expected MOVED from non-owner (node {other_idx}), got {resp:?}"
+    );
+
+    // owner should accept and serve the key
+    let mut c_owner = cluster.connect(owner_idx).await;
+    c_owner.ok(&["SET", "testkey", "value"]).await;
+    let val = c_owner.get_bulk(&["GET", "testkey"]).await;
+    assert_eq!(val, Some("value".into()));
 }
