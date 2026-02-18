@@ -397,19 +397,38 @@ impl ClusterCoordinator {
 
     // -- slot ownership check --
 
-    /// Checks if the local node owns the slot for the given key.
+    /// Checks slot ownership with migration-aware routing.
     ///
-    /// Returns `None` if local node owns the slot (proceed normally).
-    /// Returns `Some(Frame::Error("MOVED ..."))` if another node owns it.
-    /// Returns `Some(Frame::Error("CLUSTERDOWN ..."))` if slot is unassigned.
-    pub async fn check_slot(&self, key: &[u8]) -> Option<Frame> {
+    /// Returns `None` if the command should be handled locally.
+    /// Returns `Some(Frame)` with MOVED, ASK, or CLUSTERDOWN if not.
+    ///
+    /// During migration:
+    /// - Source node returns ASK for keys already transferred to the target
+    /// - Target node allows access when the client sent ASKING
+    /// - Keys not yet migrated are served locally by the source
+    pub async fn check_slot_with_migration(&self, key: &[u8], asking: bool) -> Option<Frame> {
         let slot = key_slot(key);
         let state = self.state.read().await;
+        let migration = self.migration.lock().await;
 
         if state.owns_slot(slot) {
-            return None;
+            // slot is migrating out — if key already moved, ASK redirect
+            if migration.is_migrating(slot) && migration.is_key_migrated(slot, key) {
+                if let Some(m) = migration.get_outgoing(slot) {
+                    if let Some(target) = state.nodes.get(&m.target) {
+                        return Some(Frame::Error(format!("ASK {} {}", slot, target.addr)));
+                    }
+                }
+            }
+            return None; // handle locally
         }
 
+        // not our slot — but are we importing it and client sent ASKING?
+        if migration.is_importing(slot) && asking {
+            return None; // allow access
+        }
+
+        // standard redirect
         match state.slot_owner(slot) {
             Some(owner) => Some(Frame::Error(format!("MOVED {} {}", slot, owner.addr))),
             None => Some(Frame::Error("CLUSTERDOWN Hash slot not served".into())),
@@ -801,5 +820,131 @@ mod tests {
         assert_eq!(state.slot_map.owner(1), None);
         // slot 2 should still be owned
         assert_eq!(state.slot_map.owner(2), Some(coord.local_id));
+    }
+
+    // -- check_slot_with_migration tests --
+
+    #[tokio::test]
+    async fn check_slot_owned_no_migration() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        // "foo" hashes to some slot — we own all slots
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        assert!(result.is_none(), "should handle locally");
+    }
+
+    #[tokio::test]
+    async fn check_slot_ask_when_key_migrated() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let target = NodeId::new();
+
+        // add target node
+        {
+            let mut state = coord.state.write().await;
+            let node = ClusterNode::new_primary(target, "127.0.0.1:6380".parse().unwrap());
+            state.add_node(node);
+        }
+
+        // "foo" hashes to slot 12182
+        let slot = ember_cluster::key_slot(b"foo");
+
+        // start migrating the slot
+        coord
+            .cluster_setslot_migrating(slot, &target.0.to_string())
+            .await;
+
+        // mark "foo" as migrated via the migration manager directly
+        {
+            let mut migration = coord.migration.lock().await;
+            migration.key_migrated(slot, b"foo".to_vec());
+        }
+
+        // should return ASK redirect
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        match result {
+            Some(Frame::Error(msg)) => {
+                assert!(msg.starts_with("ASK"), "expected ASK, got: {msg}");
+                assert!(msg.contains("127.0.0.1:6380"));
+            }
+            other => panic!("expected ASK error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_slot_local_when_key_not_migrated() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let target = NodeId::new();
+
+        let slot = ember_cluster::key_slot(b"foo");
+        coord
+            .cluster_setslot_migrating(slot, &target.0.to_string())
+            .await;
+
+        // "foo" NOT migrated yet — should serve locally
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        assert!(result.is_none(), "should handle locally");
+    }
+
+    #[tokio::test]
+    async fn check_slot_importing_with_asking() {
+        let (coord, _rx) = test_coordinator();
+        let source = NodeId::new();
+
+        let slot = ember_cluster::key_slot(b"foo");
+        coord
+            .cluster_setslot_importing(slot, &source.0.to_string())
+            .await;
+
+        // with asking=true, should allow local access
+        let result = coord.check_slot_with_migration(b"foo", true).await;
+        assert!(result.is_none(), "should allow with ASKING");
+    }
+
+    #[tokio::test]
+    async fn check_slot_importing_without_asking() {
+        let (coord, _rx) = test_coordinator();
+        let source = NodeId::new();
+
+        // add source node so MOVED has somewhere to point
+        {
+            let mut state = coord.state.write().await;
+            let node = ClusterNode::new_primary(source, "127.0.0.1:6381".parse().unwrap());
+            state.add_node(node);
+        }
+
+        let slot = ember_cluster::key_slot(b"foo");
+
+        // assign the slot to the source node first
+        {
+            let mut state = coord.state.write().await;
+            state.slot_map.assign(slot, source);
+        }
+
+        coord
+            .cluster_setslot_importing(slot, &source.0.to_string())
+            .await;
+
+        // without asking, should return MOVED to the owner
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        match result {
+            Some(Frame::Error(msg)) => {
+                assert!(msg.starts_with("MOVED"), "expected MOVED, got: {msg}");
+            }
+            other => panic!("expected MOVED error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_slot_unassigned_returns_clusterdown() {
+        let (coord, _rx) = test_coordinator(); // no slots assigned
+        let result = coord.check_slot_with_migration(b"foo", false).await;
+        match result {
+            Some(Frame::Error(msg)) => {
+                assert!(
+                    msg.contains("CLUSTERDOWN"),
+                    "expected CLUSTERDOWN, got: {msg}"
+                );
+            }
+            other => panic!("expected CLUSTERDOWN error, got {other:?}"),
+        }
     }
 }

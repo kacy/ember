@@ -166,6 +166,9 @@ where
     // per-connection auth state. auto-authenticated when no password is set.
     let mut authenticated = ctx.requirepass.is_none();
     let mut auth_failures: u32 = 0;
+    // ASKING flag: set by the ASKING command, consumed by the next command.
+    // allows the target node to serve importing slots during migration.
+    let mut asking = false;
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -281,7 +284,7 @@ where
             // immediately when the channel has capacity).
             let mut pending = Vec::with_capacity(frames.len());
             for frame in frames.drain(..) {
-                let p = dispatch_command(frame, &engine, ctx, slow_log, pubsub).await;
+                let p = dispatch_command(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
                 pending.push(p);
             }
 
@@ -696,11 +699,21 @@ async fn dispatch_command(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    asking: &mut bool,
 ) -> PendingResponse {
     let cmd = match Command::from_frame(frame) {
         Ok(cmd) => cmd,
         Err(e) => return PendingResponse::Immediate(Frame::Error(format!("ERR {e}"))),
     };
+
+    // handle ASKING: set the flag and return OK immediately
+    if matches!(cmd, Command::Asking) {
+        *asking = true;
+        return PendingResponse::Immediate(Frame::Simple("OK".into()));
+    }
+
+    // consume the asking flag for this command
+    let was_asking = std::mem::take(asking);
 
     let cmd_name = cmd.command_name();
     let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
@@ -710,8 +723,8 @@ async fn dispatch_command(
         None
     };
 
-    // cluster slot validation
-    if let Some(redirect) = cluster_slot_check(ctx, &cmd).await {
+    // cluster slot validation (migration-aware when cluster is enabled)
+    if let Some(redirect) = cluster_slot_check(ctx, &cmd, was_asking).await {
         return PendingResponse::Immediate(redirect);
     }
 
@@ -1590,8 +1603,11 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
 ///
 /// Returns `None` if the command should proceed (not in cluster mode,
 /// or the local node owns the slot). Returns `Some(Frame)` with a MOVED,
-/// CLUSTERDOWN, or CROSSSLOT error if execution should be rejected.
-async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame> {
+/// ASK, CLUSTERDOWN, or CROSSSLOT error if execution should be rejected.
+///
+/// The `asking` flag is set when the client sent ASKING before this command,
+/// allowing access to importing slots during migration.
+async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) -> Option<Frame> {
     let cluster = ctx.cluster.as_ref()?;
 
     match cmd {
@@ -1651,7 +1667,11 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
         | Command::VGet { ref key, .. }
         | Command::VCard { ref key }
         | Command::VDim { ref key }
-        | Command::VInfo { ref key } => cluster.check_slot(key.as_bytes()).await,
+        | Command::VInfo { ref key } => {
+            cluster
+                .check_slot_with_migration(key.as_bytes(), asking)
+                .await
+        }
 
         // multi-key commands — crossslot validation + slot ownership
         Command::Del { ref keys }
@@ -1662,7 +1682,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
                 return Some(err);
             }
             if let Some(first) = keys.first() {
-                return cluster.check_slot(first.as_bytes()).await;
+                return cluster
+                    .check_slot_with_migration(first.as_bytes(), asking)
+                    .await;
             }
             None
         }
@@ -1676,7 +1698,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
             if let Err(err) = cluster.check_crossslot(&pair) {
                 return Some(err);
             }
-            cluster.check_slot(key.as_bytes()).await
+            cluster
+                .check_slot_with_migration(key.as_bytes(), asking)
+                .await
         }
 
         // mset: extract keys from pairs for crossslot check
@@ -1686,7 +1710,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command) -> Option<Frame>
                 return Some(err);
             }
             if let Some(first) = keys.first() {
-                return cluster.check_slot(first.as_bytes()).await;
+                return cluster
+                    .check_slot_with_migration(first.as_bytes(), asking)
+                    .await;
             }
             None
         }
@@ -1709,8 +1735,9 @@ async fn execute(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
 ) -> Frame {
-    // cluster slot validation — check once before dispatch
-    if let Some(redirect) = cluster_slot_check(ctx, &cmd).await {
+    // cluster slot validation — the process() code path doesn't track
+    // ASKING state, so pass false. ASKING only matters in pipelined mode.
+    if let Some(redirect) = cluster_slot_check(ctx, &cmd, false).await {
         return redirect;
     }
 
