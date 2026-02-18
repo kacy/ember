@@ -12,7 +12,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tracing::warn;
+use tracing::{error, warn};
 
 use crate::aof::{self, AofReader, AofRecord};
 use crate::format::FormatError;
@@ -263,9 +263,19 @@ fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, del
         if let Some(n) = current {
             if let Some(new_val) = n.checked_add(delta) {
                 *data = Bytes::from(new_val.to_string());
+            } else {
+                error!(
+                    key = %key,
+                    value = n,
+                    delta,
+                    "INCR overflow during AOF replay: value unchanged — AOF may be corrupt"
+                );
             }
         } else {
-            warn!(key = %key, "skipping INCR replay: value is not an integer");
+            error!(
+                key = %key,
+                "skipping INCR replay: stored value is not an integer — AOF may be corrupt"
+            );
         }
     }
 }
