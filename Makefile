@@ -1,7 +1,8 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build docker-run \
        release-patch release-minor release-major github-release \
        publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick \
-       helm-lint helm-template proto-gen proto-go proto-py
+       helm-lint helm-template proto-gen proto-go proto-py \
+       cluster cluster-stop cluster-status cluster-clean
 
 # extract the workspace version from the root Cargo.toml
 VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
@@ -34,6 +35,18 @@ docker-build:
 
 docker-run: docker-build
 	docker run --rm -p 6379:6379 ember:latest
+
+cluster:        ## start a 3-node local dev cluster (ports 6379–6381)
+	@bash scripts/dev-cluster.sh start
+
+cluster-stop:   ## stop the local dev cluster
+	@bash scripts/dev-cluster.sh stop
+
+cluster-status: ## show cluster health
+	@bash scripts/dev-cluster.sh status
+
+cluster-clean:  ## stop cluster and remove all data
+	@bash scripts/dev-cluster.sh clean
 
 bench:
 	cargo bench --workspace
