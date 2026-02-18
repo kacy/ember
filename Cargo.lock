@@ -829,6 +829,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "subtle",
+ "tempfile",
  "thiserror 2.0.18",
  "tikv-jemallocator",
  "tokio",
