@@ -202,7 +202,6 @@ impl ClusterCoordinator {
             Err(e) => return Frame::Error(format!("ERR invalid address: {e}")),
         };
 
-        let mut gossip = self.gossip.lock().await;
         let new_id = NodeId::new();
         let gossip_port = match port.checked_add(self.gossip_port_offset) {
             Some(p) => p,
@@ -215,23 +214,27 @@ impl ClusterCoordinator {
         };
         let gossip_addr = SocketAddr::new(addr.ip(), gossip_port);
 
-        gossip.add_seed(new_id, gossip_addr);
+        // build the join message, then release the gossip lock before any awaits
+        let encoded = {
+            let mut gossip = self.gossip.lock().await;
+            gossip.add_seed(new_id, gossip_addr);
+            gossip.create_join_message().encode()
+        };
 
         // send join message via UDP
-        let join_msg = gossip.create_join_message();
-        let encoded = join_msg.encode();
-
-        let socket = self.udp_socket.lock().await;
-        if let Some(ref sock) = *socket {
-            if let Err(e) = sock.send_to(&encoded, gossip_addr).await {
-                warn!("failed to send join to {gossip_addr}: {e}");
-                return Frame::Error(format!("ERR failed to send join: {e}"));
+        {
+            let socket = self.udp_socket.lock().await;
+            if let Some(ref sock) = *socket {
+                if let Err(e) = sock.send_to(&encoded, gossip_addr).await {
+                    warn!("failed to send join to {gossip_addr}: {e}");
+                    return Frame::Error(format!("ERR failed to send join: {e}"));
+                }
+            } else {
+                return Frame::Error("ERR gossip socket not ready".into());
             }
-        } else {
-            return Frame::Error("ERR gossip socket not ready".into());
         }
 
-        // add to cluster state as well
+        // add to cluster state and persist — gossip and socket locks are released
         let mut state = self.state.write().await;
         let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
         state.add_node(node);
