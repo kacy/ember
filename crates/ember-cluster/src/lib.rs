@@ -49,4 +49,6 @@ pub use raft::{
     TypeConfig,
 };
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
-pub use topology::{ClusterHealth, ClusterNode, ClusterState, NodeFlags, NodeId, NodeRole};
+pub use topology::{
+    ClusterHealth, ClusterNode, ClusterState, ConfigParseError, NodeFlags, NodeId, NodeRole,
+};
