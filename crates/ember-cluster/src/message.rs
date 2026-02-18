@@ -92,6 +92,12 @@ pub enum NodeUpdate {
     Dead { node: NodeId, incarnation: u64 },
     /// Node left the cluster gracefully.
     Left { node: NodeId },
+    /// Node's slot ownership changed.
+    SlotsChanged {
+        node: NodeId,
+        incarnation: u64,
+        slots: Vec<SlotRange>,
+    },
 }
 
 /// Information about a cluster member.
@@ -115,6 +121,7 @@ const UPDATE_ALIVE: u8 = 1;
 const UPDATE_SUSPECT: u8 = 2;
 const UPDATE_DEAD: u8 = 3;
 const UPDATE_LEFT: u8 = 4;
+const UPDATE_SLOTS_CHANGED: u8 = 5;
 
 impl GossipMessage {
     /// Serializes the message to bytes.
@@ -358,6 +365,21 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
             buf.put_u8(UPDATE_LEFT);
             encode_node_id(buf, node);
         }
+        NodeUpdate::SlotsChanged {
+            node,
+            incarnation,
+            slots,
+        } => {
+            buf.put_u8(UPDATE_SLOTS_CHANGED);
+            encode_node_id(buf, node);
+            buf.put_u64_le(*incarnation);
+            let count = slots.len().min(MAX_COLLECTION_COUNT);
+            buf.put_u16_le(count as u16);
+            for slot in &slots[..count] {
+                buf.put_u16_le(slot.start);
+                buf.put_u16_le(slot.end);
+            }
+        }
     }
 }
 
@@ -402,6 +424,28 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         UPDATE_LEFT => {
             let node = decode_node_id(buf)?;
             Ok(NodeUpdate::Left { node })
+        }
+        UPDATE_SLOTS_CHANGED => {
+            let node = decode_node_id(buf)?;
+            let incarnation = safe_get_u64_le(buf)?;
+            let count = safe_get_u16_le(buf)? as usize;
+            if count > MAX_COLLECTION_COUNT {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("slot range count {count} exceeds limit"),
+                ));
+            }
+            let mut slots = Vec::with_capacity(count);
+            for _ in 0..count {
+                let start = safe_get_u16_le(buf)?;
+                let end = safe_get_u16_le(buf)?;
+                slots.push(SlotRange::try_new(start, end)?);
+            }
+            Ok(NodeUpdate::SlotsChanged {
+                node,
+                incarnation,
+                slots,
+            })
         }
         other => Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -593,11 +637,54 @@ mod tests {
                 incarnation: 3,
             },
             NodeUpdate::Left { node },
+            NodeUpdate::SlotsChanged {
+                node,
+                incarnation: 4,
+                slots: vec![SlotRange::new(0, 5460)],
+            },
         ];
         let msg = GossipMessage::Ping {
             seq: 1,
             sender: node,
             updates,
+        };
+        let encoded = msg.encode();
+        let decoded = GossipMessage::decode(&encoded).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn slots_changed_empty_roundtrip() {
+        let node = NodeId::new();
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: node,
+            updates: vec![NodeUpdate::SlotsChanged {
+                node,
+                incarnation: 1,
+                slots: vec![],
+            }],
+        };
+        let encoded = msg.encode();
+        let decoded = GossipMessage::decode(&encoded).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn slots_changed_multiple_ranges_roundtrip() {
+        let node = NodeId::new();
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: node,
+            updates: vec![NodeUpdate::SlotsChanged {
+                node,
+                incarnation: 5,
+                slots: vec![
+                    SlotRange::new(0, 5460),
+                    SlotRange::new(5461, 10922),
+                    SlotRange::new(10923, 16383),
+                ],
+            }],
         };
         let encoded = msg.encode();
         let decoded = GossipMessage::decode(&encoded).unwrap();

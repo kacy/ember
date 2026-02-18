@@ -10,7 +10,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use ember_cluster::{
     key_slot, ClusterNode, ClusterState, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
-    MigrationManager, NodeId, SLOT_COUNT,
+    MigrationManager, NodeId, SlotRange, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
@@ -185,64 +185,78 @@ impl ClusterCoordinator {
 
     /// CLUSTER ADDSLOTS slot [slot ...]
     pub async fn cluster_addslots(&self, slots: &[u16]) -> Frame {
-        let mut state = self.state.write().await;
+        let new_slots = {
+            let mut state = self.state.write().await;
 
-        // validate: all slots must be unassigned
-        for &slot in slots {
-            if slot >= SLOT_COUNT {
-                return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+            // validate: all slots must be unassigned
+            for &slot in slots {
+                if slot >= SLOT_COUNT {
+                    return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
+                }
+                if state.slot_map.owner(slot).is_some() {
+                    return Frame::Error(format!("ERR Slot {slot} is already busy"));
+                }
             }
-            if state.slot_map.owner(slot).is_some() {
-                return Frame::Error(format!("ERR Slot {slot} is already busy"));
+
+            // assign all slots to local node
+            for &slot in slots {
+                state.slot_map.assign(slot, self.local_id);
             }
-        }
 
-        // assign all slots to local node
-        for &slot in slots {
-            state.slot_map.assign(slot, self.local_id);
-        }
+            // update node.slots from slot_map
+            let new_slots = state.slot_map.slots_for_node(self.local_id);
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.slots = new_slots.clone();
+            }
 
-        // update node.slots from slot_map
-        let new_slots = state.slot_map.slots_for_node(self.local_id);
-        if let Some(node) = state.nodes.get_mut(&self.local_id) {
-            node.slots = new_slots;
-        }
+            state.update_health();
+            new_slots
+        };
 
-        state.update_health();
+        // propagate via gossip (lock ordering: state released, then gossip)
+        self.broadcast_local_slots(new_slots).await;
+
         Frame::Simple("OK".into())
     }
 
     /// CLUSTER DELSLOTS slot [slot ...]
     pub async fn cluster_delslots(&self, slots: &[u16]) -> Frame {
-        let mut state = self.state.write().await;
+        let new_slots = {
+            let mut state = self.state.write().await;
 
-        // validate: all slots must be owned by us
-        for &slot in slots {
-            if slot >= SLOT_COUNT {
-                return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
-            }
-            match state.slot_map.owner(slot) {
-                Some(owner) if owner != self.local_id => {
-                    return Frame::Error(format!("ERR Slot {slot} is not owned by this node"));
+            // validate: all slots must be owned by us
+            for &slot in slots {
+                if slot >= SLOT_COUNT {
+                    return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
                 }
-                None => {
-                    return Frame::Error(format!("ERR Slot {slot} is already unassigned"));
+                match state.slot_map.owner(slot) {
+                    Some(owner) if owner != self.local_id => {
+                        return Frame::Error(format!("ERR Slot {slot} is not owned by this node"));
+                    }
+                    None => {
+                        return Frame::Error(format!("ERR Slot {slot} is already unassigned"));
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
 
-        for &slot in slots {
-            state.slot_map.unassign(slot);
-        }
+            for &slot in slots {
+                state.slot_map.unassign(slot);
+            }
 
-        // update node.slots from slot_map
-        let new_slots = state.slot_map.slots_for_node(self.local_id);
-        if let Some(node) = state.nodes.get_mut(&self.local_id) {
-            node.slots = new_slots;
-        }
+            // update node.slots from slot_map
+            let new_slots = state.slot_map.slots_for_node(self.local_id);
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.slots = new_slots.clone();
+            }
 
-        state.update_health();
+            state.update_health();
+            new_slots
+        };
+
+        // propagate via gossip (lock ordering: state released, then gossip)
+        self.broadcast_local_slots(new_slots).await;
+
         Frame::Simple("OK".into())
     }
 
@@ -339,25 +353,31 @@ impl ClusterCoordinator {
             migration.complete_migration(slot);
         }
 
-        // assign the slot to the specified node
-        let mut state = self.state.write().await;
-        state.slot_map.assign(slot, node_id);
+        let local_slots = {
+            let mut state = self.state.write().await;
+            state.slot_map.assign(slot, node_id);
 
-        // update the node's slot list
-        let new_slots = state.slot_map.slots_for_node(node_id);
-        if let Some(node) = state.nodes.get_mut(&node_id) {
-            node.slots = new_slots;
-        }
-
-        // also update the local node's slot list if it changed
-        if node_id != self.local_id {
-            let local_slots = state.slot_map.slots_for_node(self.local_id);
-            if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                node.slots = local_slots;
+            // update the node's slot list
+            let new_slots = state.slot_map.slots_for_node(node_id);
+            if let Some(node) = state.nodes.get_mut(&node_id) {
+                node.slots = new_slots;
             }
-        }
 
-        state.update_health();
+            // also update the local node's slot list if it changed
+            let local_slots = state.slot_map.slots_for_node(self.local_id);
+            if node_id != self.local_id {
+                if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                    node.slots = local_slots.clone();
+                }
+            }
+
+            state.update_health();
+            local_slots
+        };
+
+        // propagate our updated slot ownership via gossip
+        self.broadcast_local_slots(local_slots).await;
+
         Frame::Simple("OK".into())
     }
 
@@ -413,6 +433,15 @@ impl ClusterCoordinator {
             }
         }
         Ok(())
+    }
+
+    /// Pushes the local node's current slot ownership into the gossip engine
+    /// so it propagates to the rest of the cluster.
+    async fn broadcast_local_slots(&self, slots: Vec<SlotRange>) {
+        let mut gossip = self.gossip.lock().await;
+        gossip.set_local_slots(slots.clone());
+        let incarnation = gossip.local_incarnation();
+        gossip.queue_slots_update(self.local_id, incarnation, slots);
     }
 
     // -- gossip networking --
@@ -500,15 +529,23 @@ impl ClusterCoordinator {
             while let Some(event) = event_rx.recv().await {
                 let mut state = coordinator.state.write().await;
                 match event {
-                    GossipEvent::MemberJoined(id, addr) => {
+                    GossipEvent::MemberJoined(id, addr, slots) => {
                         info!("cluster: node {} joined at {}", id, addr);
                         if !state.nodes.contains_key(&id) {
-                            let node = ClusterNode::new_primary_with_offset(
+                            let mut node = ClusterNode::new_primary_with_offset(
                                 id,
                                 addr,
                                 coordinator.gossip_port_offset,
                             );
+                            // apply slot ranges from gossip
+                            for range in &slots {
+                                for slot in range.iter() {
+                                    state.slot_map.assign(slot, id);
+                                }
+                            }
+                            node.slots = slots;
                             state.add_node(node);
+                            state.update_health();
                         }
                     }
                     GossipEvent::MemberSuspected(id) => {
@@ -536,6 +573,30 @@ impl ClusterCoordinator {
                         if let Some(node) = state.nodes.get_mut(&id) {
                             node.flags.pfail = false;
                             node.flags.fail = false;
+                        }
+                        state.update_health();
+                    }
+                    GossipEvent::SlotsChanged(id, slots) => {
+                        debug!(
+                            "cluster: node {} slots changed ({} ranges)",
+                            id,
+                            slots.len()
+                        );
+                        // clear old slot assignments for this node
+                        let old_ranges = state.slot_map.slots_for_node(id);
+                        for range in &old_ranges {
+                            for slot in range.iter() {
+                                state.slot_map.unassign(slot);
+                            }
+                        }
+                        // apply new slot assignments
+                        for range in &slots {
+                            for slot in range.iter() {
+                                state.slot_map.assign(slot, id);
+                            }
+                        }
+                        if let Some(node) = state.nodes.get_mut(&id) {
+                            node.slots = slots;
                         }
                         state.update_health();
                     }
@@ -710,5 +771,35 @@ mod tests {
         // should succeed even with no active migration
         let resp = coord.cluster_setslot_stable(100).await;
         assert!(matches!(resp, Frame::Simple(_)));
+    }
+
+    #[tokio::test]
+    async fn addslots_queues_gossip_update() {
+        let (coord, _rx) = test_coordinator();
+
+        let resp = coord.cluster_addslots(&[0, 1, 2]).await;
+        assert!(matches!(resp, Frame::Simple(_)));
+
+        // verify state has the slots assigned
+        let state = coord.state.read().await;
+        assert_eq!(state.slot_map.owner(0), Some(coord.local_id));
+        assert_eq!(state.slot_map.owner(1), Some(coord.local_id));
+        assert_eq!(state.slot_map.owner(2), Some(coord.local_id));
+        // slot 3 should still be unassigned
+        assert_eq!(state.slot_map.owner(3), None);
+    }
+
+    #[tokio::test]
+    async fn delslots_queues_gossip_update() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+
+        let resp = coord.cluster_delslots(&[0, 1]).await;
+        assert!(matches!(resp, Frame::Simple(_)));
+
+        let state = coord.state.read().await;
+        assert_eq!(state.slot_map.owner(0), None);
+        assert_eq!(state.slot_map.owner(1), None);
+        // slot 2 should still be owned
+        assert_eq!(state.slot_map.owner(2), Some(coord.local_id));
     }
 }
