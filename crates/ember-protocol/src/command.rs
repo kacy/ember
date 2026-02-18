@@ -280,6 +280,9 @@ pub enum Command {
     /// CLUSTER ADDSLOTS `slot` \[slot...\]. Assign slots to the local node.
     ClusterAddSlots { slots: Vec<u16> },
 
+    /// CLUSTER ADDSLOTSRANGE `start` `end` \[start end ...\]. Assign a contiguous range of hash slots.
+    ClusterAddSlotsRange { ranges: Vec<(u16, u16)> },
+
     /// CLUSTER DELSLOTS `slot` \[slot...\]. Remove slots from the local node.
     ClusterDelSlots { slots: Vec<u16> },
 
@@ -570,6 +573,7 @@ impl Command {
             Command::ClusterSetSlotStable { .. } => "cluster_setslot",
             Command::ClusterMeet { .. } => "cluster_meet",
             Command::ClusterAddSlots { .. } => "cluster_addslots",
+            Command::ClusterAddSlotsRange { .. } => "cluster_addslotsrange",
             Command::ClusterDelSlots { .. } => "cluster_delslots",
             Command::ClusterForget { .. } => "cluster_forget",
             Command::ClusterReplicate { .. } => "cluster_replicate",
@@ -1581,6 +1585,28 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
             }
             let slots = parse_slot_list(&args[1..])?;
             Ok(Command::ClusterAddSlots { slots })
+        }
+        "ADDSLOTSRANGE" => {
+            // arguments are pairs: start1 end1 [start2 end2 ...]
+            if args.len() < 3 || (args.len() - 1) % 2 != 0 {
+                return Err(ProtocolError::WrongArity("CLUSTER ADDSLOTSRANGE".into()));
+            }
+            let mut ranges = Vec::new();
+            for pair in args[1..].chunks(2) {
+                let start: u16 = extract_string(&pair[0])?
+                    .parse()
+                    .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot".into()))?;
+                let end: u16 = extract_string(&pair[1])?
+                    .parse()
+                    .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot".into()))?;
+                if start > end || end >= 16384 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid slot range: start must be <= end and both must be 0-16383".into(),
+                    ));
+                }
+                ranges.push((start, end));
+            }
+            Ok(Command::ClusterAddSlotsRange { ranges })
         }
         "DELSLOTS" => {
             if args.len() < 2 {
@@ -4306,6 +4332,42 @@ mod tests {
                 slots: vec![0, 1, 2]
             },
         );
+    }
+
+    #[test]
+    fn cluster_addslotsrange_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0", "5460"])).unwrap(),
+            Command::ClusterAddSlotsRange {
+                ranges: vec![(0, 5460)]
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_addslotsrange_multiple() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0", "100", "200", "300"]))
+                .unwrap(),
+            Command::ClusterAddSlotsRange {
+                ranges: vec![(0, 100), (200, 300)]
+            },
+        );
+    }
+
+    #[test]
+    fn cluster_addslotsrange_invalid_range() {
+        let err =
+            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "100", "50"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn cluster_addslotsrange_wrong_arity() {
+        // odd number of slot args
+        let err =
+            Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
     #[test]

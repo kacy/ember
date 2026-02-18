@@ -120,6 +120,53 @@ DBSIZE                          # => (integer) 6
 ember-cli -p 6380 --tls --tls-insecure PING
 ```
 
+## clustering
+
+spin up a 3-node local cluster with one command:
+
+```bash
+make cluster
+```
+
+this builds the release binaries if needed, starts nodes on ports 6379–6381, joins them together, and assigns all 16384 hash slots evenly. you should see something like:
+
+```
+starting node 1 (port 6379, bootstrap)...
+starting node 2 (port 6380)...
+starting node 3 (port 6381)...
+  node :6379 ready
+  node :6380 ready
+  node :6381 ready
+joining cluster...
+assigning slots...
+
+cluster_state:ok
+cluster_slots_assigned:16384
+cluster_known_nodes:3
+cluster_size:3
+```
+
+connect to any node and start writing:
+
+```bash
+ember-cli -p 6379 SET hello world   # => OK
+ember-cli -p 6380 GET hello         # => "world" or MOVED redirect
+
+ember-cli -p 6379 cluster info      # cluster_state:ok, 16384 slots assigned
+ember-cli -p 6380 cluster nodes     # 3 nodes, each with correct slot range
+```
+
+clients that support cluster mode (including `redis-cli --cluster`) follow `MOVED` redirects automatically. the built-in `ember-cli` sends each command to the right node based on the key's hash slot.
+
+stop the cluster and clean up:
+
+```bash
+make cluster-stop   # SIGTERM the nodes, keep data
+make cluster-clean  # stop + delete ./data/cluster/
+```
+
+see [ARCHITECTURE.md](ARCHITECTURE.md) for how clustering works under the hood (raft, gossip, hash slots, migration).
+
 ## protobuf storage
 
 ember can store schema-validated protobuf messages and access individual fields server-side. compile with `--features protobuf` to enable.
