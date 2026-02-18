@@ -1,0 +1,2 @@
+ember-py @ ../../clients/ember-py
+numpy>=1.26
