@@ -56,20 +56,27 @@ impl ClusterCoordinator {
     ///
     /// Returns the coordinator and a receiver for gossip events that
     /// should be consumed by a background task.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `bind_addr.port() + gossip_config.gossip_port_offset` overflows u16.
     pub fn new(
         local_id: NodeId,
         bind_addr: SocketAddr,
         gossip_config: GossipConfig,
         bootstrap: bool,
         data_dir: Option<PathBuf>,
-    ) -> (Self, mpsc::Receiver<GossipEvent>) {
+    ) -> Result<(Self, mpsc::Receiver<GossipEvent>), String> {
         let (event_tx, event_rx) = mpsc::channel(256);
 
         let port_offset = gossip_config.gossip_port_offset;
-        let gossip_port = bind_addr
-            .port()
-            .checked_add(port_offset)
-            .expect("gossip port offset overflows u16");
+        let gossip_port = bind_addr.port().checked_add(port_offset).ok_or_else(|| {
+            format!(
+                "gossip port overflow: {} + {} exceeds u16 range",
+                bind_addr.port(),
+                port_offset
+            )
+        })?;
         let gossip_addr = SocketAddr::new(bind_addr.ip(), gossip_port);
 
         let gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
@@ -97,7 +104,7 @@ impl ClusterCoordinator {
             raft_node: std::sync::OnceLock::new(),
         };
 
-        (coordinator, event_rx)
+        Ok((coordinator, event_rx))
     }
 
     /// Restores a cluster coordinator from a previously saved `nodes.conf`.
@@ -116,10 +123,13 @@ impl ClusterCoordinator {
 
         let (event_tx, event_rx) = mpsc::channel(256);
 
-        let gossip_port = bind_addr
-            .port()
-            .checked_add(port_offset)
-            .expect("gossip port offset overflows u16");
+        let gossip_port = bind_addr.port().checked_add(port_offset).ok_or_else(|| {
+            ConfigParseError::InvalidAddress(format!(
+                "gossip port overflow: {} + {} exceeds u16 range",
+                bind_addr.port(),
+                port_offset
+            ))
+        })?;
         let gossip_addr = SocketAddr::new(bind_addr.ip(), gossip_port);
 
         let mut gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
@@ -936,10 +946,7 @@ impl ClusterCoordinator {
                                                 addr: raft_addr.to_string(),
                                             };
                                             let handle = raft.raft_handle();
-                                            if handle
-                                                .add_learner(raft_id, node, true)
-                                                .await
-                                                .is_ok()
+                                            if handle.add_learner(raft_id, node, true).await.is_ok()
                                             {
                                                 let m = handle.metrics().borrow().clone();
                                                 let mut new_members: std::collections::BTreeSet<
@@ -1077,7 +1084,7 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        ClusterCoordinator::new(local_id, addr, config, false, None)
+        ClusterCoordinator::new(local_id, addr, config, false, None).unwrap()
     }
 
     /// Creates a test coordinator bootstrapped with all 16384 slots.
@@ -1085,7 +1092,20 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        ClusterCoordinator::new(local_id, addr, config, true, None)
+        ClusterCoordinator::new(local_id, addr, config, true, None).unwrap()
+    }
+
+    #[test]
+    fn new_rejects_port_overflow() {
+        // port 65000 + offset 2000 = 67000, which overflows u16 (max 65535)
+        let local_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:65000".parse().unwrap();
+        let config = GossipConfig {
+            gossip_port_offset: 2000,
+            ..GossipConfig::default()
+        };
+        let result = ClusterCoordinator::new(local_id, addr, config, false, None);
+        assert!(result.is_err(), "expected port overflow error");
     }
 
     #[tokio::test]
@@ -1398,7 +1418,8 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
         let (coord, _rx) =
-            ClusterCoordinator::new(local_id, addr, config, true, Some(dir.path().to_path_buf()));
+            ClusterCoordinator::new(local_id, addr, config, true, Some(dir.path().to_path_buf()))
+                .unwrap();
 
         // add some slots and save
         coord.save_config().await;
@@ -1423,7 +1444,8 @@ mod tests {
             config.clone(),
             true,
             Some(dir.path().to_path_buf()),
-        );
+        )
+        .unwrap();
 
         coord.save_config().await;
 
