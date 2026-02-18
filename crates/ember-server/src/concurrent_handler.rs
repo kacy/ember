@@ -283,7 +283,12 @@ async fn execute_concurrent(
             TtlResult::Milliseconds(ms) => Frame::Integer(ms as i64),
             TtlResult::NoExpiry => Frame::Integer(-1),
             TtlResult::NotFound => Frame::Integer(-2),
-            TtlResult::Seconds(s) => Frame::Integer(s as i64 * 1000),
+            TtlResult::Seconds(s) => {
+                // convert seconds → milliseconds, capping at i64::MAX to
+                // avoid overflow for pathologically large TTL values
+                let ms = s.saturating_mul(1000).min(i64::MAX as u64);
+                Frame::Integer(ms as i64)
+            }
         },
 
         Command::Ping(None) => Frame::Simple("PONG".into()),

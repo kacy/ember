@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use ember_cluster::{GossipConfig, NodeId, RaftNode, RaftStorage, raft_id_from_node_id};
+use ember_cluster::{raft_id_from_node_id, GossipConfig, NodeId, RaftNode, RaftStorage};
 use ember_core::ShardPersistenceConfig;
 use tracing::info;
 #[cfg(feature = "protobuf")]
@@ -451,9 +451,13 @@ async fn main() {
             let data = std::fs::read_to_string(&conf_path)
                 .unwrap_or_else(|e| exit_err(format!("failed to read nodes.conf: {e}")));
 
-            let (coord, rx) =
-                ClusterCoordinator::from_config(&data, addr, gossip_config, cluster_data_dir.clone())
-                    .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
+            let (coord, rx) = ClusterCoordinator::from_config(
+                &data,
+                addr,
+                gossip_config,
+                cluster_data_dir.clone(),
+            )
+            .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
 
             info!("cluster mode: restored from nodes.conf");
             let id = coord.local_id();
@@ -466,7 +470,8 @@ async fn main() {
                 gossip_config,
                 true,
                 Some(cluster_data_dir.clone()),
-            );
+            )
+            .unwrap_or_else(|e| exit_err(format!("error: {e}")));
             info!("cluster mode: bootstrapped with all 16384 slots");
             (coord, rx, local_id, true)
         } else {
@@ -477,7 +482,8 @@ async fn main() {
                 gossip_config,
                 false,
                 Some(cluster_data_dir.clone()),
-            );
+            )
+            .unwrap_or_else(|e| exit_err(format!("error: {e}")));
             info!("cluster mode: waiting for CLUSTER MEET");
             (coord, rx, local_id, false)
         };

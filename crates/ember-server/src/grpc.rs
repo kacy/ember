@@ -2021,7 +2021,9 @@ impl EmberCache for EmberService {
             channel_rxs.push((ch.clone(), pubsub.subscribe(ch)));
         }
         for pat in &req.patterns {
-            pattern_rxs.push((pat.clone(), pubsub.psubscribe(pat)));
+            if let Some(rx) = pubsub.psubscribe(pat) {
+                pattern_rxs.push((pat.clone(), rx));
+            }
         }
 
         tokio::spawn(async move {
