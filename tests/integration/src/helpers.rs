@@ -84,9 +84,11 @@ impl TestServer {
             cmd.arg("--cluster-bootstrap");
         }
 
-        let data_dir = if opts.appendonly {
-            cmd.arg("--appendonly");
-            cmd.arg("--appendfsync").arg("always");
+        let data_dir = if opts.appendonly || opts.cluster_enabled {
+            if opts.appendonly {
+                cmd.arg("--appendonly");
+                cmd.arg("--appendfsync").arg("always");
+            }
 
             if let Some(ref path) = opts.data_dir_path {
                 cmd.arg("--data-dir").arg(path);

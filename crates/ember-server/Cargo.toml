@@ -47,5 +47,8 @@ tokio-stream = { workspace = true, optional = true }
 # optional: better multi-threaded allocation performance
 tikv-jemallocator = { version = "0.6", optional = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 tonic-build = { workspace = true, optional = true }

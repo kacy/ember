@@ -418,24 +418,68 @@ async fn main() {
             ));
         }
 
-        let local_id = NodeId::new();
+        // cluster requires a data directory for nodes.conf persistence.
+        // persistence may have already consumed args.data_dir via .take(),
+        // so we read from the engine config's copy instead.
+        let cluster_data_dir = engine_config
+            .persistence
+            .as_ref()
+            .map(|p| p.data_dir.clone())
+            .unwrap_or_else(|| {
+                exit_err("error: --data-dir is required when --cluster-enabled is set")
+            });
+
         let gossip_config = GossipConfig {
             gossip_port_offset: args.cluster_port_offset,
             probe_timeout: std::time::Duration::from_millis(args.cluster_node_timeout / 2),
             ..GossipConfig::default()
         };
 
-        let (coordinator, event_rx) =
-            ClusterCoordinator::new(local_id, addr, gossip_config, args.cluster_bootstrap);
+        let conf_path = cluster_data_dir.join("nodes.conf");
+
+        let (coordinator, event_rx) = if conf_path.exists() {
+            // restore from saved config
+            let data = std::fs::read_to_string(&conf_path)
+                .unwrap_or_else(|e| exit_err(format!("failed to read nodes.conf: {e}")));
+
+            let (coord, rx) =
+                ClusterCoordinator::from_config(&data, addr, gossip_config, cluster_data_dir)
+                    .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
+
+            info!("cluster mode: restored from nodes.conf");
+            (coord, rx)
+        } else if args.cluster_bootstrap {
+            let local_id = NodeId::new();
+            let (coord, rx) = ClusterCoordinator::new(
+                local_id,
+                addr,
+                gossip_config,
+                true,
+                Some(cluster_data_dir),
+            );
+            info!("cluster mode: bootstrapped with all 16384 slots");
+            (coord, rx)
+        } else {
+            let local_id = NodeId::new();
+            let (coord, rx) = ClusterCoordinator::new(
+                local_id,
+                addr,
+                gossip_config,
+                false,
+                Some(cluster_data_dir),
+            );
+            info!("cluster mode: waiting for CLUSTER MEET");
+            (coord, rx)
+        };
+
         let coordinator = Arc::new(coordinator);
 
         // spawn gossip networking tasks
         coordinator.spawn_gossip(addr, event_rx).await;
 
-        if args.cluster_bootstrap {
-            info!("cluster mode: bootstrapped with all 16384 slots");
-        } else {
-            info!("cluster mode: waiting for CLUSTER MEET");
+        // save initial config (for new clusters)
+        if !conf_path.exists() {
+            coordinator.save_config().await;
         }
 
         Some(coordinator)
