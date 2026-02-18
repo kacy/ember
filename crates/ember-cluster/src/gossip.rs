@@ -118,12 +118,24 @@ pub struct GossipEngine {
     event_tx: mpsc::Sender<GossipEvent>,
     /// Slot ranges owned by the local node, included in Welcome replies.
     local_slots: Vec<SlotRange>,
+    /// Active PingReq relays waiting for an Ack from the target.
+    relay_pending: HashMap<u64, RelayEntry>,
 }
 
 struct PendingProbe {
     target: NodeId,
     sent_at: Instant,
     indirect: bool,
+}
+
+/// Tracks a PingReq relay in progress.
+///
+/// When we forward a Ping on behalf of another node (via PingReq), we
+/// store this entry so we can relay the Ack back to the original requester.
+struct RelayEntry {
+    requester: SocketAddr,
+    original_seq: u64,
+    sent_at: Instant,
 }
 
 impl GossipEngine {
@@ -145,6 +157,7 @@ impl GossipEngine {
             pending_probes: HashMap::new(),
             event_tx,
             local_slots: Vec::new(),
+            relay_pending: HashMap::new(),
         }
     }
 
@@ -217,11 +230,16 @@ impl GossipEngine {
     }
 
     /// Handles an incoming gossip message.
+    ///
+    /// Returns a list of `(address, message)` pairs to send. Most messages
+    /// produce a single reply back to `from`, but PingReq forwards a Ping
+    /// to a different host, and relayed Acks route back to the original
+    /// requester.
     pub async fn handle_message(
         &mut self,
         msg: GossipMessage,
         from: SocketAddr,
-    ) -> Option<GossipMessage> {
+    ) -> Vec<(SocketAddr, GossipMessage)> {
         match msg {
             GossipMessage::Ping {
                 seq,
@@ -234,18 +252,21 @@ impl GossipEngine {
 
                 // Reply with ACK
                 let response_updates = self.collect_updates();
-                Some(GossipMessage::Ack {
-                    seq,
-                    sender: self.local_id,
-                    updates: response_updates,
-                })
+                vec![(
+                    from,
+                    GossipMessage::Ack {
+                        seq,
+                        sender: self.local_id,
+                        updates: response_updates,
+                    },
+                )]
             }
 
             GossipMessage::PingReq {
                 seq,
                 sender,
                 target,
-                target_addr: _,
+                target_addr,
             } => {
                 trace!(
                     "received ping-req seq={} from {} for {}",
@@ -255,9 +276,27 @@ impl GossipEngine {
                 );
                 self.ensure_member(sender, from);
 
-                // Forward ping to target (handled externally)
-                // For now, we just record that we might need to relay
-                None
+                // forward a fresh Ping to the target on behalf of the requester
+                let relay_seq = self.next_seq;
+                self.next_seq += 1;
+
+                self.relay_pending.insert(
+                    relay_seq,
+                    RelayEntry {
+                        requester: from,
+                        original_seq: seq,
+                        sent_at: Instant::now(),
+                    },
+                );
+
+                vec![(
+                    target_addr,
+                    GossipMessage::Ping {
+                        seq: relay_seq,
+                        sender: self.local_id,
+                        updates: vec![],
+                    },
+                )]
             }
 
             GossipMessage::Ack {
@@ -269,6 +308,8 @@ impl GossipEngine {
                 self.apply_updates(&updates).await;
                 self.ensure_member(sender, from);
 
+                let mut outgoing = Vec::new();
+
                 // Clear pending probe
                 if let Some(probe) = self.pending_probes.remove(&seq) {
                     if self.members.get(&probe.target).map(|m| m.state)
@@ -278,7 +319,20 @@ impl GossipEngine {
                         self.mark_alive(probe.target).await;
                     }
                 }
-                None
+
+                // Check if this is a relayed Ack — forward it back to the requester
+                if let Some(relay) = self.relay_pending.remove(&seq) {
+                    outgoing.push((
+                        relay.requester,
+                        GossipMessage::Ack {
+                            seq: relay.original_seq,
+                            sender: self.local_id,
+                            updates: vec![],
+                        },
+                    ));
+                }
+
+                outgoing
             }
 
             GossipMessage::Join {
@@ -318,10 +372,13 @@ impl GossipEngine {
                     slots: self.local_slots.clone(),
                 });
 
-                Some(GossipMessage::Welcome {
-                    sender: self.local_id,
-                    members,
-                })
+                vec![(
+                    from,
+                    GossipMessage::Welcome {
+                        sender: self.local_id,
+                        members,
+                    },
+                )]
             }
 
             GossipMessage::Welcome { sender, members } => {
@@ -353,18 +410,26 @@ impl GossipEngine {
                             .await;
                     }
                 }
-                None
+                vec![]
             }
         }
     }
 
     /// Runs one protocol period: probe a random node.
-    pub fn tick(&mut self) -> Option<(SocketAddr, GossipMessage)> {
-        // Check for timed-out probes
-        self.check_probe_timeouts();
+    ///
+    /// Returns all messages to send this tick: the direct probe plus any
+    /// PingReq messages generated by timed-out direct probes.
+    pub fn tick(&mut self) -> Vec<(SocketAddr, GossipMessage)> {
+        let mut outgoing = Vec::new();
+
+        // Check for timed-out probes (may generate PingReq messages)
+        outgoing.extend(self.check_probe_timeouts());
 
         // Check for expired suspicions
         self.check_suspicion_timeouts();
+
+        // Clean up stale relay entries
+        self.cleanup_stale_relays();
 
         // Select a random alive member to probe
         let target_info = {
@@ -376,10 +441,13 @@ impl GossipEngine {
                 .collect();
 
             if alive_members.is_empty() {
-                return None;
+                return outgoing;
             }
 
-            *alive_members.choose(&mut rand::rng())?
+            match alive_members.choose(&mut rand::rng()) {
+                Some(info) => *info,
+                None => return outgoing,
+            }
         };
 
         let (target_id, target_addr) = target_info;
@@ -402,7 +470,8 @@ impl GossipEngine {
             },
         );
 
-        Some((target_addr, msg))
+        outgoing.push((target_addr, msg));
+        outgoing
     }
 
     /// Creates a join message to send to a seed node.
@@ -595,23 +664,29 @@ impl GossipEngine {
         }
     }
 
-    fn check_probe_timeouts(&mut self) {
+    /// Checks for timed-out probes and implements two-phase failure detection.
+    ///
+    /// Phase 1: direct ping timeout → send PingReq to `indirect_probes` random
+    ///          alive members, and register an indirect probe for the target.
+    /// Phase 2: indirect probe timeout → mark the target Suspect.
+    ///
+    /// Returns PingReq messages to send.
+    fn check_probe_timeouts(&mut self) -> Vec<(SocketAddr, GossipMessage)> {
         let timeout = self.config.probe_timeout;
         let now = Instant::now();
+        let mut outgoing = Vec::new();
 
-        // Collect timed out probes first
-        let timed_out: Vec<_> = self
+        // Phase 2: indirect probe timeouts → mark Suspect
+        let indirect_timed_out: Vec<_> = self
             .pending_probes
             .iter()
-            .filter(|(_, probe)| now.duration_since(probe.sent_at) > timeout && !probe.indirect)
+            .filter(|(_, probe)| probe.indirect && now.duration_since(probe.sent_at) > timeout)
             .map(|(seq, probe)| (*seq, probe.target))
             .collect();
 
-        // Now process them
-        for (seq, target) in timed_out {
+        for (seq, target) in indirect_timed_out {
             self.pending_probes.remove(&seq);
 
-            // Get incarnation before mutating
             let incarnation = self
                 .members
                 .get(&target)
@@ -620,7 +695,7 @@ impl GossipEngine {
 
             if let Some(inc) = incarnation {
                 if let Some(member) = self.members.get_mut(&target) {
-                    debug!("node {} failed to respond, marking suspect", target);
+                    debug!("node {} failed indirect probe, marking suspect", target);
                     member.state = MemberStatus::Suspect;
                     member.state_change = Instant::now();
                 }
@@ -630,6 +705,100 @@ impl GossipEngine {
                 });
             }
         }
+
+        // Phase 1: direct ping timeouts → send PingReq
+        let direct_timed_out: Vec<_> = self
+            .pending_probes
+            .iter()
+            .filter(|(_, probe)| !probe.indirect && now.duration_since(probe.sent_at) > timeout)
+            .map(|(seq, probe)| (*seq, probe.target))
+            .collect();
+
+        for (seq, target) in direct_timed_out {
+            self.pending_probes.remove(&seq);
+
+            let target_addr = match self.members.get(&target) {
+                Some(m) if m.state == MemberStatus::Alive => m.addr,
+                _ => continue,
+            };
+
+            // pick random alive members (excluding target) to relay through
+            let relay_nodes: Vec<(NodeId, SocketAddr)> = self
+                .members
+                .values()
+                .filter(|m| m.state == MemberStatus::Alive && m.id != target)
+                .map(|m| (m.id, m.addr))
+                .collect();
+
+            if relay_nodes.is_empty() {
+                // no relays available — fall back to immediate suspect
+                let incarnation = self
+                    .members
+                    .get(&target)
+                    .map(|m| m.incarnation)
+                    .unwrap_or(0);
+
+                if let Some(member) = self.members.get_mut(&target) {
+                    debug!("node {} timed out with no relays, marking suspect", target);
+                    member.state = MemberStatus::Suspect;
+                    member.state_change = Instant::now();
+                }
+                self.queue_update(NodeUpdate::Suspect {
+                    node: target,
+                    incarnation,
+                });
+                continue;
+            }
+
+            let k = self.config.indirect_probes.min(relay_nodes.len());
+            let chosen: Vec<_> = relay_nodes
+                .choose_multiple(&mut rand::rng(), k)
+                .copied()
+                .collect();
+
+            debug!(
+                "node {} direct ping timed out, sending PingReq to {} relays",
+                target,
+                chosen.len()
+            );
+
+            // register an indirect probe — if this times out, we mark Suspect
+            let indirect_seq = self.next_seq;
+            self.next_seq += 1;
+            self.pending_probes.insert(
+                indirect_seq,
+                PendingProbe {
+                    target,
+                    sent_at: Instant::now(),
+                    indirect: true,
+                },
+            );
+
+            for (_, relay_addr) in chosen {
+                outgoing.push((
+                    relay_addr,
+                    GossipMessage::PingReq {
+                        seq: indirect_seq,
+                        sender: self.local_id,
+                        target,
+                        target_addr,
+                    },
+                ));
+            }
+        }
+
+        outgoing
+    }
+
+    /// Removes stale relay entries that have timed out.
+    ///
+    /// If the target never responds, the relay entry just sits there.
+    /// The original prober handles its own timeout via the indirect probe.
+    fn cleanup_stale_relays(&mut self) {
+        let timeout = self.config.probe_timeout;
+        let now = Instant::now();
+        self.relay_pending
+            .retain(|_, entry| now.duration_since(entry.sent_at) <= timeout);
     }
 
     fn check_suspicion_timeouts(&mut self) {
@@ -715,8 +884,10 @@ mod tests {
             updates: vec![],
         };
 
-        let response = engine.handle_message(msg, test_addr(6380)).await;
-        assert!(matches!(response, Some(GossipMessage::Ack { .. })));
+        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        assert_eq!(responses.len(), 1);
+        assert!(matches!(responses[0].1, GossipMessage::Ack { .. }));
+        assert_eq!(responses[0].0.port(), 6380);
         assert_eq!(engine.alive_count(), 1);
     }
 
@@ -732,8 +903,9 @@ mod tests {
             sender_addr: test_addr(6380),
         };
 
-        let response = engine.handle_message(msg, test_addr(6380)).await;
-        assert!(matches!(response, Some(GossipMessage::Welcome { .. })));
+        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        assert_eq!(responses.len(), 1);
+        assert!(matches!(responses[0].1, GossipMessage::Welcome { .. }));
         assert_eq!(engine.alive_count(), 1);
     }
 
@@ -743,8 +915,8 @@ mod tests {
         let mut engine =
             GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
-        let probe = engine.tick();
-        assert!(probe.is_none());
+        let messages = engine.tick();
+        assert!(messages.is_empty());
     }
 
     #[tokio::test]
@@ -754,10 +926,10 @@ mod tests {
             GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
 
         engine.add_seed(NodeId::new(), test_addr(6380));
-        let probe = engine.tick();
-        assert!(probe.is_some());
+        let messages = engine.tick();
+        assert_eq!(messages.len(), 1);
 
-        let (addr, msg) = probe.unwrap();
+        let (addr, msg) = &messages[0];
         assert_eq!(addr.port(), 6380);
         assert!(matches!(msg, GossipMessage::Ping { .. }));
     }
@@ -869,9 +1041,10 @@ mod tests {
             sender_addr: test_addr(6380),
         };
 
-        let response = engine.handle_message(msg, test_addr(6380)).await;
-        match response {
-            Some(GossipMessage::Welcome { members, .. }) => {
+        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        assert_eq!(responses.len(), 1);
+        match &responses[0].1 {
+            GossipMessage::Welcome { members, .. } => {
                 let local_member = members.iter().find(|m| m.id == local_id);
                 assert!(local_member.is_some(), "welcome should include local node");
                 assert_eq!(local_member.unwrap().slots, vec![SlotRange::new(0, 16383)]);
@@ -916,5 +1089,173 @@ mod tests {
             }
             other => panic!("expected MemberJoined, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn direct_ping_timeout_sends_pingreq() {
+        let (tx, _rx) = mpsc::channel(16);
+        let config = GossipConfig {
+            probe_timeout: Duration::from_millis(0), // expire immediately
+            ..GossipConfig::default()
+        };
+        let mut engine = GossipEngine::new(NodeId::new(), test_addr(6379), config, tx);
+
+        let target = NodeId::new();
+        let relay = NodeId::new();
+        engine.add_seed(target, test_addr(6380));
+        engine.add_seed(relay, test_addr(6381));
+
+        // send a direct probe to target
+        let messages = engine.tick();
+        // tick sends the direct ping plus checks timeouts (but probe just started)
+        assert!(!messages.is_empty());
+
+        // the direct probe is pending — now on next tick it should time out
+        // and generate PingReq messages to the relay
+        let messages = engine.tick();
+
+        // should have at least one PingReq in the outgoing messages
+        let pingreqs: Vec<_> = messages
+            .iter()
+            .filter(|(_, msg)| matches!(msg, GossipMessage::PingReq { .. }))
+            .collect();
+
+        // the first tick's probe should have timed out (0ms timeout)
+        // and generated PingReq(s) to the relay node
+        assert!(
+            !pingreqs.is_empty(),
+            "expected PingReq after direct probe timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn pingreq_handler_forwards_to_target() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let requester = NodeId::new();
+        let target = NodeId::new();
+        let target_addr = test_addr(6381);
+
+        let msg = GossipMessage::PingReq {
+            seq: 42,
+            sender: requester,
+            target,
+            target_addr,
+        };
+
+        let responses = engine.handle_message(msg, test_addr(6380)).await;
+
+        // should forward a Ping to the target address
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].0, target_addr);
+        assert!(matches!(responses[0].1, GossipMessage::Ping { .. }));
+
+        // relay entry should be registered
+        assert_eq!(engine.relay_pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn relayed_ack_forwarded_to_requester() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let requester = NodeId::new();
+        let requester_addr = test_addr(6380);
+        let target = NodeId::new();
+        let target_addr = test_addr(6381);
+
+        // step 1: receive PingReq
+        let msg = GossipMessage::PingReq {
+            seq: 42,
+            sender: requester,
+            target,
+            target_addr,
+        };
+        let responses = engine.handle_message(msg, requester_addr).await;
+        let relay_seq = match &responses[0].1 {
+            GossipMessage::Ping { seq, .. } => *seq,
+            other => panic!("expected Ping, got {other:?}"),
+        };
+
+        // step 2: target responds with Ack for the relay_seq
+        let target_sender = NodeId::new();
+        let ack = GossipMessage::Ack {
+            seq: relay_seq,
+            sender: target_sender,
+            updates: vec![],
+        };
+        let responses = engine.handle_message(ack, target_addr).await;
+
+        // should forward an Ack with the original seq back to the requester
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].0, requester_addr);
+        match &responses[0].1 {
+            GossipMessage::Ack { seq, .. } => assert_eq!(*seq, 42),
+            other => panic!("expected Ack, got {other:?}"),
+        }
+
+        // relay entry should be cleaned up
+        assert!(engine.relay_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn indirect_probe_timeout_marks_suspect() {
+        let (tx, _rx) = mpsc::channel(16);
+        let config = GossipConfig {
+            probe_timeout: Duration::from_millis(0), // expire immediately
+            indirect_probes: 1,
+            ..GossipConfig::default()
+        };
+        let mut engine = GossipEngine::new(NodeId::new(), test_addr(6379), config, tx);
+
+        let target = NodeId::new();
+        let relay = NodeId::new();
+        engine.add_seed(target, test_addr(6380));
+        engine.add_seed(relay, test_addr(6381));
+
+        // tick 1: send direct ping
+        engine.tick();
+
+        // tick 2: direct probe timed out → PingReq sent, indirect probe registered
+        engine.tick();
+
+        // tick 3: indirect probe also timed out → should mark Suspect
+        engine.tick();
+
+        // verify at least one member is now Suspect
+        let suspect_count = engine
+            .members
+            .values()
+            .filter(|m| m.state == MemberStatus::Suspect)
+            .count();
+        assert!(suspect_count > 0, "expected at least one Suspect member");
+    }
+
+    #[tokio::test]
+    async fn stale_relay_entries_cleaned_up() {
+        let (tx, _rx) = mpsc::channel(16);
+        let config = GossipConfig {
+            probe_timeout: Duration::from_millis(0), // expire immediately
+            ..GossipConfig::default()
+        };
+        let mut engine = GossipEngine::new(NodeId::new(), test_addr(6379), config, tx);
+
+        // manually insert a relay entry
+        engine.relay_pending.insert(
+            999,
+            RelayEntry {
+                requester: test_addr(6380),
+                original_seq: 1,
+                sent_at: Instant::now() - Duration::from_secs(10),
+            },
+        );
+
+        engine.tick();
+
+        // stale entry should be cleaned up
+        assert!(engine.relay_pending.is_empty());
     }
 }

@@ -606,7 +606,7 @@ impl ClusterCoordinator {
                 tokio::select! {
                     _ = tick_interval.tick() => {
                         let mut gossip = coordinator.gossip.lock().await;
-                        if let Some((target_addr, msg)) = gossip.tick() {
+                        for (target_addr, msg) in gossip.tick() {
                             let encoded = msg.encode();
                             if let Err(e) = sock.send_to(&encoded, target_addr).await {
                                 debug!("gossip send error to {target_addr}: {e}");
@@ -620,10 +620,10 @@ impl ClusterCoordinator {
                                 match GossipMessage::decode(&recv_buf[..len]) {
                                     Ok(msg) => {
                                         let mut gossip = coordinator.gossip.lock().await;
-                                        if let Some(reply) = gossip.handle_message(msg, from).await {
+                                        for (addr, reply) in gossip.handle_message(msg, from).await {
                                             let encoded = reply.encode();
-                                            if let Err(e) = sock.send_to(&encoded, from).await {
-                                                debug!("gossip reply error to {from}: {e}");
+                                            if let Err(e) = sock.send_to(&encoded, addr).await {
+                                                debug!("gossip reply error to {addr}: {e}");
                                             }
                                         }
                                     }
