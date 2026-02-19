@@ -13,9 +13,10 @@ use crate::shard::{
     self, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse,
 };
 
-/// Default channel buffer size per shard. 256 is large enough to absorb
-/// bursts without putting meaningful back-pressure on connections.
-const DEFAULT_SHARD_BUFFER: usize = 256;
+/// Default channel buffer size per shard. At 500k+ ops/sec/core, 256 can
+/// fill in under 0.5ms under pipelined bursts. 1024 gives ~2ms of headroom
+/// at negligible memory cost (~100KB per shard on 64-bit).
+const DEFAULT_SHARD_BUFFER: usize = 1024;
 
 /// Configuration for the engine, passed down to each shard.
 #[derive(Debug, Clone, Default)]

@@ -175,6 +175,10 @@ where
     // per-connection transaction state for MULTI/EXEC/DISCARD
     let mut tx_state = TransactionState::None;
 
+    // cache the peer address string once; avoids an allocation per command
+    // on the MONITOR hot path where every command needs a string representation.
+    let peer_addr_str = peer_addr.to_string();
+
     let mut buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
     let mut out = BytesMut::with_capacity(ctx.limits.buf_capacity);
     let mut frames = Vec::new();
@@ -262,7 +266,7 @@ where
                         slow_log,
                         pubsub,
                         &mut asking,
-                        peer_addr,
+                        &peer_addr_str,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -287,7 +291,7 @@ where
                     Frame::Simple("OK".into()).serialize(&mut out);
                     stream.write_all(&out).await?;
                     out.clear();
-                    handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
+                    handle_monitor_mode(&mut stream, &mut buf, ctx, &peer_addr_str).await?;
                     return Ok(());
                 }
                 let response = process(
@@ -297,7 +301,7 @@ where
                     slow_log,
                     pubsub,
                     &mut asking,
-                    peer_addr,
+                    &peer_addr_str,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -324,7 +328,7 @@ where
                         slow_log,
                         pubsub,
                         &mut asking,
-                        peer_addr,
+                        &peer_addr_str,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -363,7 +367,7 @@ where
                         slow_log,
                         pubsub,
                         &mut asking,
-                        peer_addr,
+                        &peer_addr_str,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -394,7 +398,7 @@ where
                     slow_log,
                     pubsub,
                     &mut asking,
-                    peer_addr,
+                    &peer_addr_str,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -427,7 +431,7 @@ where
                         slow_log,
                         pubsub,
                         &mut asking,
-                        peer_addr,
+                        &peer_addr_str,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -443,7 +447,7 @@ where
                         slow_log,
                         pubsub,
                         &mut asking,
-                        peer_addr,
+                        &peer_addr_str,
                     )
                     .await;
                     pending.push(p);
@@ -477,7 +481,7 @@ async fn handle_frame_with_tx(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
-    peer_addr: SocketAddr,
+    peer_addr: &str,
 ) -> Frame {
     // peek at the command name without consuming the frame
     let cmd_name = peek_command_name(&frame);
@@ -732,7 +736,7 @@ async fn handle_monitor_mode<S>(
     stream: &mut S,
     buf: &mut BytesMut,
     ctx: &Arc<ServerContext>,
-    peer_addr: SocketAddr,
+    peer_addr: &str,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -1125,7 +1129,7 @@ async fn process(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
-    peer_addr: SocketAddr,
+    peer_addr: &str,
 ) -> Frame {
     // broadcast to MONITOR subscribers
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -1137,7 +1141,7 @@ async fn process(
                 .as_secs_f64();
             let _ = ctx.monitor_tx.send(MonitorEvent {
                 timestamp: ts,
-                client_addr: peer_addr.to_string(),
+                client_addr: peer_addr.to_owned(),
                 args,
             });
         }
@@ -1197,7 +1201,7 @@ async fn dispatch_command(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
-    peer_addr: SocketAddr,
+    peer_addr: &str,
 ) -> PendingResponse {
     // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -1209,7 +1213,7 @@ async fn dispatch_command(
                 .as_secs_f64();
             let _ = ctx.monitor_tx.send(MonitorEvent {
                 timestamp: ts,
-                client_addr: peer_addr.to_string(),
+                client_addr: peer_addr.to_owned(),
                 args,
             });
         }
