@@ -25,6 +25,19 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
+/// Stagger delay before broadcasting a vote request so replicas with more
+/// data wait less (replaced with a fixed value until offset tracking lands).
+const ELECTION_STAGGER_MS: u64 = 500;
+
+/// Timeout for an in-progress election; clears state if quorum not reached.
+const ELECTION_TIMEOUT_SECS: u64 = 5;
+
+/// Grace period given to the primary during a default (non-FORCE) failover.
+const FAILOVER_GRACE_MS: u64 = 500;
+
+/// TCP port offset from the data port to the replication stream port.
+const REPLICATION_PORT_OFFSET: u16 = 2;
+
 /// Integration struct wrapping cluster crate types for the running server.
 ///
 /// Thread-safe via interior mutability: `RwLock` for state (many readers,
@@ -293,15 +306,14 @@ impl ClusterCoordinator {
 
     /// Returns an error `Frame` for the given `RaftProposalError`.
     fn raft_error_frame(e: RaftProposalError) -> Frame {
-        match e {
+        let msg = match e {
             RaftProposalError::NotLeader(Some(node)) => {
-                Frame::Error(format!("ERR not leader, leader at {}", node.addr))
+                format!("not leader, leader at {}", node.addr)
             }
-            RaftProposalError::NotLeader(None) => {
-                Frame::Error("ERR no leader elected, retry shortly".into())
-            }
-            RaftProposalError::Fatal(msg) => Frame::Error(format!("ERR raft error: {msg}")),
-        }
+            RaftProposalError::NotLeader(None) => "no leader elected, retry shortly".into(),
+            RaftProposalError::Fatal(msg) => format!("raft error: {msg}"),
+        };
+        Frame::Error(format!("ERR {msg}"))
     }
 
     // -- cluster command handlers --
@@ -872,6 +884,16 @@ impl ClusterCoordinator {
             .store(false, std::sync::atomic::Ordering::Release);
     }
 
+    /// Derives the replication TCP port from a data-plane port.
+    ///
+    /// The formula is `data_port + gossip_port_offset + REPLICATION_PORT_OFFSET`,
+    /// which keeps replication off both the data port and the gossip port.
+    fn replication_port(&self, data_port: u16) -> Option<u16> {
+        data_port
+            .checked_add(self.gossip_port_offset)
+            .and_then(|p| p.checked_add(REPLICATION_PORT_OFFSET))
+    }
+
     // -- automatic failover --
 
     /// Starts an automatic failover election after `failed_primary` is confirmed dead.
@@ -880,10 +902,10 @@ impl ClusterCoordinator {
     /// Broadcasts a `VoteRequest` via gossip and waits up to 5 seconds for
     /// a quorum of primaries to respond with `VoteGranted`.
     async fn start_election(self: &Arc<Self>, failed_primary: NodeId) {
-        // Brief delay so a replica that is farther behind waits longer.
-        // A proper implementation would compute: (max_offset - my_offset) * scale,
-        // but without a shared offset oracle we use a fixed delay as a tie-breaker.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        // fixed 500 ms stagger; a production implementation should compute
+        // (max_offset - my_offset) * scale so the most up-to-date replica wins.
+        // this requires a shared offset oracle (e.g., gossip-advertised offset).
+        tokio::time::sleep(std::time::Duration::from_millis(ELECTION_STAGGER_MS)).await;
 
         // Re-read cluster state — the primary may have recovered during our sleep.
         let (epoch, total_primaries, still_failed) = {
@@ -945,7 +967,7 @@ impl ClusterCoordinator {
         }
 
         // Wait for votes; give the cluster time to respond.
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(ELECTION_TIMEOUT_SECS)).await;
 
         // Timed out without quorum — clear election state.
         let mut guard = self.election.lock().await;
@@ -1088,7 +1110,7 @@ impl ClusterCoordinator {
             // give the replication stream a brief window to deliver
             // any in-flight records before we cut over. a future improvement
             // could track the exact offset and wait for full catchup.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(FAILOVER_GRACE_MS)).await;
         }
 
         // get the primary's current slot ranges so we can hand them over
@@ -1173,12 +1195,7 @@ impl ClusterCoordinator {
             return;
         };
 
-        let repl_port = match self
-            .bind_addr
-            .port()
-            .checked_add(self.gossip_port_offset)
-            .and_then(|p| p.checked_add(2))
-        {
+        let repl_port = match self.replication_port(self.bind_addr.port()) {
             Some(p) => p,
             None => {
                 error!("replication port overflows u16; not starting replication server");
@@ -1215,11 +1232,7 @@ impl ClusterCoordinator {
             return;
         };
 
-        let repl_port = match addr
-            .port()
-            .checked_add(self.gossip_port_offset)
-            .and_then(|p| p.checked_add(2))
-        {
+        let repl_port = match self.replication_port(addr.port()) {
             Some(p) => p,
             None => {
                 error!(%primary_id, "primary replication port overflows u16; not connecting");
@@ -1301,12 +1314,14 @@ impl ClusterCoordinator {
             return;
         };
 
-        let state = self.state.read().await;
-        let gossip = self.gossip.lock().await;
-        let incarnation = gossip.local_incarnation();
-        let content = state.to_nodes_conf(incarnation);
-        drop(gossip);
-        drop(state);
+        let incarnation = {
+            let gossip = self.gossip.lock().await;
+            gossip.local_incarnation()
+        };
+        let content = {
+            let state = self.state.read().await;
+            state.to_nodes_conf(incarnation)
+        };
 
         let conf_path = dir.join("nodes.conf");
         let tmp_path = dir.join("nodes.conf.tmp");
@@ -1398,14 +1413,16 @@ impl ClusterCoordinator {
         // task 2: gossip event consumer — updates cluster state
         let coordinator = Arc::clone(self);
         tokio::spawn(async move {
+            // PostAction defers work that must run after the state write-lock is released.
+            // Holding the lock while calling gossip or async failover methods would deadlock.
+            enum PostAction {
+                None,
+                StartElection(NodeId),
+                HandleVoteRequest { candidate: NodeId, epoch: u64 },
+                HandleVoteGranted { from: NodeId, candidate: NodeId, epoch: u64 },
+            }
+
             while let Some(event) = event_rx.recv().await {
-                // Actions that need to run after releasing the state write-lock.
-                enum PostAction {
-                    None,
-                    StartElection(NodeId),
-                    HandleVoteRequest { candidate: NodeId, epoch: u64 },
-                    HandleVoteGranted { from: NodeId, candidate: NodeId, epoch: u64 },
-                }
                 let mut post_action = PostAction::None;
 
                 let needs_save = {
