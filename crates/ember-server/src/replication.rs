@@ -37,7 +37,7 @@ use bytes::Bytes;
 use ember_core::{Engine, ShardRequest, ShardResponse};
 use ember_persistence::aof::AofRecord;
 use ember_persistence::snapshot::{self, SnapValue};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -55,44 +55,46 @@ const MSG_RESYNC: u8 = 5;
 
 // -- framed I/O primitives --
 //
-// thin wrappers around AsyncReadExt/AsyncWriteExt for the little-endian binary
-// wire protocol. each wraps exactly one syscall; no buffering happens here.
+// generic over AsyncRead/AsyncWrite so they work with both raw TcpStream
+// and BufWriter<TcpStream>. the primary-side write path wraps the stream
+// in a BufWriter, so small writes (tag, shard_id, offset, length) are
+// coalesced into a single syscall per record rather than 4-5 separate ones.
 
-async fn write_u8(w: &mut TcpStream, val: u8) -> std::io::Result<()> {
+async fn write_u8(w: &mut (impl AsyncWrite + Unpin), val: u8) -> std::io::Result<()> {
     w.write_all(&[val]).await
 }
 
-async fn write_u16_le(w: &mut TcpStream, val: u16) -> std::io::Result<()> {
+async fn write_u16_le(w: &mut (impl AsyncWrite + Unpin), val: u16) -> std::io::Result<()> {
     w.write_all(&val.to_le_bytes()).await
 }
 
-async fn write_u32_le(w: &mut TcpStream, val: u32) -> std::io::Result<()> {
+async fn write_u32_le(w: &mut (impl AsyncWrite + Unpin), val: u32) -> std::io::Result<()> {
     w.write_all(&val.to_le_bytes()).await
 }
 
-async fn write_u64_le(w: &mut TcpStream, val: u64) -> std::io::Result<()> {
+async fn write_u64_le(w: &mut (impl AsyncWrite + Unpin), val: u64) -> std::io::Result<()> {
     w.write_all(&val.to_le_bytes()).await
 }
 
-async fn read_u8(r: &mut TcpStream) -> std::io::Result<u8> {
+async fn read_u8(r: &mut (impl AsyncRead + Unpin)) -> std::io::Result<u8> {
     let mut buf = [0u8; 1];
     r.read_exact(&mut buf).await?;
     Ok(buf[0])
 }
 
-async fn read_u16_le(r: &mut TcpStream) -> std::io::Result<u16> {
+async fn read_u16_le(r: &mut (impl AsyncRead + Unpin)) -> std::io::Result<u16> {
     let mut buf = [0u8; 2];
     r.read_exact(&mut buf).await?;
     Ok(u16::from_le_bytes(buf))
 }
 
-async fn read_u32_le(r: &mut TcpStream) -> std::io::Result<u32> {
+async fn read_u32_le(r: &mut (impl AsyncRead + Unpin)) -> std::io::Result<u32> {
     let mut buf = [0u8; 4];
     r.read_exact(&mut buf).await?;
     Ok(u32::from_le_bytes(buf))
 }
 
-async fn read_u64_le(r: &mut TcpStream) -> std::io::Result<u64> {
+async fn read_u64_le(r: &mut (impl AsyncRead + Unpin)) -> std::io::Result<u64> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf).await?;
     Ok(u64::from_le_bytes(buf))
@@ -103,7 +105,11 @@ async fn read_u64_le(r: &mut TcpStream) -> std::io::Result<u64> {
 /// Used throughout the handshake and snapshot-load path to assert that
 /// the primary sent the message type we expected at this point in the
 /// protocol.
-async fn expect_tag(stream: &mut TcpStream, expected: u8, label: &str) -> io::Result<()> {
+async fn expect_tag(
+    stream: &mut (impl AsyncRead + Unpin),
+    expected: u8,
+    label: &str,
+) -> io::Result<()> {
     let tag = read_u8(stream).await?;
     if tag != expected {
         return Err(io::Error::new(
@@ -161,7 +167,12 @@ impl ReplicationServer {
     }
 
     /// Handles a single replica connection: handshake + full sync + stream.
-    async fn handle_replica(&self, mut stream: TcpStream) -> std::io::Result<()> {
+    async fn handle_replica(&self, stream: TcpStream) -> std::io::Result<()> {
+        // wrap in a 64 KiB write buffer so the 4-5 small framing writes
+        // (tag, shard_id, offset, length) per record are coalesced into
+        // a single syscall. reads are delegated to the inner TcpStream.
+        let mut stream = BufWriter::with_capacity(65536, stream);
+
         // read replica handshake
         let replica_version = read_u8(&mut stream).await?;
         if replica_version != REPL_VERSION {
@@ -254,6 +265,9 @@ impl ReplicationServer {
                     write_u64_le(&mut stream, event.offset).await?;
                     write_u32_le(&mut stream, record_len).await?;
                     stream.write_all(&record_bytes).await?;
+                    // flush so the replica receives the record without waiting
+                    // for the 64 KiB buffer to fill (reduces replication lag)
+                    stream.flush().await?;
                 }
                 Err(broadcast::error::RecvError::Lagged(count)) => {
                     warn!("replication stream lagged by {count} events; triggering resync");
