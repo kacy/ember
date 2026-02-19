@@ -136,6 +136,11 @@ async fn process(
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
+            // reject oversized keys/values before any further processing
+            if let Some(err) = crate::connection_common::validate_command_sizes(&cmd) {
+                return err;
+            }
+
             let cmd_name = cmd.command_name();
             let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
             let start = if needs_timing {
