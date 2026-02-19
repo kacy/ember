@@ -149,8 +149,8 @@ fn unexpected_response(resp: &ShardResponse) -> Status {
     }
 }
 
-// input validation limits — shared with the RESP path in connection_common
-use crate::connection_common::{MAX_KEY_LEN, MAX_VALUE_LEN};
+// input validation limits — defaults used as fallback documentation
+use crate::config::ConnectionLimits;
 #[cfg(feature = "vector")]
 const MAX_VECTOR_DIMS: usize = 65_536;
 #[cfg(feature = "vector")]
@@ -161,25 +161,27 @@ const MAX_HNSW_M: u32 = 1_024;
 const MAX_HNSW_EF: u32 = 1_024;
 
 #[allow(clippy::result_large_err)] // Status is tonic's idiomatic error type
-fn validate_key(key: &str) -> Result<(), Status> {
+fn validate_key(key: &str, limits: &ConnectionLimits) -> Result<(), Status> {
     if key.is_empty() {
         return Err(Status::invalid_argument("key must not be empty"));
     }
-    if key.len() > MAX_KEY_LEN {
+    if key.len() > limits.max_key_len {
         return Err(Status::invalid_argument(format!(
-            "key length {} exceeds max {MAX_KEY_LEN}",
-            key.len()
+            "key length {} exceeds max {}",
+            key.len(),
+            limits.max_key_len
         )));
     }
     Ok(())
 }
 
 #[allow(clippy::result_large_err)] // Status is tonic's idiomatic error type
-fn validate_value(value: &[u8]) -> Result<(), Status> {
-    if value.len() > MAX_VALUE_LEN {
+fn validate_value(value: &[u8], limits: &ConnectionLimits) -> Result<(), Status> {
+    if value.len() > limits.max_value_len {
         return Err(Status::invalid_argument(format!(
-            "value length {} exceeds max {MAX_VALUE_LEN}",
-            value.len()
+            "value length {} exceeds max {}",
+            value.len(),
+            limits.max_value_len
         )));
     }
     Ok(())
@@ -205,7 +207,7 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         let key = req.key;
-        validate_key(&key)?;
+        validate_key(&key, &self.ctx.limits)?;
 
         let resp = self
             .route(&key, ShardRequest::Get { key: key.clone() })
@@ -224,8 +226,8 @@ impl EmberCache for EmberService {
     async fn set(&self, request: Request<SetRequest>) -> Result<Response<SetResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
-        validate_key(&req.key)?;
-        validate_value(&req.value)?;
+        validate_key(&req.key, &self.ctx.limits)?;
+        validate_value(&req.value, &self.ctx.limits)?;
 
         let expire = parse_expire(req.expire_seconds, req.expire_millis);
         let resp = self
@@ -254,7 +256,7 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let keys = request.into_inner().keys;
         for k in &keys {
-            validate_key(k)?;
+            validate_key(k, &self.ctx.limits)?;
         }
 
         let responses = self
@@ -278,7 +280,7 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let keys = request.into_inner().keys;
         for k in &keys {
-            validate_key(k)?;
+            validate_key(k, &self.ctx.limits)?;
         }
 
         let responses = self
@@ -305,8 +307,8 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let pairs = request.into_inner().pairs;
         for p in &pairs {
-            validate_key(&p.key)?;
-            validate_value(&p.value)?;
+            validate_key(&p.key, &self.ctx.limits)?;
+            validate_value(&p.value, &self.ctx.limits)?;
         }
 
         let keys: Vec<String> = pairs.iter().map(|p| p.key.clone()).collect();
@@ -1369,7 +1371,7 @@ impl EmberCache for EmberService {
         {
             let start = Instant::now();
             let req = request.into_inner();
-            validate_key(&req.key)?;
+            validate_key(&req.key, &self.ctx.limits)?;
             if req.vector.len() > MAX_VECTOR_DIMS {
                 return Err(Status::invalid_argument(format!(
                     "vector dimensions {} exceeds max {MAX_VECTOR_DIMS}",
@@ -1443,7 +1445,7 @@ impl EmberCache for EmberService {
         {
             let start = Instant::now();
             let req = request.into_inner();
-            validate_key(&req.key)?;
+            validate_key(&req.key, &self.ctx.limits)?;
 
             if req.entries.is_empty() {
                 return Ok(Response::new(IntResponse { value: 0 }));
@@ -1544,7 +1546,7 @@ impl EmberCache for EmberService {
         {
             let start = Instant::now();
             let req = request.into_inner();
-            validate_key(&req.key)?;
+            validate_key(&req.key, &self.ctx.limits)?;
             if (req.count as usize) > MAX_VSIM_COUNT {
                 return Err(Status::invalid_argument(format!(
                     "vsim count {} exceeds max {MAX_VSIM_COUNT}",
@@ -1846,7 +1848,7 @@ impl EmberCache for EmberService {
     async fn decr(&self, request: Request<DecrRequest>) -> Result<Response<IntResponse>, Status> {
         let start = Instant::now();
         let key = request.into_inner().key;
-        validate_key(&key)?;
+        validate_key(&key, &self.ctx.limits)?;
         let resp = self
             .route(&key, ShardRequest::Decr { key: key.clone() })
             .await?;
@@ -1865,7 +1867,7 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let keys = request.into_inner().keys;
         for k in &keys {
-            validate_key(k)?;
+            validate_key(k, &self.ctx.limits)?;
         }
 
         let responses = self
@@ -1986,19 +1988,19 @@ impl EmberCache for EmberService {
         }
 
         let total_subs = req.channels.len() + req.patterns.len();
-        if total_subs > crate::connection_common::MAX_SUBSCRIPTIONS_PER_CONN {
+        if total_subs > self.ctx.limits.max_subscriptions_per_conn {
             return Err(Status::invalid_argument(format!(
                 "too many subscriptions ({total_subs}), max {}",
-                crate::connection_common::MAX_SUBSCRIPTIONS_PER_CONN
+                self.ctx.limits.max_subscriptions_per_conn
             )));
         }
 
         for pat in &req.patterns {
-            if pat.len() > crate::connection_common::MAX_PATTERN_LEN {
+            if pat.len() > self.ctx.limits.max_pattern_len {
                 return Err(Status::invalid_argument(format!(
                     "pattern too long ({} bytes), max {}",
                     pat.len(),
-                    crate::connection_common::MAX_PATTERN_LEN
+                    self.ctx.limits.max_pattern_len
                 )));
             }
         }

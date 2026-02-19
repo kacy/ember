@@ -13,9 +13,9 @@ use crate::shard::{
     self, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse,
 };
 
-/// Channel buffer size per shard. 256 is large enough to absorb
+/// Default channel buffer size per shard. 256 is large enough to absorb
 /// bursts without putting meaningful back-pressure on connections.
-const SHARD_BUFFER: usize = 256;
+const DEFAULT_SHARD_BUFFER: usize = 256;
 
 /// Configuration for the engine, passed down to each shard.
 #[derive(Debug, Clone, Default)]
@@ -35,6 +35,8 @@ pub struct EngineConfig {
     /// When set, enables PROTO.* commands.
     #[cfg(feature = "protobuf")]
     pub schema_registry: Option<crate::schema::SharedSchemaRegistry>,
+    /// Channel buffer size per shard. 0 means use the default (256).
+    pub shard_channel_buffer: usize,
 }
 
 /// The sharded engine. Owns handles to all shard tasks and routes
@@ -73,13 +75,18 @@ impl Engine {
         );
 
         let drop_handle = DropHandle::spawn();
+        let buffer = if config.shard_channel_buffer == 0 {
+            DEFAULT_SHARD_BUFFER
+        } else {
+            config.shard_channel_buffer
+        };
 
         let shards = (0..shard_count)
             .map(|i| {
                 let mut shard_config = config.shard.clone();
                 shard_config.shard_id = i as u16;
                 shard::spawn_shard(
-                    SHARD_BUFFER,
+                    buffer,
                     shard_config,
                     config.persistence.clone(),
                     Some(drop_handle.clone()),

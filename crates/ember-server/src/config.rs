@@ -3,12 +3,18 @@
 //! Handles conversion from CLI-friendly strings (like "100M", "1G")
 //! to the internal config types used by the engine. Also provides a
 //! `ConfigRegistry` for CONFIG GET/SET support at runtime.
+//!
+//! Configuration resolution order (highest priority wins):
+//!   defaults → TOML file → env vars → CLI flags
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::time::Duration;
 
 use ember_core::{EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig};
 use ember_persistence::aof::FsyncPolicy;
+use serde::{Deserialize, Serialize};
 
 /// Parses a human-readable byte size string into a number of bytes.
 ///
@@ -85,6 +91,7 @@ pub fn build_engine_config(
     eviction_policy: EvictionPolicy,
     shard_count: usize,
     persistence: Option<ShardPersistenceConfig>,
+    shard_channel_buffer: usize,
 ) -> EngineConfig {
     let per_shard_memory = max_memory.map(|total| {
         // divide evenly, rounding down — better to be slightly
@@ -102,7 +109,390 @@ pub fn build_engine_config(
         replication_tx: None,
         #[cfg(feature = "protobuf")]
         schema_registry: None,
+        shard_channel_buffer,
     }
+}
+
+// ---------------------------------------------------------------------------
+// EmberConfig: unified TOML configuration
+// ---------------------------------------------------------------------------
+
+/// Top-level configuration loaded from a TOML file.
+///
+/// Every field has a default matching the current hard-coded values so a
+/// completely empty file is valid. Fields are grouped into sections that
+/// mirror the TOML layout.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EmberConfig {
+    // -- server --
+    pub bind: String,
+    pub port: u16,
+    /// Number of shards. 0 means auto-detect CPU cores.
+    pub shards: usize,
+    pub concurrent: bool,
+    pub requirepass: String,
+    #[serde(rename = "data-dir")]
+    pub data_dir: String,
+
+    // -- connections --
+    pub maxclients: usize,
+    #[serde(rename = "idle-timeout-secs")]
+    pub idle_timeout_secs: u64,
+    #[serde(rename = "max-pipeline-depth")]
+    pub max_pipeline_depth: usize,
+    #[serde(rename = "max-auth-failures")]
+    pub max_auth_failures: u32,
+
+    // -- memory --
+    pub maxmemory: String,
+    #[serde(rename = "maxmemory-policy")]
+    pub maxmemory_policy: String,
+
+    // -- persistence --
+    pub appendonly: bool,
+    pub appendfsync: String,
+    #[serde(rename = "active-expiry-interval-ms")]
+    pub active_expiry_interval_ms: u64,
+    #[serde(rename = "aof-fsync-interval-secs")]
+    pub aof_fsync_interval_secs: u64,
+
+    // -- monitoring --
+    #[serde(rename = "metrics-port")]
+    pub metrics_port: u16,
+    #[serde(rename = "slowlog-log-slower-than")]
+    pub slowlog_log_slower_than: i64,
+    #[serde(rename = "slowlog-max-len")]
+    pub slowlog_max_len: usize,
+
+    // -- tls --
+    #[serde(rename = "tls-port")]
+    pub tls_port: u16,
+    #[serde(rename = "tls-cert-file")]
+    pub tls_cert_file: String,
+    #[serde(rename = "tls-key-file")]
+    pub tls_key_file: String,
+    #[serde(rename = "tls-ca-cert-file")]
+    pub tls_ca_cert_file: String,
+    #[serde(rename = "tls-auth-clients")]
+    pub tls_auth_clients: String,
+
+    // -- protocol limits --
+    #[serde(rename = "max-key-len")]
+    pub max_key_len: String,
+    #[serde(rename = "max-value-len")]
+    pub max_value_len: String,
+    #[serde(rename = "max-subscriptions-per-connection")]
+    pub max_subscriptions_per_connection: usize,
+    #[serde(rename = "max-pattern-len")]
+    pub max_pattern_len: usize,
+    #[serde(rename = "read-buffer-capacity")]
+    pub read_buffer_capacity: usize,
+    #[serde(rename = "max-buffer-size")]
+    pub max_buffer_size: String,
+
+    // -- cluster (nested table) --
+    pub cluster: ClusterConfig,
+
+    // -- engine internals (nested table) --
+    pub engine: EngineInternalsConfig,
+}
+
+impl Default for EmberConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1".into(),
+            port: 6379,
+            shards: 0,
+            concurrent: false,
+            requirepass: String::new(),
+            data_dir: String::new(),
+
+            maxclients: 10_000,
+            idle_timeout_secs: 300,
+            max_pipeline_depth: 10_000,
+            max_auth_failures: 10,
+
+            maxmemory: String::new(),
+            maxmemory_policy: "noeviction".into(),
+
+            appendonly: false,
+            appendfsync: "everysec".into(),
+            active_expiry_interval_ms: 100,
+            aof_fsync_interval_secs: 1,
+
+            metrics_port: 0,
+            slowlog_log_slower_than: 10_000,
+            slowlog_max_len: 128,
+
+            tls_port: 0,
+            tls_cert_file: String::new(),
+            tls_key_file: String::new(),
+            tls_ca_cert_file: String::new(),
+            tls_auth_clients: "no".into(),
+
+            max_key_len: "512kb".into(),
+            max_value_len: "512mb".into(),
+            max_subscriptions_per_connection: 10_000,
+            max_pattern_len: 256,
+            read_buffer_capacity: 4096,
+            max_buffer_size: "64mb".into(),
+
+            cluster: ClusterConfig::default(),
+            engine: EngineInternalsConfig::default(),
+        }
+    }
+}
+
+/// Cluster-specific configuration (`[cluster]` section).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClusterConfig {
+    pub enabled: bool,
+    pub bootstrap: bool,
+    #[serde(rename = "port-offset")]
+    pub port_offset: u16,
+    #[serde(rename = "raft-port-offset")]
+    pub raft_port_offset: u16,
+    #[serde(rename = "node-timeout-ms")]
+    pub node_timeout_ms: u64,
+    #[serde(rename = "auth-pass")]
+    pub auth_pass: String,
+    pub gossip: GossipSection,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bootstrap: false,
+            port_offset: 10_000,
+            raft_port_offset: 10_001,
+            node_timeout_ms: 5_000,
+            auth_pass: String::new(),
+            gossip: GossipSection::default(),
+        }
+    }
+}
+
+/// Gossip tuning parameters (`[cluster.gossip]` section).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GossipSection {
+    #[serde(rename = "protocol-period-ms")]
+    pub protocol_period_ms: u64,
+    #[serde(rename = "probe-timeout-ms")]
+    pub probe_timeout_ms: u64,
+    #[serde(rename = "suspicion-multiplier")]
+    pub suspicion_multiplier: u32,
+    #[serde(rename = "indirect-probes")]
+    pub indirect_probes: usize,
+    #[serde(rename = "max-piggyback")]
+    pub max_piggyback: usize,
+}
+
+impl Default for GossipSection {
+    fn default() -> Self {
+        Self {
+            protocol_period_ms: 1_000,
+            probe_timeout_ms: 500,
+            suspicion_multiplier: 5,
+            indirect_probes: 3,
+            max_piggyback: 10,
+        }
+    }
+}
+
+/// Engine internal tuning (`[engine]` section).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EngineInternalsConfig {
+    #[serde(rename = "shard-channel-buffer")]
+    pub shard_channel_buffer: usize,
+    #[serde(rename = "replication-broadcast-capacity")]
+    pub replication_broadcast_capacity: usize,
+    #[serde(rename = "stats-poll-interval-secs")]
+    pub stats_poll_interval_secs: u64,
+}
+
+impl Default for EngineInternalsConfig {
+    fn default() -> Self {
+        Self {
+            shard_channel_buffer: 256,
+            replication_broadcast_capacity: 65_536,
+            stats_poll_interval_secs: 5,
+        }
+    }
+}
+
+impl EmberConfig {
+    /// Loads config from a TOML file, falling back to defaults for any
+    /// missing fields. Returns an error if the file can't be read or
+    /// contains unknown fields.
+    pub fn from_file(path: &Path) -> Result<Self, String> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| format!("failed to read config file '{}': {e}", path.display()))?;
+        toml::from_str(&contents)
+            .map_err(|e| format!("failed to parse config file '{}': {e}", path.display()))
+    }
+
+    /// Serializes the current config to a TOML string.
+    pub fn to_toml(&self) -> Result<String, String> {
+        toml::to_string_pretty(self).map_err(|e| format!("failed to serialize config: {e}"))
+    }
+
+    /// Derives `ConnectionLimits` from this config, resolving byte-size
+    /// strings to concrete numbers.
+    pub fn connection_limits(&self) -> Result<ConnectionLimits, String> {
+        let max_key_len = if self.max_key_len.is_empty() {
+            512 * 1024
+        } else {
+            parse_byte_size(&self.max_key_len)?
+        };
+        let max_value_len = if self.max_value_len.is_empty() {
+            512 * 1024 * 1024
+        } else {
+            parse_byte_size(&self.max_value_len)?
+        };
+        let max_buf_size = if self.max_buffer_size.is_empty() {
+            64 * 1024 * 1024
+        } else {
+            parse_byte_size(&self.max_buffer_size)?
+        };
+
+        Ok(ConnectionLimits {
+            buf_capacity: self.read_buffer_capacity,
+            max_buf_size,
+            idle_timeout: Duration::from_secs(self.idle_timeout_secs),
+            max_auth_failures: self.max_auth_failures,
+            max_subscriptions_per_conn: self.max_subscriptions_per_connection,
+            max_pattern_len: self.max_pattern_len,
+            max_pipeline_depth: self.max_pipeline_depth,
+            max_key_len,
+            max_value_len,
+            stats_poll_interval: Duration::from_secs(self.engine.stats_poll_interval_secs),
+        })
+    }
+
+    /// Builds the runtime `ConfigRegistry` from this config's values.
+    pub fn to_registry(&self) -> ConfigRegistry {
+        let mut params = HashMap::new();
+        params.insert("port".into(), self.port.to_string());
+        params.insert("bind-address".into(), self.bind.clone());
+        params.insert("maxmemory".into(), if self.maxmemory.is_empty() {
+            "0".into()
+        } else {
+            parse_byte_size(&self.maxmemory).map(|v| v.to_string()).unwrap_or_else(|_| "0".into())
+        });
+        params.insert("maxmemory-policy".into(), self.maxmemory_policy.clone());
+        params.insert("appendonly".into(), if self.appendonly { "yes" } else { "no" }.into());
+        params.insert("appendfsync".into(), self.appendfsync.clone());
+        params.insert(
+            "slowlog-log-slower-than".into(),
+            self.slowlog_log_slower_than.to_string(),
+        );
+        params.insert("slowlog-max-len".into(), self.slowlog_max_len.to_string());
+        params.insert("maxclients".into(), self.maxclients.to_string());
+        params.insert("idle-timeout-secs".into(), self.idle_timeout_secs.to_string());
+        params.insert("max-pipeline-depth".into(), self.max_pipeline_depth.to_string());
+        params.insert("max-auth-failures".into(), self.max_auth_failures.to_string());
+        params.insert("active-expiry-interval-ms".into(), self.active_expiry_interval_ms.to_string());
+        params.insert("aof-fsync-interval-secs".into(), self.aof_fsync_interval_secs.to_string());
+        params.insert("max-key-len".into(), self.max_key_len.clone());
+        params.insert("max-value-len".into(), self.max_value_len.clone());
+        params.insert("max-subscriptions-per-connection".into(), self.max_subscriptions_per_connection.to_string());
+        params.insert("max-pattern-len".into(), self.max_pattern_len.to_string());
+        params.insert("read-buffer-capacity".into(), self.read_buffer_capacity.to_string());
+        params.insert("max-buffer-size".into(), self.max_buffer_size.clone());
+        params.insert("shard-channel-buffer".into(), self.engine.shard_channel_buffer.to_string());
+        params.insert("replication-broadcast-capacity".into(), self.engine.replication_broadcast_capacity.to_string());
+        params.insert("stats-poll-interval-secs".into(), self.engine.stats_poll_interval_secs.to_string());
+        ConfigRegistry::new(params)
+    }
+
+    /// Resolves the shard count: uses the configured value, or CPU count
+    /// if set to 0.
+    pub fn resolved_shard_count(&self) -> usize {
+        if self.shards == 0 {
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        } else {
+            self.shards
+        }
+    }
+
+    /// Resolves the data directory as an optional `PathBuf`.
+    pub fn data_dir_path(&self) -> Option<PathBuf> {
+        if self.data_dir.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(&self.data_dir))
+        }
+    }
+
+    /// Parses `maxmemory` into an optional byte count.
+    pub fn max_memory_bytes(&self) -> Result<Option<usize>, String> {
+        if self.maxmemory.is_empty() || self.maxmemory == "0" {
+            Ok(None)
+        } else {
+            parse_byte_size(&self.maxmemory).map(Some)
+        }
+    }
+
+    /// Parses `metrics-port`, returning `None` when 0 (disabled).
+    pub fn metrics_port(&self) -> Option<u16> {
+        if self.metrics_port == 0 {
+            None
+        } else {
+            Some(self.metrics_port)
+        }
+    }
+
+    /// Parses `tls-port`, returning `None` when 0 (disabled).
+    pub fn tls_port(&self) -> Option<u16> {
+        if self.tls_port == 0 {
+            None
+        } else {
+            Some(self.tls_port)
+        }
+    }
+
+    /// Returns the requirepass value, or `None` if empty.
+    pub fn requirepass(&self) -> Option<String> {
+        if self.requirepass.is_empty() {
+            None
+        } else {
+            Some(self.requirepass.clone())
+        }
+    }
+
+    /// Returns the cluster auth-pass, or `None` if empty.
+    pub fn cluster_auth_pass(&self) -> Option<String> {
+        if self.cluster.auth_pass.is_empty() {
+            None
+        } else {
+            Some(self.cluster.auth_pass.clone())
+        }
+    }
+}
+
+/// Runtime limits derived from `EmberConfig` at startup.
+///
+/// Stored on `ServerContext` and read by connection handlers on the
+/// hot path. All values are plain types — no allocations per-access.
+#[derive(Debug, Clone)]
+pub struct ConnectionLimits {
+    pub buf_capacity: usize,
+    pub max_buf_size: usize,
+    pub idle_timeout: Duration,
+    pub max_auth_failures: u32,
+    pub max_subscriptions_per_conn: usize,
+    pub max_pattern_len: usize,
+    pub max_pipeline_depth: usize,
+    pub max_key_len: usize,
+    pub max_value_len: usize,
+    pub stats_poll_interval: Duration,
 }
 
 /// Runtime configuration registry for CONFIG GET/SET.
@@ -262,14 +652,14 @@ mod tests {
 
     #[test]
     fn build_config_divides_memory() {
-        let cfg = build_engine_config(Some(400), EvictionPolicy::AllKeysLru, 4, None);
+        let cfg = build_engine_config(Some(400), EvictionPolicy::AllKeysLru, 4, None, 0);
         assert_eq!(cfg.shard.max_memory, Some(100));
         assert_eq!(cfg.shard.eviction_policy, EvictionPolicy::AllKeysLru);
     }
 
     #[test]
     fn build_config_no_limit() {
-        let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None);
+        let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None, 0);
         assert_eq!(cfg.shard.max_memory, None);
     }
 
@@ -324,5 +714,95 @@ mod tests {
         let registry = ConfigRegistry::new(params);
 
         assert!(registry.set("maxmemory", "200").is_err());
+    }
+
+    // -- EmberConfig tests --
+
+    #[test]
+    fn default_config_roundtrips_through_toml() {
+        let cfg = EmberConfig::default();
+        let toml_str = cfg.to_toml().unwrap();
+        let parsed: EmberConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.port, 6379);
+        assert_eq!(parsed.bind, "127.0.0.1");
+        assert_eq!(parsed.maxclients, 10_000);
+        assert_eq!(parsed.cluster.port_offset, 10_000);
+        assert_eq!(parsed.engine.shard_channel_buffer, 256);
+    }
+
+    #[test]
+    fn partial_toml_uses_defaults() {
+        let toml_str = r#"
+            port = 7777
+            [cluster]
+            enabled = true
+        "#;
+        let cfg: EmberConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.port, 7777);
+        assert!(cfg.cluster.enabled);
+        // everything else should be default
+        assert_eq!(cfg.bind, "127.0.0.1");
+        assert_eq!(cfg.maxclients, 10_000);
+        assert!(!cfg.appendonly);
+    }
+
+    #[test]
+    fn unknown_field_rejected() {
+        let toml_str = r#"
+            port = 6379
+            bogus_field = "nope"
+        "#;
+        let result: Result<EmberConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn connection_limits_from_defaults() {
+        let cfg = EmberConfig::default();
+        let limits = cfg.connection_limits().unwrap();
+        assert_eq!(limits.buf_capacity, 4096);
+        assert_eq!(limits.max_buf_size, 64 * 1024 * 1024);
+        assert_eq!(limits.idle_timeout, Duration::from_secs(300));
+        assert_eq!(limits.max_key_len, 512 * 1024);
+        assert_eq!(limits.max_value_len, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn config_to_registry_populates_params() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+        let all = registry.get_matching("*");
+        assert!(all.len() > 10);
+
+        let port = registry.get_matching("port");
+        assert_eq!(port.len(), 1);
+        assert_eq!(port[0].1, "6379");
+    }
+
+    #[test]
+    fn resolved_shard_count_auto_detects() {
+        let cfg = EmberConfig::default();
+        assert_eq!(cfg.shards, 0);
+        let count = cfg.resolved_shard_count();
+        assert!(count >= 1);
+    }
+
+    #[test]
+    fn resolved_shard_count_explicit() {
+        let mut cfg = EmberConfig::default();
+        cfg.shards = 4;
+        assert_eq!(cfg.resolved_shard_count(), 4);
+    }
+
+    #[test]
+    fn max_memory_bytes_parsing() {
+        let mut cfg = EmberConfig::default();
+        assert_eq!(cfg.max_memory_bytes().unwrap(), None);
+
+        cfg.maxmemory = "100M".into();
+        assert_eq!(cfg.max_memory_bytes().unwrap(), Some(100 * 1024 * 1024));
+
+        cfg.maxmemory = "0".into();
+        assert_eq!(cfg.max_memory_bytes().unwrap(), None);
     }
 }

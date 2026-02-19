@@ -33,6 +33,8 @@ thiserror = { workspace = true }
 futures = "0.3"
 dashmap = "6"
 subtle = { workspace = true }
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
 
 # tls
 tokio-rustls = { workspace = true }

@@ -20,9 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
-    MAX_BUF_SIZE, MAX_PATTERN_LEN, MAX_PIPELINE_DEPTH, MAX_SUBSCRIPTIONS_PER_CONN,
-    TransactionState,
+    is_allowed_before_auth, is_auth_frame, try_auth, validate_command_sizes, TransactionState,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
@@ -174,13 +172,13 @@ where
     // per-connection transaction state for MULTI/EXEC/DISCARD
     let mut tx_state = TransactionState::None;
 
-    let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
-    let mut out = BytesMut::with_capacity(BUF_CAPACITY);
+    let mut buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
+    let mut out = BytesMut::with_capacity(ctx.limits.buf_capacity);
     let mut frames = Vec::new();
 
     loop {
         // guard against unbounded buffer growth from incomplete frames
-        if buf.len() > MAX_BUF_SIZE {
+        if buf.len() > ctx.limits.max_buf_size {
             let msg = "ERR max buffer size exceeded, closing connection";
             let mut err_buf = BytesMut::new();
             Frame::Error(msg.into()).serialize(&mut err_buf);
@@ -189,8 +187,8 @@ where
         }
 
         // read some data — returns 0 on clean disconnect, times out
-        // after IDLE_TIMEOUT to reclaim resources from abandoned connections
-        match tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(&mut buf)).await {
+        // after idle_timeout to reclaim resources from abandoned connections
+        match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
             Ok(Ok(0)) => return Ok(()),
             Ok(Ok(_)) => {}
             Ok(Err(e)) => return Err(e.into()),
@@ -207,7 +205,7 @@ where
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     frames.push(frame);
-                    if frames.len() >= MAX_PIPELINE_DEPTH {
+                    if frames.len() >= ctx.limits.max_pipeline_depth {
                         break; // process this batch, remaining data stays in buf
                     }
                 }
@@ -232,7 +230,7 @@ where
                         authenticated = true;
                     } else {
                         auth_failures += 1;
-                        if auth_failures >= MAX_AUTH_FAILURES {
+                        if auth_failures >= ctx.limits.max_auth_failures {
                             Frame::Error("ERR too many AUTH failures, closing connection".into())
                                 .serialize(&mut out);
                             let _ = stream.write_all(&out).await;
@@ -276,7 +274,7 @@ where
 
             // enter subscriber mode — this blocks until all subscriptions
             // are removed or the client disconnects
-            handle_subscriber_mode(&mut stream, &mut buf, &mut out, pubsub, sub_frames).await?;
+            handle_subscriber_mode(&mut stream, &mut buf, &mut out, ctx, pubsub, sub_frames).await?;
             return Ok(());
         }
 
@@ -541,7 +539,7 @@ async fn handle_blocking_pop_cmd(
         Err(e) => return Frame::Error(format!("ERR {e}")),
     };
 
-    if let Some(err) = crate::connection_common::validate_command_sizes(&cmd) {
+    if let Some(err) = validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len) {
         return err;
     }
 
@@ -637,6 +635,7 @@ async fn handle_subscriber_mode<S>(
     stream: &mut S,
     buf: &mut BytesMut,
     out: &mut BytesMut,
+    ctx: &Arc<ServerContext>,
     pubsub: &Arc<PubSubManager>,
     initial_frames: Vec<Frame>,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -650,7 +649,7 @@ where
     // process the initial subscribe commands
     for frame in initial_frames {
         if let Ok(cmd) = Command::from_frame(frame) {
-            handle_sub_command(cmd, pubsub, &mut channel_rxs, &mut pattern_rxs, out);
+            handle_sub_command(cmd, ctx, pubsub, &mut channel_rxs, &mut pattern_rxs, out);
         }
     }
 
@@ -678,7 +677,7 @@ where
             }
 
             // check for new commands from the client (with idle timeout)
-            result = tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(buf)) => {
+            result = tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(buf)) => {
                 let result = match result {
                     Ok(inner) => inner,
                     Err(_) => {
@@ -688,7 +687,7 @@ where
                     }
                 };
                 // guard against unbounded buffer growth
-                if buf.len() > MAX_BUF_SIZE {
+                if buf.len() > ctx.limits.max_buf_size {
                     cleanup_subscriptions(pubsub, &channel_rxs, &pattern_rxs);
                     return Ok(());
                 }
@@ -711,7 +710,7 @@ where
                                             | Command::PSubscribe { .. }
                                             | Command::PUnsubscribe { .. } => {
                                                 handle_sub_command(
-                                                    cmd, pubsub, &mut channel_rxs,
+                                                    cmd, ctx, pubsub, &mut channel_rxs,
                                                     &mut pattern_rxs, out,
                                                 );
                                             }
@@ -762,6 +761,7 @@ where
 /// and writing RESP3 responses.
 fn handle_sub_command(
     cmd: Command,
+    ctx: &Arc<ServerContext>,
     pubsub: &PubSubManager,
     channel_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
     pattern_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
@@ -771,7 +771,7 @@ fn handle_sub_command(
         Command::Subscribe { channels } => {
             for ch in channels {
                 let total = channel_rxs.len() + pattern_rxs.len();
-                if total >= MAX_SUBSCRIPTIONS_PER_CONN {
+                if total >= ctx.limits.max_subscriptions_per_conn {
                     Frame::Error("ERR max subscriptions per connection reached".into())
                         .serialize(out);
                     continue;
@@ -807,17 +807,17 @@ fn handle_sub_command(
         }
         Command::PSubscribe { patterns } => {
             for pat in patterns {
-                if pat.len() > MAX_PATTERN_LEN {
+                if pat.len() > ctx.limits.max_pattern_len {
                     Frame::Error(format!(
                         "ERR pattern too long ({} bytes, max {})",
                         pat.len(),
-                        MAX_PATTERN_LEN
+                        ctx.limits.max_pattern_len
                     ))
                     .serialize(out);
                     continue;
                 }
                 let total = channel_rxs.len() + pattern_rxs.len();
-                if total >= MAX_SUBSCRIPTIONS_PER_CONN {
+                if total >= ctx.limits.max_subscriptions_per_conn {
                     Frame::Error("ERR max subscriptions per connection reached".into())
                         .serialize(out);
                     continue;
@@ -1036,7 +1036,7 @@ async fn dispatch_command(
     };
 
     // reject oversized keys/values before any further processing
-    if let Some(err) = crate::connection_common::validate_command_sizes(&cmd) {
+    if let Some(err) = validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len) {
         return PendingResponse::Immediate(err);
     }
 

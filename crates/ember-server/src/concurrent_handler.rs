@@ -24,8 +24,7 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
-    MAX_BUF_SIZE, MAX_PIPELINE_DEPTH, TransactionState,
+    is_allowed_before_auth, is_auth_frame, try_auth, validate_command_sizes, TransactionState,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
@@ -50,11 +49,11 @@ where
     let mut auth_failures: u32 = 0;
     let mut tx_state = TransactionState::None;
 
-    let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
-    let mut out = BytesMut::with_capacity(BUF_CAPACITY);
+    let mut buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
+    let mut out = BytesMut::with_capacity(ctx.limits.buf_capacity);
 
     loop {
-        if buf.len() > MAX_BUF_SIZE {
+        if buf.len() > ctx.limits.max_buf_size {
             let msg = "ERR max buffer size exceeded, closing connection";
             let mut err_buf = BytesMut::new();
             Frame::Error(msg.into()).serialize(&mut err_buf);
@@ -62,7 +61,7 @@ where
             return Ok(());
         }
 
-        match tokio::time::timeout(IDLE_TIMEOUT, stream.read_buf(&mut buf)).await {
+        match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
             Ok(Ok(0)) => return Ok(()),
             Ok(Ok(_)) => {}
             Ok(Err(e)) => return Err(e.into()),
@@ -72,7 +71,7 @@ where
         out.clear();
         let mut pipeline_count: usize = 0;
         loop {
-            if pipeline_count >= MAX_PIPELINE_DEPTH {
+            if pipeline_count >= ctx.limits.max_pipeline_depth {
                 break; // process this batch, remaining data stays in buf
             }
             match parse_frame(&buf) {
@@ -88,7 +87,7 @@ where
                                 authenticated = true;
                             } else {
                                 auth_failures += 1;
-                                if auth_failures >= MAX_AUTH_FAILURES {
+                                if auth_failures >= ctx.limits.max_auth_failures {
                                     Frame::Error(
                                         "ERR too many AUTH failures, closing connection".into(),
                                     )
@@ -146,7 +145,7 @@ async fn process(
     match Command::from_frame(frame) {
         Ok(cmd) => {
             // reject oversized keys/values before any further processing
-            if let Some(err) = crate::connection_common::validate_command_sizes(&cmd) {
+            if let Some(err) = validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len) {
                 return err;
             }
 
