@@ -344,17 +344,23 @@ impl Keyspace {
 
     /// Cleans up after removing an element from a collection (list, sorted
     /// set, hash, or set). If the collection is now empty, removes the key
-    /// entirely and adjusts memory/expiry tracking. Otherwise just adjusts
-    /// the memory delta.
-    fn cleanup_after_remove(&mut self, key: &str, old_size: usize, is_empty: bool) {
+    /// entirely and subtracts `old_size` from the memory tracker. Otherwise
+    /// subtracts `removed_bytes` (the byte cost of the removed element(s))
+    /// without rescanning the remaining collection.
+    fn cleanup_after_remove(
+        &mut self,
+        key: &str,
+        old_size: usize,
+        is_empty: bool,
+        removed_bytes: usize,
+    ) {
         if is_empty {
             if let Some(removed) = self.entries.remove(key) {
                 self.decrement_expiry_if_set(&removed);
             }
             self.memory.remove_with_size(old_size);
-        } else if let Some(entry) = self.entries.get(key) {
-            let new_size = memory::entry_size(key, &entry.value);
-            self.memory.adjust(old_size, new_size);
+        } else {
+            self.memory.shrink_by(removed_bytes);
         }
     }
 
@@ -1237,23 +1243,23 @@ impl Keyspace {
             self.insert_empty(key, Value::List(VecDeque::new()));
         }
 
-        let len = self
-            .track_size(key, |entry| {
-                let Value::List(ref mut deque) = entry.value else {
-                    unreachable!("type verified by ensure_collection_type");
-                };
-                for val in values {
-                    if left {
-                        deque.push_front(val.clone());
-                    } else {
-                        deque.push_back(val.clone());
-                    }
-                }
-                let len = deque.len();
-                entry.touch();
-                len
-            })
-            .unwrap_or(0);
+        // safe: key was just inserted or confirmed to exist
+        let entry = self.entries.get_mut(key).unwrap();
+        let Value::List(ref mut deque) = entry.value else {
+            unreachable!("type verified by ensure_collection_type");
+        };
+        for val in values {
+            if left {
+                deque.push_front(val.clone());
+            } else {
+                deque.push_back(val.clone());
+            }
+        }
+        let len = deque.len();
+        entry.touch();
+
+        // apply the known delta — no need to rescan the entire list
+        self.memory.grow_by(element_increase);
 
         Ok(len)
     }
@@ -1271,7 +1277,6 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &entry.value);
         let Value::List(ref mut deque) = entry.value else {
             // checked above
             return Err(WrongType);
@@ -1284,7 +1289,17 @@ impl Keyspace {
         entry.touch();
 
         let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
-        self.cleanup_after_remove(key, old_entry_size, is_empty);
+        if let Some(ref elem) = popped {
+            let element_size = elem.len() + memory::VECDEQUE_ELEMENT_OVERHEAD;
+            let old_size = if is_empty {
+                // the list held exactly this one element — compute exact old size
+                // from constants rather than scanning
+                key.len() + memory::ENTRY_OVERHEAD + memory::VECDEQUE_BASE_OVERHEAD + element_size
+            } else {
+                0 // unused in the non-empty branch of cleanup_after_remove
+            };
+            self.cleanup_after_remove(key, old_size, is_empty, element_size);
+        }
 
         Ok(popped)
     }
@@ -1378,9 +1393,11 @@ impl Keyspace {
         };
         let old_entry_size = memory::entry_size(key, &entry.value);
         let mut removed = Vec::new();
+        let mut removed_bytes: usize = 0;
         if let Value::SortedSet(ref mut ss) = entry.value {
             for member in members {
                 if ss.remove(member) {
+                    removed_bytes += SortedSet::estimated_member_cost(member);
                     removed.push(member.clone());
                 }
             }
@@ -1388,7 +1405,7 @@ impl Keyspace {
         entry.touch();
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
-        self.cleanup_after_remove(key, old_entry_size, is_empty);
+        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
 
         Ok(removed)
     }
@@ -1586,9 +1603,11 @@ impl Keyspace {
 
         let old_entry_size = memory::entry_size(key, &entry.value);
         let mut removed = Vec::new();
+        let mut removed_bytes: usize = 0;
         let is_empty = if let Value::Hash(ref mut map) = entry.value {
             for field in fields {
-                if map.remove(field).is_some() {
+                if let Some(val) = map.remove(field) {
+                    removed_bytes += field.len() + val.len() + memory::HASHMAP_ENTRY_OVERHEAD;
                     removed.push(field.clone());
                 }
             }
@@ -1597,7 +1616,7 @@ impl Keyspace {
             false
         };
 
-        self.cleanup_after_remove(key, old_entry_size, is_empty);
+        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
 
         Ok(removed)
     }
@@ -1815,9 +1834,11 @@ impl Keyspace {
         let old_entry_size = memory::entry_size(key, &entry.value);
 
         let mut removed = 0;
+        let mut removed_bytes: usize = 0;
         let is_empty = if let Value::Set(ref mut set) = entry.value {
             for member in members {
                 if set.remove(member) {
+                    removed_bytes += member.len() + memory::HASHSET_MEMBER_OVERHEAD;
                     removed += 1;
                 }
             }
@@ -1826,7 +1847,7 @@ impl Keyspace {
             false
         };
 
-        self.cleanup_after_remove(key, old_entry_size, is_empty);
+        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
 
         Ok(removed)
     }
