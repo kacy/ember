@@ -13,6 +13,7 @@ use bytes::Bytes;
 use ember_persistence::aof::{AofRecord, AofWriter, FsyncPolicy};
 use ember_persistence::recovery::{self, RecoveredValue};
 use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
+use smallvec::{smallvec, SmallVec};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
@@ -828,15 +829,16 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
         ctx.schema_registry,
     );
 
-    // collect mutation records once; used for both AOF and replication
-    let records = to_aof_records(&msg.request, &response);
-
-    // after LPush/RPush, check if any blocked clients are waiting
+    // after LPush/RPush, check if any blocked clients are waiting.
+    // done before consuming the request so we can borrow the key.
     if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } = msg.request {
         if matches!(response, ShardResponse::Len(_)) {
             wake_blocked_waiters(key, ctx);
         }
     }
+
+    // consume the request to move owned data into AOF records (avoids cloning)
+    let records = to_aof_records(msg.request, &response);
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
@@ -1611,9 +1613,12 @@ fn duration_to_expire_ms(d: Duration) -> i64 {
     }
 }
 
-/// Converts a successful mutation request+response pair into an AOF record.
-/// Returns None for non-mutation requests or failed mutations.
-fn to_aof_records(req: &ShardRequest, resp: &ShardResponse) -> Vec<AofRecord> {
+/// Converts a successful mutation request+response pair into AOF records.
+///
+/// Takes ownership of the request to move keys and values directly into
+/// the records, avoiding heap allocations from cloning. Returns SmallVec
+/// since 99%+ of commands produce 0 or 1 records.
+fn to_aof_records(req: ShardRequest, resp: &ShardResponse) -> SmallVec<[AofRecord; 1]> {
     match (req, resp) {
         (
             ShardRequest::Set {
@@ -1622,129 +1627,102 @@ fn to_aof_records(req: &ShardRequest, resp: &ShardResponse) -> Vec<AofRecord> {
             ShardResponse::Ok,
         ) => {
             let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            vec![AofRecord::Set {
-                key: key.clone(),
-                value: value.clone(),
+            smallvec![AofRecord::Set {
+                key,
+                value,
                 expire_ms,
             }]
         }
         (ShardRequest::Del { key }, ShardResponse::Bool(true))
         | (ShardRequest::Unlink { key }, ShardResponse::Bool(true)) => {
-            vec![AofRecord::Del { key: key.clone() }]
+            smallvec![AofRecord::Del { key }]
         }
         (ShardRequest::Expire { key, seconds }, ShardResponse::Bool(true)) => {
-            vec![AofRecord::Expire {
-                key: key.clone(),
-                seconds: *seconds,
-            }]
+            smallvec![AofRecord::Expire { key, seconds }]
         }
-        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => vec![AofRecord::LPush {
-            key: key.clone(),
-            values: values.clone(),
-        }],
-        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => vec![AofRecord::RPush {
-            key: key.clone(),
-            values: values.clone(),
-        }],
+        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => {
+            smallvec![AofRecord::LPush { key, values }]
+        }
+        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => {
+            smallvec![AofRecord::RPush { key, values }]
+        }
         (ShardRequest::LPop { key }, ShardResponse::Value(Some(_))) => {
-            vec![AofRecord::LPop { key: key.clone() }]
+            smallvec![AofRecord::LPop { key }]
         }
         (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
-            vec![AofRecord::RPop { key: key.clone() }]
+            smallvec![AofRecord::RPop { key }]
         }
         (ShardRequest::ZAdd { key, .. }, ShardResponse::ZAddLen { applied, .. })
             if !applied.is_empty() =>
         {
-            vec![AofRecord::ZAdd {
-                key: key.clone(),
+            smallvec![AofRecord::ZAdd {
+                key,
                 members: applied.clone(),
             }]
         }
         (ShardRequest::ZRem { key, .. }, ShardResponse::ZRemLen { removed, .. })
             if !removed.is_empty() =>
         {
-            vec![AofRecord::ZRem {
-                key: key.clone(),
+            smallvec![AofRecord::ZRem {
+                key,
                 members: removed.clone(),
             }]
         }
         (ShardRequest::Incr { key }, ShardResponse::Integer(_)) => {
-            vec![AofRecord::Incr { key: key.clone() }]
+            smallvec![AofRecord::Incr { key }]
         }
         (ShardRequest::Decr { key }, ShardResponse::Integer(_)) => {
-            vec![AofRecord::Decr { key: key.clone() }]
+            smallvec![AofRecord::Decr { key }]
         }
         (ShardRequest::IncrBy { key, delta }, ShardResponse::Integer(_)) => {
-            vec![AofRecord::IncrBy {
-                key: key.clone(),
-                delta: *delta,
-            }]
+            smallvec![AofRecord::IncrBy { key, delta }]
         }
         (ShardRequest::DecrBy { key, delta }, ShardResponse::Integer(_)) => {
-            vec![AofRecord::DecrBy {
-                key: key.clone(),
-                delta: *delta,
-            }]
+            smallvec![AofRecord::DecrBy { key, delta }]
         }
         // INCRBYFLOAT: record as a SET with the resulting value to avoid
         // float rounding drift during replay.
         (ShardRequest::IncrByFloat { key, .. }, ShardResponse::BulkString(val)) => {
-            vec![AofRecord::Set {
-                key: key.clone(),
+            smallvec![AofRecord::Set {
+                key,
                 value: Bytes::from(val.clone()),
                 expire_ms: -1,
             }]
         }
         // APPEND: record the appended value for replay
-        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => vec![AofRecord::Append {
-            key: key.clone(),
-            value: value.clone(),
-        }],
-        (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => vec![AofRecord::Rename {
-            key: key.clone(),
-            newkey: newkey.clone(),
-        }],
+        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => {
+            smallvec![AofRecord::Append { key, value }]
+        }
+        (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => {
+            smallvec![AofRecord::Rename { key, newkey }]
+        }
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
-            vec![AofRecord::Persist { key: key.clone() }]
+            smallvec![AofRecord::Persist { key }]
         }
         (ShardRequest::Pexpire { key, milliseconds }, ShardResponse::Bool(true)) => {
-            vec![AofRecord::Pexpire {
-                key: key.clone(),
-                milliseconds: *milliseconds,
-            }]
+            smallvec![AofRecord::Pexpire { key, milliseconds }]
         }
         // Hash commands
-        (ShardRequest::HSet { key, fields }, ShardResponse::Len(_)) => vec![AofRecord::HSet {
-            key: key.clone(),
-            fields: fields.clone(),
-        }],
+        (ShardRequest::HSet { key, fields }, ShardResponse::Len(_)) => {
+            smallvec![AofRecord::HSet { key, fields }]
+        }
         (ShardRequest::HDel { key, .. }, ShardResponse::HDelLen { removed, .. })
             if !removed.is_empty() =>
         {
-            vec![AofRecord::HDel {
-                key: key.clone(),
+            smallvec![AofRecord::HDel {
+                key,
                 fields: removed.clone(),
             }]
         }
         (ShardRequest::HIncrBy { key, field, delta }, ShardResponse::Integer(_)) => {
-            vec![AofRecord::HIncrBy {
-                key: key.clone(),
-                field: field.clone(),
-                delta: *delta,
-            }]
+            smallvec![AofRecord::HIncrBy { key, field, delta }]
         }
         // Set commands
         (ShardRequest::SAdd { key, members }, ShardResponse::Len(count)) if *count > 0 => {
-            vec![AofRecord::SAdd {
-                key: key.clone(),
-                members: members.clone(),
-            }]
+            smallvec![AofRecord::SAdd { key, members }]
         }
         (ShardRequest::SRem { key, members }, ShardResponse::Len(count)) if *count > 0 => {
-            vec![AofRecord::SRem {
-                key: key.clone(),
-                members: members.clone(),
-            }]
+            smallvec![AofRecord::SRem { key, members }]
         }
         // Proto commands
         #[cfg(feature = "protobuf")]
@@ -1759,19 +1737,16 @@ fn to_aof_records(req: &ShardRequest, resp: &ShardResponse) -> Vec<AofRecord> {
             ShardResponse::Ok,
         ) => {
             let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            vec![AofRecord::ProtoSet {
-                key: key.clone(),
-                type_name: type_name.clone(),
-                data: data.clone(),
+            smallvec![AofRecord::ProtoSet {
+                key,
+                type_name,
+                data,
                 expire_ms,
             }]
         }
         #[cfg(feature = "protobuf")]
         (ShardRequest::ProtoRegisterAof { name, descriptor }, ShardResponse::Ok) => {
-            vec![AofRecord::ProtoRegister {
-                name: name.clone(),
-                descriptor: descriptor.clone(),
-            }]
+            smallvec![AofRecord::ProtoRegister { name, descriptor }]
         }
         // atomic field ops persist as a full ProtoSet (the whole re-encoded value)
         #[cfg(feature = "protobuf")]
@@ -1784,8 +1759,8 @@ fn to_aof_records(req: &ShardRequest, resp: &ShardResponse) -> Vec<AofRecord> {
             },
         ) => {
             let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            vec![AofRecord::ProtoSet {
-                key: key.clone(),
+            smallvec![AofRecord::ProtoSet {
+                key,
                 type_name: type_name.clone(),
                 data: data.clone(),
                 expire_ms,
@@ -1805,14 +1780,14 @@ fn to_aof_records(req: &ShardRequest, resp: &ShardResponse) -> Vec<AofRecord> {
             ShardResponse::VAddResult {
                 element, vector, ..
             },
-        ) => vec![AofRecord::VAdd {
-            key: key.clone(),
+        ) => smallvec![AofRecord::VAdd {
+            key,
             element: element.clone(),
             vector: vector.clone(),
-            metric: *metric,
-            quantization: *quantization,
-            connectivity: *connectivity,
-            expansion_add: *expansion_add,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
         }],
         // VADD_BATCH: expand each applied entry into its own AofRecord::VAdd
         #[cfg(feature = "vector")]
@@ -1832,18 +1807,17 @@ fn to_aof_records(req: &ShardRequest, resp: &ShardResponse) -> Vec<AofRecord> {
                 key: key.clone(),
                 element: element.clone(),
                 vector: vector.clone(),
-                metric: *metric,
-                quantization: *quantization,
-                connectivity: *connectivity,
-                expansion_add: *expansion_add,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
             })
             .collect(),
         #[cfg(feature = "vector")]
-        (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => vec![AofRecord::VRem {
-            key: key.clone(),
-            element: element.clone(),
-        }],
-        _ => vec![],
+        (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => {
+            smallvec![AofRecord::VRem { key, element }]
+        }
+        _ => SmallVec::new(),
     }
 }
 
@@ -2423,7 +2397,7 @@ mod tests {
             xx: false,
         };
         let resp = ShardResponse::Ok;
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::Set { key, expire_ms, .. } => {
                 assert_eq!(key, "k");
@@ -2443,14 +2417,14 @@ mod tests {
             xx: false,
         };
         let resp = ShardResponse::OutOfMemory;
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
     fn to_aof_records_for_del() {
         let req = ShardRequest::Del { key: "k".into() };
         let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Del { .. }));
     }
 
@@ -2458,7 +2432,7 @@ mod tests {
     fn to_aof_records_skips_failed_del() {
         let req = ShardRequest::Del { key: "k".into() };
         let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2581,7 +2555,7 @@ mod tests {
             value: Bytes::from("data"),
         };
         let resp = ShardResponse::Len(10);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::Append { key, value } => {
                 assert_eq!(key, "k");
@@ -2614,7 +2588,7 @@ mod tests {
     fn to_aof_records_for_incr() {
         let req = ShardRequest::Incr { key: "c".into() };
         let resp = ShardResponse::Integer(1);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Incr { .. }));
     }
 
@@ -2622,7 +2596,7 @@ mod tests {
     fn to_aof_records_for_decr() {
         let req = ShardRequest::Decr { key: "c".into() };
         let resp = ShardResponse::Integer(-1);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Decr { .. }));
     }
 
@@ -2633,7 +2607,7 @@ mod tests {
             delta: 5,
         };
         let resp = ShardResponse::Integer(15);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::IncrBy { key, delta } => {
                 assert_eq!(key, "c");
@@ -2650,7 +2624,7 @@ mod tests {
             delta: 3,
         };
         let resp = ShardResponse::Integer(7);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::DecrBy { key, delta } => {
                 assert_eq!(key, "c");
@@ -2735,7 +2709,7 @@ mod tests {
     fn to_aof_records_for_persist() {
         let req = ShardRequest::Persist { key: "k".into() };
         let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Persist { .. }));
     }
 
@@ -2743,7 +2717,7 @@ mod tests {
     fn to_aof_records_skips_failed_persist() {
         let req = ShardRequest::Persist { key: "k".into() };
         let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2753,7 +2727,7 @@ mod tests {
             milliseconds: 5000,
         };
         let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::Pexpire { key, milliseconds } => {
                 assert_eq!(key, "k");
@@ -2770,7 +2744,7 @@ mod tests {
             milliseconds: 5000,
         };
         let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2865,7 +2839,7 @@ mod tests {
         };
         // when NX blocks, the shard returns Value(None), not Ok
         let resp = ShardResponse::Value(None);
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2941,7 +2915,7 @@ mod tests {
             fields: vec![("f1".into(), Bytes::from("v1"))],
         };
         let resp = ShardResponse::Len(1);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::HSet { key, fields } => {
                 assert_eq!(key, "h");
@@ -2961,7 +2935,7 @@ mod tests {
             count: 2,
             removed: vec!["f1".into(), "f2".into()],
         };
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::HDel { key, fields } => {
                 assert_eq!(key, "h");
@@ -2981,7 +2955,7 @@ mod tests {
             count: 0,
             removed: vec![],
         };
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2992,7 +2966,7 @@ mod tests {
             delta: 5,
         };
         let resp = ShardResponse::Integer(10);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::HIncrBy { key, field, delta } => {
                 assert_eq!(key, "h");
@@ -3010,7 +2984,7 @@ mod tests {
             members: vec!["m1".into(), "m2".into()],
         };
         let resp = ShardResponse::Len(2);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::SAdd { key, members } => {
                 assert_eq!(key, "s");
@@ -3027,7 +3001,7 @@ mod tests {
             members: vec!["m1".into()],
         };
         let resp = ShardResponse::Len(0);
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -3037,7 +3011,7 @@ mod tests {
             members: vec!["m1".into()],
         };
         let resp = ShardResponse::Len(1);
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::SRem { key, members } => {
                 assert_eq!(key, "s");
@@ -3054,7 +3028,7 @@ mod tests {
             members: vec!["m1".into()],
         };
         let resp = ShardResponse::Len(0);
-        assert!(to_aof_records(&req, &resp).is_empty());
+        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -3114,7 +3088,7 @@ mod tests {
             newkey: "new".into(),
         };
         let resp = ShardResponse::Ok;
-        let record = to_aof_records(&req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
         match record {
             AofRecord::Rename { key, newkey } => {
                 assert_eq!(key, "old");
@@ -3148,7 +3122,7 @@ mod tests {
                 ("c".into(), vec![5.0, 6.0]),
             ],
         };
-        let records = to_aof_records(&req, &resp);
+        let records = to_aof_records(req, &resp);
         assert_eq!(records.len(), 3);
         for (i, record) in records.iter().enumerate() {
             match record {

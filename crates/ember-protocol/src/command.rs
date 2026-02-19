@@ -2032,9 +2032,8 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
                 return Err(wrong_arity("CLUSTER COUNTKEYSINSLOT"));
             }
             let n = parse_u64(&args[1], "CLUSTER COUNTKEYSINSLOT")?;
-            let slot = u16::try_from(n).map_err(|_| {
-                ProtocolError::InvalidCommandFrame("invalid slot number".into())
-            })?;
+            let slot = u16::try_from(n)
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
             Ok(Command::ClusterCountKeysInSlot { slot })
         }
         "GETKEYSINSLOT" => {
@@ -2042,13 +2041,11 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
                 return Err(wrong_arity("CLUSTER GETKEYSINSLOT"));
             }
             let n = parse_u64(&args[1], "CLUSTER GETKEYSINSLOT")?;
-            let slot = u16::try_from(n).map_err(|_| {
-                ProtocolError::InvalidCommandFrame("invalid slot number".into())
-            })?;
+            let slot = u16::try_from(n)
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
             let c = parse_u64(&args[2], "CLUSTER GETKEYSINSLOT")?;
-            let count = u32::try_from(c).map_err(|_| {
-                ProtocolError::InvalidCommandFrame("invalid count".into())
-            })?;
+            let count = u32::try_from(c)
+                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid count".into()))?;
             Ok(Command::ClusterGetKeysInSlot { slot, count })
         }
         _ => Err(ProtocolError::InvalidCommandFrame(format!(
