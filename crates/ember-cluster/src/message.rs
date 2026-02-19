@@ -116,6 +116,24 @@ pub enum NodeUpdate {
         /// The primary this node replicates from, if it is a replica.
         replicates: Option<NodeId>,
     },
+    /// A replica is requesting votes to take over a failed primary.
+    VoteRequest {
+        /// The candidate requesting votes.
+        candidate: NodeId,
+        /// Config epoch this election is contesting.
+        epoch: u64,
+        /// Candidate's replication offset; higher value signals the most up-to-date replica.
+        offset: u64,
+    },
+    /// A primary is granting its vote to a candidate replica.
+    VoteGranted {
+        /// The primary casting the vote.
+        from: NodeId,
+        /// The candidate receiving the vote.
+        candidate: NodeId,
+        /// The epoch this vote is for.
+        epoch: u64,
+    },
 }
 
 /// Information about a cluster member.
@@ -142,6 +160,8 @@ const UPDATE_DEAD: u8 = 3;
 const UPDATE_LEFT: u8 = 4;
 const UPDATE_SLOTS_CHANGED: u8 = 5;
 const UPDATE_ROLE_CHANGED: u8 = 6;
+const UPDATE_VOTE_REQUEST: u8 = 7;
+const UPDATE_VOTE_GRANTED: u8 = 8;
 
 impl GossipMessage {
     /// Serializes the message to bytes.
@@ -457,6 +477,26 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
                 }
             }
         }
+        NodeUpdate::VoteRequest {
+            candidate,
+            epoch,
+            offset,
+        } => {
+            buf.put_u8(UPDATE_VOTE_REQUEST);
+            encode_node_id(buf, candidate);
+            buf.put_u64_le(*epoch);
+            buf.put_u64_le(*offset);
+        }
+        NodeUpdate::VoteGranted {
+            from,
+            candidate,
+            epoch,
+        } => {
+            buf.put_u8(UPDATE_VOTE_GRANTED);
+            encode_node_id(buf, from);
+            encode_node_id(buf, candidate);
+            buf.put_u64_le(*epoch);
+        }
     }
 }
 
@@ -539,6 +579,26 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
                 incarnation,
                 is_primary,
                 replicates,
+            })
+        }
+        UPDATE_VOTE_REQUEST => {
+            let candidate = decode_node_id(buf)?;
+            let epoch = safe_get_u64_le(buf)?;
+            let offset = safe_get_u64_le(buf)?;
+            Ok(NodeUpdate::VoteRequest {
+                candidate,
+                epoch,
+                offset,
+            })
+        }
+        UPDATE_VOTE_GRANTED => {
+            let from = decode_node_id(buf)?;
+            let candidate = decode_node_id(buf)?;
+            let epoch = safe_get_u64_le(buf)?;
+            Ok(NodeUpdate::VoteGranted {
+                from,
+                candidate,
+                epoch,
             })
         }
         other => Err(io::Error::new(
@@ -850,6 +910,41 @@ mod tests {
 
         let result = GossipMessage::decode(&buf);
         assert!(result.is_err(), "should reject inverted slot range");
+    }
+
+    #[test]
+    fn vote_request_roundtrip() {
+        let candidate = NodeId::new();
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: candidate,
+            updates: vec![NodeUpdate::VoteRequest {
+                candidate,
+                epoch: 5,
+                offset: 1234,
+            }],
+        };
+        let encoded = msg.encode();
+        let decoded = GossipMessage::decode(&encoded).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn vote_granted_roundtrip() {
+        let primary = NodeId::new();
+        let candidate = NodeId::new();
+        let msg = GossipMessage::Ack {
+            seq: 2,
+            sender: primary,
+            updates: vec![NodeUpdate::VoteGranted {
+                from: primary,
+                candidate,
+                epoch: 5,
+            }],
+        };
+        let encoded = msg.encode();
+        let decoded = GossipMessage::decode(&encoded).unwrap();
+        assert_eq!(msg, decoded);
     }
 
     #[test]
