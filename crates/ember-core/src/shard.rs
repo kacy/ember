@@ -1124,20 +1124,11 @@ fn dispatch(
             expire,
             nx,
             xx,
-        } => {
-            // NX: only set if key does NOT already exist
-            if *nx && ks.exists(key) {
-                return ShardResponse::Value(None);
-            }
-            // XX: only set if key DOES already exist
-            if *xx && !ks.exists(key) {
-                return ShardResponse::Value(None);
-            }
-            match ks.set(key.clone(), value.clone(), *expire) {
-                SetResult::Ok => ShardResponse::Ok,
-                SetResult::OutOfMemory => ShardResponse::OutOfMemory,
-            }
-        }
+        } => match ks.set(key.clone(), value.clone(), *expire, *nx, *xx) {
+            SetResult::Ok => ShardResponse::Ok,
+            SetResult::Blocked => ShardResponse::Value(None),
+            SetResult::OutOfMemory => ShardResponse::OutOfMemory,
+        },
         ShardRequest::Incr { key } => incr_result(ks.incr(key)),
         ShardRequest::Decr { key } => incr_result(ks.decr(key)),
         ShardRequest::IncrBy { key, delta } => incr_result(ks.incr_by(key, *delta)),
@@ -2101,7 +2092,7 @@ mod tests {
     #[test]
     fn dispatch_del() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
 
         let resp = test_dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
@@ -2113,7 +2104,7 @@ mod tests {
     #[test]
     fn dispatch_exists() {
         let mut ks = Keyspace::new();
-        ks.set("yes".into(), Bytes::from("here"), None);
+        ks.set("yes".into(), Bytes::from("here"), None, false, false);
 
         let resp = test_dispatch(&mut ks, &ShardRequest::Exists { key: "yes".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
@@ -2125,7 +2116,7 @@ mod tests {
     #[test]
     fn dispatch_expire_and_ttl() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
 
         let resp = test_dispatch(
             &mut ks,
@@ -2445,7 +2436,7 @@ mod tests {
     #[test]
     fn dispatch_decr_existing() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10"), None);
+        ks.set("n".into(), Bytes::from("10"), None, false, false);
         let resp = test_dispatch(&mut ks, &ShardRequest::Decr { key: "n".into() });
         assert!(matches!(resp, ShardResponse::Integer(9)));
     }
@@ -2453,7 +2444,7 @@ mod tests {
     #[test]
     fn dispatch_incr_non_integer() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("hello"), None);
+        ks.set("s".into(), Bytes::from("hello"), None, false, false);
         let resp = test_dispatch(&mut ks, &ShardRequest::Incr { key: "s".into() });
         assert!(matches!(resp, ShardResponse::Err(_)));
     }
@@ -2461,7 +2452,7 @@ mod tests {
     #[test]
     fn dispatch_incrby() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10"), None);
+        ks.set("n".into(), Bytes::from("10"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
             &ShardRequest::IncrBy {
@@ -2475,7 +2466,7 @@ mod tests {
     #[test]
     fn dispatch_decrby() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10"), None);
+        ks.set("n".into(), Bytes::from("10"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
             &ShardRequest::DecrBy {
@@ -2502,7 +2493,7 @@ mod tests {
     #[test]
     fn dispatch_incrbyfloat() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10.5"), None);
+        ks.set("n".into(), Bytes::from("10.5"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
             &ShardRequest::IncrByFloat {
@@ -2522,7 +2513,7 @@ mod tests {
     #[test]
     fn dispatch_append() {
         let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("hello"), None);
+        ks.set("k".into(), Bytes::from("hello"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Append {
@@ -2536,7 +2527,7 @@ mod tests {
     #[test]
     fn dispatch_strlen() {
         let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("hello"), None);
+        ks.set("k".into(), Bytes::from("hello"), None, false, false);
         let resp = test_dispatch(&mut ks, &ShardRequest::Strlen { key: "k".into() });
         assert!(matches!(resp, ShardResponse::Len(5)));
     }
@@ -2641,6 +2632,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
 
         let resp = test_dispatch(&mut ks, &ShardRequest::Persist { key: "key".into() });
@@ -2664,6 +2657,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
 
         let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
@@ -2685,7 +2680,7 @@ mod tests {
     #[test]
     fn dispatch_pexpire() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
 
         let resp = test_dispatch(
             &mut ks,
@@ -2767,7 +2762,7 @@ mod tests {
     #[test]
     fn dispatch_set_nx_when_key_exists() {
         let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("old"), None);
+        ks.set("k".into(), Bytes::from("old"), None, false, false);
 
         let resp = test_dispatch(
             &mut ks,
@@ -2791,7 +2786,7 @@ mod tests {
     #[test]
     fn dispatch_set_xx_when_key_exists() {
         let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("old"), None);
+        ks.set("k".into(), Bytes::from("old"), None, false, false);
 
         let resp = test_dispatch(
             &mut ks,
@@ -2845,8 +2840,8 @@ mod tests {
     #[test]
     fn dispatch_flushdb_clears_all_keys() {
         let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None);
-        ks.set("b".into(), Bytes::from("2"), None);
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set("b".into(), Bytes::from("2"), None, false, false);
 
         assert_eq!(ks.len(), 2);
 
@@ -2858,9 +2853,9 @@ mod tests {
     #[test]
     fn dispatch_scan_returns_keys() {
         let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None);
-        ks.set("user:2".into(), Bytes::from("b"), None);
-        ks.set("item:1".into(), Bytes::from("c"), None);
+        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
+        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
+        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
 
         let resp = test_dispatch(
             &mut ks,
@@ -2883,9 +2878,9 @@ mod tests {
     #[test]
     fn dispatch_scan_with_pattern() {
         let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None);
-        ks.set("user:2".into(), Bytes::from("b"), None);
-        ks.set("item:1".into(), Bytes::from("c"), None);
+        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
+        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
+        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
 
         let resp = test_dispatch(
             &mut ks,
@@ -3034,9 +3029,9 @@ mod tests {
     #[test]
     fn dispatch_keys() {
         let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None);
-        ks.set("user:2".into(), Bytes::from("b"), None);
-        ks.set("item:1".into(), Bytes::from("c"), None);
+        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
+        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
+        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Keys {
@@ -3055,7 +3050,7 @@ mod tests {
     #[test]
     fn dispatch_rename() {
         let mut ks = Keyspace::new();
-        ks.set("old".into(), Bytes::from("value"), None);
+        ks.set("old".into(), Bytes::from("value"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
             &ShardRequest::Rename {
@@ -3159,6 +3154,8 @@ mod tests {
             "greeting".into(),
             Bytes::from("hello"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
 
         let resp = test_dispatch(
@@ -3233,7 +3230,7 @@ mod tests {
     #[test]
     fn restore_key_rejects_duplicate_without_replace() {
         let mut ks = Keyspace::new();
-        ks.set("existing".into(), Bytes::from("old"), None);
+        ks.set("existing".into(), Bytes::from("old"), None, false, false);
 
         let snap = SnapValue::String(Bytes::from("new"));
         let data = snapshot::serialize_snap_value(&snap).unwrap();
@@ -3258,7 +3255,7 @@ mod tests {
     #[test]
     fn restore_key_replace_overwrites() {
         let mut ks = Keyspace::new();
-        ks.set("existing".into(), Bytes::from("old"), None);
+        ks.set("existing".into(), Bytes::from("old"), None, false, false);
 
         let snap = SnapValue::String(Bytes::from("new"));
         let data = snapshot::serialize_snap_value(&snap).unwrap();

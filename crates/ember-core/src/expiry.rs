@@ -49,7 +49,7 @@ mod tests {
     fn no_expired_keys_removes_nothing() {
         let mut ks = Keyspace::new();
         for i in 0..10 {
-            ks.set(format!("key:{i}"), Bytes::from("val"), None);
+            ks.set(format!("key:{i}"), Bytes::from("val"), None, false, false);
         }
         let removed = run_expiration_cycle(&mut ks);
         assert_eq!(removed, 0);
@@ -65,11 +65,13 @@ mod tests {
                 format!("temp:{i}"),
                 Bytes::from("gone"),
                 Some(Duration::from_millis(5)),
+                false,
+                false,
             );
         }
         // and some persistent keys
         for i in 0..5 {
-            ks.set(format!("keep:{i}"), Bytes::from("stay"), None);
+            ks.set(format!("keep:{i}"), Bytes::from("stay"), None, false, false);
         }
 
         thread::sleep(Duration::from_millis(20));
@@ -87,6 +89,8 @@ mod tests {
                 format!("key:{i}"),
                 Bytes::from("val"),
                 Some(Duration::from_secs(3600)),
+                false,
+                false,
             );
         }
         let removed = run_expiration_cycle(&mut ks);

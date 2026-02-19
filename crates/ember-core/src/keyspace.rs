@@ -212,6 +212,8 @@ pub enum SetResult {
     Ok,
     /// Memory limit reached and eviction policy is NoEviction.
     OutOfMemory,
+    /// NX/XX condition was not met (key existed for NX, or didn't for XX).
+    Blocked,
 }
 
 /// A single entry in the keyspace: a value plus optional expiration
@@ -477,35 +479,60 @@ impl Keyspace {
         }
     }
 
-    /// Stores a key-value pair. If the key already existed, the old entry
-    /// (including any TTL) is replaced entirely.
+    /// Stores a key-value pair with optional NX/XX conditions.
+    ///
+    /// - `nx`: only set if the key does NOT already exist
+    /// - `xx`: only set if the key DOES already exist
     ///
     /// `expire` sets an optional TTL as a duration from now.
     ///
-    /// Returns `SetResult::OutOfMemory` if the memory limit is reached
-    /// and the eviction policy is `NoEviction`. With `AllKeysLru`, this
-    /// will evict keys to make room before inserting.
-    pub fn set(&mut self, key: String, value: Bytes, expire: Option<Duration>) -> SetResult {
+    /// Uses a single lookup for the old entry to handle NX/XX checks,
+    /// memory accounting, and expiry tracking together.
+    pub fn set(
+        &mut self,
+        key: String,
+        value: Bytes,
+        expire: Option<Duration>,
+        nx: bool,
+        xx: bool,
+    ) -> SetResult {
         let has_expiry = expire.is_some();
         let new_value = Value::String(value);
-
-        // check memory limit — for overwrites, only the net increase matters
         let new_size = memory::entry_size(&key, &new_value);
-        let old_size = self
-            .entries
-            .get(key.as_str())
-            .map(|e| memory::entry_size(&key, &e.value))
-            .unwrap_or(0);
-        let net_increase = new_size.saturating_sub(old_size);
 
+        // single lookup: check existence, gather old size and expiry state.
+        // treat expired entries as non-existent.
+        let old_info = self.entries.get(key.as_str()).and_then(|e| {
+            if e.is_expired() {
+                None
+            } else {
+                Some((memory::entry_size(&key, &e.value), e.expires_at_ms != 0))
+            }
+        });
+
+        // NX/XX condition checks
+        let key_exists = old_info.is_some();
+        if nx && key_exists {
+            return SetResult::Blocked;
+        }
+        if xx && !key_exists {
+            return SetResult::Blocked;
+        }
+
+        // memory limit check — for overwrites, only the net increase matters
+        let old_size = old_info.map(|(size, _)| size).unwrap_or(0);
+        let net_increase = new_size.saturating_sub(old_size);
         if !self.enforce_memory_limit(net_increase) {
             return SetResult::OutOfMemory;
         }
 
-        if let Some(old_entry) = self.entries.get(key.as_str()) {
-            self.memory.replace(&key, &old_entry.value, &new_value);
-            self.adjust_expiry_count(old_entry.expires_at_ms != 0, has_expiry);
+        // update memory tracking and expiry count
+        if let Some((_, had_expiry)) = old_info {
+            self.memory.adjust(old_size, new_size);
+            self.adjust_expiry_count(had_expiry, has_expiry);
         } else {
+            // clean up the expired entry if one exists
+            self.remove_if_expired(&key);
             self.memory.add(&key, &new_value);
             if has_expiry {
                 self.expiry_count += 1;
@@ -793,8 +820,8 @@ impl Keyspace {
         let new_val = current.checked_add(delta).ok_or(IncrError::Overflow)?;
         let new_bytes = Bytes::from(new_val.to_string());
 
-        match self.set(key.to_owned(), new_bytes, existing_expire) {
-            SetResult::Ok => Ok(new_val),
+        match self.set(key.to_owned(), new_bytes, existing_expire, false, false) {
+            SetResult::Ok | SetResult::Blocked => Ok(new_val),
             SetResult::OutOfMemory => Err(IncrError::OutOfMemory),
         }
     }
@@ -832,8 +859,8 @@ impl Keyspace {
         let formatted = format_float(new_val);
         let new_bytes = Bytes::copy_from_slice(formatted.as_bytes());
 
-        match self.set(key.to_owned(), new_bytes, existing_expire) {
-            SetResult::Ok => Ok(formatted),
+        match self.set(key.to_owned(), new_bytes, existing_expire, false, false) {
+            SetResult::Ok | SetResult::Blocked => Ok(formatted),
             SetResult::OutOfMemory => Err(IncrFloatError::OutOfMemory),
         }
     }
@@ -851,8 +878,8 @@ impl Keyspace {
                     new_data.extend_from_slice(value);
                     let new_len = new_data.len();
                     let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
-                    match self.set(key.to_owned(), Bytes::from(new_data), expire) {
-                        SetResult::Ok => Ok(new_len),
+                    match self.set(key.to_owned(), Bytes::from(new_data), expire, false, false) {
+                        SetResult::Ok | SetResult::Blocked => Ok(new_len),
                         SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
                     }
                 }
@@ -860,8 +887,14 @@ impl Keyspace {
             },
             None => {
                 let new_len = value.len();
-                match self.set(key.to_owned(), Bytes::copy_from_slice(value), None) {
-                    SetResult::Ok => Ok(new_len),
+                match self.set(
+                    key.to_owned(),
+                    Bytes::copy_from_slice(value),
+                    None,
+                    false,
+                    false,
+                ) {
+                    SetResult::Ok | SetResult::Blocked => Ok(new_len),
                     SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
                 }
             }
@@ -2512,7 +2545,7 @@ mod tests {
     #[test]
     fn set_and_get() {
         let mut ks = Keyspace::new();
-        ks.set("hello".into(), Bytes::from("world"), None);
+        ks.set("hello".into(), Bytes::from("world"), None, false, false);
         assert_eq!(
             ks.get("hello").unwrap(),
             Some(Value::String(Bytes::from("world")))
@@ -2528,8 +2561,8 @@ mod tests {
     #[test]
     fn overwrite_replaces_value() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("first"), None);
-        ks.set("key".into(), Bytes::from("second"), None);
+        ks.set("key".into(), Bytes::from("first"), None, false, false);
+        ks.set("key".into(), Bytes::from("second"), None, false, false);
         assert_eq!(
             ks.get("key").unwrap(),
             Some(Value::String(Bytes::from("second")))
@@ -2543,16 +2576,18 @@ mod tests {
             "key".into(),
             Bytes::from("v1"),
             Some(Duration::from_secs(100)),
+            false,
+            false,
         );
         // overwrite without TTL — should clear the old one
-        ks.set("key".into(), Bytes::from("v2"), None);
+        ks.set("key".into(), Bytes::from("v2"), None, false, false);
         assert_eq!(ks.ttl("key"), TtlResult::NoExpiry);
     }
 
     #[test]
     fn del_existing() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         assert!(ks.del("key"));
         assert_eq!(ks.get("key").unwrap(), None);
     }
@@ -2566,7 +2601,7 @@ mod tests {
     #[test]
     fn exists_present_and_absent() {
         let mut ks = Keyspace::new();
-        ks.set("yes".into(), Bytes::from("here"), None);
+        ks.set("yes".into(), Bytes::from("here"), None, false, false);
         assert!(ks.exists("yes"));
         assert!(!ks.exists("no"));
     }
@@ -2578,6 +2613,8 @@ mod tests {
             "temp".into(),
             Bytes::from("gone"),
             Some(Duration::from_millis(10)),
+            false,
+            false,
         );
         // wait for expiration
         thread::sleep(Duration::from_millis(30));
@@ -2589,7 +2626,7 @@ mod tests {
     #[test]
     fn ttl_no_expiry() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         assert_eq!(ks.ttl("key"), TtlResult::NoExpiry);
     }
 
@@ -2606,6 +2643,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(100)),
+            false,
+            false,
         );
         match ks.ttl("key") {
             TtlResult::Seconds(s) => assert!((98..=100).contains(&s)),
@@ -2620,6 +2659,8 @@ mod tests {
             "temp".into(),
             Bytes::from("val"),
             Some(Duration::from_millis(10)),
+            false,
+            false,
         );
         thread::sleep(Duration::from_millis(30));
         assert_eq!(ks.ttl("temp"), TtlResult::NotFound);
@@ -2628,7 +2669,7 @@ mod tests {
     #[test]
     fn expire_existing_key() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         assert!(ks.expire("key", 60));
         match ks.ttl("key") {
             TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
@@ -2649,6 +2690,8 @@ mod tests {
             "temp".into(),
             Bytes::from("val"),
             Some(Duration::from_millis(10)),
+            false,
+            false,
         );
         thread::sleep(Duration::from_millis(30));
         // key is expired, del should return false (not found)
@@ -2661,7 +2704,7 @@ mod tests {
     fn memory_increases_on_set() {
         let mut ks = Keyspace::new();
         assert_eq!(ks.stats().used_bytes, 0);
-        ks.set("key".into(), Bytes::from("value"), None);
+        ks.set("key".into(), Bytes::from("value"), None, false, false);
         assert!(ks.stats().used_bytes > 0);
         assert_eq!(ks.stats().key_count, 1);
     }
@@ -2669,7 +2712,7 @@ mod tests {
     #[test]
     fn memory_decreases_on_del() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("value"), None);
+        ks.set("key".into(), Bytes::from("value"), None, false, false);
         let after_set = ks.stats().used_bytes;
         ks.del("key");
         assert_eq!(ks.stats().used_bytes, 0);
@@ -2679,10 +2722,16 @@ mod tests {
     #[test]
     fn memory_adjusts_on_overwrite() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("short"), None);
+        ks.set("key".into(), Bytes::from("short"), None, false, false);
         let small = ks.stats().used_bytes;
 
-        ks.set("key".into(), Bytes::from("a much longer value"), None);
+        ks.set(
+            "key".into(),
+            Bytes::from("a much longer value"),
+            None,
+            false,
+            false,
+        );
         let large = ks.stats().used_bytes;
 
         assert!(large > small);
@@ -2696,6 +2745,8 @@ mod tests {
             "temp".into(),
             Bytes::from("data"),
             Some(Duration::from_millis(10)),
+            false,
+            false,
         );
         assert!(ks.stats().used_bytes > 0);
         thread::sleep(Duration::from_millis(30));
@@ -2708,9 +2759,21 @@ mod tests {
     #[test]
     fn stats_tracks_expiry_count() {
         let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None);
-        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(100)));
-        ks.set("c".into(), Bytes::from("3"), Some(Duration::from_secs(200)));
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set(
+            "b".into(),
+            Bytes::from("2"),
+            Some(Duration::from_secs(100)),
+            false,
+            false,
+        );
+        ks.set(
+            "c".into(),
+            Bytes::from("3"),
+            Some(Duration::from_secs(200)),
+            false,
+            false,
+        );
 
         let stats = ks.stats();
         assert_eq!(stats.key_count, 3);
@@ -2731,10 +2794,13 @@ mod tests {
         let mut ks = Keyspace::with_config(config);
 
         // first key should fit
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // second key should push us over the limit
-        let result = ks.set("b".into(), Bytes::from("val"), None);
+        let result = ks.set("b".into(), Bytes::from("val"), None, false, false);
         assert_eq!(result, SetResult::OutOfMemory);
 
         // original key should still be there
@@ -2750,10 +2816,16 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // this should trigger eviction of "a" to make room
-        assert_eq!(ks.set("b".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("b".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // "a" should have been evicted
         assert!(!ks.exists("a"));
@@ -2773,9 +2845,12 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
-        let result = ks.set("b".into(), Bytes::from("val"), None);
+        let result = ks.set("b".into(), Bytes::from("val"), None, false, false);
         assert_eq!(result, SetResult::OutOfMemory);
     }
 
@@ -2788,10 +2863,16 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // overwriting with same-size value should succeed — no net increase
-        assert_eq!(ks.set("a".into(), Bytes::from("new"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("new"), None, false, false),
+            SetResult::Ok
+        );
         assert_eq!(
             ks.get("a").unwrap(),
             Some(Value::String(Bytes::from("new")))
@@ -2807,11 +2888,14 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // overwriting with a much larger value should fail if it exceeds limit
         let big_value = "x".repeat(200);
-        let result = ks.set("a".into(), Bytes::from(big_value), None);
+        let result = ks.set("a".into(), Bytes::from(big_value), None, false, false);
         assert_eq!(result, SetResult::OutOfMemory);
 
         // original value should still be intact
@@ -2826,8 +2910,14 @@ mod tests {
     #[test]
     fn iter_entries_returns_live_entries() {
         let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None);
-        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(100)));
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set(
+            "b".into(),
+            Bytes::from("2"),
+            Some(Duration::from_secs(100)),
+            false,
+            false,
+        );
 
         let entries: Vec<_> = ks.iter_entries().collect();
         assert_eq!(entries.len(), 2);
@@ -2840,8 +2930,10 @@ mod tests {
             "dead".into(),
             Bytes::from("gone"),
             Some(Duration::from_millis(1)),
+            false,
+            false,
         );
-        ks.set("alive".into(), Bytes::from("here"), None);
+        ks.set("alive".into(), Bytes::from("here"), None, false, false);
         thread::sleep(Duration::from_millis(10));
 
         let entries: Vec<_> = ks.iter_entries().collect();
@@ -2852,7 +2944,7 @@ mod tests {
     #[test]
     fn iter_entries_ttl_for_no_expiry() {
         let mut ks = Keyspace::new();
-        ks.set("permanent".into(), Bytes::from("val"), None);
+        ks.set("permanent".into(), Bytes::from("val"), None, false, false);
 
         let entries: Vec<_> = ks.iter_entries().collect();
         assert_eq!(entries[0].2, -1);
@@ -2888,7 +2980,7 @@ mod tests {
     #[test]
     fn restore_overwrites_existing() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("old"), None);
+        ks.set("key".into(), Bytes::from("old"), None, false, false);
         ks.restore("key".into(), Value::String(Bytes::from("new")), None);
         assert_eq!(
             ks.get("key").unwrap(),
@@ -2921,7 +3013,7 @@ mod tests {
         let mut ks = Keyspace::new();
         for i in 0..100 {
             assert_eq!(
-                ks.set(format!("key:{i}"), Bytes::from("value"), None),
+                ks.set(format!("key:{i}"), Bytes::from("value"), None, false, false),
                 SetResult::Ok
             );
         }
@@ -3052,21 +3144,21 @@ mod tests {
     #[test]
     fn lpush_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.lpush("s", &[Bytes::from("nope")]).is_err());
     }
 
     #[test]
     fn lrange_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.lrange("s", 0, -1).is_err());
     }
 
     #[test]
     fn llen_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.llen("s").is_err());
     }
 
@@ -3087,7 +3179,7 @@ mod tests {
         let mut ks = Keyspace::new();
         assert_eq!(ks.value_type("missing"), "none");
 
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert_eq!(ks.value_type("s"), "string");
 
         let mut list = std::collections::VecDeque::new();
@@ -3317,7 +3409,7 @@ mod tests {
     #[test]
     fn zadd_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks
             .zadd("s", &[(1.0, "m".into())], &ZAddFlags::default())
             .is_err());
@@ -3326,7 +3418,7 @@ mod tests {
     #[test]
     fn zrem_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.zrem("s", &["m".into()]).is_err());
     }
 
@@ -3340,14 +3432,14 @@ mod tests {
     #[test]
     fn zrank_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.zrank("s", "m").is_err());
     }
 
     #[test]
     fn zrange_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.zrange("s", 0, -1).is_err());
     }
 
@@ -3384,7 +3476,7 @@ mod tests {
     #[test]
     fn incr_existing_value() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10"), None);
+        ks.set("n".into(), Bytes::from("10"), None, false, false);
         assert_eq!(ks.incr("n").unwrap(), 11);
     }
 
@@ -3397,14 +3489,14 @@ mod tests {
     #[test]
     fn decr_existing_value() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10"), None);
+        ks.set("n".into(), Bytes::from("10"), None, false, false);
         assert_eq!(ks.decr("n").unwrap(), 9);
     }
 
     #[test]
     fn incr_non_integer_returns_error() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("notanum"), None);
+        ks.set("s".into(), Bytes::from("notanum"), None, false, false);
         assert_eq!(ks.incr("s").unwrap_err(), IncrError::NotAnInteger);
     }
 
@@ -3418,21 +3510,39 @@ mod tests {
     #[test]
     fn incr_overflow_returns_error() {
         let mut ks = Keyspace::new();
-        ks.set("max".into(), Bytes::from(i64::MAX.to_string()), None);
+        ks.set(
+            "max".into(),
+            Bytes::from(i64::MAX.to_string()),
+            None,
+            false,
+            false,
+        );
         assert_eq!(ks.incr("max").unwrap_err(), IncrError::Overflow);
     }
 
     #[test]
     fn decr_overflow_returns_error() {
         let mut ks = Keyspace::new();
-        ks.set("min".into(), Bytes::from(i64::MIN.to_string()), None);
+        ks.set(
+            "min".into(),
+            Bytes::from(i64::MIN.to_string()),
+            None,
+            false,
+            false,
+        );
         assert_eq!(ks.decr("min").unwrap_err(), IncrError::Overflow);
     }
 
     #[test]
     fn incr_preserves_ttl() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("5"), Some(Duration::from_secs(60)));
+        ks.set(
+            "n".into(),
+            Bytes::from("5"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
         ks.incr("n").unwrap();
         match ks.ttl("n") {
             TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
@@ -3475,7 +3585,7 @@ mod tests {
     #[test]
     fn zcard_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("val"), None);
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.zcard("s").is_err());
     }
 
@@ -3486,6 +3596,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
         assert!(matches!(ks.ttl("key"), TtlResult::Seconds(_)));
 
@@ -3497,7 +3609,7 @@ mod tests {
     #[test]
     fn persist_returns_false_without_expiry() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         assert!(!ks.persist("key"));
     }
 
@@ -3514,6 +3626,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
         match ks.pttl("key") {
             TtlResult::Milliseconds(ms) => assert!(ms > 59_000 && ms <= 60_000),
@@ -3524,7 +3638,7 @@ mod tests {
     #[test]
     fn pttl_no_expiry() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         assert_eq!(ks.pttl("key"), TtlResult::NoExpiry);
     }
 
@@ -3537,7 +3651,7 @@ mod tests {
     #[test]
     fn pexpire_sets_ttl_in_millis() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         assert!(ks.pexpire("key", 5000));
         match ks.pttl("key") {
             TtlResult::Milliseconds(ms) => assert!(ms > 4000 && ms <= 5000),
@@ -3559,6 +3673,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
         assert!(ks.pexpire("key", 500));
         match ks.pttl("key") {
@@ -3581,7 +3697,10 @@ mod tests {
         let mut ks = Keyspace::with_config(config);
 
         // first key eats up most of the budget
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // lpush should be rejected — not enough room
         let result = ks.lpush("list", &[Bytes::from("big-value-here")]);
@@ -3600,7 +3719,10 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         let result = ks.rpush("list", &[Bytes::from("big-value-here")]);
         assert_eq!(result, Err(WriteError::OutOfMemory));
@@ -3615,7 +3737,10 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         let result = ks.zadd("z", &[(1.0, "member".into())], &ZAddFlags::default());
         assert!(matches!(result, Err(WriteError::OutOfMemory)));
@@ -3637,7 +3762,10 @@ mod tests {
         };
         let mut ks = Keyspace::with_config(config);
 
-        assert_eq!(ks.set("a".into(), Bytes::from("val"), None), SetResult::Ok);
+        assert_eq!(
+            ks.set("a".into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
 
         // should evict "a" to make room for the list
         assert!(ks.lpush("list", &[Bytes::from("item")]).is_ok());
@@ -3647,8 +3775,14 @@ mod tests {
     #[test]
     fn clear_removes_all_keys() {
         let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None);
-        ks.set("b".into(), Bytes::from("2"), Some(Duration::from_secs(60)));
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set(
+            "b".into(),
+            Bytes::from("2"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
         ks.lpush("list", &[Bytes::from("x")]).unwrap();
 
         assert_eq!(ks.len(), 3);
@@ -3668,9 +3802,9 @@ mod tests {
     #[test]
     fn scan_returns_keys() {
         let mut ks = Keyspace::new();
-        ks.set("key1".into(), Bytes::from("a"), None);
-        ks.set("key2".into(), Bytes::from("b"), None);
-        ks.set("key3".into(), Bytes::from("c"), None);
+        ks.set("key1".into(), Bytes::from("a"), None, false, false);
+        ks.set("key2".into(), Bytes::from("b"), None, false, false);
+        ks.set("key3".into(), Bytes::from("c"), None, false, false);
 
         let (cursor, keys) = ks.scan_keys(0, 10, None);
         assert_eq!(cursor, 0); // complete in one pass
@@ -3688,9 +3822,9 @@ mod tests {
     #[test]
     fn scan_with_pattern() {
         let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None);
-        ks.set("user:2".into(), Bytes::from("b"), None);
-        ks.set("item:1".into(), Bytes::from("c"), None);
+        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
+        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
+        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
 
         let (cursor, keys) = ks.scan_keys(0, 10, Some("user:*"));
         assert_eq!(cursor, 0);
@@ -3704,7 +3838,7 @@ mod tests {
     fn scan_with_count_limit() {
         let mut ks = Keyspace::new();
         for i in 0..10 {
-            ks.set(format!("k{i}"), Bytes::from("v"), None);
+            ks.set(format!("k{i}"), Bytes::from("v"), None, false, false);
         }
 
         // first batch
@@ -3724,11 +3858,13 @@ mod tests {
     #[test]
     fn scan_skips_expired_keys() {
         let mut ks = Keyspace::new();
-        ks.set("live".into(), Bytes::from("a"), None);
+        ks.set("live".into(), Bytes::from("a"), None, false, false);
         ks.set(
             "expired".into(),
             Bytes::from("b"),
             Some(Duration::from_millis(1)),
+            false,
+            false,
         );
 
         std::thread::sleep(Duration::from_millis(5));
@@ -4002,7 +4138,7 @@ mod tests {
     #[test]
     fn hash_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("string"), None);
+        ks.set("s".into(), Bytes::from("string"), None, false, false);
         assert!(ks.hset("s", &[("f".into(), Bytes::from("v"))]).is_err());
         assert!(ks.hget("s", "f").is_err());
         assert!(ks.hgetall("s").is_err());
@@ -4096,7 +4232,7 @@ mod tests {
     #[test]
     fn set_on_string_key_returns_wrongtype() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("string"), None);
+        ks.set("s".into(), Bytes::from("string"), None, false, false);
         assert!(ks.sadd("s", &["m".into()]).is_err());
         assert!(ks.srem("s", &["m".into()]).is_err());
         assert!(ks.smembers("s").is_err());
@@ -4109,7 +4245,13 @@ mod tests {
     #[test]
     fn zero_ttl_expires_immediately() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), Some(Duration::ZERO));
+        ks.set(
+            "key".into(),
+            Bytes::from("val"),
+            Some(Duration::ZERO),
+            false,
+            false,
+        );
 
         // key should be expired immediately
         std::thread::sleep(Duration::from_millis(1));
@@ -4123,6 +4265,8 @@ mod tests {
             "key".into(),
             Bytes::from("val"),
             Some(Duration::from_millis(1)),
+            false,
+            false,
         );
 
         std::thread::sleep(Duration::from_millis(5));
@@ -4223,7 +4367,13 @@ mod tests {
     #[test]
     fn incr_at_max_value_overflows() {
         let mut ks = Keyspace::new();
-        ks.set("counter".into(), Bytes::from(i64::MAX.to_string()), None);
+        ks.set(
+            "counter".into(),
+            Bytes::from(i64::MAX.to_string()),
+            None,
+            false,
+            false,
+        );
 
         let result = ks.incr("counter");
         assert!(matches!(result, Err(IncrError::Overflow)));
@@ -4232,7 +4382,13 @@ mod tests {
     #[test]
     fn decr_at_min_value_underflows() {
         let mut ks = Keyspace::new();
-        ks.set("counter".into(), Bytes::from(i64::MIN.to_string()), None);
+        ks.set(
+            "counter".into(),
+            Bytes::from(i64::MIN.to_string()),
+            None,
+            false,
+            false,
+        );
 
         let result = ks.decr("counter");
         assert!(matches!(result, Err(IncrError::Overflow)));
@@ -4266,7 +4422,7 @@ mod tests {
     #[test]
     fn empty_string_key_works() {
         let mut ks = Keyspace::new();
-        ks.set("".into(), Bytes::from("value"), None);
+        ks.set("".into(), Bytes::from("value"), None, false, false);
         assert_eq!(
             ks.get("").unwrap(),
             Some(Value::String(Bytes::from("value")))
@@ -4277,7 +4433,7 @@ mod tests {
     #[test]
     fn empty_value_works() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from(""), None);
+        ks.set("key".into(), Bytes::from(""), None, false, false);
         assert_eq!(ks.get("key").unwrap(), Some(Value::String(Bytes::from(""))));
     }
 
@@ -4286,14 +4442,14 @@ mod tests {
         let mut ks = Keyspace::new();
         // value with null bytes and other binary data
         let binary = Bytes::from(vec![0u8, 1, 2, 255, 0, 128]);
-        ks.set("binary".into(), binary.clone(), None);
+        ks.set("binary".into(), binary.clone(), None, false, false);
         assert_eq!(ks.get("binary").unwrap(), Some(Value::String(binary)));
     }
 
     #[test]
     fn incr_by_float_basic() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10.5"), None);
+        ks.set("n".into(), Bytes::from("10.5"), None, false, false);
         let result = ks.incr_by_float("n", 2.3).unwrap();
         let f: f64 = result.parse().unwrap();
         assert!((f - 12.8).abs() < 0.001);
@@ -4310,7 +4466,7 @@ mod tests {
     #[test]
     fn incr_by_float_negative() {
         let mut ks = Keyspace::new();
-        ks.set("n".into(), Bytes::from("10"), None);
+        ks.set("n".into(), Bytes::from("10"), None, false, false);
         let result = ks.incr_by_float("n", -3.5).unwrap();
         let f: f64 = result.parse().unwrap();
         assert!((f - 6.5).abs() < 0.001);
@@ -4327,7 +4483,7 @@ mod tests {
     #[test]
     fn incr_by_float_not_a_float() {
         let mut ks = Keyspace::new();
-        ks.set("s".into(), Bytes::from("hello"), None);
+        ks.set("s".into(), Bytes::from("hello"), None, false, false);
         let err = ks.incr_by_float("s", 1.0).unwrap_err();
         assert_eq!(err, IncrFloatError::NotAFloat);
     }
@@ -4335,7 +4491,7 @@ mod tests {
     #[test]
     fn append_to_existing_key() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("hello"), None);
+        ks.set("key".into(), Bytes::from("hello"), None, false, false);
         let len = ks.append("key", b" world").unwrap();
         assert_eq!(len, 11);
         assert_eq!(
@@ -4366,7 +4522,7 @@ mod tests {
     #[test]
     fn strlen_existing_key() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("hello"), None);
+        ks.set("key".into(), Bytes::from("hello"), None, false, false);
         assert_eq!(ks.strlen("key").unwrap(), 5);
     }
 
@@ -4402,9 +4558,9 @@ mod tests {
     #[test]
     fn keys_match_all() {
         let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None);
-        ks.set("b".into(), Bytes::from("2"), None);
-        ks.set("c".into(), Bytes::from("3"), None);
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set("b".into(), Bytes::from("2"), None, false, false);
+        ks.set("c".into(), Bytes::from("3"), None, false, false);
         let mut result = ks.keys("*");
         result.sort();
         assert_eq!(result, vec!["a", "b", "c"]);
@@ -4413,9 +4569,9 @@ mod tests {
     #[test]
     fn keys_with_pattern() {
         let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None);
-        ks.set("user:2".into(), Bytes::from("b"), None);
-        ks.set("item:1".into(), Bytes::from("c"), None);
+        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
+        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
+        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
         let mut result = ks.keys("user:*");
         result.sort();
         assert_eq!(result, vec!["user:1", "user:2"]);
@@ -4424,11 +4580,13 @@ mod tests {
     #[test]
     fn keys_skips_expired() {
         let mut ks = Keyspace::new();
-        ks.set("live".into(), Bytes::from("a"), None);
+        ks.set("live".into(), Bytes::from("a"), None, false, false);
         ks.set(
             "dead".into(),
             Bytes::from("b"),
             Some(Duration::from_millis(1)),
+            false,
+            false,
         );
         thread::sleep(Duration::from_millis(5));
         let result = ks.keys("*");
@@ -4446,7 +4604,7 @@ mod tests {
     #[test]
     fn rename_basic() {
         let mut ks = Keyspace::new();
-        ks.set("old".into(), Bytes::from("value"), None);
+        ks.set("old".into(), Bytes::from("value"), None, false, false);
         ks.rename("old", "new").unwrap();
         assert!(!ks.exists("old"));
         assert_eq!(
@@ -4462,6 +4620,8 @@ mod tests {
             "old".into(),
             Bytes::from("val"),
             Some(Duration::from_secs(60)),
+            false,
+            false,
         );
         ks.rename("old", "new").unwrap();
         match ks.ttl("new") {
@@ -4473,8 +4633,8 @@ mod tests {
     #[test]
     fn rename_overwrites_destination() {
         let mut ks = Keyspace::new();
-        ks.set("src".into(), Bytes::from("new_val"), None);
-        ks.set("dst".into(), Bytes::from("old_val"), None);
+        ks.set("src".into(), Bytes::from("new_val"), None, false, false);
+        ks.set("dst".into(), Bytes::from("old_val"), None, false, false);
         ks.rename("src", "dst").unwrap();
         assert!(!ks.exists("src"));
         assert_eq!(
@@ -4494,7 +4654,7 @@ mod tests {
     #[test]
     fn rename_same_key() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None);
+        ks.set("key".into(), Bytes::from("val"), None, false, false);
         // renaming to itself should succeed (Redis behavior)
         ks.rename("key", "key").unwrap();
         assert_eq!(
@@ -4506,7 +4666,7 @@ mod tests {
     #[test]
     fn rename_tracks_memory() {
         let mut ks = Keyspace::new();
-        ks.set("old".into(), Bytes::from("value"), None);
+        ks.set("old".into(), Bytes::from("value"), None, false, false);
         let before = ks.stats().used_bytes;
         ks.rename("old", "new").unwrap();
         let after = ks.stats().used_bytes;
@@ -4525,9 +4685,9 @@ mod tests {
     fn count_keys_in_slot_matches() {
         let mut ks = Keyspace::new();
         // insert a few keys and count those in a specific slot
-        ks.set("a".into(), Bytes::from("1"), None);
-        ks.set("b".into(), Bytes::from("2"), None);
-        ks.set("c".into(), Bytes::from("3"), None);
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set("b".into(), Bytes::from("2"), None, false, false);
+        ks.set("c".into(), Bytes::from("3"), None, false, false);
 
         let slot_a = ember_cluster::key_slot(b"a");
         let count = ks.count_keys_in_slot(slot_a);
@@ -4543,6 +4703,8 @@ mod tests {
             "temp".into(),
             Bytes::from("gone"),
             Some(Duration::from_millis(0)),
+            false,
+            false,
         );
         // key is expired — should not be counted
         thread::sleep(Duration::from_millis(5));
@@ -4552,8 +4714,8 @@ mod tests {
     #[test]
     fn get_keys_in_slot_returns_matching() {
         let mut ks = Keyspace::new();
-        ks.set("x".into(), Bytes::from("1"), None);
-        ks.set("y".into(), Bytes::from("2"), None);
+        ks.set("x".into(), Bytes::from("1"), None, false, false);
+        ks.set("y".into(), Bytes::from("2"), None, false, false);
 
         let slot_x = ember_cluster::key_slot(b"x");
         let keys = ks.get_keys_in_slot(slot_x, 100);
@@ -4565,7 +4727,7 @@ mod tests {
         let mut ks = Keyspace::new();
         // insert several keys — some might share a slot
         for i in 0..100 {
-            ks.set(format!("key:{i}"), Bytes::from("v"), None);
+            ks.set(format!("key:{i}"), Bytes::from("v"), None, false, false);
         }
         // ask for at most 3 keys from slot 0
         let keys = ks.get_keys_in_slot(0, 3);
