@@ -33,7 +33,7 @@ bench/results/*.json
 .bench-venv/
 
 # presentations / local docs
-docs/
+personal/
 
 # python
 __pycache__/
