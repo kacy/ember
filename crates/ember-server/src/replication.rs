@@ -28,6 +28,7 @@
 //! [MSG_RESYNC: 1B]    primary closes the connection; replica reconnects
 //! ```
 
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,7 +53,10 @@ const MSG_SHARD_OFFSET: u8 = 3;
 const MSG_RECORD: u8 = 4;
 const MSG_RESYNC: u8 = 5;
 
-// -- helpers --
+// -- framed I/O primitives --
+//
+// thin wrappers around AsyncReadExt/AsyncWriteExt for the little-endian binary
+// wire protocol. each wraps exactly one syscall; no buffering happens here.
 
 async fn write_u8(w: &mut TcpStream, val: u8) -> std::io::Result<()> {
     w.write_all(&[val]).await
@@ -92,6 +96,22 @@ async fn read_u64_le(r: &mut TcpStream) -> std::io::Result<u64> {
     let mut buf = [0u8; 8];
     r.read_exact(&mut buf).await?;
     Ok(u64::from_le_bytes(buf))
+}
+
+/// Reads one byte and returns an error if it doesn't match `expected`.
+///
+/// Used throughout the handshake and snapshot-load path to assert that
+/// the primary sent the message type we expected at this point in the
+/// protocol.
+async fn expect_tag(stream: &mut TcpStream, expected: u8, label: &str) -> io::Result<()> {
+    let tag = read_u8(stream).await?;
+    if tag != expected {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("expected {label} ({}), got {tag}", expected),
+        ));
+    }
+    Ok(())
 }
 
 // -- primary-side server --
@@ -348,31 +368,21 @@ impl ReplicationClient {
         info!(primary_id = %primary_id, "handshake ok, loading full sync");
 
         // receive per-shard snapshots
+        let mut snap_buf = Vec::new();
         for _ in 0..primary_shards {
-            let msg = read_u8(&mut stream).await?;
-            if msg != MSG_SHARD_SYNC {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("expected MSG_SHARD_SYNC, got {msg}"),
-                ));
-            }
+            expect_tag(&mut stream, MSG_SHARD_SYNC, "MSG_SHARD_SYNC").await?;
             let shard_id = read_u16_le(&mut stream).await?;
             let snap_len = read_u32_le(&mut stream).await? as usize;
 
-            let mut snap_bytes = vec![0u8; snap_len];
-            stream.read_exact(&mut snap_bytes).await?;
+            snap_buf.clear();
+            snap_buf.resize(snap_len, 0);
+            stream.read_exact(&mut snap_buf).await?;
 
             // apply snapshot to the engine
-            self.apply_snapshot(shard_id, &snap_bytes).await?;
+            self.apply_snapshot(shard_id, &snap_buf).await?;
 
             // read (and ignore for now) the shard offset tag
-            let offset_msg = read_u8(&mut stream).await?;
-            if offset_msg != MSG_SHARD_OFFSET {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("expected MSG_SHARD_OFFSET, got {offset_msg}"),
-                ));
-            }
+            expect_tag(&mut stream, MSG_SHARD_OFFSET, "MSG_SHARD_OFFSET").await?;
             let _recv_shard_id = read_u16_le(&mut stream).await?;
             let _recv_offset = read_u64_le(&mut stream).await?;
         }
@@ -398,8 +408,7 @@ impl ReplicationClient {
                     })?;
 
                     if let Some(request) = aof_record_to_shard_request(&record) {
-                        let key = primary_key_for_request(&request).map(|k| k.to_owned());
-                        if let Some(key) = key {
+                        if let Some(key) = primary_key_for_request(&request).map(str::to_owned) {
                             if let Err(e) = self.engine.route(&key, request).await {
                                 warn!("replication apply failed: {e:?}");
                             }
@@ -441,16 +450,10 @@ impl ReplicationClient {
                 }
             };
 
-            let expire = if entry.expire_ms > 0 {
-                Some(std::time::Duration::from_millis(entry.expire_ms as u64))
-            } else {
-                None
-            };
-
             let request = ShardRequest::Set {
                 key: entry.key.clone(),
                 value,
-                expire,
+                expire: expire_from_ms(entry.expire_ms),
                 nx: false,
                 xx: false,
             };
@@ -468,11 +471,7 @@ impl ReplicationClient {
         use ember_persistence::snapshot::SnapValue;
 
         let key = entry.key.clone();
-        let expire = if entry.expire_ms > 0 {
-            Some(std::time::Duration::from_millis(entry.expire_ms as u64))
-        } else {
-            None
-        };
+        let expire = expire_from_ms(entry.expire_ms);
 
         match entry.value {
             SnapValue::List(deque) => {
@@ -556,6 +555,14 @@ impl ReplicationClient {
     }
 }
 
+/// Converts a millisecond expiry field to an `Option<Duration>`.
+///
+/// AOF and snapshot records store `-1` (or any non-positive value) to
+/// indicate "no expiry". A positive `ms` becomes `Some(Duration)`.
+fn expire_from_ms(ms: i64) -> Option<Duration> {
+    (ms > 0).then(|| Duration::from_millis(ms as u64))
+}
+
 // -- AofRecord → ShardRequest conversion --
 
 /// Converts an `AofRecord` into the equivalent `ShardRequest` for replay.
@@ -568,20 +575,13 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             key,
             value,
             expire_ms,
-        } => {
-            let expire = if *expire_ms > 0 {
-                Some(Duration::from_millis(*expire_ms as u64))
-            } else {
-                None
-            };
-            Some(ShardRequest::Set {
-                key: key.clone(),
-                value: value.clone(),
-                expire,
-                nx: false,
-                xx: false,
-            })
-        }
+        } => Some(ShardRequest::Set {
+            key: key.clone(),
+            value: value.clone(),
+            expire: expire_from_ms(*expire_ms),
+            nx: false,
+            xx: false,
+        }),
         AofRecord::Del { key } => Some(ShardRequest::Del { key: key.clone() }),
         AofRecord::Expire { key, seconds } => Some(ShardRequest::Expire {
             key: key.clone(),
