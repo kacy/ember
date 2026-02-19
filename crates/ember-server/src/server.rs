@@ -90,6 +90,13 @@ pub async fn run(
 
     let engine = Engine::with_config(shard_count, config);
 
+    // wire replication: give the cluster coordinator access to the engine
+    // and start the replication server so replicas can connect
+    if let Some(ref coordinator) = cluster {
+        coordinator.set_engine(Arc::new(engine.clone()));
+        coordinator.start_replication_server().await;
+    }
+
     if metrics_enabled {
         crate::metrics::spawn_stats_poller(engine.clone());
     }

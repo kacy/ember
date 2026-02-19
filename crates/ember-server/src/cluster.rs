@@ -18,6 +18,7 @@ use ember_cluster::{
     ClusterStateData, ConfigParseError, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
     MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError, SlotRange, SLOT_COUNT,
 };
+use ember_core::Engine;
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
@@ -35,12 +36,16 @@ pub struct ClusterCoordinator {
     migration: Mutex<MigrationManager>,
     local_id: NodeId,
     gossip_port_offset: u16,
+    /// local data-plane bind address (used to compute replication port)
+    bind_addr: SocketAddr,
     /// bound UDP socket for gossip, set after spawn_gossip
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
     /// directory for nodes.conf persistence (None disables saving)
     data_dir: Option<PathBuf>,
     /// raft node for linearizable topology mutations; set once after startup
     raft_node: std::sync::OnceLock<Arc<RaftNode>>,
+    /// engine handle for replication; set once during startup
+    engine: std::sync::OnceLock<Arc<Engine>>,
 }
 
 impl std::fmt::Debug for ClusterCoordinator {
@@ -99,9 +104,11 @@ impl ClusterCoordinator {
             migration: Mutex::new(MigrationManager::new()),
             local_id,
             gossip_port_offset: port_offset,
+            bind_addr,
             udp_socket: Mutex::new(None),
             data_dir,
             raft_node: std::sync::OnceLock::new(),
+            engine: std::sync::OnceLock::new(),
         };
 
         Ok((coordinator, event_rx))
@@ -154,9 +161,11 @@ impl ClusterCoordinator {
             migration: Mutex::new(MigrationManager::new()),
             local_id,
             gossip_port_offset: port_offset,
+            bind_addr,
             udp_socket: Mutex::new(None),
             data_dir: Some(data_dir),
             raft_node: std::sync::OnceLock::new(),
+            engine: std::sync::OnceLock::new(),
         };
 
         Ok((coordinator, event_rx))
@@ -783,6 +792,10 @@ impl ClusterCoordinator {
         let _ = incarnation; // used only to hold the lock briefly
 
         self.save_config().await;
+
+        // connect to the primary's replication port and start streaming
+        self.start_replication_client(primary_id).await;
+
         Frame::Simple("OK".into())
     }
 
@@ -808,6 +821,111 @@ impl ClusterCoordinator {
             Some(node.addr)
         } else {
             None
+        }
+    }
+
+    /// Attaches the engine so replication can start on demand.
+    ///
+    /// Must be called once after the engine is built, before any `CLUSTER REPLICATE`
+    /// commands are processed.
+    pub fn set_engine(&self, engine: Arc<Engine>) {
+        let _ = self.engine.set(engine);
+    }
+
+    /// Starts the replication server for this node.
+    ///
+    /// Binds a TCP listener on `bind_addr.port() + gossip_port_offset + 2`
+    /// and accepts replica connections indefinitely. This is a no-op if
+    /// no engine has been attached via `set_engine`.
+    pub async fn start_replication_server(self: &Arc<Self>) {
+        let Some(engine) = self.engine.get() else {
+            warn!("start_replication_server called before set_engine; skipping");
+            return;
+        };
+
+        let repl_port = match self
+            .bind_addr
+            .port()
+            .checked_add(self.gossip_port_offset)
+            .and_then(|p| p.checked_add(2))
+        {
+            Some(p) => p,
+            None => {
+                error!("replication port overflows u16; not starting replication server");
+                return;
+            }
+        };
+
+        let local_id = self.local_id.to_string();
+        if let Err(e) =
+            crate::replication::ReplicationServer::start(Arc::clone(engine), local_id, repl_port)
+                .await
+        {
+            error!("failed to start replication server on port {repl_port}: {e}");
+        }
+    }
+
+    /// Starts the replication client, connecting to the primary's replication port.
+    ///
+    /// The replication port of the primary is derived from its data-plane address
+    /// by adding `gossip_port_offset + 2`.
+    async fn start_replication_client(&self, primary_id: NodeId) {
+        let Some(engine) = self.engine.get() else {
+            warn!("start_replication_client called before set_engine; skipping");
+            return;
+        };
+
+        let primary_addr = {
+            let state = self.state.read().await;
+            state.nodes.get(&primary_id).map(|n| n.addr)
+        };
+
+        let Some(addr) = primary_addr else {
+            warn!(%primary_id, "cannot start replication client: primary not found in state");
+            return;
+        };
+
+        let repl_port = match addr
+            .port()
+            .checked_add(self.gossip_port_offset)
+            .and_then(|p| p.checked_add(2))
+        {
+            Some(p) => p,
+            None => {
+                error!(%primary_id, "primary replication port overflows u16; not connecting");
+                return;
+            }
+        };
+
+        let repl_addr = std::net::SocketAddr::new(addr.ip(), repl_port);
+        info!(%primary_id, %repl_addr, "starting replication client");
+        crate::replication::ReplicationClient::start(Arc::clone(engine), repl_addr);
+    }
+
+    /// Returns replication status for the `INFO replication` section.
+    ///
+    /// Returns `(role, Option<primary_addr>)`.
+    pub async fn replication_info(&self) -> ReplicationInfo {
+        let state = self.state.read().await;
+        let local = state.nodes.get(&self.local_id);
+        let role = local.map(|n| n.role).unwrap_or(NodeRole::Primary);
+        let primary_addr = if role == NodeRole::Replica {
+            local
+                .and_then(|n| n.replicates)
+                .and_then(|id| state.nodes.get(&id))
+                .map(|n| n.addr)
+        } else {
+            None
+        };
+        let replica_count = if role == NodeRole::Primary {
+            local.map(|n| n.replicas.len()).unwrap_or(0)
+        } else {
+            0
+        };
+        ReplicationInfo {
+            role,
+            primary_addr,
+            replica_count,
         }
     }
 
@@ -1133,6 +1251,16 @@ impl ClusterCoordinator {
             }
         });
     }
+}
+
+/// Snapshot of replication status for the `INFO replication` command.
+#[derive(Debug)]
+pub struct ReplicationInfo {
+    pub role: NodeRole,
+    /// Address of the primary this node replicates from (replica only).
+    pub primary_addr: Option<std::net::SocketAddr>,
+    /// Number of connected replicas (primary only).
+    pub replica_count: usize,
 }
 
 /// Compacts a flat list of slot numbers into contiguous `SlotRange` values.

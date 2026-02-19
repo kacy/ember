@@ -12,7 +12,7 @@ use bytes::Bytes;
 use ember_persistence::aof::{AofRecord, AofWriter, FsyncPolicy};
 use ember_persistence::recovery::{self, RecoveredValue};
 use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::dropper::DropHandle;
@@ -31,6 +31,21 @@ const EXPIRY_TICK: Duration = Duration::from_millis(100);
 
 /// How often to fsync when using the `EverySec` policy.
 const FSYNC_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A mutation event broadcast to replication subscribers.
+///
+/// Published after every successful mutation on the hot path. The
+/// `offset` is per-shard and monotonically increasing — replicas use it
+/// to detect gaps and trigger re-sync when they fall behind.
+#[derive(Debug, Clone)]
+pub struct ReplicationEvent {
+    /// The shard that produced this event.
+    pub shard_id: u16,
+    /// Monotonically increasing per-shard offset.
+    pub offset: u64,
+    /// The mutation record, ready to replay on a replica.
+    pub record: AofRecord,
+}
 
 /// Optional persistence configuration for a shard.
 #[derive(Debug, Clone)]
@@ -239,6 +254,11 @@ pub enum ShardRequest {
     Stats,
     /// Triggers a snapshot write.
     Snapshot,
+    /// Serializes the current shard state to bytes (in-memory snapshot).
+    ///
+    /// Used by the replication server to capture a consistent shard
+    /// snapshot for transmission to a new replica without filesystem I/O.
+    SerializeSnapshot,
     /// Triggers an AOF rewrite (snapshot + truncate AOF).
     RewriteAof,
     /// Clears all keys from the keyspace.
@@ -427,6 +447,8 @@ pub enum ShardResponse {
     StringArray(Vec<String>),
     /// Serialized key dump with remaining TTL (for MIGRATE/DUMP).
     KeyDump { data: Vec<u8>, ttl_ms: i64 },
+    /// In-memory snapshot of the full shard state (for replication).
+    SnapshotData { shard_id: u16, data: Vec<u8> },
     /// HMGET result: array of optional values.
     OptionalArray(Vec<Option<Bytes>>),
     /// VADD result: element, vector, and whether it was newly added.
@@ -523,6 +545,7 @@ pub fn spawn_shard(
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
+    replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardHandle {
     let (tx, rx) = mpsc::channel(buffer);
@@ -531,6 +554,7 @@ pub fn spawn_shard(
         config,
         persistence,
         drop_handle,
+        replication_tx,
         #[cfg(feature = "protobuf")]
         schema_registry,
     ));
@@ -544,6 +568,7 @@ async fn run_shard(
     config: ShardConfig,
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
+    replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) {
     let shard_id = config.shard_id;
@@ -670,6 +695,9 @@ async fn run_shard(
         .map(|p| p.fsync_policy)
         .unwrap_or(FsyncPolicy::No);
 
+    // monotonically increasing per-shard replication offset
+    let mut replication_offset: u64 = 0;
+
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(EXPIRY_TICK);
     expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -690,6 +718,8 @@ async fn run_shard(
                             &persistence,
                             &drop_handle,
                             shard_id,
+                            &replication_tx,
+                            &mut replication_offset,
                             #[cfg(feature = "protobuf")]
                             &schema_registry,
                         );
@@ -707,6 +737,8 @@ async fn run_shard(
                                 &persistence,
                                 &drop_handle,
                                 shard_id,
+                                &replication_tx,
+                                &mut replication_offset,
                                 #[cfg(feature = "protobuf")]
                                 &schema_registry,
                             );
@@ -748,6 +780,8 @@ fn process_message(
     persistence: &Option<ShardPersistenceConfig>,
     drop_handle: &Option<DropHandle>,
     shard_id: u16,
+    replication_tx: &Option<broadcast::Sender<ReplicationEvent>>,
+    replication_offset: &mut u64,
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) {
     let request_kind = describe_request(&msg.request);
@@ -758,9 +792,11 @@ fn process_message(
         schema_registry,
     );
 
+    // collect mutation records once; used for both AOF and replication
+    let records = to_aof_records(&msg.request, &response);
+
     // write AOF records for successful mutations
     if let Some(ref mut writer) = aof_writer {
-        let records = to_aof_records(&msg.request, &response);
         for record in &records {
             if let Err(e) = writer.write_record(record) {
                 warn!(shard_id, "aof write failed: {e}");
@@ -773,10 +809,28 @@ fn process_message(
         }
     }
 
+    // broadcast mutation events to replication subscribers
+    if let Some(ref tx) = replication_tx {
+        for record in records {
+            *replication_offset += 1;
+            // ignore send errors — no subscribers or lagged consumers
+            let _ = tx.send(ReplicationEvent {
+                shard_id,
+                offset: *replication_offset,
+                record,
+            });
+        }
+    }
+
     // handle special requests that need access to persistence state
     match request_kind {
         RequestKind::Snapshot => {
             let resp = handle_snapshot(keyspace, persistence, shard_id);
+            let _ = msg.reply.send(resp);
+            return;
+        }
+        RequestKind::SerializeSnapshot => {
+            let resp = handle_serialize_snapshot(keyspace, shard_id);
             let _ = msg.reply.send(resp);
             return;
         }
@@ -810,6 +864,7 @@ fn process_message(
 /// handling after dispatch without borrowing the request again.
 enum RequestKind {
     Snapshot,
+    SerializeSnapshot,
     RewriteAof,
     FlushDbAsync,
     Other,
@@ -818,6 +873,7 @@ enum RequestKind {
 fn describe_request(req: &ShardRequest) -> RequestKind {
     match req {
         ShardRequest::Snapshot => RequestKind::Snapshot,
+        ShardRequest::SerializeSnapshot => RequestKind::SerializeSnapshot,
         ShardRequest::RewriteAof => RequestKind::RewriteAof,
         ShardRequest::FlushDbAsync => RequestKind::FlushDbAsync,
         _ => RequestKind::Other,
@@ -1269,10 +1325,11 @@ fn dispatch(
                 })
             })
         }
-        // snapshot/rewrite/flush_async are handled in the main loop, not here
-        ShardRequest::Snapshot | ShardRequest::RewriteAof | ShardRequest::FlushDbAsync => {
-            ShardResponse::Ok
-        }
+        // these requests are intercepted in process_message, not handled here
+        ShardRequest::Snapshot
+        | ShardRequest::SerializeSnapshot
+        | ShardRequest::RewriteAof
+        | ShardRequest::FlushDbAsync => ShardResponse::Ok,
     }
 }
 
@@ -1611,6 +1668,30 @@ fn handle_snapshot(
     }
 }
 
+/// Serializes the current shard state to bytes without filesystem I/O.
+///
+/// Used by the replication server to capture a snapshot for transmission
+/// to a new replica. The format matches the file-based snapshot and can
+/// be loaded via [`ember_persistence::snapshot::read_snapshot_from_bytes`].
+fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> ShardResponse {
+    let entries: Vec<SnapEntry> = keyspace
+        .iter_entries()
+        .map(|(key, value, expire_ms)| SnapEntry {
+            key: key.to_owned(),
+            value: value_to_snap(value),
+            expire_ms,
+        })
+        .collect();
+
+    match snapshot::write_snapshot_bytes(shard_id, &entries) {
+        Ok(data) => ShardResponse::SnapshotData { shard_id, data },
+        Err(e) => {
+            warn!(shard_id, "snapshot serialization failed: {e}");
+            ShardResponse::Err(format!("snapshot failed: {e}"))
+        }
+    }
+}
+
 /// Writes a snapshot and then truncates the AOF.
 ///
 /// When protobuf is enabled, re-persists all registered schemas to the
@@ -1892,6 +1973,7 @@ mod tests {
             ShardConfig::default(),
             None,
             None,
+            None,
             #[cfg(feature = "protobuf")]
             None,
         );
@@ -1929,6 +2011,7 @@ mod tests {
             ShardConfig::default(),
             None,
             None,
+            None,
             #[cfg(feature = "protobuf")]
             None,
         );
@@ -1958,6 +2041,7 @@ mod tests {
         let handle = spawn_shard(
             16,
             ShardConfig::default(),
+            None,
             None,
             None,
             #[cfg(feature = "protobuf")]
@@ -2033,6 +2117,7 @@ mod tests {
                 config.clone(),
                 Some(pcfg.clone()),
                 None,
+                None,
                 #[cfg(feature = "protobuf")]
                 None,
             );
@@ -2080,6 +2165,7 @@ mod tests {
                 16,
                 config,
                 Some(pcfg),
+                None,
                 None,
                 #[cfg(feature = "protobuf")]
                 None,

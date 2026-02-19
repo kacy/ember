@@ -13,6 +13,7 @@ mod connection_common;
 mod grpc;
 mod metrics;
 mod pubsub;
+mod replication;
 mod server;
 mod slowlog;
 mod tls;
@@ -23,7 +24,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use ember_cluster::{raft_id_from_node_id, GossipConfig, NodeId, RaftNode, RaftStorage};
-use ember_core::ShardPersistenceConfig;
+use ember_core::{ReplicationEvent, ShardPersistenceConfig};
 use tracing::info;
 #[cfg(feature = "protobuf")]
 use tracing::warn;
@@ -412,6 +413,14 @@ async fn main() {
 
     if args.cluster_bootstrap && !args.cluster_enabled {
         exit_err("error: --cluster-bootstrap requires --cluster-enabled");
+    }
+
+    // set up the replication broadcast channel when cluster is enabled.
+    // the sender goes into engine_config so shards can publish mutations;
+    // replicas subscribe to it when they connect for full sync + streaming.
+    if args.cluster_enabled {
+        let (repl_tx, _) = tokio::sync::broadcast::channel::<ReplicationEvent>(65536);
+        engine_config.replication_tx = Some(repl_tx);
     }
 
     // build cluster coordinator if cluster mode is enabled
