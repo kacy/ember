@@ -22,6 +22,7 @@ use tokio::sync::{broadcast, oneshot};
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
     MAX_BUF_SIZE, MAX_PATTERN_LEN, MAX_PIPELINE_DEPTH, MAX_SUBSCRIPTIONS_PER_CONN,
+    TransactionState,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
@@ -170,6 +171,8 @@ where
     // ASKING flag: set by the ASKING command, consumed by the next command.
     // allows the target node to serve importing slots during migration.
     let mut asking = false;
+    // per-connection transaction state for MULTI/EXEC/DISCARD
+    let mut tx_state = TransactionState::None;
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -281,21 +284,41 @@ where
         // then collect responses in order. this avoids creating N large
         // async state machines (one per pipelined command) and lets
         // shards process in parallel while we wait.
+        //
+        // when a transaction is active (or a batch contains MULTI/EXEC),
+        // fall back to serial execution to preserve ordering guarantees.
         if !frames.is_empty() {
-            // phase 1: dispatch — send each command to its shard.
-            // each dispatch is just an mpsc send (fast, completes
-            // immediately when the channel has capacity).
-            let mut pending = Vec::with_capacity(frames.len());
-            for frame in frames.drain(..) {
-                let p = dispatch_command(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
-                pending.push(p);
-            }
+            let needs_serial = !matches!(tx_state, TransactionState::None)
+                || frames.iter().any(is_transaction_frame);
 
-            // phase 2: collect — await shard responses in order.
-            for p in pending {
-                let response = resolve_response(p, ctx, slow_log).await;
-                ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
-                response.serialize(&mut out);
+            if needs_serial {
+                // serial path: required during transactions
+                for frame in frames.drain(..) {
+                    let response = handle_frame_with_tx(
+                        frame,
+                        &mut tx_state,
+                        &engine,
+                        ctx,
+                        slow_log,
+                        pubsub,
+                        &mut asking,
+                    )
+                    .await;
+                    response.serialize(&mut out);
+                }
+            } else {
+                // pipeline path: dispatch all commands to shards, then collect
+                let mut pending = Vec::with_capacity(frames.len());
+                for frame in frames.drain(..) {
+                    let p =
+                        dispatch_command(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                    pending.push(p);
+                }
+                for p in pending {
+                    let response = resolve_response(p, ctx, slow_log).await;
+                    ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+                    response.serialize(&mut out);
+                }
             }
         }
 
@@ -303,6 +326,130 @@ where
             stream.write_all(&out).await?;
         }
     }
+}
+
+/// Handles a single frame with transaction awareness.
+///
+/// When not in a transaction, dispatches the frame normally (falling back to
+/// serial execution since transactions break the pipeline model). When
+/// queuing, most frames are buffered and `+QUEUED` is returned. EXEC replays
+/// the queue through the normal dispatch path and returns an array of results.
+async fn handle_frame_with_tx(
+    frame: Frame,
+    tx_state: &mut TransactionState,
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
+    pubsub: &Arc<PubSubManager>,
+    asking: &mut bool,
+) -> Frame {
+    // peek at the command name without consuming the frame
+    let cmd_name = peek_command_name(&frame);
+
+    match tx_state {
+        TransactionState::None => {
+            if cmd_name.as_deref() == Some("MULTI") {
+                // validate the frame parses correctly
+                match Command::from_frame(frame) {
+                    Ok(Command::Multi) => {
+                        *tx_state = TransactionState::Queuing {
+                            queue: Vec::new(),
+                            error: false,
+                        };
+                        Frame::Simple("OK".into())
+                    }
+                    Ok(_) => unreachable!(),
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                }
+            } else if cmd_name.as_deref() == Some("EXEC") {
+                Frame::Error("ERR EXEC without MULTI".into())
+            } else if cmd_name.as_deref() == Some("DISCARD") {
+                Frame::Error("ERR DISCARD without MULTI".into())
+            } else {
+                // normal dispatch path (process() increments commands_processed)
+                process(frame, engine, ctx, slow_log, pubsub, asking).await
+            }
+        }
+        TransactionState::Queuing { queue, error } => {
+            match cmd_name.as_deref() {
+                Some("MULTI") => {
+                    Frame::Error("ERR MULTI calls can not be nested".into())
+                }
+                Some("EXEC") => {
+                    if *error {
+                        let q = std::mem::take(queue);
+                        *tx_state = TransactionState::None;
+                        drop(q);
+                        Frame::Error(
+                            "EXECABORT Transaction discarded because of previous errors."
+                                .into(),
+                        )
+                    } else {
+                        let q = std::mem::take(queue);
+                        *tx_state = TransactionState::None;
+                        // replay queued commands serially (process() handles metrics)
+                        let mut results = Vec::with_capacity(q.len());
+                        for queued_frame in q {
+                            let response = process(
+                                queued_frame, engine, ctx, slow_log, pubsub, asking,
+                            )
+                            .await;
+                            results.push(response);
+                        }
+                        Frame::Array(results)
+                    }
+                }
+                Some("DISCARD") => {
+                    let q = std::mem::take(queue);
+                    *tx_state = TransactionState::None;
+                    drop(q);
+                    Frame::Simple("OK".into())
+                }
+                _ => {
+                    // validate the command parses correctly before queuing
+                    match Command::from_frame(frame.clone()) {
+                        Ok(cmd) => {
+                            // AUTH and QUIT execute immediately, not queued
+                            if matches!(cmd, Command::Auth { .. } | Command::Quit) {
+                                process(frame, engine, ctx, slow_log, pubsub, asking).await
+                            } else {
+                                queue.push(frame);
+                                Frame::Simple("QUEUED".into())
+                            }
+                        }
+                        Err(e) => {
+                            *error = true;
+                            Frame::Error(format!("ERR {e}"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Peeks at the command name from a raw frame without consuming it.
+fn peek_command_name(frame: &Frame) -> Option<String> {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return String::from_utf8(name.to_vec())
+                .ok()
+                .map(|s| s.to_ascii_uppercase());
+        }
+    }
+    None
+}
+
+/// Checks if a raw frame is a MULTI, EXEC, or DISCARD command.
+fn is_transaction_frame(frame: &Frame) -> bool {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return name.eq_ignore_ascii_case(b"MULTI")
+                || name.eq_ignore_ascii_case(b"EXEC")
+                || name.eq_ignore_ascii_case(b"DISCARD");
+        }
+    }
+    false
 }
 
 /// Checks if a raw frame is a SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE command.
@@ -3380,6 +3527,13 @@ async fn execute(
         // ASKING is intercepted by process() and dispatch_command() before
         // reaching here, but the match must be exhaustive.
         Command::Asking => Frame::Simple("OK".into()),
+
+        // MULTI/EXEC/DISCARD are intercepted by handle_frame_with_tx() before
+        // reaching here. If they arrive directly (e.g. EXEC without MULTI),
+        // they should have been caught earlier — return an error for safety.
+        Command::Multi => Frame::Error("ERR MULTI calls can not be nested".into()),
+        Command::Exec => Frame::Error("ERR EXEC without MULTI".into()),
+        Command::Discard => Frame::Error("ERR DISCARD without MULTI".into()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
