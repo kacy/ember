@@ -89,7 +89,7 @@ where
                             if success {
                                 authenticated = true;
                             } else {
-                                auth_failures += 1;
+                                auth_failures = auth_failures.saturating_add(1);
                                 if auth_failures >= ctx.limits.max_auth_failures {
                                     Frame::Error(
                                         "ERR too many AUTH failures, closing connection".into(),
@@ -220,7 +220,9 @@ async fn process(
     match Command::from_frame(frame) {
         Ok(cmd) => {
             // reject oversized keys/values before any further processing
-            if let Some(err) = validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len) {
+            if let Some(err) =
+                validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
+            {
                 return err;
             }
 
