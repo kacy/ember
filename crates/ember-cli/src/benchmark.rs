@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use clap::Args;
 use colored::Colorize;
 use ember_protocol::types::Frame;
@@ -164,8 +164,9 @@ async fn run_workload(
     // generate the value payload once
     let value = generate_value(args.data_size);
 
-    // barrier so all clients start at roughly the same time
-    let barrier = Arc::new(Barrier::new(clients));
+    // the coordinator (main task) is a barrier participant so wall_start
+    // is measured only after all clients have connected and are ready.
+    let barrier = Arc::new(Barrier::new(clients + 1));
 
     let mut handles = Vec::with_capacity(clients);
 
@@ -206,28 +207,38 @@ async fn run_workload(
 
             let mut rng = StdRng::from_os_rng();
 
+            // reuse a serialization buffer across batches to avoid
+            // re-allocating on every iteration
+            let mut ser_buf = BytesMut::new();
+
             while sent < count {
                 let batch = pipeline.min((count - sent) as usize);
 
-                // build and set the command for this batch
-                let key = format!("key:{:012}", rng.random_range(0..keyspace));
-                let frame = match kind {
-                    WorkloadKind::Ping => {
-                        Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"PING"))])
-                    }
-                    WorkloadKind::Set => Frame::Array(vec![
-                        Frame::Bulk(Bytes::from_static(b"SET")),
-                        Frame::Bulk(Bytes::from(key)),
-                        Frame::Bulk(Bytes::from(value.clone())),
-                    ]),
-                    WorkloadKind::Get => Frame::Array(vec![
-                        Frame::Bulk(Bytes::from_static(b"GET")),
-                        Frame::Bulk(Bytes::from(key)),
-                    ]),
-                };
-                conn.set_command(&frame);
+                // build one command per pipeline slot, each with a distinct
+                // random key. this avoids the hot-key skew that results from
+                // repeating the same command N times.
+                let mut cmds: Vec<Bytes> = Vec::with_capacity(batch);
+                for _ in 0..batch {
+                    let key = format!("key:{:012}", rng.random_range(0..keyspace));
+                    let frame = match kind {
+                        WorkloadKind::Ping => {
+                            Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"PING"))])
+                        }
+                        WorkloadKind::Set => Frame::Array(vec![
+                            Frame::Bulk(Bytes::from_static(b"SET")),
+                            Frame::Bulk(Bytes::from(key)),
+                            Frame::Bulk(Bytes::from(value.clone())),
+                        ]),
+                        WorkloadKind::Get => Frame::Array(vec![
+                            Frame::Bulk(Bytes::from_static(b"GET")),
+                            Frame::Bulk(Bytes::from(key)),
+                        ]),
+                    };
+                    frame.serialize(&mut ser_buf);
+                    cmds.push(ser_buf.split().freeze());
+                }
 
-                match conn.send_pipeline(batch).await {
+                match conn.send_many(&cmds).await {
                     Ok(elapsed) => {
                         // record per-command latency (guard against zero/overflow)
                         let divisor = (batch as u32).max(1);
@@ -251,8 +262,10 @@ async fn run_workload(
         handles.push(handle);
     }
 
-    // measure wall clock from spawn to completion — the barrier ensures
-    // all clients start their actual work at roughly the same time
+    // wait until all clients have finished setup and are ready to go.
+    // starting the timer here ensures connection setup time is excluded
+    // from the reported throughput.
+    barrier.wait().await;
     let wall_start = Instant::now();
     let mut all_latencies: Vec<Duration> = Vec::with_capacity(total as usize);
 
