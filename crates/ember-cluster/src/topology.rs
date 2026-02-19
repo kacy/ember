@@ -250,6 +250,15 @@ impl ClusterNode {
             .map(|id| id.0.to_string())
             .unwrap_or_else(|| "-".to_string());
 
+        let ping_ms = self
+            .last_ping_sent
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        let pong_ms = self
+            .last_pong_received
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+
         // Format: <id> <addr>@<bus-port> <flags> <master-id> <ping-sent> <pong-recv> <config-epoch> <link-state> <slots>
         format!(
             "{} {}@{} {} {} {} {} {} connected {}",
@@ -258,12 +267,8 @@ impl ClusterNode {
             self.cluster_bus_addr.port(),
             self.format_flags(),
             replicates_str,
-            self.last_ping_sent
-                .map(|t| t.elapsed().as_millis() as u64)
-                .unwrap_or(0),
-            self.last_pong_received
-                .map(|t| t.elapsed().as_millis() as u64)
-                .unwrap_or(0),
+            ping_ms,
+            pong_ms,
             self.config_epoch,
             slots_str
         )
@@ -470,7 +475,7 @@ impl ClusterState {
                 .ok_or_else(|| format!("replica {replica_id} has no primary configured"))?
         };
 
-        // transfer every slot currently owned by the old primary
+        // transfer every slot the old primary owned to the promoted replica
         for slot in 0..SLOT_COUNT {
             if self.slot_map.owner(slot) == Some(primary_id) {
                 self.slot_map.assign(slot, replica_id);
@@ -478,11 +483,11 @@ impl ClusterState {
         }
         let new_primary_slots = self.slot_map.slots_for_node(replica_id);
 
-        // bump epoch before touching node state
+        // bump epoch before touching node state so both nodes land on the same epoch
         self.config_epoch += 1;
         let new_epoch = self.config_epoch;
 
-        // demote old primary → it now replicates the new primary
+        // demote the old primary: clear its slots and make it a replica of the winner
         if let Some(old_primary) = self.nodes.get_mut(&primary_id) {
             old_primary.role = NodeRole::Replica;
             old_primary.replicates = Some(replica_id);
@@ -491,7 +496,7 @@ impl ClusterState {
             old_primary.config_epoch = new_epoch;
         }
 
-        // promote the replica → it becomes the new primary
+        // promote the winner: take ownership of all slots and clear the replicates pointer
         if let Some(new_primary) = self.nodes.get_mut(&replica_id) {
             new_primary.role = NodeRole::Primary;
             new_primary.replicates = None;

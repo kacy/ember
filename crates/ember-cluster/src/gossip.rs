@@ -478,10 +478,10 @@ impl GossipEngine {
                     if member.id == self.local_id {
                         continue;
                     }
-                    let slots = member.slots.clone();
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         self.members.entry(member.id)
                     {
+                        let slots = member.slots.clone();
                         e.insert(MemberState {
                             id: member.id,
                             addr: member.addr,
@@ -759,9 +759,11 @@ impl GossipEngine {
                     if let Some(member) = self.members.get_mut(node) {
                         // only accept if incarnation is at least as recent
                         if *incarnation >= member.incarnation {
-                            member.slots = slots.clone();
-                            self.emit(GossipEvent::SlotsChanged(*node, slots.clone()))
-                                .await;
+                            let owned = slots.clone();
+                            member.slots = owned.clone();
+                            // release the mutable borrow before the async call
+                            drop(member);
+                            self.emit(GossipEvent::SlotsChanged(*node, owned)).await;
                         }
                     }
                 }
@@ -849,17 +851,23 @@ impl GossipEngine {
         let now = Instant::now();
         let mut outgoing = Vec::new();
 
+        // Single pass: collect timed-out entries by kind and remove them.
+        let mut timed_out_indirect: Vec<(u64, NodeId)> = Vec::new();
+        let mut timed_out_direct: Vec<(u64, NodeId)> = Vec::new();
+        self.pending_probes.retain(|seq, probe| {
+            if now.duration_since(probe.sent_at) <= timeout {
+                return true;
+            }
+            if probe.indirect {
+                timed_out_indirect.push((*seq, probe.target));
+            } else {
+                timed_out_direct.push((*seq, probe.target));
+            }
+            false
+        });
+
         // Phase 2: indirect probe timeouts → mark Suspect
-        let indirect_timed_out: Vec<_> = self
-            .pending_probes
-            .iter()
-            .filter(|(_, probe)| probe.indirect && now.duration_since(probe.sent_at) > timeout)
-            .map(|(seq, probe)| (*seq, probe.target))
-            .collect();
-
-        for (seq, target) in indirect_timed_out {
-            self.pending_probes.remove(&seq);
-
+        for (_seq, target) in timed_out_indirect {
             let incarnation = self
                 .members
                 .get(&target)
@@ -880,15 +888,7 @@ impl GossipEngine {
         }
 
         // Phase 1: direct ping timeouts → send PingReq
-        let direct_timed_out: Vec<_> = self
-            .pending_probes
-            .iter()
-            .filter(|(_, probe)| !probe.indirect && now.duration_since(probe.sent_at) > timeout)
-            .map(|(seq, probe)| (*seq, probe.target))
-            .collect();
-
-        for (seq, target) in direct_timed_out {
-            self.pending_probes.remove(&seq);
+        for (_seq, target) in timed_out_direct {
 
             let target_addr = match self.members.get(&target) {
                 Some(m) if m.state == MemberStatus::Alive => m.addr,

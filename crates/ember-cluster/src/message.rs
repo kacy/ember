@@ -14,6 +14,11 @@ use crate::{NodeId, SlotRange};
 /// Prevents allocation bombs from crafted messages.
 const MAX_COLLECTION_COUNT: usize = 1024;
 
+/// Address family discriminant for IPv4 (standard AF_INET byte count: 4).
+const ADDR_IPV4: u8 = 4;
+/// Address family discriminant for IPv6 (standard AF_INET6 byte count: 6 hex groups, 16 bytes).
+const ADDR_IPV6: u8 = 6;
+
 // Safe read helpers that return io::Error instead of panicking on truncated input.
 
 fn safe_get_u8(buf: &mut &[u8]) -> io::Result<u8> {
@@ -163,6 +168,22 @@ const UPDATE_ROLE_CHANGED: u8 = 6;
 const UPDATE_VOTE_REQUEST: u8 = 7;
 const UPDATE_VOTE_GRANTED: u8 = 8;
 
+/// Writes a count-capped slice into `buf` using a per-item encoder.
+///
+/// Writes `min(items.len(), MAX_COLLECTION_COUNT)` as a u16, then calls
+/// `encode_one` for each item in the truncated slice. Used everywhere a
+/// repeated list is encoded to avoid duplicating the truncation logic.
+fn encode_slice<T, F>(buf: &mut BytesMut, items: &[T], encode_one: F)
+where
+    F: Fn(&mut BytesMut, &T),
+{
+    let count = items.len().min(MAX_COLLECTION_COUNT);
+    buf.put_u16_le(count as u16);
+    for item in &items[..count] {
+        encode_one(buf, item);
+    }
+}
+
 impl GossipMessage {
     /// Serializes the message to bytes.
     pub fn encode(&self) -> Bytes {
@@ -217,11 +238,7 @@ impl GossipMessage {
             GossipMessage::Welcome { sender, members } => {
                 buf.put_u8(MSG_WELCOME);
                 encode_node_id(buf, sender);
-                let count = members.len().min(MAX_COLLECTION_COUNT);
-                buf.put_u16_le(count as u16);
-                for member in &members[..count] {
-                    encode_member_info(buf, member);
-                }
+                encode_slice(buf, members, encode_member_info);
             }
             GossipMessage::SlotsAnnounce {
                 sender,
@@ -231,12 +248,10 @@ impl GossipMessage {
                 buf.put_u8(MSG_SLOTS_ANNOUNCE);
                 encode_node_id(buf, sender);
                 buf.put_u64_le(*incarnation);
-                let count = slots.len().min(MAX_COLLECTION_COUNT);
-                buf.put_u16_le(count as u16);
-                for slot in &slots[..count] {
-                    buf.put_u16_le(slot.start);
-                    buf.put_u16_le(slot.end);
-                }
+                encode_slice(buf, slots, |b, slot| {
+                    b.put_u16_le(slot.start);
+                    b.put_u16_le(slot.end);
+                });
             }
         }
     }
@@ -356,12 +371,12 @@ fn decode_node_id(buf: &mut &[u8]) -> io::Result<NodeId> {
 fn encode_socket_addr(buf: &mut BytesMut, addr: &SocketAddr) {
     match addr {
         SocketAddr::V4(v4) => {
-            buf.put_u8(4);
+            buf.put_u8(ADDR_IPV4);
             buf.put_slice(&v4.ip().octets());
             buf.put_u16_le(v4.port());
         }
         SocketAddr::V6(v6) => {
-            buf.put_u8(6);
+            buf.put_u8(ADDR_IPV6);
             buf.put_slice(&v6.ip().octets());
             buf.put_u16_le(v6.port());
         }
@@ -377,7 +392,8 @@ fn decode_socket_addr(buf: &mut &[u8]) -> io::Result<SocketAddr> {
     }
     let addr_type = buf.get_u8();
     match addr_type {
-        4 => {
+        ADDR_IPV4 => {
+            // 4 octets + 2-byte port = 6 bytes
             if buf.len() < 6 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -389,7 +405,8 @@ fn decode_socket_addr(buf: &mut &[u8]) -> io::Result<SocketAddr> {
             let port = buf.get_u16_le();
             Ok(SocketAddr::from((octets, port)))
         }
-        6 => {
+        ADDR_IPV6 => {
+            // 16 octets + 2-byte port = 18 bytes
             if buf.len() < 18 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -409,11 +426,7 @@ fn decode_socket_addr(buf: &mut &[u8]) -> io::Result<SocketAddr> {
 }
 
 fn encode_updates(buf: &mut BytesMut, updates: &[NodeUpdate]) {
-    let count = updates.len().min(MAX_COLLECTION_COUNT);
-    buf.put_u16_le(count as u16);
-    for update in &updates[..count] {
-        encode_update(buf, update);
-    }
+    encode_slice(buf, updates, encode_update);
 }
 
 fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
@@ -450,12 +463,10 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
             buf.put_u8(UPDATE_SLOTS_CHANGED);
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
-            let count = slots.len().min(MAX_COLLECTION_COUNT);
-            buf.put_u16_le(count as u16);
-            for slot in &slots[..count] {
-                buf.put_u16_le(slot.start);
-                buf.put_u16_le(slot.end);
-            }
+            encode_slice(buf, slots, |b, slot| {
+                b.put_u16_le(slot.start);
+                b.put_u16_le(slot.end);
+            });
         }
         NodeUpdate::RoleChanged {
             node,
@@ -613,12 +624,10 @@ fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
     encode_socket_addr(buf, &member.addr);
     buf.put_u64_le(member.incarnation);
     buf.put_u8(if member.is_primary { 1 } else { 0 });
-    let slot_count = member.slots.len().min(MAX_COLLECTION_COUNT);
-    buf.put_u16_le(slot_count as u16);
-    for slot in &member.slots[..slot_count] {
-        buf.put_u16_le(slot.start);
-        buf.put_u16_le(slot.end);
-    }
+    encode_slice(buf, &member.slots, |b, slot| {
+        b.put_u16_le(slot.start);
+        b.put_u16_le(slot.end);
+    });
 }
 
 fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
@@ -669,7 +678,7 @@ mod tests {
             updates: vec![],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -693,7 +702,7 @@ mod tests {
             ],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -706,7 +715,7 @@ mod tests {
             target_addr: test_addr(),
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -721,7 +730,7 @@ mod tests {
             }],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -732,7 +741,7 @@ mod tests {
             sender_addr: test_addr(),
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -758,7 +767,7 @@ mod tests {
             ],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -769,7 +778,7 @@ mod tests {
             sender_addr: test_addr_v6(),
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -790,7 +799,7 @@ mod tests {
             }],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
 
         // primary variant (no replicates field)
@@ -805,7 +814,7 @@ mod tests {
             }],
         };
         let encoded2 = msg2.encode();
-        let decoded2 = GossipMessage::decode(&encoded2).unwrap();
+        let decoded2 = GossipMessage::decode(&encoded2).expect("roundtrip should succeed");
         assert_eq!(msg2, decoded2);
     }
 
@@ -839,7 +848,7 @@ mod tests {
             updates,
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -856,7 +865,7 @@ mod tests {
             }],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -877,7 +886,7 @@ mod tests {
             }],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -925,7 +934,7 @@ mod tests {
             }],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
@@ -943,7 +952,7 @@ mod tests {
             }],
         };
         let encoded = msg.encode();
-        let decoded = GossipMessage::decode(&encoded).unwrap();
+        let decoded = GossipMessage::decode(&encoded).expect("roundtrip should succeed");
         assert_eq!(msg, decoded);
     }
 
