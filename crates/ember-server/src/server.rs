@@ -16,7 +16,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use crate::cluster::ClusterCoordinator;
-use crate::config::ConfigRegistry;
+use crate::config::{ConfigRegistry, ConnectionLimits};
 use crate::connection;
 use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
@@ -49,6 +49,8 @@ pub struct ServerContext {
     pub config: Arc<ConfigRegistry>,
     /// Cluster coordinator, present when --cluster-enabled is set.
     pub cluster: Option<Arc<ClusterCoordinator>>,
+    /// Connection-level limits derived from EmberConfig.
+    pub limits: ConnectionLimits,
 }
 
 /// Binds to `addr` and runs the accept loop.
@@ -75,6 +77,7 @@ pub async fn run(
     tls: Option<(SocketAddr, TlsConfig)>,
     cluster: Option<Arc<ClusterCoordinator>>,
     config_registry: Arc<ConfigRegistry>,
+    limits: ConnectionLimits,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
@@ -126,6 +129,7 @@ pub async fn run(
         bind_addr: addr,
         config: config_registry,
         cluster,
+        limits,
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
@@ -370,6 +374,7 @@ pub async fn run_concurrent(
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
     config_registry: Arc<ConfigRegistry>,
+    limits: ConnectionLimits,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
@@ -409,6 +414,7 @@ pub async fn run_concurrent(
         bind_addr: addr,
         config: config_registry,
         cluster: None,
+        limits,
     });
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
