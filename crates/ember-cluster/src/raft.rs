@@ -622,6 +622,9 @@ impl RaftNetworkClient {
 
     async fn send_rpc(&self, rpc: RaftRpc) -> std::io::Result<RaftRpcResponse> {
         let mut stream = TcpStream::connect(self.target_addr).await?;
+        // disable Nagle's algorithm so Raft heartbeats and vote requests are
+        // sent immediately rather than buffered for up to 200ms.
+        stream.set_nodelay(true)?;
         match &self.secret {
             Some(secret) => {
                 write_frame_authenticated(&mut stream, &rpc, secret).await?;

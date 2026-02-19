@@ -12,7 +12,7 @@
 //! 4. After suspicion timeout, mark as DEAD
 //! 5. Piggyback state updates on all messages
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -132,7 +132,9 @@ pub struct GossipEngine {
     /// Known cluster members.
     members: HashMap<NodeId, MemberState>,
     /// Pending updates to piggyback on outgoing messages.
-    pending_updates: Vec<NodeUpdate>,
+    /// VecDeque gives O(1) front drain instead of the O(n) shift that
+    /// Vec::drain(0..n) requires.
+    pending_updates: VecDeque<NodeUpdate>,
     /// Sequence number for protocol messages.
     next_seq: u64,
     /// Pending probes awaiting acknowledgment.
@@ -175,7 +177,7 @@ impl GossipEngine {
             incarnation: 1,
             config,
             members: HashMap::new(),
-            pending_updates: Vec::new(),
+            pending_updates: VecDeque::new(),
             next_seq: 1,
             pending_probes: HashMap::new(),
             event_tx,
@@ -1020,19 +1022,20 @@ impl GossipEngine {
     }
 
     fn queue_update(&mut self, update: NodeUpdate) {
-        self.pending_updates.push(update);
+        self.pending_updates.push_back(update);
         // When the queue overflows, drop the oldest pending updates.
         // This is safe: gossip convergence doesn't require every update to be
         // delivered. Members re-gossip their state on each protocol period, so
         // a dropped update will be re-sent in the next round.
         if self.pending_updates.len() > self.config.max_piggyback * 2 {
-            self.pending_updates.drain(0..self.config.max_piggyback);
+            let to_drop = self.pending_updates.len() - self.config.max_piggyback * 2;
+            self.pending_updates.drain(..to_drop);
         }
     }
 
     fn collect_updates(&mut self) -> Vec<NodeUpdate> {
         let count = self.pending_updates.len().min(self.config.max_piggyback);
-        self.pending_updates.drain(0..count).collect()
+        self.pending_updates.drain(..count).collect()
     }
 }
 
