@@ -27,5 +27,5 @@ pub use keyspace::{
 };
 #[cfg(feature = "vector")]
 pub use keyspace::{VAddResult, VectorWriteError};
-pub use shard::{ShardPersistenceConfig, ShardRequest, ShardResponse};
+pub use shard::{ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse};
 pub use types::Value;

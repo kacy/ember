@@ -333,7 +333,7 @@ impl AofRecord {
     }
 
     /// Serializes this record into a byte vector (tag + payload, no CRC).
-    fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
+    pub fn to_bytes(&self) -> Result<Vec<u8>, FormatError> {
         let mut buf = Vec::with_capacity(self.estimated_size());
         format::write_u8(&mut buf, self.tag())?;
 
@@ -489,7 +489,7 @@ impl AofRecord {
     }
 
     /// Deserializes a record from a byte slice (tag + payload, no CRC).
-    fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
+    pub fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
         let mut cursor = io::Cursor::new(data);
         let tag = format::read_u8(&mut cursor)?;
         match tag {

@@ -4,10 +4,12 @@
 //! of the key. Each shard is an independent tokio task — no locks on
 //! the hot path.
 
+use tokio::sync::broadcast;
+
 use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::keyspace::ShardConfig;
-use crate::shard::{self, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse};
+use crate::shard::{self, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse};
 
 /// Channel buffer size per shard. 256 is large enough to absorb
 /// bursts without putting meaningful back-pressure on connections.
@@ -21,6 +23,12 @@ pub struct EngineConfig {
     /// Optional persistence configuration. When set, each shard gets
     /// its own AOF and snapshot files under this directory.
     pub persistence: Option<ShardPersistenceConfig>,
+    /// Optional broadcast sender for replication events.
+    ///
+    /// When set, every successful mutation is published as a
+    /// [`ReplicationEvent`] so replication clients can stream it to
+    /// replicas.
+    pub replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
     /// Optional schema registry for protobuf value validation.
     /// When set, enables PROTO.* commands.
     #[cfg(feature = "protobuf")]
@@ -35,6 +43,7 @@ pub struct EngineConfig {
 #[derive(Debug, Clone)]
 pub struct Engine {
     shards: Vec<ShardHandle>,
+    replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
     #[cfg(feature = "protobuf")]
     schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -72,6 +81,7 @@ impl Engine {
                     shard_config,
                     config.persistence.clone(),
                     Some(drop_handle.clone()),
+                    config.replication_tx.clone(),
                     #[cfg(feature = "protobuf")]
                     config.schema_registry.clone(),
                 )
@@ -80,6 +90,7 @@ impl Engine {
 
         Self {
             shards,
+            replication_tx: config.replication_tx,
             #[cfg(feature = "protobuf")]
             schema_registry: config.schema_registry,
         }
@@ -110,6 +121,15 @@ impl Engine {
     /// Returns the number of shards.
     pub fn shard_count(&self) -> usize {
         self.shards.len()
+    }
+
+    /// Creates a new broadcast receiver for replication events.
+    ///
+    /// Returns `None` if no replication channel was configured. Each
+    /// caller gets an independent receiver starting from the current
+    /// broadcast position — not from the beginning of the stream.
+    pub fn subscribe_replication(&self) -> Option<broadcast::Receiver<ReplicationEvent>> {
+        self.replication_tx.as_ref().map(|tx| tx.subscribe())
     }
 
     /// Sends a request to a specific shard by index.
