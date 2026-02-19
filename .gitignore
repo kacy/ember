@@ -32,6 +32,9 @@ bench/results/*.csv
 bench/results/*.json
 .bench-venv/
 
+# presentations / local docs
+docs/
+
 # python
 __pycache__/
 *.pyc

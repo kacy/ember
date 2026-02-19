@@ -895,7 +895,6 @@ impl GossipEngine {
 
         // Phase 1: direct ping timeouts → send PingReq
         for (_seq, target) in timed_out_direct {
-
             let target_addr = match self.members.get(&target) {
                 Some(m) if m.state == MemberStatus::Alive => m.addr,
                 _ => continue,
@@ -1532,6 +1531,9 @@ mod tests {
                 role_changed = true;
             }
         }
-        assert!(!role_changed, "stale role update should not emit RoleChanged");
+        assert!(
+            !role_changed,
+            "stale role update should not emit RoleChanged"
+        );
     }
 }

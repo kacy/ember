@@ -1044,7 +1044,12 @@ mod tests {
         state.add_node(replica);
 
         // register the replica in the primary's replica list
-        state.nodes.get_mut(&primary_id).unwrap().replicas.push(replica_id);
+        state
+            .nodes
+            .get_mut(&primary_id)
+            .unwrap()
+            .replicas
+            .push(replica_id);
 
         let initial_epoch = state.config_epoch;
         state.promote_replica(replica_id).unwrap();
