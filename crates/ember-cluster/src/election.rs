@@ -54,12 +54,8 @@ impl Election {
             return false;
         }
         self.votes.insert(from);
-        if self.votes.len() >= Self::quorum(total_primaries) {
-            self.promoted = true;
-            true
-        } else {
-            false
-        }
+        self.promoted = self.votes.len() >= Self::quorum(total_primaries);
+        self.promoted
     }
 
     /// Minimum votes required for a majority.
