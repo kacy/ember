@@ -2076,9 +2076,15 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        let (coord, _rx) =
-            ClusterCoordinator::new(local_id, addr, config, true, Some(dir.path().to_path_buf()), None)
-                .unwrap();
+        let (coord, _rx) = ClusterCoordinator::new(
+            local_id,
+            addr,
+            config,
+            true,
+            Some(dir.path().to_path_buf()),
+            None,
+        )
+        .unwrap();
 
         // add some slots and save
         coord.save_config().await;

@@ -222,9 +222,7 @@ fn resolve_password(args: &mut Args) {
 /// `--cluster-auth-pass-file`. The two options are mutually exclusive.
 fn resolve_cluster_secret(args: &Args) -> Option<std::sync::Arc<ember_cluster::ClusterSecret>> {
     if args.cluster_auth_pass.is_some() && args.cluster_auth_pass_file.is_some() {
-        exit_err(
-            "error: --cluster-auth-pass and --cluster-auth-pass-file are mutually exclusive",
-        );
+        exit_err("error: --cluster-auth-pass and --cluster-auth-pass-file are mutually exclusive");
     }
     if let Some(ref password) = args.cluster_auth_pass {
         return Some(std::sync::Arc::new(
@@ -550,7 +548,14 @@ async fn main() {
         let raft_id = raft_id_from_node_id(local_id);
 
         let (storage, state_rx) = RaftStorage::new();
-        let raft_node = match RaftNode::start(raft_id, raft_addr, storage.clone(), coordinator.cluster_secret()).await {
+        let raft_node = match RaftNode::start(
+            raft_id,
+            raft_addr,
+            storage.clone(),
+            coordinator.cluster_secret(),
+        )
+        .await
+        {
             Ok(node) => Arc::new(node),
             Err(e) => exit_err(format!("failed to start raft node: {e}")),
         };

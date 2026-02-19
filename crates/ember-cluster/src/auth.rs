@@ -44,8 +44,7 @@ impl ClusterSecret {
 
     /// Computes an HMAC-SHA256 tag over `payload`.
     pub fn sign(&self, payload: &[u8]) -> [u8; TAG_LEN] {
-        let mut mac =
-            HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any key length");
+        let mut mac = HmacSha256::new_from_slice(&self.key).expect("HMAC accepts any key length");
         mac.update(payload);
         mac.finalize().into_bytes().into()
     }

@@ -1004,4 +1004,42 @@ mod tests {
         let result = GossipMessage::decode(&buf);
         assert!(result.is_err(), "should reject slot >= 16384");
     }
+
+    // -- authenticated encode/decode tests --
+
+    #[test]
+    fn authenticated_roundtrip() {
+        let secret = ClusterSecret::from_password("cluster-pass");
+        let msg = GossipMessage::Ping {
+            seq: 42,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let encoded = msg.encode_authenticated(&secret);
+        let decoded =
+            GossipMessage::decode_authenticated(&encoded, &secret).expect("auth roundtrip");
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn wrong_secret_rejected() {
+        let s1 = ClusterSecret::from_password("secret-a");
+        let s2 = ClusterSecret::from_password("secret-b");
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let encoded = msg.encode_authenticated(&s1);
+        let result = GossipMessage::decode_authenticated(&encoded, &s2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn truncated_auth_message_rejected() {
+        let secret = ClusterSecret::from_password("test");
+        // too short to even contain a 32-byte tag
+        let result = GossipMessage::decode_authenticated(&[0u8; 16], &secret);
+        assert!(result.is_err());
+    }
 }
