@@ -17,12 +17,13 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 
 - **resp3 protocol** — full compatibility with `redis-cli` and existing Redis clients
 - **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN
-- **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN
+- **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, BLPOP, BRPOP
 - **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZRANGE, ZCARD
 - **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
 - **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME
-- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT
+- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET
+- **transactions** — MULTI, EXEC, DISCARD for atomic command batching
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **vector similarity search** — HNSW-backed approximate nearest neighbor search with cosine, L2, and inner product metrics (compile with `--features vector`)
 - **protobuf storage** — schema-validated protobuf values with field-level access (compile with `--features protobuf`)
@@ -116,6 +117,16 @@ TTL temp                        # => 59
 
 SCAN 0 MATCH "user:*" COUNT 100
 DBSIZE                          # => (integer) 6
+
+# blocking list ops (work queues)
+BLPOP tasks 5                   # blocks up to 5 seconds for an element
+# in another terminal: LPUSH tasks job1 => unblocks with ["tasks", "job1"]
+
+# transactions
+MULTI
+SET account:a 100
+SET account:b 200
+EXEC                            # => [OK, OK] — atomic batch
 
 # TLS
 ember-cli -p 6380 --tls --tls-insecure PING
@@ -211,7 +222,7 @@ make cluster-clean  # stop + delete ./data/cluster/
 | `RESTORE key ttl payload` | receive a migrated key |
 | `ASKING` | tell the server to honor an ASK redirect for the next command |
 
-replication commands (REPLICATE, FAILOVER) are coming in the next phase — see the status table below.
+replication commands (REPLICATE, FAILOVER) are implemented — see the status table below.
 
 see [ARCHITECTURE.md](ARCHITECTURE.md) for how clustering works under the hood (raft, gossip, hash slots, migration).
 
@@ -404,11 +415,13 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 3 | data types (sorted sets, lists, hashes, sets) | ✅ complete |
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
-| 6 | replication and high availability | 🔜 next |
+| 6 | replication and high availability | ✅ complete |
+| 7 | security hardening | ✅ complete |
+| 8 | production gaps (transactions, blocking ops, config) | ✅ complete |
 
-phase 6 will add leader/replica data streaming, `CLUSTER REPLICATE`, automatic failover via epoch-based elections, and `CLUSTER FAILOVER` for manual promotion. the topology structs already carry replica tracking fields; the commands are parsed — the replication stream is what remains.
+phase 6 added leader/replica data streaming, `CLUSTER REPLICATE`, automatic failover via epoch-based elections, and `CLUSTER FAILOVER` for manual promotion. phase 7 added RESP key/value size limits and cluster transport HMAC-SHA256 auth. phase 8 filled critical production gaps: MULTI/EXEC/DISCARD transactions, BLPOP/BRPOP blocking list ops, and CONFIG GET/SET for monitoring tool compatibility.
 
-**current**: 107 commands, 1,049 tests, ~22k lines of code (~41k including tests and comments)
+**current**: 114 commands, 1,100+ tests, ~23k lines of code (~43k including tests and comments)
 
 ## security
 
