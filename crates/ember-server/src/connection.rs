@@ -17,7 +17,7 @@ use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, 
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
@@ -280,6 +280,53 @@ where
             return Ok(());
         }
 
+        // check for blocking list operations (BLPOP/BRPOP). these break
+        // the pipeline model because they may block the connection. process
+        // any preceding non-blocking frames first, then handle the blocking
+        // op, then continue with any remaining frames.
+        if frames.iter().any(is_blocking_pop_frame) {
+            let mut remaining = Vec::new();
+            let mut blocking_frame = None;
+
+            for frame in frames.drain(..) {
+                if blocking_frame.is_some() {
+                    remaining.push(frame);
+                } else if is_blocking_pop_frame(&frame) {
+                    blocking_frame = Some(frame);
+                } else {
+                    let response =
+                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                    response.serialize(&mut out);
+                }
+            }
+
+            // flush any preceding responses
+            if !out.is_empty() {
+                stream.write_all(&out).await?;
+                out.clear();
+            }
+
+            // handle the blocking pop
+            if let Some(frame) = blocking_frame {
+                let response =
+                    handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking).await;
+                response.serialize(&mut out);
+                stream.write_all(&out).await?;
+                out.clear();
+            }
+
+            // process any remaining frames after the blocking op
+            for frame in remaining {
+                let response =
+                    process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                response.serialize(&mut out);
+            }
+            if !out.is_empty() {
+                stream.write_all(&out).await?;
+            }
+            continue;
+        }
+
         // two-phase pipeline: dispatch all commands to shards first,
         // then collect responses in order. this avoids creating N large
         // async state machines (one per pipelined command) and lets
@@ -452,6 +499,17 @@ fn is_transaction_frame(frame: &Frame) -> bool {
     false
 }
 
+/// Checks if a raw frame is a BLPOP or BRPOP command.
+fn is_blocking_pop_frame(frame: &Frame) -> bool {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return name.eq_ignore_ascii_case(b"BLPOP")
+                || name.eq_ignore_ascii_case(b"BRPOP");
+        }
+    }
+    false
+}
+
 /// Checks if a raw frame is a SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE command.
 fn is_subscribe_frame(frame: &Frame) -> bool {
     if let Frame::Array(parts) = frame {
@@ -463,6 +521,110 @@ fn is_subscribe_frame(frame: &Frame) -> bool {
         }
     }
     false
+}
+
+/// Handles a BLPOP or BRPOP command.
+///
+/// Blocking list pops break the pipeline model — the connection may need to
+/// wait for data to arrive. For each key, a oneshot waiter channel is sent
+/// to the owning shard. The first shard to respond wins; the rest are
+/// dropped (shard detects dead waiters and discards them).
+async fn handle_blocking_pop_cmd(
+    frame: Frame,
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
+    asking: &mut bool,
+) -> Frame {
+    let cmd = match Command::from_frame(frame) {
+        Ok(cmd) => cmd,
+        Err(e) => return Frame::Error(format!("ERR {e}")),
+    };
+
+    if let Some(err) = crate::connection_common::validate_command_sizes(&cmd) {
+        return err;
+    }
+
+    let was_asking = std::mem::take(asking);
+    if let Some(redirect) = cluster_slot_check(ctx, &cmd, was_asking).await {
+        return redirect;
+    }
+
+    let (keys, timeout_secs, is_left) = match cmd {
+        Command::BLPop { keys, timeout_secs } => (keys, timeout_secs, true),
+        Command::BRPop { keys, timeout_secs } => (keys, timeout_secs, false),
+        _ => return Frame::Error("ERR expected BLPOP or BRPOP".into()),
+    };
+
+    let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
+    let start = if needs_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
+
+    // create a single mpsc channel — all shards race to deliver the first
+    // result. capacity of 1 ensures only the first pop is delivered.
+    let (waiter_tx, mut waiter_rx) = mpsc::channel(1);
+
+    for key in &keys {
+        let idx = engine.shard_for_key(key);
+        let req = if is_left {
+            ShardRequest::BLPop {
+                key: key.clone(),
+                waiter: waiter_tx.clone(),
+            }
+        } else {
+            ShardRequest::BRPop {
+                key: key.clone(),
+                waiter: waiter_tx.clone(),
+            }
+        };
+        // dispatch — we ignore the reply channel since blocking ops
+        // communicate through the waiter mpsc instead
+        if let Err(e) = engine.dispatch_to_shard(idx, req).await {
+            return Frame::Error(format!("ERR {e}"));
+        }
+    }
+
+    // drop our copy of the sender so the channel closes when all shard
+    // waiters are gone (timeout or immediate pop)
+    drop(waiter_tx);
+
+    // race the receiver against the timeout. timeout of 0 means block
+    // indefinitely — cap at 300 seconds to prevent truly infinite waits.
+    let timeout_dur = if timeout_secs == 0.0 {
+        Duration::from_secs(300)
+    } else {
+        Duration::from_secs_f64(timeout_secs)
+    };
+
+    let result = tokio::time::timeout(timeout_dur, waiter_rx.recv()).await;
+
+    let cmd_name = if is_left { "blpop" } else { "brpop" };
+
+    let response = match result {
+        // got a result before timeout
+        Ok(Some((key, data))) => Frame::Array(vec![
+            Frame::Bulk(Bytes::from(key.into_bytes())),
+            Frame::Bulk(data),
+        ]),
+        // channel closed (all shards had empty lists and no push arrived)
+        // or timeout expired
+        Ok(None) | Err(_) => Frame::Null,
+    };
+
+    if let Some(start) = start {
+        let elapsed = start.elapsed();
+        slow_log.maybe_record(elapsed, cmd_name);
+        if ctx.metrics_enabled {
+            let is_error = matches!(&response, Frame::Error(_));
+            crate::metrics::record_command(cmd_name, elapsed, is_error);
+        }
+    }
+    ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+
+    response
 }
 
 /// Subscriber mode: listens for both broadcast messages and client commands.
@@ -1044,6 +1206,12 @@ async fn dispatch_command(
         Command::LLen { key } => {
             dispatch!(key, ShardRequest::LLen { key }, ResponseTag::LenResult)
         }
+
+        // blocking list ops are handled in the main loop before dispatch;
+        // if they reach here (e.g. inside MULTI), return an error.
+        Command::BLPop { .. } | Command::BRPop { .. } => PendingResponse::Immediate(Frame::Error(
+            "ERR blocking commands are not allowed inside transactions".into(),
+        )),
 
         // -- sorted set commands --
         Command::ZAdd {
@@ -1855,7 +2023,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         Command::Del { ref keys }
         | Command::Unlink { ref keys }
         | Command::Exists { ref keys }
-        | Command::MGet { ref keys } => {
+        | Command::MGet { ref keys }
+        | Command::BLPop { ref keys, .. }
+        | Command::BRPop { ref keys, .. } => {
             if let Err(err) = cluster.check_crossslot(keys) {
                 return Some(err);
             }
@@ -2464,6 +2634,12 @@ async fn execute(
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
+
+        // blocking list ops are handled by handle_blocking_pop_cmd in the
+        // main loop; reaching here means they're inside a transaction.
+        Command::BLPop { .. } | Command::BRPop { .. } => Frame::Error(
+            "ERR blocking commands are not allowed inside transactions".into(),
+        ),
 
         Command::Type { key } => {
             let idx = engine.shard_for_key(&key);

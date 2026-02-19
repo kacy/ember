@@ -179,6 +179,14 @@ pub enum Command {
     /// LLEN `key`. Returns the length of a list.
     LLen { key: String },
 
+    /// BLPOP `key` \[key ...\] `timeout`. Blocks until an element is available
+    /// at the head of one of the given lists, or the timeout expires.
+    BLPop { keys: Vec<String>, timeout_secs: f64 },
+
+    /// BRPOP `key` \[key ...\] `timeout`. Blocks until an element is available
+    /// at the tail of one of the given lists, or the timeout expires.
+    BRPop { keys: Vec<String>, timeout_secs: f64 },
+
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },
 
@@ -572,6 +580,8 @@ impl Command {
             Command::RPop { .. } => "rpop",
             Command::LRange { .. } => "lrange",
             Command::LLen { .. } => "llen",
+            Command::BLPop { .. } => "blpop",
+            Command::BRPop { .. } => "brpop",
 
             // sorted set
             Command::ZAdd { .. } => "zadd",
@@ -692,6 +702,8 @@ impl Command {
                 | Command::RPush { .. }
                 | Command::LPop { .. }
                 | Command::RPop { .. }
+                | Command::BLPop { .. }
+                | Command::BRPop { .. }
             // sorted set
                 | Command::ZAdd { .. }
                 | Command::ZRem { .. }
@@ -788,7 +800,9 @@ impl Command {
             Command::Del { keys }
             | Command::Unlink { keys }
             | Command::Exists { keys }
-            | Command::MGet { keys } => keys.first().map(String::as_str),
+            | Command::MGet { keys }
+            | Command::BLPop { keys, .. }
+            | Command::BRPop { keys, .. } => keys.first().map(String::as_str),
             Command::MSet { pairs } => pairs.first().map(|(k, _)| k.as_str()),
             _ => None,
         }
@@ -853,6 +867,8 @@ impl Command {
             "RPOP" => parse_rpop(&frames[1..]),
             "LRANGE" => parse_lrange(&frames[1..]),
             "LLEN" => parse_llen(&frames[1..]),
+            "BLPOP" => parse_blpop(&frames[1..]),
+            "BRPOP" => parse_brpop(&frames[1..]),
             "TYPE" => parse_type(&frames[1..]),
             "ZADD" => parse_zadd(&frames[1..]),
             "ZREM" => parse_zrem(&frames[1..]),
@@ -1421,6 +1437,43 @@ fn parse_llen(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::LLen { key })
+}
+
+/// Parses BLPOP/BRPOP: all args except the last are keys, the last is the
+/// timeout in seconds (float). At least one key is required.
+fn parse_blpop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("BLPOP"));
+    }
+    let timeout_secs = parse_timeout(&args[args.len() - 1], "BLPOP")?;
+    let keys = extract_strings(&args[..args.len() - 1])?;
+    Ok(Command::BLPop { keys, timeout_secs })
+}
+
+fn parse_brpop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("BRPOP"));
+    }
+    let timeout_secs = parse_timeout(&args[args.len() - 1], "BRPOP")?;
+    let keys = extract_strings(&args[..args.len() - 1])?;
+    Ok(Command::BRPop { keys, timeout_secs })
+}
+
+/// Extracts the timeout argument for BLPOP/BRPOP. Redis accepts integer or
+/// float seconds; negative values are an error.
+fn parse_timeout(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
+    let s = extract_string(frame)?;
+    let val: f64 = s.parse().map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!(
+            "timeout is not a float or out of range for '{cmd}'"
+        ))
+    })?;
+    if val < 0.0 {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "timeout is negative for '{cmd}'"
+        )));
+    }
+    Ok(val)
 }
 
 fn parse_type(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3362,6 +3415,72 @@ mod tests {
             Command::from_frame(cmd(&["RPOP", "list"])).unwrap(),
             Command::RPop { key: "list".into() },
         );
+    }
+
+    // --- blpop ---
+
+    #[test]
+    fn blpop_single_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BLPOP", "mylist", "5"])).unwrap(),
+            Command::BLPop {
+                keys: vec!["mylist".into()],
+                timeout_secs: 5.0,
+            },
+        );
+    }
+
+    #[test]
+    fn blpop_multi_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BLPOP", "a", "b", "c", "0"])).unwrap(),
+            Command::BLPop {
+                keys: vec!["a".into(), "b".into(), "c".into()],
+                timeout_secs: 0.0,
+            },
+        );
+    }
+
+    #[test]
+    fn blpop_float_timeout() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BLPOP", "q", "1.5"])).unwrap(),
+            Command::BLPop {
+                keys: vec!["q".into()],
+                timeout_secs: 1.5,
+            },
+        );
+    }
+
+    #[test]
+    fn blpop_wrong_arity() {
+        let err = Command::from_frame(cmd(&["BLPOP"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn blpop_negative_timeout() {
+        let err = Command::from_frame(cmd(&["BLPOP", "k", "-1"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- brpop ---
+
+    #[test]
+    fn brpop_single_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BRPOP", "mylist", "10"])).unwrap(),
+            Command::BRPop {
+                keys: vec!["mylist".into()],
+                timeout_secs: 10.0,
+            },
+        );
+    }
+
+    #[test]
+    fn brpop_wrong_arity() {
+        let err = Command::from_frame(cmd(&["BRPOP"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
     // --- lrange ---
