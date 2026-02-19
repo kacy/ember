@@ -168,6 +168,16 @@ struct Args {
     /// node timeout in milliseconds for failure detection
     #[arg(long, default_value_t = 5000, env = "EMBER_CLUSTER_NODE_TIMEOUT")]
     cluster_node_timeout: u64,
+
+    /// shared secret for authenticating cluster transport (gossip + raft).
+    /// when set, unauthenticated messages are silently dropped.
+    #[arg(long, env = "EMBER_CLUSTER_AUTH_PASS")]
+    cluster_auth_pass: Option<String>,
+
+    /// path to a file containing the cluster auth password (alternative to
+    /// --cluster-auth-pass). the file contents are trimmed of trailing whitespace.
+    #[arg(long, env = "EMBER_CLUSTER_AUTH_PASS_FILE")]
+    cluster_auth_pass_file: Option<std::path::PathBuf>,
 }
 
 /// Prints `msg` to stderr and exits with code 1.
@@ -206,6 +216,31 @@ fn resolve_password(args: &mut Args) {
             }
         }
     }
+}
+
+/// Resolves the cluster auth secret from either `--cluster-auth-pass` or
+/// `--cluster-auth-pass-file`. The two options are mutually exclusive.
+fn resolve_cluster_secret(args: &Args) -> Option<std::sync::Arc<ember_cluster::ClusterSecret>> {
+    if args.cluster_auth_pass.is_some() && args.cluster_auth_pass_file.is_some() {
+        exit_err(
+            "error: --cluster-auth-pass and --cluster-auth-pass-file are mutually exclusive",
+        );
+    }
+    if let Some(ref password) = args.cluster_auth_pass {
+        return Some(std::sync::Arc::new(
+            ember_cluster::ClusterSecret::from_password(password),
+        ));
+    }
+    if let Some(ref path) = args.cluster_auth_pass_file {
+        match ember_cluster::ClusterSecret::from_file(path) {
+            Ok(secret) => return Some(std::sync::Arc::new(secret)),
+            Err(e) => exit_err(format!(
+                "error: failed to read --cluster-auth-pass-file '{}': {e}",
+                path.display()
+            )),
+        }
+    }
+    None
 }
 
 /// Parses a `host:port` pair into a `SocketAddr`. Exits with a message on failure.
@@ -265,6 +300,7 @@ async fn main() {
     let mut args = Args::parse();
 
     resolve_password(&mut args);
+    let cluster_secret = resolve_cluster_secret(&args);
 
     let addr = parse_bind_addr(&args.host, args.port, "");
 
@@ -369,6 +405,9 @@ async fn main() {
     if args.requirepass.is_some() {
         info!("authentication enabled (requirepass set)");
     }
+    if cluster_secret.is_some() {
+        info!("cluster transport authentication enabled");
+    }
 
     // build TLS config if --tls-port is set
     let tls_config = if let Some(tls_port) = args.tls_port {
@@ -465,6 +504,7 @@ async fn main() {
                 addr,
                 gossip_config,
                 cluster_data_dir.clone(),
+                cluster_secret.clone(),
             )
             .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
 
@@ -479,6 +519,7 @@ async fn main() {
                 gossip_config,
                 true,
                 Some(cluster_data_dir.clone()),
+                cluster_secret.clone(),
             )
             .unwrap_or_else(|e| exit_err(format!("error: {e}")));
             info!("cluster mode: bootstrapped with all 16384 slots");
@@ -491,6 +532,7 @@ async fn main() {
                 gossip_config,
                 false,
                 Some(cluster_data_dir.clone()),
+                cluster_secret.clone(),
             )
             .unwrap_or_else(|e| exit_err(format!("error: {e}")));
             info!("cluster mode: waiting for CLUSTER MEET");
@@ -508,7 +550,7 @@ async fn main() {
         let raft_id = raft_id_from_node_id(local_id);
 
         let (storage, state_rx) = RaftStorage::new();
-        let raft_node = match RaftNode::start(raft_id, raft_addr, storage.clone()).await {
+        let raft_node = match RaftNode::start(raft_id, raft_addr, storage.clone(), coordinator.cluster_secret()).await {
             Ok(node) => Arc::new(node),
             Err(e) => exit_err(format!("failed to start raft node: {e}")),
         };
