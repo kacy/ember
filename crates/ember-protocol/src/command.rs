@@ -505,10 +505,17 @@ impl Command {
     /// a glance when auditing command names.
     pub fn command_name(&self) -> &'static str {
         match self {
+            // connection
             Command::Ping(_) => "ping",
             Command::Echo(_) => "echo",
+            Command::Auth { .. } => "auth",
+            Command::Quit => "quit",
+
+            // strings
             Command::Get { .. } => "get",
             Command::Set { .. } => "set",
+            Command::MGet { .. } => "mget",
+            Command::MSet { .. } => "mset",
             Command::Incr { .. } => "incr",
             Command::Decr { .. } => "decr",
             Command::IncrBy { .. } => "incrby",
@@ -516,37 +523,45 @@ impl Command {
             Command::IncrByFloat { .. } => "incrbyfloat",
             Command::Append { .. } => "append",
             Command::Strlen { .. } => "strlen",
-            Command::Keys { .. } => "keys",
-            Command::Rename { .. } => "rename",
+
+            // key lifecycle
             Command::Del { .. } => "del",
             Command::Unlink { .. } => "unlink",
             Command::Exists { .. } => "exists",
-            Command::MGet { .. } => "mget",
-            Command::MSet { .. } => "mset",
+            Command::Rename { .. } => "rename",
+            Command::Keys { .. } => "keys",
+            Command::Scan { .. } => "scan",
+            Command::Type { .. } => "type",
             Command::Expire { .. } => "expire",
             Command::Ttl { .. } => "ttl",
             Command::Persist { .. } => "persist",
             Command::Pttl { .. } => "pttl",
             Command::Pexpire { .. } => "pexpire",
+
+            // server
             Command::DbSize => "dbsize",
             Command::Info { .. } => "info",
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
             Command::FlushDb { .. } => "flushdb",
-            Command::Scan { .. } => "scan",
+
+            // list
             Command::LPush { .. } => "lpush",
             Command::RPush { .. } => "rpush",
             Command::LPop { .. } => "lpop",
             Command::RPop { .. } => "rpop",
             Command::LRange { .. } => "lrange",
             Command::LLen { .. } => "llen",
-            Command::Type { .. } => "type",
+
+            // sorted set
             Command::ZAdd { .. } => "zadd",
             Command::ZRem { .. } => "zrem",
             Command::ZScore { .. } => "zscore",
             Command::ZRank { .. } => "zrank",
             Command::ZCard { .. } => "zcard",
             Command::ZRange { .. } => "zrange",
+
+            // hash
             Command::HSet { .. } => "hset",
             Command::HGet { .. } => "hget",
             Command::HGetAll { .. } => "hgetall",
@@ -557,11 +572,15 @@ impl Command {
             Command::HKeys { .. } => "hkeys",
             Command::HVals { .. } => "hvals",
             Command::HMGet { .. } => "hmget",
+
+            // set
             Command::SAdd { .. } => "sadd",
             Command::SRem { .. } => "srem",
             Command::SMembers { .. } => "smembers",
             Command::SIsMember { .. } => "sismember",
             Command::SCard { .. } => "scard",
+
+            // cluster
             Command::ClusterInfo => "cluster_info",
             Command::ClusterNodes => "cluster_nodes",
             Command::ClusterSlots => "cluster_slots",
@@ -583,9 +602,13 @@ impl Command {
             Command::Migrate { .. } => "migrate",
             Command::Restore { .. } => "restore",
             Command::Asking => "asking",
+
+            // slow log
             Command::SlowLogGet { .. } => "slowlog",
             Command::SlowLogLen => "slowlog",
             Command::SlowLogReset => "slowlog",
+
+            // pub/sub
             Command::Subscribe { .. } => "subscribe",
             Command::Unsubscribe { .. } => "unsubscribe",
             Command::PSubscribe { .. } => "psubscribe",
@@ -594,6 +617,8 @@ impl Command {
             Command::PubSubChannels { .. } => "pubsub",
             Command::PubSubNumSub { .. } => "pubsub",
             Command::PubSubNumPat => "pubsub",
+
+            // vector
             Command::VAdd { .. } => "vadd",
             Command::VAddBatch { .. } => "vadd_batch",
             Command::VSim { .. } => "vsim",
@@ -602,6 +627,8 @@ impl Command {
             Command::VCard { .. } => "vcard",
             Command::VDim { .. } => "vdim",
             Command::VInfo { .. } => "vinfo",
+
+            // protobuf
             Command::ProtoRegister { .. } => "proto.register",
             Command::ProtoSet { .. } => "proto.set",
             Command::ProtoGet { .. } => "proto.get",
@@ -611,8 +638,7 @@ impl Command {
             Command::ProtoGetField { .. } => "proto.getfield",
             Command::ProtoSetField { .. } => "proto.setfield",
             Command::ProtoDelField { .. } => "proto.delfield",
-            Command::Auth { .. } => "auth",
-            Command::Quit => "quit",
+
             Command::Unknown(_) => "unknown",
         }
     }
@@ -625,38 +651,47 @@ impl Command {
     pub fn is_write(&self) -> bool {
         matches!(
             self,
+            // string mutations
             Command::Set { .. }
-                | Command::Del { .. }
-                | Command::Unlink { .. }
+                | Command::MSet { .. }
+                | Command::Append { .. }
                 | Command::Incr { .. }
                 | Command::Decr { .. }
                 | Command::IncrBy { .. }
                 | Command::DecrBy { .. }
                 | Command::IncrByFloat { .. }
-                | Command::Append { .. }
+            // key lifecycle
+                | Command::Del { .. }
+                | Command::Unlink { .. }
                 | Command::Rename { .. }
                 | Command::Expire { .. }
-                | Command::Persist { .. }
                 | Command::Pexpire { .. }
-                | Command::MSet { .. }
+                | Command::Persist { .. }
+            // list
                 | Command::LPush { .. }
-                | Command::LPop { .. }
                 | Command::RPush { .. }
+                | Command::LPop { .. }
                 | Command::RPop { .. }
+            // sorted set
                 | Command::ZAdd { .. }
                 | Command::ZRem { .. }
+            // hash
                 | Command::HSet { .. }
                 | Command::HDel { .. }
                 | Command::HIncrBy { .. }
+            // set
                 | Command::SAdd { .. }
                 | Command::SRem { .. }
+            // server / persistence
                 | Command::FlushDb { .. }
                 | Command::BgRewriteAof
                 | Command::BgSave
                 | Command::Restore { .. }
+            // vector
                 | Command::VAdd { .. }
                 | Command::VAddBatch { .. }
                 | Command::VRem { .. }
+            // protobuf
                 | Command::ProtoRegister { .. }
                 | Command::ProtoSet { .. }
                 | Command::ProtoSetField { .. }
@@ -901,6 +936,11 @@ fn parse_u64(frame: &Frame, cmd: &str) -> Result<u64, ProtocolError> {
     })
 }
 
+/// Shorthand for the wrong-arity error returned by every parser.
+fn wrong_arity(cmd: &'static str) -> ProtocolError {
+    ProtocolError::WrongArity(cmd.into())
+}
+
 fn parse_ping(args: &[Frame]) -> Result<Command, ProtocolError> {
     match args.len() {
         0 => Ok(Command::Ping(None)),
@@ -908,13 +948,13 @@ fn parse_ping(args: &[Frame]) -> Result<Command, ProtocolError> {
             let msg = extract_bytes(&args[0])?;
             Ok(Command::Ping(Some(msg)))
         }
-        _ => Err(ProtocolError::WrongArity("PING".into())),
+        _ => Err(wrong_arity("PING")),
     }
 }
 
 fn parse_echo(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("ECHO".into()));
+        return Err(wrong_arity("ECHO"));
     }
     let msg = extract_bytes(&args[0])?;
     Ok(Command::Echo(msg))
@@ -922,7 +962,7 @@ fn parse_echo(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_get(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("GET".into()));
+        return Err(wrong_arity("GET"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Get { key })
@@ -930,7 +970,7 @@ fn parse_get(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("SET".into()));
+        return Err(wrong_arity("SET"));
     }
 
     let key = extract_string(&args[0])?;
@@ -955,7 +995,7 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "EX" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::WrongArity("SET".into()));
+                    return Err(wrong_arity("SET"));
                 }
                 let amount = parse_u64(&args[idx], "SET")?;
                 if amount == 0 {
@@ -969,7 +1009,7 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "PX" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::WrongArity("SET".into()));
+                    return Err(wrong_arity("SET"));
                 }
                 let amount = parse_u64(&args[idx], "SET")?;
                 if amount == 0 {
@@ -1005,7 +1045,7 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_incr(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("INCR".into()));
+        return Err(wrong_arity("INCR"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Incr { key })
@@ -1013,7 +1053,7 @@ fn parse_incr(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_decr(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("DECR".into()));
+        return Err(wrong_arity("DECR"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Decr { key })
@@ -1021,7 +1061,7 @@ fn parse_decr(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_incrby(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("INCRBY".into()));
+        return Err(wrong_arity("INCRBY"));
     }
     let key = extract_string(&args[0])?;
     let delta = parse_i64(&args[1], "INCRBY")?;
@@ -1030,7 +1070,7 @@ fn parse_incrby(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_decrby(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("DECRBY".into()));
+        return Err(wrong_arity("DECRBY"));
     }
     let key = extract_string(&args[0])?;
     let delta = parse_i64(&args[1], "DECRBY")?;
@@ -1039,7 +1079,7 @@ fn parse_decrby(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_incrbyfloat(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("INCRBYFLOAT".into()));
+        return Err(wrong_arity("INCRBYFLOAT"));
     }
     let key = extract_string(&args[0])?;
     let s = extract_string(&args[1])?;
@@ -1056,7 +1096,7 @@ fn parse_incrbyfloat(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_append(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("APPEND".into()));
+        return Err(wrong_arity("APPEND"));
     }
     let key = extract_string(&args[0])?;
     let value = extract_bytes(&args[1])?;
@@ -1065,7 +1105,7 @@ fn parse_append(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_strlen(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("STRLEN".into()));
+        return Err(wrong_arity("STRLEN"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Strlen { key })
@@ -1073,7 +1113,7 @@ fn parse_strlen(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_keys(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("KEYS".into()));
+        return Err(wrong_arity("KEYS"));
     }
     let pattern = extract_string(&args[0])?;
     Ok(Command::Keys { pattern })
@@ -1081,7 +1121,7 @@ fn parse_keys(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_rename(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("RENAME".into()));
+        return Err(wrong_arity("RENAME"));
     }
     let key = extract_string(&args[0])?;
     let newkey = extract_string(&args[1])?;
@@ -1090,7 +1130,7 @@ fn parse_rename(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("DEL".into()));
+        return Err(wrong_arity("DEL"));
     }
     let keys = extract_strings(args)?;
     Ok(Command::Del { keys })
@@ -1098,7 +1138,7 @@ fn parse_del(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_exists(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("EXISTS".into()));
+        return Err(wrong_arity("EXISTS"));
     }
     let keys = extract_strings(args)?;
     Ok(Command::Exists { keys })
@@ -1106,7 +1146,7 @@ fn parse_exists(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_mget(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("MGET".into()));
+        return Err(wrong_arity("MGET"));
     }
     let keys = extract_strings(args)?;
     Ok(Command::MGet { keys })
@@ -1114,7 +1154,7 @@ fn parse_mget(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_mset(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() || !args.len().is_multiple_of(2) {
-        return Err(ProtocolError::WrongArity("MSET".into()));
+        return Err(wrong_arity("MSET"));
     }
     let mut pairs = Vec::with_capacity(args.len() / 2);
     for chunk in args.chunks(2) {
@@ -1127,7 +1167,7 @@ fn parse_mset(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_expire(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("EXPIRE".into()));
+        return Err(wrong_arity("EXPIRE"));
     }
     let key = extract_string(&args[0])?;
     let seconds = parse_u64(&args[1], "EXPIRE")?;
@@ -1143,7 +1183,7 @@ fn parse_expire(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_ttl(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("TTL".into()));
+        return Err(wrong_arity("TTL"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Ttl { key })
@@ -1151,7 +1191,7 @@ fn parse_ttl(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_persist(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("PERSIST".into()));
+        return Err(wrong_arity("PERSIST"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Persist { key })
@@ -1159,7 +1199,7 @@ fn parse_persist(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_pttl(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("PTTL".into()));
+        return Err(wrong_arity("PTTL"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Pttl { key })
@@ -1167,7 +1207,7 @@ fn parse_pttl(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_pexpire(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("PEXPIRE".into()));
+        return Err(wrong_arity("PEXPIRE"));
     }
     let key = extract_string(&args[0])?;
     let milliseconds = parse_u64(&args[1], "PEXPIRE")?;
@@ -1183,7 +1223,7 @@ fn parse_pexpire(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_dbsize(args: &[Frame]) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("DBSIZE".into()));
+        return Err(wrong_arity("DBSIZE"));
     }
     Ok(Command::DbSize)
 }
@@ -1197,20 +1237,20 @@ fn parse_info(args: &[Frame]) -> Result<Command, ProtocolError> {
                 section: Some(section),
             })
         }
-        _ => Err(ProtocolError::WrongArity("INFO".into())),
+        _ => Err(wrong_arity("INFO")),
     }
 }
 
 fn parse_bgsave(args: &[Frame]) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("BGSAVE".into()));
+        return Err(wrong_arity("BGSAVE"));
     }
     Ok(Command::BgSave)
 }
 
 fn parse_bgrewriteaof(args: &[Frame]) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("BGREWRITEAOF".into()));
+        return Err(wrong_arity("BGREWRITEAOF"));
     }
     Ok(Command::BgRewriteAof)
 }
@@ -1225,12 +1265,12 @@ fn parse_flushdb(args: &[Frame]) -> Result<Command, ProtocolError> {
             return Ok(Command::FlushDb { async_mode: true });
         }
     }
-    Err(ProtocolError::WrongArity("FLUSHDB".into()))
+    Err(wrong_arity("FLUSHDB"))
 }
 
 fn parse_unlink(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("UNLINK".into()));
+        return Err(wrong_arity("UNLINK"));
     }
     let keys = extract_strings(args)?;
     Ok(Command::Unlink { keys })
@@ -1238,7 +1278,7 @@ fn parse_unlink(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("SCAN".into()));
+        return Err(wrong_arity("SCAN"));
     }
 
     let cursor = parse_u64(&args[0], "SCAN")?;
@@ -1252,7 +1292,7 @@ fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
             "MATCH" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::WrongArity("SCAN".into()));
+                    return Err(wrong_arity("SCAN"));
                 }
                 pattern = Some(extract_string(&args[idx])?);
                 idx += 1;
@@ -1260,7 +1300,7 @@ fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
             "COUNT" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::WrongArity("SCAN".into()));
+                    return Err(wrong_arity("SCAN"));
                 }
                 let n = parse_u64(&args[idx], "SCAN")?;
                 if n > MAX_SCAN_COUNT {
@@ -1296,7 +1336,7 @@ fn parse_i64(frame: &Frame, cmd: &str) -> Result<i64, ProtocolError> {
 
 fn parse_lpush(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("LPUSH".into()));
+        return Err(wrong_arity("LPUSH"));
     }
     let key = extract_string(&args[0])?;
     let values = extract_bytes_vec(&args[1..])?;
@@ -1305,7 +1345,7 @@ fn parse_lpush(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_rpush(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("RPUSH".into()));
+        return Err(wrong_arity("RPUSH"));
     }
     let key = extract_string(&args[0])?;
     let values = extract_bytes_vec(&args[1..])?;
@@ -1314,7 +1354,7 @@ fn parse_rpush(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_lpop(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("LPOP".into()));
+        return Err(wrong_arity("LPOP"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::LPop { key })
@@ -1322,7 +1362,7 @@ fn parse_lpop(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_rpop(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("RPOP".into()));
+        return Err(wrong_arity("RPOP"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::RPop { key })
@@ -1330,7 +1370,7 @@ fn parse_rpop(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_lrange(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 3 {
-        return Err(ProtocolError::WrongArity("LRANGE".into()));
+        return Err(wrong_arity("LRANGE"));
     }
     let key = extract_string(&args[0])?;
     let start = parse_i64(&args[1], "LRANGE")?;
@@ -1340,7 +1380,7 @@ fn parse_lrange(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_llen(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("LLEN".into()));
+        return Err(wrong_arity("LLEN"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::LLen { key })
@@ -1348,7 +1388,7 @@ fn parse_llen(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_type(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("TYPE".into()));
+        return Err(wrong_arity("TYPE"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Type { key })
@@ -1371,7 +1411,7 @@ fn parse_f64(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
 fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     // ZADD key [NX|XX] [GT|LT] [CH] score member [score member ...]
     if args.len() < 3 {
-        return Err(ProtocolError::WrongArity("ZADD".into()));
+        return Err(wrong_arity("ZADD"));
     }
 
     let key = extract_string(&args[0])?;
@@ -1422,7 +1462,7 @@ fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     // remaining args must be score/member pairs
     let remaining = &args[idx..];
     if remaining.is_empty() || !remaining.len().is_multiple_of(2) {
-        return Err(ProtocolError::WrongArity("ZADD".into()));
+        return Err(wrong_arity("ZADD"));
     }
 
     let mut members = Vec::with_capacity(remaining.len() / 2);
@@ -1441,7 +1481,7 @@ fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_zcard(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("ZCARD".into()));
+        return Err(wrong_arity("ZCARD"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::ZCard { key })
@@ -1449,7 +1489,7 @@ fn parse_zcard(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_zrem(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("ZREM".into()));
+        return Err(wrong_arity("ZREM"));
     }
     let key = extract_string(&args[0])?;
     let members = extract_strings(&args[1..])?;
@@ -1458,7 +1498,7 @@ fn parse_zrem(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_zscore(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("ZSCORE".into()));
+        return Err(wrong_arity("ZSCORE"));
     }
     let key = extract_string(&args[0])?;
     let member = extract_string(&args[1])?;
@@ -1467,7 +1507,7 @@ fn parse_zscore(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_zrank(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("ZRANK".into()));
+        return Err(wrong_arity("ZRANK"));
     }
     let key = extract_string(&args[0])?;
     let member = extract_string(&args[1])?;
@@ -1476,7 +1516,7 @@ fn parse_zrank(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_zrange(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 3 || args.len() > 4 {
-        return Err(ProtocolError::WrongArity("ZRANGE".into()));
+        return Err(wrong_arity("ZRANGE"));
     }
     let key = extract_string(&args[0])?;
     let start = parse_i64(&args[1], "ZRANGE")?;
@@ -1509,7 +1549,7 @@ fn parse_hset(args: &[Frame]) -> Result<Command, ProtocolError> {
     // args = [key, field, value, ...]
     // Need at least 3 args, and after key we need pairs (so remaining count must be even)
     if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
-        return Err(ProtocolError::WrongArity("HSET".into()));
+        return Err(wrong_arity("HSET"));
     }
 
     let key = extract_string(&args[0])?;
@@ -1526,7 +1566,7 @@ fn parse_hset(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hget(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("HGET".into()));
+        return Err(wrong_arity("HGET"));
     }
     let key = extract_string(&args[0])?;
     let field = extract_string(&args[1])?;
@@ -1535,7 +1575,7 @@ fn parse_hget(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hgetall(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("HGETALL".into()));
+        return Err(wrong_arity("HGETALL"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::HGetAll { key })
@@ -1543,7 +1583,7 @@ fn parse_hgetall(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hdel(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("HDEL".into()));
+        return Err(wrong_arity("HDEL"));
     }
     let key = extract_string(&args[0])?;
     let fields = extract_strings(&args[1..])?;
@@ -1552,7 +1592,7 @@ fn parse_hdel(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hexists(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("HEXISTS".into()));
+        return Err(wrong_arity("HEXISTS"));
     }
     let key = extract_string(&args[0])?;
     let field = extract_string(&args[1])?;
@@ -1561,7 +1601,7 @@ fn parse_hexists(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hlen(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("HLEN".into()));
+        return Err(wrong_arity("HLEN"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::HLen { key })
@@ -1569,7 +1609,7 @@ fn parse_hlen(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hincrby(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 3 {
-        return Err(ProtocolError::WrongArity("HINCRBY".into()));
+        return Err(wrong_arity("HINCRBY"));
     }
     let key = extract_string(&args[0])?;
     let field = extract_string(&args[1])?;
@@ -1579,7 +1619,7 @@ fn parse_hincrby(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hkeys(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("HKEYS".into()));
+        return Err(wrong_arity("HKEYS"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::HKeys { key })
@@ -1587,7 +1627,7 @@ fn parse_hkeys(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hvals(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("HVALS".into()));
+        return Err(wrong_arity("HVALS"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::HVals { key })
@@ -1595,7 +1635,7 @@ fn parse_hvals(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_hmget(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("HMGET".into()));
+        return Err(wrong_arity("HMGET"));
     }
     let key = extract_string(&args[0])?;
     let fields = extract_strings(&args[1..])?;
@@ -1606,7 +1646,7 @@ fn parse_hmget(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_sadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("SADD".into()));
+        return Err(wrong_arity("SADD"));
     }
     let key = extract_string(&args[0])?;
     let members = extract_strings(&args[1..])?;
@@ -1615,7 +1655,7 @@ fn parse_sadd(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_srem(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("SREM".into()));
+        return Err(wrong_arity("SREM"));
     }
     let key = extract_string(&args[0])?;
     let members = extract_strings(&args[1..])?;
@@ -1624,7 +1664,7 @@ fn parse_srem(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_smembers(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("SMEMBERS".into()));
+        return Err(wrong_arity("SMEMBERS"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::SMembers { key })
@@ -1632,7 +1672,7 @@ fn parse_smembers(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_sismember(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("SISMEMBER".into()));
+        return Err(wrong_arity("SISMEMBER"));
     }
     let key = extract_string(&args[0])?;
     let member = extract_string(&args[1])?;
@@ -1641,7 +1681,7 @@ fn parse_sismember(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_scard(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("SCARD".into()));
+        return Err(wrong_arity("SCARD"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::SCard { key })
@@ -1651,46 +1691,46 @@ fn parse_scard(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("CLUSTER".into()));
+        return Err(wrong_arity("CLUSTER"));
     }
 
     let subcommand = extract_string(&args[0])?.to_ascii_uppercase();
     match subcommand.as_str() {
         "INFO" => {
             if args.len() != 1 {
-                return Err(ProtocolError::WrongArity("CLUSTER INFO".into()));
+                return Err(wrong_arity("CLUSTER INFO"));
             }
             Ok(Command::ClusterInfo)
         }
         "NODES" => {
             if args.len() != 1 {
-                return Err(ProtocolError::WrongArity("CLUSTER NODES".into()));
+                return Err(wrong_arity("CLUSTER NODES"));
             }
             Ok(Command::ClusterNodes)
         }
         "SLOTS" => {
             if args.len() != 1 {
-                return Err(ProtocolError::WrongArity("CLUSTER SLOTS".into()));
+                return Err(wrong_arity("CLUSTER SLOTS"));
             }
             Ok(Command::ClusterSlots)
         }
         "KEYSLOT" => {
             if args.len() != 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER KEYSLOT".into()));
+                return Err(wrong_arity("CLUSTER KEYSLOT"));
             }
             let key = extract_string(&args[1])?;
             Ok(Command::ClusterKeySlot { key })
         }
         "MYID" => {
             if args.len() != 1 {
-                return Err(ProtocolError::WrongArity("CLUSTER MYID".into()));
+                return Err(wrong_arity("CLUSTER MYID"));
             }
             Ok(Command::ClusterMyId)
         }
         "SETSLOT" => parse_cluster_setslot(&args[1..]),
         "MEET" => {
             if args.len() != 3 {
-                return Err(ProtocolError::WrongArity("CLUSTER MEET".into()));
+                return Err(wrong_arity("CLUSTER MEET"));
             }
             let ip = extract_string(&args[1])?;
             let port_str = extract_string(&args[2])?;
@@ -1701,7 +1741,7 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         "ADDSLOTS" => {
             if args.len() < 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER ADDSLOTS".into()));
+                return Err(wrong_arity("CLUSTER ADDSLOTS"));
             }
             let slots = parse_slot_list(&args[1..])?;
             Ok(Command::ClusterAddSlots { slots })
@@ -1709,7 +1749,7 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         "ADDSLOTSRANGE" => {
             // arguments are pairs: start1 end1 [start2 end2 ...]
             if args.len() < 3 || !(args.len() - 1).is_multiple_of(2) {
-                return Err(ProtocolError::WrongArity("CLUSTER ADDSLOTSRANGE".into()));
+                return Err(wrong_arity("CLUSTER ADDSLOTSRANGE"));
             }
             let mut ranges = Vec::new();
             for pair in args[1..].chunks(2) {
@@ -1730,21 +1770,21 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         "DELSLOTS" => {
             if args.len() < 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER DELSLOTS".into()));
+                return Err(wrong_arity("CLUSTER DELSLOTS"));
             }
             let slots = parse_slot_list(&args[1..])?;
             Ok(Command::ClusterDelSlots { slots })
         }
         "FORGET" => {
             if args.len() != 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER FORGET".into()));
+                return Err(wrong_arity("CLUSTER FORGET"));
             }
             let node_id = extract_string(&args[1])?;
             Ok(Command::ClusterForget { node_id })
         }
         "REPLICATE" => {
             if args.len() != 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER REPLICATE".into()));
+                return Err(wrong_arity("CLUSTER REPLICATE"));
             }
             let node_id = extract_string(&args[1])?;
             Ok(Command::ClusterReplicate { node_id })
@@ -1768,7 +1808,7 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         "COUNTKEYSINSLOT" => {
             if args.len() != 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER COUNTKEYSINSLOT".into()));
+                return Err(wrong_arity("CLUSTER COUNTKEYSINSLOT"));
             }
             let slot_str = extract_string(&args[1])?;
             let slot: u16 = slot_str
@@ -1778,7 +1818,7 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         "GETKEYSINSLOT" => {
             if args.len() != 3 {
-                return Err(ProtocolError::WrongArity("CLUSTER GETKEYSINSLOT".into()));
+                return Err(wrong_arity("CLUSTER GETKEYSINSLOT"));
             }
             let slot_str = extract_string(&args[1])?;
             let slot: u16 = slot_str
@@ -1798,14 +1838,14 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("ASKING".into()));
+        return Err(wrong_arity("ASKING"));
     }
     Ok(Command::Asking)
 }
 
 fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("SLOWLOG".into()));
+        return Err(wrong_arity("SLOWLOG"));
     }
 
     let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
@@ -1848,7 +1888,7 @@ fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
 
 fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("CLUSTER SETSLOT".into()));
+        return Err(wrong_arity("CLUSTER SETSLOT"));
     }
 
     let slot_str = extract_string(&args[0])?;
@@ -1862,7 +1902,7 @@ fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     if args.len() < 2 {
-        return Err(ProtocolError::WrongArity("CLUSTER SETSLOT".into()));
+        return Err(wrong_arity("CLUSTER SETSLOT"));
     }
 
     let action = extract_string(&args[1])?.to_ascii_uppercase();
@@ -1887,14 +1927,14 @@ fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
         "NODE" => {
             if args.len() != 3 {
-                return Err(ProtocolError::WrongArity("CLUSTER SETSLOT NODE".into()));
+                return Err(wrong_arity("CLUSTER SETSLOT NODE"));
             }
             let node_id = extract_string(&args[2])?;
             Ok(Command::ClusterSetSlotNode { slot, node_id })
         }
         "STABLE" => {
             if args.len() != 2 {
-                return Err(ProtocolError::WrongArity("CLUSTER SETSLOT STABLE".into()));
+                return Err(wrong_arity("CLUSTER SETSLOT STABLE"));
             }
             Ok(Command::ClusterSetSlotStable { slot })
         }
@@ -1907,7 +1947,7 @@ fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
 fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
     // MIGRATE host port key db timeout [COPY] [REPLACE]
     if args.len() < 5 {
-        return Err(ProtocolError::WrongArity("MIGRATE".into()));
+        return Err(wrong_arity("MIGRATE"));
     }
 
     let host = extract_string(&args[0])?;
@@ -1955,7 +1995,7 @@ fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
 fn parse_restore(args: &[Frame]) -> Result<Command, ProtocolError> {
     // RESTORE key ttl serialized-value [REPLACE]
     if args.len() < 3 {
-        return Err(ProtocolError::WrongArity("RESTORE".into()));
+        return Err(wrong_arity("RESTORE"));
     }
 
     let key = extract_string(&args[0])?;
@@ -1987,7 +2027,7 @@ fn parse_restore(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_subscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("SUBSCRIBE".into()));
+        return Err(wrong_arity("SUBSCRIBE"));
     }
     let channels: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
     Ok(Command::Subscribe { channels })
@@ -2000,7 +2040,7 @@ fn parse_unsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_psubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("PSUBSCRIBE".into()));
+        return Err(wrong_arity("PSUBSCRIBE"));
     }
     let patterns: Vec<String> = args.iter().map(extract_string).collect::<Result<_, _>>()?;
     Ok(Command::PSubscribe { patterns })
@@ -2013,7 +2053,7 @@ fn parse_punsubscribe(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_publish(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("PUBLISH".into()));
+        return Err(wrong_arity("PUBLISH"));
     }
     let channel = extract_string(&args[0])?;
     let message = extract_bytes(&args[1])?;
@@ -2022,7 +2062,7 @@ fn parse_publish(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
-        return Err(ProtocolError::WrongArity("PUBSUB".into()));
+        return Err(wrong_arity("PUBSUB"));
     }
 
     let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
@@ -2055,7 +2095,7 @@ fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
 fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     // minimum: key + element + at least one float
     if args.len() < 3 {
-        return Err(ProtocolError::WrongArity("VADD".into()));
+        return Err(wrong_arity("VADD"));
     }
 
     let key = extract_string(&args[0])?;
@@ -2195,7 +2235,7 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
 fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
     // minimum: key + DIM + n (even an empty batch needs the DIM declaration)
     if args.len() < 3 {
-        return Err(ProtocolError::WrongArity("VADD_BATCH".into()));
+        return Err(wrong_arity("VADD_BATCH"));
     }
 
     let key = extract_string(&args[0])?;
@@ -2374,7 +2414,7 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
 fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
     // minimum: key + at least one float + COUNT + k
     if args.len() < 4 {
-        return Err(ProtocolError::WrongArity("VSIM".into()));
+        return Err(wrong_arity("VSIM"));
     }
 
     let key = extract_string(&args[0])?;
@@ -2475,7 +2515,7 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// VREM key element
 fn parse_vrem(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("VREM".into()));
+        return Err(wrong_arity("VREM"));
     }
     let key = extract_string(&args[0])?;
     let element = extract_string(&args[1])?;
@@ -2485,7 +2525,7 @@ fn parse_vrem(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// VGET key element
 fn parse_vget(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("VGET".into()));
+        return Err(wrong_arity("VGET"));
     }
     let key = extract_string(&args[0])?;
     let element = extract_string(&args[1])?;
@@ -2495,7 +2535,7 @@ fn parse_vget(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// VCARD key
 fn parse_vcard(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("VCARD".into()));
+        return Err(wrong_arity("VCARD"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::VCard { key })
@@ -2504,7 +2544,7 @@ fn parse_vcard(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// VDIM key
 fn parse_vdim(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("VDIM".into()));
+        return Err(wrong_arity("VDIM"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::VDim { key })
@@ -2513,7 +2553,7 @@ fn parse_vdim(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// VINFO key
 fn parse_vinfo(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("VINFO".into()));
+        return Err(wrong_arity("VINFO"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::VInfo { key })
@@ -2523,7 +2563,7 @@ fn parse_vinfo(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_register(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("PROTO.REGISTER".into()));
+        return Err(wrong_arity("PROTO.REGISTER"));
     }
     let name = extract_string(&args[0])?;
     let descriptor = extract_bytes(&args[1])?;
@@ -2532,7 +2572,7 @@ fn parse_proto_register(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_set(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 3 {
-        return Err(ProtocolError::WrongArity("PROTO.SET".into()));
+        return Err(wrong_arity("PROTO.SET"));
     }
 
     let key = extract_string(&args[0])?;
@@ -2558,7 +2598,7 @@ fn parse_proto_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "EX" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::WrongArity("PROTO.SET".into()));
+                    return Err(wrong_arity("PROTO.SET"));
                 }
                 let amount = parse_u64(&args[idx], "PROTO.SET")?;
                 if amount == 0 {
@@ -2572,7 +2612,7 @@ fn parse_proto_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "PX" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::WrongArity("PROTO.SET".into()));
+                    return Err(wrong_arity("PROTO.SET"));
                 }
                 let amount = parse_u64(&args[idx], "PROTO.SET")?;
                 if amount == 0 {
@@ -2609,7 +2649,7 @@ fn parse_proto_set(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_get(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("PROTO.GET".into()));
+        return Err(wrong_arity("PROTO.GET"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::ProtoGet { key })
@@ -2617,7 +2657,7 @@ fn parse_proto_get(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_type(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("PROTO.TYPE".into()));
+        return Err(wrong_arity("PROTO.TYPE"));
     }
     let key = extract_string(&args[0])?;
     Ok(Command::ProtoType { key })
@@ -2625,14 +2665,14 @@ fn parse_proto_type(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_schemas(args: &[Frame]) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("PROTO.SCHEMAS".into()));
+        return Err(wrong_arity("PROTO.SCHEMAS"));
     }
     Ok(Command::ProtoSchemas)
 }
 
 fn parse_proto_describe(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
-        return Err(ProtocolError::WrongArity("PROTO.DESCRIBE".into()));
+        return Err(wrong_arity("PROTO.DESCRIBE"));
     }
     let name = extract_string(&args[0])?;
     Ok(Command::ProtoDescribe { name })
@@ -2640,7 +2680,7 @@ fn parse_proto_describe(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_getfield(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("PROTO.GETFIELD".into()));
+        return Err(wrong_arity("PROTO.GETFIELD"));
     }
     let key = extract_string(&args[0])?;
     let field_path = extract_string(&args[1])?;
@@ -2649,7 +2689,7 @@ fn parse_proto_getfield(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_setfield(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 3 {
-        return Err(ProtocolError::WrongArity("PROTO.SETFIELD".into()));
+        return Err(wrong_arity("PROTO.SETFIELD"));
     }
     let key = extract_string(&args[0])?;
     let field_path = extract_string(&args[1])?;
@@ -2663,7 +2703,7 @@ fn parse_proto_setfield(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 fn parse_proto_delfield(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
-        return Err(ProtocolError::WrongArity("PROTO.DELFIELD".into()));
+        return Err(wrong_arity("PROTO.DELFIELD"));
     }
     let key = extract_string(&args[0])?;
     let field_path = extract_string(&args[1])?;
@@ -2687,13 +2727,13 @@ fn parse_auth(args: &[Frame]) -> Result<Command, ProtocolError> {
                 password,
             })
         }
-        _ => Err(ProtocolError::WrongArity("AUTH".into())),
+        _ => Err(wrong_arity("AUTH")),
     }
 }
 
 fn parse_quit(args: &[Frame]) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
-        return Err(ProtocolError::WrongArity("QUIT".into()));
+        return Err(wrong_arity("QUIT"));
     }
     Ok(Command::Quit)
 }

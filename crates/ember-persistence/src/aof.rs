@@ -245,20 +245,24 @@ impl AofRecord {
         const LEN_PREFIX: usize = 4;
 
         match self {
+            // 1 tag + 4 key-len + key + 4 value-len + value + 8 expire_ms
             AofRecord::Set {
                 key,
                 value,
                 expire_ms: _,
             } => 1 + LEN_PREFIX + key.len() + LEN_PREFIX + value.len() + 8,
+            // 1 tag + 4 key-len + key
             AofRecord::Del { key }
             | AofRecord::LPop { key }
             | AofRecord::RPop { key }
             | AofRecord::Persist { key }
             | AofRecord::Incr { key }
             | AofRecord::Decr { key } => 1 + LEN_PREFIX + key.len(),
+            // 1 tag + 4 key-len + key + 8 seconds/millis
             AofRecord::Expire { key, .. } | AofRecord::Pexpire { key, .. } => {
                 1 + LEN_PREFIX + key.len() + 8
             }
+            // 1 tag + 4 key-len + key + 4 count + (4 value-len + value) * n
             AofRecord::LPush { key, values } | AofRecord::RPush { key, values } => {
                 let values_size: usize = values.iter().map(|v| LEN_PREFIX + v.len()).sum();
                 1 + LEN_PREFIX + key.len() + 4 + values_size
@@ -488,7 +492,10 @@ impl AofRecord {
         Ok(buf)
     }
 
-    /// Deserializes a record from a byte slice (tag + payload, no CRC).
+    /// Deserializes a record from its binary payload (tag byte + fields, no CRC).
+    ///
+    /// The format is the same as `to_bytes()`. CRC validation is the caller's
+    /// responsibility (done by the AOF recovery reader before this is called).
     pub fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
         let mut cursor = io::Cursor::new(data);
         let tag = format::read_u8(&mut cursor)?;
