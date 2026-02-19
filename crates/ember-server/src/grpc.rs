@@ -149,9 +149,8 @@ fn unexpected_response(resp: &ShardResponse) -> Status {
     }
 }
 
-// input validation limits — reject obviously malformed requests early
-const MAX_KEY_LEN: usize = 512 * 1024; // 512 KB
-const MAX_VALUE_LEN: usize = 512 * 1024 * 1024; // 512 MB
+// input validation limits — shared with the RESP path in connection_common
+use crate::connection_common::{MAX_KEY_LEN, MAX_VALUE_LEN};
 #[cfg(feature = "vector")]
 const MAX_VECTOR_DIMS: usize = 65_536;
 #[cfg(feature = "vector")]

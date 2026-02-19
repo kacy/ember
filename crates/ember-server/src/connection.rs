@@ -726,6 +726,11 @@ async fn dispatch_command(
         Err(e) => return PendingResponse::Immediate(Frame::Error(format!("ERR {e}"))),
     };
 
+    // reject oversized keys/values before any further processing
+    if let Some(err) = crate::connection_common::validate_command_sizes(&cmd) {
+        return PendingResponse::Immediate(err);
+    }
+
     // handle ASKING: set the flag and return OK immediately
     if matches!(cmd, Command::Asking) {
         *asking = true;
