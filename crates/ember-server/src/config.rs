@@ -91,6 +91,7 @@ pub fn build_engine_config(
     eviction_policy: EvictionPolicy,
     shard_count: usize,
     persistence: Option<ShardPersistenceConfig>,
+    shard_channel_buffer: usize,
 ) -> EngineConfig {
     let per_shard_memory = max_memory.map(|total| {
         // divide evenly, rounding down — better to be slightly
@@ -108,6 +109,7 @@ pub fn build_engine_config(
         replication_tx: None,
         #[cfg(feature = "protobuf")]
         schema_registry: None,
+        shard_channel_buffer,
     }
 }
 
@@ -650,14 +652,14 @@ mod tests {
 
     #[test]
     fn build_config_divides_memory() {
-        let cfg = build_engine_config(Some(400), EvictionPolicy::AllKeysLru, 4, None);
+        let cfg = build_engine_config(Some(400), EvictionPolicy::AllKeysLru, 4, None, 0);
         assert_eq!(cfg.shard.max_memory, Some(100));
         assert_eq!(cfg.shard.eviction_policy, EvictionPolicy::AllKeysLru);
     }
 
     #[test]
     fn build_config_no_limit() {
-        let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None);
+        let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None, 0);
         assert_eq!(cfg.shard.max_memory, None);
     }
 

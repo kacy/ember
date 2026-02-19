@@ -475,7 +475,13 @@ async fn main() {
 
     #[allow(unused_mut)]
     let mut engine_config =
-        build_engine_config(max_memory, eviction_policy, shard_count, persistence);
+        build_engine_config(
+            max_memory,
+            eviction_policy,
+            shard_count,
+            persistence,
+            cfg.engine.shard_channel_buffer,
+        );
 
     #[cfg(feature = "protobuf")]
     if args.protobuf {
