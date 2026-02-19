@@ -16,7 +16,7 @@
 //!
 //! # Quick Start
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use ember_cluster::{ClusterState, ClusterNode, NodeId, key_slot};
 //!
 //! // Create a single-node cluster
