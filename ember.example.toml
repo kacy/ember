@@ -1,0 +1,83 @@
+# ember configuration
+#
+# all values shown are the defaults. uncomment and modify as needed.
+# load with: ember-server --config ember.toml
+#
+# resolution order: defaults -> config file -> env vars -> CLI flags
+# env vars use the EMBER_ prefix (e.g., EMBER_PORT=7777)
+
+# --- server ---
+
+# bind = "127.0.0.1"              # address to listen on
+# port = 6379                     # data port
+# shards = 0                      # worker threads (0 = auto-detect CPU cores)
+# concurrent = false              # use DashMap-backed keyspace (experimental)
+# requirepass = ""                # require AUTH before commands (empty = disabled)
+# data-dir = ""                   # directory for AOF/snapshot files
+
+# --- connections ---
+
+# maxclients = 10000              # max simultaneous client connections
+# idle-timeout-secs = 300         # close idle connections after N seconds
+# max-pipeline-depth = 10000      # max pipelined commands per connection
+# max-auth-failures = 10          # disconnect after N failed AUTH attempts
+
+# --- memory ---
+
+# maxmemory = ""                  # memory limit (e.g., "256mb", "1gb"; empty = unlimited)
+# maxmemory-policy = "noeviction" # eviction policy: "noeviction" or "allkeys-lru"
+
+# --- persistence ---
+
+# appendonly = false              # enable append-only file logging
+# appendfsync = "everysec"        # fsync policy: "always", "everysec", "no"
+# active-expiry-interval-ms = 100 # background expiry sweep interval
+# aof-fsync-interval-secs = 1    # fsync interval when appendfsync = "everysec"
+
+# --- monitoring ---
+
+# metrics-port = 0                # prometheus /metrics and /health HTTP port (0 = disabled)
+# slowlog-log-slower-than = 10000 # log commands slower than N microseconds (-1 = disabled)
+# slowlog-max-len = 128           # max entries in the slow log ring buffer
+
+# --- tls ---
+
+# tls-port = 0                    # TLS listener port (0 = disabled)
+# tls-cert-file = ""              # path to server certificate (PEM)
+# tls-key-file = ""               # path to server private key (PEM)
+# tls-ca-cert-file = ""           # CA cert for client verification (PEM)
+# tls-auth-clients = "no"         # require client certificates ("yes" or "no")
+
+# --- protocol limits ---
+
+# max-key-len = "512kb"           # maximum key size
+# max-value-len = "512mb"         # maximum value size
+# max-subscriptions-per-connection = 10000
+# max-pattern-len = 256           # max glob pattern length for PSUBSCRIBE
+# read-buffer-capacity = 4096     # initial read buffer size per connection
+# max-buffer-size = "64mb"        # max read buffer growth per connection
+
+# --- cluster ---
+
+# [cluster]
+# enabled = false                 # enable cluster mode
+# bootstrap = false               # bootstrap as single-node cluster owning all slots
+# port-offset = 10000             # gossip bus port = data port + offset
+# raft-port-offset = 10001        # raft port = data port + offset
+# node-timeout-ms = 5000          # failure detection timeout
+# auth-pass = ""                  # HMAC-SHA256 shared secret for cluster transport
+
+# [cluster.gossip]
+# protocol-period-ms = 1000       # SWIM protocol period
+# probe-timeout-ms = 500          # direct probe timeout
+# suspicion-multiplier = 5        # suspicion duration multiplier
+# indirect-probes = 3             # number of indirect probes
+# max-piggyback = 10              # max piggybacked updates per message
+
+# --- engine internals ---
+# (you probably don't need to change these)
+
+# [engine]
+# shard-channel-buffer = 256      # bounded channel size per shard
+# replication-broadcast-capacity = 65536
+# stats-poll-interval-secs = 5    # how often to poll shards for metrics
