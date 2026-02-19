@@ -1,0 +1,61 @@
+# docker-compose.yml — quickstart for a single ember node
+#
+# usage:
+#   docker compose up -d
+#   docker compose logs -f
+#   docker compose down
+#
+# connect with redis-cli:
+#   redis-cli -p 6379 ping
+#
+# or with ember-cli (if installed):
+#   ember-cli ping
+
+services:
+  ember:
+    image: ghcr.io/kacy/ember:latest
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./data:/data
+    environment:
+      # persistence — aof with everysec fsync balances durability and throughput.
+      # set EMBER_APPENDONLY=false to run purely in-memory.
+      EMBER_APPENDONLY: "true"
+      EMBER_APPENDFSYNC: "everysec"
+
+      # cap memory at 256mb. when the limit is reached ember evicts the
+      # least-recently-used keys (allkeys-lru). set to noeviction to reject
+      # writes instead.
+      EMBER_MAX_MEMORY: "256M"
+      EMBER_EVICTION_POLICY: "allkeys-lru"
+
+      # uncomment to require a password on every connection.
+      # EMBER_REQUIREPASS: "changeme"
+
+    healthcheck:
+      test: ["CMD", "ember-server", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # ── optional: prometheus metrics ─────────────────────────────────────────────
+  # ember exposes prometheus metrics on port 9100 when EMBER_METRICS_PORT is set.
+  # uncomment the block below to enable scraping alongside the main service.
+  #
+  # ember-with-metrics:
+  #   image: ghcr.io/kacy/ember:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"
+  #     - "9100:9100"          # prometheus scrape target
+  #   volumes:
+  #     - ./data:/data
+  #   environment:
+  #     EMBER_APPENDONLY: "true"
+  #     EMBER_APPENDFSYNC: "everysec"
+  #     EMBER_MAX_MEMORY: "256M"
+  #     EMBER_EVICTION_POLICY: "allkeys-lru"
+  #     EMBER_METRICS_PORT: "9100"
