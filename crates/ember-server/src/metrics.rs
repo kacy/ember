@@ -295,3 +295,24 @@ pub fn on_connection_closed() {
 pub fn on_connection_rejected() {
     counter!("ember_connections_rejected").increment(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_used_bytes_store_and_load() {
+        let m = MemoryUsedBytes::new();
+        assert_eq!(m.load(), 0);
+        m.store(42_000);
+        assert_eq!(m.load(), 42_000);
+    }
+
+    #[test]
+    fn memory_used_bytes_debug() {
+        let m = MemoryUsedBytes::new();
+        m.store(1024);
+        let s = format!("{m:?}");
+        assert!(s.contains("1024"));
+    }
+}
