@@ -6,6 +6,7 @@
 //! definition) ever acquire it.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
@@ -45,8 +46,15 @@ impl Default for SlowLogConfig {
 }
 
 /// Thread-safe slow command log backed by a ring buffer.
+///
+/// The threshold and max_len are stored as atomics so they can be
+/// updated at runtime via CONFIG SET without adding mutex overhead
+/// to the fast path.
 pub struct SlowLog {
-    config: SlowLogConfig,
+    /// Threshold in microseconds. Negative means disabled, 0 logs everything.
+    threshold_us: AtomicI64,
+    /// Maximum ring buffer size.
+    max_len: AtomicUsize,
     inner: Mutex<SlowLogInner>,
 }
 
@@ -58,8 +66,14 @@ struct SlowLogInner {
 impl SlowLog {
     /// Creates a new slow log with the given configuration.
     pub fn new(config: SlowLogConfig) -> Self {
+        let threshold_us = if config.enabled {
+            config.slower_than.as_micros() as i64
+        } else {
+            -1
+        };
         Self {
-            config,
+            threshold_us: AtomicI64::new(threshold_us),
+            max_len: AtomicUsize::new(config.max_len),
             inner: Mutex::new(SlowLogInner {
                 entries: VecDeque::with_capacity(config.max_len),
                 next_id: 0,
@@ -72,7 +86,26 @@ impl SlowLog {
     /// Used by the connection handler to skip timing overhead entirely
     /// when both metrics and slowlog are disabled.
     pub fn is_enabled(&self) -> bool {
-        self.config.enabled
+        self.threshold_us.load(Ordering::Relaxed) >= 0
+    }
+
+    /// Updates the threshold at runtime (via CONFIG SET).
+    ///
+    /// Negative values disable the slow log. Zero logs every command.
+    pub fn update_threshold(&self, microseconds: i64) {
+        self.threshold_us.store(microseconds, Ordering::Relaxed);
+    }
+
+    /// Updates the maximum ring buffer size at runtime (via CONFIG SET).
+    ///
+    /// If the new limit is smaller than the current number of entries,
+    /// the oldest entries are discarded immediately.
+    pub fn update_max_len(&self, len: usize) {
+        self.max_len.store(len, Ordering::Relaxed);
+        let mut inner = self.lock_or_clear();
+        while inner.entries.len() > len {
+            inner.entries.pop_front();
+        }
     }
 
     /// Records a command if it exceeded the threshold.
@@ -82,16 +115,22 @@ impl SlowLog {
     /// If the lock is poisoned (another thread panicked while holding it),
     /// we recover by clearing the entries rather than propagating the panic.
     pub fn maybe_record(&self, duration: Duration, command: &str) {
-        if !self.config.enabled || duration < self.config.slower_than {
+        let threshold_us = self.threshold_us.load(Ordering::Relaxed);
+        if threshold_us < 0 {
+            return;
+        }
+        let threshold = Duration::from_micros(threshold_us as u64);
+        if duration < threshold {
             return;
         }
 
+        let max_len = self.max_len.load(Ordering::Relaxed);
         let mut inner = self.lock_or_clear();
 
         let id = inner.next_id;
         inner.next_id += 1;
 
-        if inner.entries.len() >= self.config.max_len {
+        if inner.entries.len() >= max_len {
             inner.entries.pop_front();
         }
 

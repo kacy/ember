@@ -2069,6 +2069,35 @@ async fn execute(
 
         Command::Info { section } => render_info(engine, ctx, section.as_deref()).await,
 
+        Command::ConfigGet { pattern } => {
+            let pairs = ctx.config.get_matching(&pattern);
+            let mut frames = Vec::with_capacity(pairs.len() * 2);
+            for (key, value) in pairs {
+                frames.push(Frame::Bulk(Bytes::from(key)));
+                frames.push(Frame::Bulk(Bytes::from(value)));
+            }
+            Frame::Array(frames)
+        }
+
+        Command::ConfigSet { param, value } => {
+            if let Err(e) = ctx.config.set(&param, &value) {
+                Frame::Error(e)
+            } else {
+                // apply dynamic updates for known parameters
+                let key = param.to_ascii_lowercase();
+                if key == "slowlog-log-slower-than" {
+                    if let Ok(us) = value.parse::<i64>() {
+                        slow_log.update_threshold(us);
+                    }
+                } else if key == "slowlog-max-len" {
+                    if let Ok(len) = value.parse::<usize>() {
+                        slow_log.update_max_len(len);
+                    }
+                }
+                Frame::Simple("OK".into())
+            }
+        }
+
         Command::BgSave => match engine.broadcast(|| ShardRequest::Snapshot).await {
             Ok(_) => Frame::Simple("Background saving started".into()),
             Err(e) => Frame::Error(format!("ERR {e}")),
