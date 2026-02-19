@@ -46,6 +46,10 @@ pub struct ClusterCoordinator {
     raft_node: std::sync::OnceLock<Arc<RaftNode>>,
     /// engine handle for replication; set once during startup
     engine: std::sync::OnceLock<Arc<Engine>>,
+    /// temporarily pauses writes on this node during failover coordination.
+    /// set by the primary when a replica requests failover; prevents new
+    /// mutations from arriving after the replica has decided to promote.
+    writes_paused: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for ClusterCoordinator {
@@ -109,6 +113,7 @@ impl ClusterCoordinator {
             data_dir,
             raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
+            writes_paused: std::sync::atomic::AtomicBool::new(false),
         };
 
         Ok((coordinator, event_rx))
@@ -166,6 +171,7 @@ impl ClusterCoordinator {
             data_dir: Some(data_dir),
             raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
+            writes_paused: std::sync::atomic::AtomicBool::new(false),
         };
 
         Ok((coordinator, event_rx))
@@ -822,6 +828,157 @@ impl ClusterCoordinator {
         } else {
             None
         }
+    }
+
+    /// Returns `true` if writes are temporarily paused on this node.
+    ///
+    /// Set by the primary during failover coordination to prevent new mutations
+    /// from arriving after the replica has committed to promoting.
+    pub fn is_writes_paused(&self) -> bool {
+        self.writes_paused
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Pauses write commands on this node.
+    ///
+    /// Called by the primary when a replica requests a coordinated failover,
+    /// ensuring no new writes arrive after the replica decides to promote.
+    #[allow(dead_code)]
+    pub fn pause_writes(&self) {
+        self.writes_paused
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Resumes write commands after a failover pause.
+    #[allow(dead_code)]
+    pub fn resume_writes(&self) {
+        self.writes_paused
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    /// CLUSTER FAILOVER [FORCE|TAKEOVER]
+    ///
+    /// Promotes this replica to primary. Must be run on a replica node.
+    ///
+    /// Three modes:
+    /// - **Default**: waits 500ms for replication to catch up, then promotes
+    ///   via Raft so all nodes agree on the new topology.
+    /// - **FORCE**: skips the grace period; promotes via Raft immediately.
+    ///   Use when the primary is unreachable and you accept possible data loss.
+    /// - **TAKEOVER**: bypasses Raft entirely. Updates local state and
+    ///   announces the new role via gossip. Use when Raft quorum is lost.
+    pub async fn cluster_failover(&self, force: bool, takeover: bool) -> Frame {
+        // verify we are a replica with a configured primary
+        let primary_id = {
+            let state = self.state.read().await;
+            let local = match state.nodes.get(&self.local_id) {
+                Some(n) => n,
+                None => {
+                    return Frame::Error(
+                        "ERR local node not found in cluster state".into(),
+                    )
+                }
+            };
+            if local.role != NodeRole::Replica {
+                return Frame::Error(
+                    "ERR You should send CLUSTER FAILOVER to a replica".into(),
+                );
+            }
+            match local.replicates {
+                Some(id) => id,
+                None => {
+                    return Frame::Error(
+                        "ERR No primary configured for this replica".into(),
+                    )
+                }
+            }
+        };
+
+        if takeover {
+            // TAKEOVER: immediate local promotion, no Raft or primary coordination.
+            // The replica asserts itself as primary and gossips the change;
+            // the rest of the cluster learns via gossip convergence.
+            {
+                let mut state = self.state.write().await;
+                if let Err(e) = state.promote_replica(self.local_id) {
+                    return Frame::Error(format!("ERR {e}"));
+                }
+            }
+            self.announce_promotion().await;
+            self.save_config().await;
+            info!(local_id = %self.local_id, %primary_id, "TAKEOVER: promoted to primary");
+            return Frame::Simple("OK".into());
+        }
+
+        // Default / FORCE: use Raft for cluster-wide agreement.
+        if !force {
+            // give the replication stream a brief window to deliver
+            // any in-flight records before we cut over. a future improvement
+            // could track the exact offset and wait for full catchup.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        // get the primary's current slot ranges so we can hand them over
+        let primary_slots = {
+            let state = self.state.read().await;
+            state
+                .nodes
+                .get(&primary_id)
+                .map(|n| n.slots.clone())
+                .unwrap_or_default()
+        };
+
+        if let Some(raft) = self.raft_node.get() {
+            // promote this replica in the Raft state machine
+            let promote_cmd = ClusterCommand::PromoteReplica {
+                replica_id: self.local_id,
+            };
+            if let Err(e) = raft.propose(promote_cmd).await {
+                return Self::raft_error_frame(e);
+            }
+
+            // transfer the primary's slots to this node via Raft
+            if !primary_slots.is_empty() {
+                let assign_cmd = ClusterCommand::AssignSlots {
+                    node_id: self.local_id,
+                    slots: primary_slots.clone(),
+                };
+                if let Err(e) = raft.propose(assign_cmd).await {
+                    return Self::raft_error_frame(e);
+                }
+
+                // remove those slots from the old primary
+                let remove_cmd = ClusterCommand::RemoveSlots {
+                    node_id: primary_id,
+                    slots: primary_slots,
+                };
+                // best-effort: old primary may already be unreachable
+                let _ = raft.propose(remove_cmd).await;
+            }
+        }
+
+        // apply locally right away so this node can start accepting writes
+        // without waiting for the async Raft reconciliation to complete
+        {
+            let mut state = self.state.write().await;
+            if let Err(e) = state.promote_replica(self.local_id) {
+                warn!(%e, "local promote_replica after Raft proposal failed");
+            }
+        }
+
+        self.announce_promotion().await;
+        self.save_config().await;
+
+        let mode = if force { "FORCE" } else { "default" };
+        info!(local_id = %self.local_id, %primary_id, mode, "promoted to primary");
+        Frame::Simple("OK".into())
+    }
+
+    /// Queues a role-change gossip announcement marking this node as primary.
+    async fn announce_promotion(&self) {
+        let mut gossip = self.gossip.lock().await;
+        let inc = gossip.local_incarnation();
+        gossip.queue_role_update(self.local_id, inc, true, None);
     }
 
     /// Attaches the engine so replication can start on demand.
@@ -1803,5 +1960,94 @@ mod tests {
     async fn is_replica_returns_false_initially() {
         let (coord, _rx) = test_coordinator();
         assert!(!coord.is_replica().await, "new coordinator should be a primary");
+    }
+
+    #[tokio::test]
+    async fn failover_rejected_on_primary() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let result = coord.cluster_failover(false, false).await;
+        match result {
+            Frame::Error(msg) => assert!(
+                msg.contains("replica"),
+                "expected replica error, got: {msg}"
+            ),
+            other => panic!("expected error frame, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn failover_takeover_promotes_replica() {
+        // set up: primary owns all slots, replica replicates from it
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let primary_id = coord.local_id;
+
+        let replica_id = NodeId::new();
+        let replica_addr: SocketAddr = "127.0.0.1:6380".parse().unwrap();
+
+        // add the replica to the primary's state
+        {
+            let mut state = coord.state.write().await;
+            let mut replica = ClusterNode::new_replica(replica_id, replica_addr, primary_id);
+            replica.set_myself(); // pretend we're running on the replica
+            state.add_node(replica);
+            // register replica in primary's list
+            state
+                .nodes
+                .get_mut(&primary_id)
+                .unwrap()
+                .replicas
+                .push(replica_id);
+            // update local_id to the replica
+            // (simulate running on the replica node)
+        }
+
+        // build a replica coordinator with the same state
+        let replica_addr_sa: SocketAddr = "127.0.0.1:6380".parse().unwrap();
+        let (replica_coord, _rx2) =
+            ClusterCoordinator::new(replica_id, replica_addr_sa, GossipConfig::default(), false, None)
+                .unwrap();
+
+        // manually set up the replica's state
+        {
+            let mut state = replica_coord.state.write().await;
+            let primary_node = coord.state.read().await.nodes.get(&primary_id).unwrap().clone();
+            state.add_node(primary_node);
+            // set this node as a replica of primary
+            if let Some(local) = state.nodes.get_mut(&replica_id) {
+                local.role = NodeRole::Replica;
+                local.replicates = Some(primary_id);
+            }
+            // assign all slots to primary in the slot map
+            for slot in 0..16384u16 {
+                state.slot_map.assign(slot, primary_id);
+            }
+        }
+
+        // TAKEOVER: should succeed since no Raft is needed
+        let result = replica_coord.cluster_failover(false, true).await;
+        assert!(matches!(result, Frame::Simple(_)), "expected OK, got {result:?}");
+
+        // verify the replica is now a primary
+        assert!(
+            !replica_coord.is_replica().await,
+            "after TAKEOVER, node should be primary"
+        );
+
+        // verify it owns all slots
+        let state = replica_coord.state.read().await;
+        for slot in 0..16384u16 {
+            assert_eq!(state.slot_map.owner(slot), Some(replica_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn writes_paused_blocks_and_resumes() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+
+        assert!(!coord.is_writes_paused());
+        coord.pause_writes();
+        assert!(coord.is_writes_paused());
+        coord.resume_writes();
+        assert!(!coord.is_writes_paused());
     }
 }

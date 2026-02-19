@@ -1762,8 +1762,14 @@ async fn execute(
     pubsub: &Arc<PubSubManager>,
     asking: bool,
 ) -> Frame {
-    // Replica write rejection: redirect mutations to the primary.
+    // Write gating: reject mutations when the node is a replica or when
+    // writes are temporarily paused (e.g. during failover coordination).
     if let Some(ref cluster) = ctx.cluster {
+        if cluster.is_writes_paused() && cmd.is_write() {
+            return Frame::Error(
+                "READONLY Failover in progress; writes are temporarily paused.".into(),
+            );
+        }
         if cluster.is_replica().await && cmd.is_write() {
             if let Some(key) = cmd.primary_key() {
                 use ember_cluster::key_slot;
@@ -2711,9 +2717,10 @@ async fn execute(
             None => Frame::Error("ERR This instance has cluster support disabled".into()),
         },
 
-        Command::ClusterFailover { .. } => {
-            Frame::Error("ERR FAILOVER not yet implemented".into())
-        }
+        Command::ClusterFailover { force, takeover } => match &ctx.cluster {
+            Some(c) => c.cluster_failover(force, takeover).await,
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
 
         Command::Migrate {
             host,

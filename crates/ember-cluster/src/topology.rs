@@ -446,6 +446,66 @@ impl ClusterState {
         self.state = ClusterHealth::Ok;
     }
 
+    /// Promotes a replica to primary, transferring slots from its current primary.
+    ///
+    /// Performs the full state transition for a failover:
+    /// - Transfers all slots from the old primary to the promoted replica.
+    /// - Demotes the old primary to a replica of the new primary.
+    /// - Updates replica lists on both nodes.
+    /// - Bumps the global config epoch.
+    ///
+    /// Returns an error if the target is not a replica with a configured primary.
+    pub fn promote_replica(&mut self, replica_id: NodeId) -> Result<(), String> {
+        // locate the replica and find its current primary
+        let primary_id = {
+            let replica = self
+                .nodes
+                .get(&replica_id)
+                .ok_or_else(|| format!("node {replica_id} not found in cluster state"))?;
+            if replica.role != NodeRole::Replica {
+                return Err(format!("node {replica_id} is not a replica"));
+            }
+            replica
+                .replicates
+                .ok_or_else(|| format!("replica {replica_id} has no primary configured"))?
+        };
+
+        // transfer every slot currently owned by the old primary
+        for slot in 0..SLOT_COUNT {
+            if self.slot_map.owner(slot) == Some(primary_id) {
+                self.slot_map.assign(slot, replica_id);
+            }
+        }
+        let new_primary_slots = self.slot_map.slots_for_node(replica_id);
+
+        // bump epoch before touching node state
+        self.config_epoch += 1;
+        let new_epoch = self.config_epoch;
+
+        // demote old primary → it now replicates the new primary
+        if let Some(old_primary) = self.nodes.get_mut(&primary_id) {
+            old_primary.role = NodeRole::Replica;
+            old_primary.replicates = Some(replica_id);
+            old_primary.replicas.retain(|&id| id != replica_id);
+            old_primary.slots.clear();
+            old_primary.config_epoch = new_epoch;
+        }
+
+        // promote the replica → it becomes the new primary
+        if let Some(new_primary) = self.nodes.get_mut(&replica_id) {
+            new_primary.role = NodeRole::Primary;
+            new_primary.replicates = None;
+            if !new_primary.replicas.contains(&primary_id) {
+                new_primary.replicas.push(primary_id);
+            }
+            new_primary.slots = new_primary_slots;
+            new_primary.config_epoch = new_epoch;
+        }
+
+        self.update_health();
+        Ok(())
+    }
+
     /// Generates the response for CLUSTER INFO command.
     pub fn cluster_info(&self) -> String {
         let assigned_slots = (SLOT_COUNT as usize - self.slot_map.unassigned_count()) as u16;
@@ -964,5 +1024,71 @@ mod tests {
         assert_eq!(state.primaries().count(), 1);
         assert_eq!(state.replicas().count(), 1);
         assert_eq!(state.replicas_of(primary_id).count(), 1);
+    }
+
+    #[test]
+    fn promote_replica_transfers_slots() {
+        let primary_id = NodeId::new();
+        let replica_id = NodeId::new();
+
+        let mut primary = ClusterNode::new_primary(primary_id, test_addr(6379));
+        primary.set_myself();
+
+        let mut state = ClusterState::single_node(primary);
+        let replica = ClusterNode::new_replica(replica_id, test_addr(6380), primary_id);
+        state.add_node(replica);
+
+        // register the replica in the primary's replica list
+        state.nodes.get_mut(&primary_id).unwrap().replicas.push(replica_id);
+
+        let initial_epoch = state.config_epoch;
+        state.promote_replica(replica_id).unwrap();
+
+        // epoch should have been bumped
+        assert_eq!(state.config_epoch, initial_epoch + 1);
+
+        // the promoted node is now a primary with all slots
+        let new_primary = state.nodes.get(&replica_id).unwrap();
+        assert_eq!(new_primary.role, NodeRole::Primary);
+        assert_eq!(new_primary.replicates, None);
+        assert!(new_primary.replicas.contains(&primary_id));
+        assert!(!new_primary.slots.is_empty());
+
+        // the old primary is now a replica
+        let old_primary = state.nodes.get(&primary_id).unwrap();
+        assert_eq!(old_primary.role, NodeRole::Replica);
+        assert_eq!(old_primary.replicates, Some(replica_id));
+        assert!(old_primary.slots.is_empty());
+
+        // slot ownership must be transferred
+        for slot in 0..SLOT_COUNT {
+            assert_eq!(state.slot_map.owner(slot), Some(replica_id));
+        }
+
+        // cluster should still be healthy
+        assert_eq!(state.state, ClusterHealth::Ok);
+    }
+
+    #[test]
+    fn promote_replica_rejects_non_replica() {
+        let id = NodeId::new();
+        let mut node = ClusterNode::new_primary(id, test_addr(6379));
+        node.set_myself();
+        let mut state = ClusterState::single_node(node);
+
+        let err = state.promote_replica(id).unwrap_err();
+        assert!(err.contains("not a replica"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn promote_replica_rejects_unknown_node() {
+        let id = NodeId::new();
+        let mut node = ClusterNode::new_primary(id, test_addr(6379));
+        node.set_myself();
+        let mut state = ClusterState::single_node(node);
+
+        let missing = NodeId::new();
+        let err = state.promote_replica(missing).unwrap_err();
+        assert!(err.contains("not found"), "unexpected error: {err}");
     }
 }
