@@ -710,38 +710,26 @@ async fn run_shard(
             msg = rx.recv() => {
                 match msg {
                     Some(msg) => {
-                        process_message(
-                            msg,
-                            &mut keyspace,
-                            &mut aof_writer,
+                        let mut ctx = ProcessCtx {
+                            keyspace: &mut keyspace,
+                            aof_writer: &mut aof_writer,
                             fsync_policy,
-                            &persistence,
-                            &drop_handle,
+                            persistence: &persistence,
+                            drop_handle: &drop_handle,
                             shard_id,
-                            &replication_tx,
-                            &mut replication_offset,
+                            replication_tx: &replication_tx,
+                            replication_offset: &mut replication_offset,
                             #[cfg(feature = "protobuf")]
-                            &schema_registry,
-                        );
+                            schema_registry: &schema_registry,
+                        };
+                        process_message(msg, &mut ctx);
 
                         // drain any pending messages without re-entering select!.
                         // this amortizes the select! overhead across bursts of
                         // pipelined commands that arrived while we processed the
                         // first message.
                         while let Ok(msg) = rx.try_recv() {
-                            process_message(
-                                msg,
-                                &mut keyspace,
-                                &mut aof_writer,
-                                fsync_policy,
-                                &persistence,
-                                &drop_handle,
-                                shard_id,
-                                &replication_tx,
-                                &mut replication_offset,
-                                #[cfg(feature = "protobuf")]
-                                &schema_registry,
-                            );
+                            process_message(msg, &mut ctx);
                         }
                     }
                     None => break, // channel closed, shard shutting down
@@ -766,37 +754,46 @@ async fn run_shard(
     }
 }
 
-/// Processes a single shard message: dispatches the command, writes
-/// the AOF record, handles special requests, and sends the reply.
+/// Per-shard processing context passed into `process_message`.
 ///
-/// Extracted from the main loop so it can be called for both the
-/// initial `recv()` and the `try_recv()` drain loop.
-#[allow(clippy::too_many_arguments)]
-fn process_message(
-    msg: ShardMessage,
-    keyspace: &mut Keyspace,
-    aof_writer: &mut Option<AofWriter>,
+/// Groups the mutable and configuration fields so the call site stays
+/// readable and the parameter count stays reasonable.
+struct ProcessCtx<'a> {
+    keyspace: &'a mut Keyspace,
+    aof_writer: &'a mut Option<AofWriter>,
     fsync_policy: FsyncPolicy,
-    persistence: &Option<ShardPersistenceConfig>,
-    drop_handle: &Option<DropHandle>,
+    persistence: &'a Option<ShardPersistenceConfig>,
+    drop_handle: &'a Option<DropHandle>,
     shard_id: u16,
-    replication_tx: &Option<broadcast::Sender<ReplicationEvent>>,
-    replication_offset: &mut u64,
-    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
-) {
+    replication_tx: &'a Option<broadcast::Sender<ReplicationEvent>>,
+    replication_offset: &'a mut u64,
+    #[cfg(feature = "protobuf")]
+    schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
+}
+
+/// Dispatches a single queued message, writes AOF records, and broadcasts
+/// replication events.
+///
+/// Called both in the main `recv()` path and in the `try_recv()` drain loop
+/// to amortize tokio select overhead across pipelined commands.
+fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
+    // copy cheap fields upfront to avoid field-borrow conflicts below
+    let fsync_policy = ctx.fsync_policy;
+    let shard_id = ctx.shard_id;
+
     let request_kind = describe_request(&msg.request);
     let response = dispatch(
-        keyspace,
+        ctx.keyspace,
         &msg.request,
         #[cfg(feature = "protobuf")]
-        schema_registry,
+        ctx.schema_registry,
     );
 
     // collect mutation records once; used for both AOF and replication
     let records = to_aof_records(&msg.request, &response);
 
     // write AOF records for successful mutations
-    if let Some(ref mut writer) = aof_writer {
+    if let Some(ref mut writer) = *ctx.aof_writer {
         for record in &records {
             if let Err(e) = writer.write_record(record) {
                 warn!(shard_id, "aof write failed: {e}");
@@ -810,13 +807,13 @@ fn process_message(
     }
 
     // broadcast mutation events to replication subscribers
-    if let Some(ref tx) = replication_tx {
+    if let Some(ref tx) = *ctx.replication_tx {
         for record in records {
-            *replication_offset += 1;
+            *ctx.replication_offset += 1;
             // ignore send errors — no subscribers or lagged consumers
             let _ = tx.send(ReplicationEvent {
                 shard_id,
-                offset: *replication_offset,
+                offset: *ctx.replication_offset,
                 record,
             });
         }
@@ -825,30 +822,30 @@ fn process_message(
     // handle special requests that need access to persistence state
     match request_kind {
         RequestKind::Snapshot => {
-            let resp = handle_snapshot(keyspace, persistence, shard_id);
+            let resp = handle_snapshot(ctx.keyspace, ctx.persistence, shard_id);
             let _ = msg.reply.send(resp);
             return;
         }
         RequestKind::SerializeSnapshot => {
-            let resp = handle_serialize_snapshot(keyspace, shard_id);
+            let resp = handle_serialize_snapshot(ctx.keyspace, shard_id);
             let _ = msg.reply.send(resp);
             return;
         }
         RequestKind::RewriteAof => {
             let resp = handle_rewrite(
-                keyspace,
-                persistence,
-                aof_writer,
+                ctx.keyspace,
+                ctx.persistence,
+                ctx.aof_writer,
                 shard_id,
                 #[cfg(feature = "protobuf")]
-                schema_registry,
+                ctx.schema_registry,
             );
             let _ = msg.reply.send(resp);
             return;
         }
         RequestKind::FlushDbAsync => {
-            let old_entries = keyspace.flush_async();
-            if let Some(ref handle) = drop_handle {
+            let old_entries = ctx.keyspace.flush_async();
+            if let Some(ref handle) = *ctx.drop_handle {
                 handle.defer_entries(old_entries);
             }
             let _ = msg.reply.send(ShardResponse::Ok);
@@ -899,7 +896,9 @@ fn write_result_len(result: Result<usize, WriteError>) -> ShardResponse {
     }
 }
 
-/// Executes a single request against the keyspace.
+/// Routes a request to the appropriate keyspace operation and returns a response.
+///
+/// This is the hot path — every read and write goes through here.
 fn dispatch(
     ks: &mut Keyspace,
     req: &ShardRequest,
