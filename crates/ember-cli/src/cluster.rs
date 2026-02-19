@@ -1,8 +1,8 @@
 //! Cluster management subcommands.
 //!
-//! Provides typed CLI subcommands for cluster operations. Each variant
-//! maps to a `CLUSTER <subcommand>` wire command that gets sent to the
-//! server as a RESP3 array.
+//! Provides typed CLI subcommands for cluster operations. Individual variants
+//! map to `CLUSTER <subcommand>` wire commands. The `Create` and `Check`
+//! commands are multi-step orchestrations that connect to multiple nodes.
 
 use std::process::ExitCode;
 
@@ -12,6 +12,9 @@ use colored::Colorize;
 use crate::connection::Connection;
 use crate::format::format_response;
 use crate::tls::TlsClientConfig;
+
+/// Total number of hash slots in a Redis/Ember cluster.
+const SLOT_COUNT: u16 = 16384;
 
 /// Cluster management actions.
 #[derive(Debug, Subcommand)]
@@ -110,6 +113,31 @@ pub enum ClusterCommand {
         /// Maximum number of keys to return.
         count: u32,
     },
+
+    /// Create a new cluster from a list of nodes.
+    ///
+    /// Connects to each node, assigns slots evenly, and issues CLUSTER MEET
+    /// to form the cluster. All nodes must be in cluster mode and have no
+    /// slots assigned.
+    Create {
+        /// Node addresses in host:port format.
+        #[arg(required = true, num_args = 1..)]
+        nodes: Vec<String>,
+
+        /// Number of replicas per primary (default: 0).
+        #[arg(long, default_value_t = 0)]
+        replicas: usize,
+    },
+
+    /// Check cluster health and slot coverage.
+    ///
+    /// Connects to a node, fetches CLUSTER NODES, and verifies that all
+    /// 16384 slots are covered with no FAIL/PFAIL nodes.
+    Check {
+        /// Node address to query (default: 127.0.0.1:6379).
+        #[arg(default_value = "127.0.0.1:6379")]
+        node: String,
+    },
 }
 
 /// Actions for the `CLUSTER SETSLOT` command.
@@ -170,6 +198,21 @@ impl ClusterCommand {
                     "invalid slot {slot}: hash slots must be in the range 0-{MAX_SLOT}"
                 ));
             }
+            Self::Create { nodes, replicas } => {
+                if nodes.len() < 3 {
+                    return Err("cluster create requires at least 3 nodes".into());
+                }
+                let min_nodes = 3 * (1 + replicas);
+                if nodes.len() < min_nodes {
+                    return Err(format!(
+                        "not enough nodes for {replicas} replica(s): need at least {min_nodes}, got {}",
+                        nodes.len()
+                    ));
+                }
+                for addr in nodes {
+                    parse_host_port(addr).map_err(|e| format!("invalid address '{addr}': {e}"))?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -179,6 +222,9 @@ impl ClusterCommand {
     ///
     /// Returns a vec like `["CLUSTER", "MEET", "10.0.0.1", "6379"]` that
     /// can be sent directly to the server.
+    ///
+    /// Returns `None` for orchestrated commands (Create, Check) that
+    /// handle their own multi-step communication.
     pub fn to_tokens(&self) -> Vec<String> {
         match self {
             Self::Info => vec!["CLUSTER".into(), "INFO".into()],
@@ -256,6 +302,8 @@ impl ClusterCommand {
                 slot.to_string(),
                 count.to_string(),
             ],
+            // orchestrated commands don't use tokens
+            Self::Create { .. } | Self::Check { .. } => vec![],
         }
     }
 }
@@ -279,6 +327,17 @@ pub fn run_cluster(
     if let Err(msg) = cmd.validate() {
         eprintln!("{}", format!("error: {msg}").red());
         return ExitCode::FAILURE;
+    }
+
+    // orchestrated commands handle their own connections
+    match cmd {
+        ClusterCommand::Create { nodes, replicas } => {
+            return rt.block_on(run_cluster_create(nodes, *replicas, password, tls));
+        }
+        ClusterCommand::Check { node } => {
+            return rt.block_on(run_cluster_check(node, password, tls));
+        }
+        _ => {}
     }
 
     rt.block_on(async {
@@ -316,6 +375,555 @@ pub fn run_cluster(
         conn.shutdown().await;
         exit_code
     })
+}
+
+// ---------------------------------------------------------------------------
+// cluster create
+// ---------------------------------------------------------------------------
+
+/// Orchestrates creating a new cluster from a list of node addresses.
+///
+/// Steps:
+/// 1. Connect to each node and verify it's in cluster mode with no slots
+/// 2. Get each node's ID via CLUSTER MYID
+/// 3. Assign 16384 slots evenly across primary nodes
+/// 4. CLUSTER MEET from node[0] to every other node
+/// 5. Wait for all nodes to see each other (convergence)
+/// 6. If replicas > 0, assign replicas to primaries
+async fn run_cluster_create(
+    addrs: &[String],
+    replicas: usize,
+    password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
+) -> ExitCode {
+    let primary_count = addrs.len() / (1 + replicas);
+    let replica_count = addrs.len() - primary_count;
+
+    println!(
+        ">>> creating cluster with {primary_count} primaries and {replica_count} replicas"
+    );
+
+    // connect to all nodes and collect their IDs
+    let mut connections: Vec<(String, Connection, String)> = Vec::new(); // (addr, conn, node_id)
+
+    for addr in addrs {
+        let (host, port) = match parse_host_port(addr) {
+            Ok(hp) => hp,
+            Err(e) => {
+                eprintln!("{}", format!("invalid address '{addr}': {e}").red());
+                return ExitCode::FAILURE;
+            }
+        };
+
+        let mut conn = match Connection::connect(&host, port, tls).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "{}",
+                    format!("could not connect to {addr}: {e}").red()
+                );
+                return ExitCode::FAILURE;
+            }
+        };
+
+        if let Some(pw) = password {
+            if let Err(e) = conn.authenticate(pw).await {
+                eprintln!("{}", format!("auth failed on {addr}: {e}").red());
+                return ExitCode::FAILURE;
+            }
+        }
+
+        // verify node is in cluster mode and has no slots assigned
+        match conn.send_command_strs(&["CLUSTER", "INFO"]).await {
+            Ok(frame) => {
+                let info = frame_to_string(&frame);
+                if !info.contains("cluster_state:") {
+                    eprintln!(
+                        "{}",
+                        format!("{addr} does not appear to be in cluster mode").red()
+                    );
+                    return ExitCode::FAILURE;
+                }
+                // check for already assigned slots
+                if let Some(assigned) = parse_cluster_info_field(&info, "cluster_slots_assigned") {
+                    if assigned != "0" {
+                        eprintln!(
+                            "{}",
+                            format!("{addr} already has {assigned} slots assigned — node must be empty").red()
+                        );
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("{}", format!("CLUSTER INFO failed on {addr}: {e}").red());
+                return ExitCode::FAILURE;
+            }
+        }
+
+        // get node ID
+        let node_id = match conn.send_command_strs(&["CLUSTER", "MYID"]).await {
+            Ok(frame) => frame_to_string(&frame),
+            Err(e) => {
+                eprintln!("{}", format!("CLUSTER MYID failed on {addr}: {e}").red());
+                return ExitCode::FAILURE;
+            }
+        };
+
+        println!("  {} {}", addr, node_id.dimmed());
+        connections.push((addr.clone(), conn, node_id));
+    }
+
+    // assign slots evenly across primaries using ADDSLOTSRANGE
+    let slots_per_primary = SLOT_COUNT / primary_count as u16;
+    let remainder = SLOT_COUNT % primary_count as u16;
+
+    println!(">>> assigning {SLOT_COUNT} slots across {primary_count} primaries");
+
+    let mut cursor: u16 = 0;
+    for (i, (addr, conn, _)) in connections.iter_mut().enumerate().take(primary_count) {
+        let count = slots_per_primary + if (i as u16) < remainder { 1 } else { 0 };
+        let start = cursor;
+        let end = cursor + count - 1;
+        cursor += count;
+        let start_s = start.to_string();
+        let end_s = end.to_string();
+        match conn
+            .send_command_strs(&["CLUSTER", "ADDSLOTSRANGE", &start_s, &end_s])
+            .await
+        {
+            Ok(frame) if is_ok(&frame) => {
+                println!("  {addr}: slots {start}-{end} ({count} slots)");
+            }
+            Ok(frame) => {
+                eprintln!(
+                    "{}",
+                    format!("ADDSLOTSRANGE failed on {addr}: {}", frame_to_string(&frame)).red()
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!(
+                    "{}",
+                    format!("ADDSLOTSRANGE failed on {addr}: {e}").red()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // CLUSTER MEET from node[0] to every other node
+    let (ref first_host, first_port) = parse_host_port(&connections[0].0).expect("already validated");
+
+    println!(">>> sending CLUSTER MEET commands");
+
+    for i in 1..connections.len() {
+        let addr = connections[i].0.clone();
+        let (host, port) = parse_host_port(&addr).expect("already validated");
+        let first_addr = connections[0].0.clone();
+
+        match connections[0]
+            .1
+            .send_command_strs(&["CLUSTER", "MEET", &host, &port.to_string()])
+            .await
+        {
+            Ok(frame) if is_ok(&frame) => {
+                println!("  {first_addr} -> {addr}");
+            }
+            Ok(frame) => {
+                eprintln!(
+                    "{}",
+                    format!("CLUSTER MEET failed for {addr}: {}", frame_to_string(&frame)).red()
+                );
+                return ExitCode::FAILURE;
+            }
+            Err(e) => {
+                eprintln!(
+                    "{}",
+                    format!("CLUSTER MEET failed for {addr}: {e}").red()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // also meet from other nodes back to the first node to speed convergence
+    for (_, conn, _) in connections.iter_mut().skip(1) {
+        let _ = conn
+            .send_command_strs(&["CLUSTER", "MEET", first_host, &first_port.to_string()])
+            .await;
+    }
+
+    // wait for convergence: poll until all nodes see the expected count
+    let expected_nodes = connections.len();
+    println!(">>> waiting for cluster convergence ({expected_nodes} nodes)");
+
+    for attempt in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        let mut converged = true;
+        for (addr, conn, _) in &mut connections {
+            match conn.send_command_strs(&["CLUSTER", "INFO"]).await {
+                Ok(frame) => {
+                    let info = frame_to_string(&frame);
+                    let known = parse_cluster_info_field(&info, "cluster_known_nodes")
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if known < expected_nodes {
+                        converged = false;
+                        if attempt % 5 == 4 {
+                            println!(
+                                "  {} sees {known}/{expected_nodes} nodes...",
+                                addr.dimmed()
+                            );
+                        }
+                        break;
+                    }
+                }
+                Err(_) => {
+                    converged = false;
+                    break;
+                }
+            }
+        }
+
+        if converged {
+            println!("  {} all {expected_nodes} nodes converged", "✓".green());
+            break;
+        }
+
+        if attempt == 29 {
+            eprintln!(
+                "{}",
+                "warning: convergence timed out after 30s — some nodes may not see all peers yet"
+                    .yellow()
+            );
+        }
+    }
+
+    // assign replicas if requested
+    if replicas > 0 && replica_count > 0 {
+        println!(">>> assigning replicas");
+
+        for (i, replica_idx) in (primary_count..connections.len()).enumerate() {
+            let primary_idx = i % primary_count;
+            let primary_id = connections[primary_idx].2.clone();
+            let primary_addr = connections[primary_idx].0.clone();
+            let replica_addr = connections[replica_idx].0.clone();
+
+            match connections[replica_idx]
+                .1
+                .send_command_strs(&["CLUSTER", "REPLICATE", &primary_id])
+                .await
+            {
+                Ok(frame) if is_ok(&frame) => {
+                    println!(
+                        "  {} -> replica of {} ({})",
+                        replica_addr,
+                        primary_addr,
+                        &primary_id[..std::cmp::min(8, primary_id.len())]
+                    );
+                }
+                Ok(frame) => {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "CLUSTER REPLICATE failed on {replica_addr}: {}",
+                            frame_to_string(&frame)
+                        )
+                        .red()
+                    );
+                    return ExitCode::FAILURE;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        format!("CLUSTER REPLICATE failed on {replica_addr}: {e}").red()
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+    }
+
+    // clean up connections
+    for (_, mut conn, _) in connections {
+        conn.shutdown().await;
+    }
+
+    println!("{}", ">>> cluster created successfully".green());
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// cluster check
+// ---------------------------------------------------------------------------
+
+/// Connects to a node and checks cluster health.
+///
+/// Fetches CLUSTER NODES, verifies all 16384 slots are covered, and
+/// reports any FAIL or PFAIL nodes.
+async fn run_cluster_check(
+    addr: &str,
+    password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
+) -> ExitCode {
+    let (host, port) = match parse_host_port(addr) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!("{}", format!("invalid address '{addr}': {e}").red());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut conn = match Connection::connect(&host, port, tls).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!("could not connect to {addr}: {e}").red()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(pw) = password {
+        if let Err(e) = conn.authenticate(pw).await {
+            eprintln!("{}", format!("auth failed: {e}").red());
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // get cluster info
+    let cluster_info = match conn.send_command_strs(&["CLUSTER", "INFO"]).await {
+        Ok(frame) => frame_to_string(&frame),
+        Err(e) => {
+            eprintln!("{}", format!("CLUSTER INFO failed: {e}").red());
+            conn.shutdown().await;
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // get cluster nodes
+    let nodes_output = match conn.send_command_strs(&["CLUSTER", "NODES"]).await {
+        Ok(frame) => frame_to_string(&frame),
+        Err(e) => {
+            eprintln!("{}", format!("CLUSTER NODES failed: {e}").red());
+            conn.shutdown().await;
+            return ExitCode::FAILURE;
+        }
+    };
+
+    conn.shutdown().await;
+
+    // parse nodes
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut slot_coverage = vec![false; SLOT_COUNT as usize];
+    let mut node_count = 0;
+    let mut primary_count = 0;
+    let mut fail_nodes: Vec<String> = Vec::new();
+
+    for line in nodes_output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 8 {
+            continue;
+        }
+
+        node_count += 1;
+        let node_id = &parts[0][..std::cmp::min(8, parts[0].len())];
+        let addr_part = parts[1];
+        let flags = parts[2];
+
+        // check for failure flags
+        if flags.contains("fail") && !flags.contains("pfail") {
+            fail_nodes.push(format!("{node_id} ({addr_part})"));
+            errors.push(format!("node {node_id} ({addr_part}) is in FAIL state"));
+        } else if flags.contains("pfail") {
+            warnings.push(format!(
+                "node {node_id} ({addr_part}) is in PFAIL state (possible failure)"
+            ));
+        }
+
+        // parse slots (fields 8+)
+        let is_primary = flags.contains("master") || !flags.contains("slave");
+        if is_primary {
+            primary_count += 1;
+        }
+
+        for slot_spec in parts.iter().skip(8) {
+            // slots can be: "0-5460" or "5461" or "[5461-<-importing_id]" etc
+            if slot_spec.starts_with('[') {
+                continue; // skip migration markers
+            }
+
+            if let Some((start_s, end_s)) = slot_spec.split_once('-') {
+                if let (Ok(start), Ok(end)) = (start_s.parse::<u16>(), end_s.parse::<u16>()) {
+                    for s in start..=end {
+                        if (s as usize) < slot_coverage.len() {
+                            slot_coverage[s as usize] = true;
+                        }
+                    }
+                }
+            } else if let Ok(s) = slot_spec.parse::<u16>() {
+                if (s as usize) < slot_coverage.len() {
+                    slot_coverage[s as usize] = true;
+                }
+            }
+        }
+    }
+
+    // check slot coverage
+    let covered = slot_coverage.iter().filter(|&&c| c).count();
+    let uncovered = SLOT_COUNT as usize - covered;
+
+    if uncovered > 0 {
+        // find uncovered ranges for a readable message
+        let ranges = find_uncovered_ranges(&slot_coverage);
+        errors.push(format!(
+            "{uncovered} slots not covered: {}",
+            format_slot_ranges(&ranges)
+        ));
+    }
+
+    // parse cluster state from CLUSTER INFO
+    let state = parse_cluster_info_field(&cluster_info, "cluster_state")
+        .unwrap_or_else(|| "unknown".into());
+
+    // print report
+    println!("{}", "=== cluster check ===".bold());
+    println!("connected to: {addr}");
+    println!(
+        "cluster state: {}",
+        if state == "ok" {
+            state.green().to_string()
+        } else {
+            state.red().to_string()
+        }
+    );
+    println!("nodes: {node_count} ({primary_count} primaries)");
+    println!(
+        "slot coverage: {covered}/{} ({:.1}%)",
+        SLOT_COUNT,
+        covered as f64 / SLOT_COUNT as f64 * 100.0
+    );
+
+    if !warnings.is_empty() {
+        println!();
+        for w in &warnings {
+            println!("{} {w}", "[WARN]".yellow());
+        }
+    }
+
+    if !errors.is_empty() {
+        println!();
+        for e in &errors {
+            println!("{} {e}", "[ERR]".red());
+        }
+        return ExitCode::FAILURE;
+    }
+
+    if warnings.is_empty() {
+        println!("\n{}", "all checks passed".green());
+    }
+
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+/// Parses a "host:port" string into (host, port).
+fn parse_host_port(addr: &str) -> Result<(String, u16), String> {
+    // handle IPv6 addresses like [::1]:6379
+    if let Some(bracket_end) = addr.find("]:") {
+        let host = &addr[..bracket_end + 1];
+        let port_str = &addr[bracket_end + 2..];
+        let port: u16 = port_str
+            .parse()
+            .map_err(|_| format!("invalid port '{port_str}'"))?;
+        return Ok((host.to_string(), port));
+    }
+
+    let (host, port_str) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| "expected host:port format".to_string())?;
+    let port: u16 = port_str
+        .parse()
+        .map_err(|_| format!("invalid port '{port_str}'"))?;
+    Ok((host.to_string(), port))
+}
+
+/// Extracts the string content from a Frame (Bulk or Simple).
+fn frame_to_string(frame: &ember_protocol::types::Frame) -> String {
+    match frame {
+        ember_protocol::types::Frame::Bulk(b) => String::from_utf8_lossy(b).into_owned(),
+        ember_protocol::types::Frame::Simple(s) => s.clone(),
+        ember_protocol::types::Frame::Error(e) => format!("ERR {e}"),
+        ember_protocol::types::Frame::Integer(n) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Returns true if the frame is a Simple "OK" response.
+fn is_ok(frame: &ember_protocol::types::Frame) -> bool {
+    matches!(frame, ember_protocol::types::Frame::Simple(s) if s == "OK")
+}
+
+/// Parses a field value from CLUSTER INFO output.
+///
+/// CLUSTER INFO returns lines like "cluster_state:ok\r\n".
+fn parse_cluster_info_field(info: &str, field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    for line in info.lines() {
+        let line = line.trim();
+        if let Some(value) = line.strip_prefix(&prefix) {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Finds ranges of uncovered slots for readable error messages.
+fn find_uncovered_ranges(coverage: &[bool]) -> Vec<(u16, u16)> {
+    let mut ranges = Vec::new();
+    let mut start: Option<u16> = None;
+
+    for (i, &covered) in coverage.iter().enumerate() {
+        if !covered {
+            if start.is_none() {
+                start = Some(i as u16);
+            }
+        } else if let Some(s) = start {
+            ranges.push((s, i as u16 - 1));
+            start = None;
+        }
+    }
+    if let Some(s) = start {
+        ranges.push((s, coverage.len() as u16 - 1));
+    }
+    ranges
+}
+
+/// Formats slot ranges for display (e.g. "0-5460, 10923-16383").
+fn format_slot_ranges(ranges: &[(u16, u16)]) -> String {
+    let strs: Vec<String> = ranges
+        .iter()
+        .map(|(start, end)| {
+            if start == end {
+                start.to_string()
+            } else {
+                format!("{start}-{end}")
+            }
+        })
+        .collect();
+    strs.join(", ")
 }
 
 #[cfg(test)]
@@ -501,5 +1109,119 @@ mod tests {
             cmd.to_tokens(),
             vec!["CLUSTER", "GETKEYSINSLOT", "500", "10"]
         );
+    }
+
+    // --- new tests for create/check helpers ---
+
+    #[test]
+    fn parse_host_port_simple() {
+        assert_eq!(
+            parse_host_port("127.0.0.1:7001").unwrap(),
+            ("127.0.0.1".into(), 7001)
+        );
+    }
+
+    #[test]
+    fn parse_host_port_hostname() {
+        assert_eq!(
+            parse_host_port("node1.example.com:6379").unwrap(),
+            ("node1.example.com".into(), 6379)
+        );
+    }
+
+    #[test]
+    fn parse_host_port_invalid() {
+        assert!(parse_host_port("no-port").is_err());
+        assert!(parse_host_port("host:abc").is_err());
+    }
+
+    #[test]
+    fn parse_cluster_info_field_found() {
+        let info = "cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_known_nodes:3\r\n";
+        assert_eq!(
+            parse_cluster_info_field(info, "cluster_state"),
+            Some("ok".into())
+        );
+        assert_eq!(
+            parse_cluster_info_field(info, "cluster_slots_assigned"),
+            Some("16384".into())
+        );
+        assert_eq!(
+            parse_cluster_info_field(info, "cluster_known_nodes"),
+            Some("3".into())
+        );
+    }
+
+    #[test]
+    fn parse_cluster_info_field_missing() {
+        let info = "cluster_state:ok\r\n";
+        assert_eq!(parse_cluster_info_field(info, "nonexistent"), None);
+    }
+
+    #[test]
+    fn find_uncovered_ranges_all_covered() {
+        let coverage = vec![true; SLOT_COUNT as usize];
+        assert!(find_uncovered_ranges(&coverage).is_empty());
+    }
+
+    #[test]
+    fn find_uncovered_ranges_none_covered() {
+        let coverage = vec![false; 10];
+        assert_eq!(find_uncovered_ranges(&coverage), vec![(0, 9)]);
+    }
+
+    #[test]
+    fn find_uncovered_ranges_gap_in_middle() {
+        let mut coverage = vec![true; 10];
+        coverage[3] = false;
+        coverage[4] = false;
+        assert_eq!(find_uncovered_ranges(&coverage), vec![(3, 4)]);
+    }
+
+    #[test]
+    fn format_slot_ranges_display() {
+        assert_eq!(format_slot_ranges(&[(0, 5460)]), "0-5460");
+        assert_eq!(
+            format_slot_ranges(&[(0, 5460), (10923, 16383)]),
+            "0-5460, 10923-16383"
+        );
+        assert_eq!(format_slot_ranges(&[(42, 42)]), "42");
+    }
+
+    #[test]
+    fn create_validates_minimum_nodes() {
+        let cmd = ClusterCommand::Create {
+            nodes: vec!["a:1".into(), "b:2".into()],
+            replicas: 0,
+        };
+        assert!(cmd.validate().is_err());
+    }
+
+    #[test]
+    fn create_validates_replica_count() {
+        let cmd = ClusterCommand::Create {
+            nodes: vec!["a:1".into(), "b:2".into(), "c:3".into()],
+            replicas: 1,
+        };
+        // 3 nodes with 1 replica requires 6 nodes minimum
+        assert!(cmd.validate().is_err());
+    }
+
+    #[test]
+    fn create_validates_addresses() {
+        let cmd = ClusterCommand::Create {
+            nodes: vec!["a:1".into(), "b:2".into(), "no-port".into()],
+            replicas: 0,
+        };
+        assert!(cmd.validate().is_err());
+    }
+
+    #[test]
+    fn create_valid_three_nodes() {
+        let cmd = ClusterCommand::Create {
+            nodes: vec!["a:1".into(), "b:2".into(), "c:3".into()],
+            replicas: 0,
+        };
+        assert!(cmd.validate().is_ok());
     }
 }

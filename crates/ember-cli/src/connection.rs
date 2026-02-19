@@ -116,6 +116,15 @@ impl Connection {
         }
     }
 
+    /// Sends a command from a slice of string references and reads the response.
+    ///
+    /// Convenience wrapper around `send_command` for cases where tokens are
+    /// string slices rather than owned Strings.
+    pub async fn send_command_strs(&mut self, args: &[&str]) -> Result<Frame, ConnectionError> {
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        self.send_command(&owned).await
+    }
+
     /// Gracefully shuts down the connection.
     ///
     /// Sends a QUIT command to the server and then shuts down the stream.
