@@ -14,6 +14,14 @@
 //! scanned every byte twice. The current implementation does a single
 //! pass that builds Frame values directly, returning `Incomplete` if
 //! the buffer doesn't contain enough data yet.
+//!
+//! # Zero-copy bulk strings
+//!
+//! When parsing from a `Bytes` buffer via [`parse_frame_bytes`], bulk
+//! string data is returned as a zero-copy `Bytes::slice()` into the
+//! original buffer. This avoids a heap allocation per bulk string.
+//! The fallback [`parse_frame`] copies bulk data for callers that
+//! only have a `&[u8]`.
 
 use std::io::Cursor;
 
@@ -40,7 +48,37 @@ const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 /// while still letting the Vec grow organically as elements are parsed.
 const PREALLOC_CAP: usize = 1024;
 
+/// Zero-copy frame parser. Bulk string data is returned as `Bytes::slice()`
+/// into the input buffer, avoiding a heap copy per bulk string.
+///
+/// Use this on the hot path when the caller has a `Bytes` (e.g. from
+/// `BytesMut::freeze()`).
+///
+/// Returns `Ok(Some((frame, consumed)))` if a complete frame was parsed,
+/// `Ok(None)` if the buffer doesn't contain enough data yet,
+/// or `Err(...)` if the data is malformed.
+#[inline]
+pub fn parse_frame_bytes(buf: &Bytes) -> Result<Option<(Frame, usize)>, ProtocolError> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+
+    let mut cursor = Cursor::new(buf.as_ref());
+
+    match try_parse(&mut cursor, Some(buf), 0) {
+        Ok(frame) => {
+            let consumed = cursor.position() as usize;
+            Ok(Some((frame, consumed)))
+        }
+        Err(ProtocolError::Incomplete) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// Checks whether `buf` contains a complete RESP3 frame and parses it.
+///
+/// Bulk string data is copied out of the buffer. Prefer [`parse_frame_bytes`]
+/// on hot paths when a `Bytes` reference is available.
 ///
 /// Returns `Ok(Some(frame))` if a complete frame was parsed,
 /// `Ok(None)` if the buffer doesn't contain enough data yet,
@@ -53,7 +91,7 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
 
     let mut cursor = Cursor::new(buf);
 
-    match try_parse(&mut cursor, 0) {
+    match try_parse(&mut cursor, None, 0) {
         Ok(frame) => {
             let consumed = cursor.position() as usize;
             Ok(Some((frame, consumed)))
@@ -69,7 +107,14 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
 
 /// Parses a complete RESP3 frame from the cursor position, returning
 /// `Incomplete` if the buffer doesn't contain enough data.
-fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, ProtocolError> {
+///
+/// When `src` is `Some`, bulk string bytes are sliced zero-copy from the
+/// source buffer. When `None`, they are copied.
+fn try_parse(
+    cursor: &mut Cursor<&[u8]>,
+    src: Option<&Bytes>,
+    depth: usize,
+) -> Result<Frame, ProtocolError> {
     let prefix = read_byte(cursor)?;
 
     match prefix {
@@ -108,16 +153,23 @@ fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, Protocol
             }
 
             let pos = cursor.position() as usize;
-            let buf = cursor.get_ref();
 
-            // verify trailing \r\n
-            if buf[pos + len] != b'\r' || buf[pos + len + 1] != b'\n' {
-                return Err(ProtocolError::InvalidFrameLength(len as i64));
+            // verify trailing \r\n (scope the borrow so we can mutate cursor after)
+            {
+                let buf = cursor.get_ref();
+                if buf[pos + len] != b'\r' || buf[pos + len + 1] != b'\n' {
+                    return Err(ProtocolError::InvalidFrameLength(len as i64));
+                }
             }
 
-            let data = &buf[pos..pos + len];
             cursor.set_position((pos + len + 2) as u64);
-            Ok(Frame::Bulk(Bytes::copy_from_slice(data)))
+
+            // zero-copy when source Bytes is available, copy otherwise
+            let data = match src {
+                Some(b) => b.slice(pos..pos + len),
+                None => Bytes::copy_from_slice(&cursor.get_ref()[pos..pos + len]),
+            };
+            Ok(Frame::Bulk(data))
         }
         b'*' => {
             let next_depth = depth + 1;
@@ -136,7 +188,7 @@ fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, Protocol
             let count = count as usize;
             let mut frames = Vec::with_capacity(count.min(PREALLOC_CAP));
             for _ in 0..count {
-                frames.push(try_parse(cursor, next_depth)?);
+                frames.push(try_parse(cursor, src, next_depth)?);
             }
             Ok(Frame::Array(frames))
         }
@@ -162,8 +214,8 @@ fn try_parse(cursor: &mut Cursor<&[u8]>, depth: usize) -> Result<Frame, Protocol
             let count = count as usize;
             let mut pairs = Vec::with_capacity(count.min(PREALLOC_CAP));
             for _ in 0..count {
-                let key = try_parse(cursor, next_depth)?;
-                let val = try_parse(cursor, next_depth)?;
+                let key = try_parse(cursor, src, next_depth)?;
+                let val = try_parse(cursor, src, next_depth)?;
                 pairs.push((key, val));
             }
             Ok(Frame::Map(pairs))
@@ -196,7 +248,7 @@ fn read_line<'a>(cursor: &mut Cursor<&'a [u8]>) -> Result<&'a [u8], ProtocolErro
 /// Reads a line and parses it as an i64.
 fn read_integer_line(cursor: &mut Cursor<&[u8]>) -> Result<i64, ProtocolError> {
     let line = read_line(cursor)?;
-    parse_i64(line)
+    parse_i64_bytes(line)
 }
 
 /// Finds the next `\r\n` in the buffer starting from the cursor position.
@@ -231,9 +283,51 @@ fn remaining(cursor: &Cursor<&[u8]>) -> usize {
     len.saturating_sub(pos)
 }
 
-fn parse_i64(buf: &[u8]) -> Result<i64, ProtocolError> {
-    let s = std::str::from_utf8(buf).map_err(|_| ProtocolError::InvalidInteger)?;
-    s.parse::<i64>().map_err(|_| ProtocolError::InvalidInteger)
+/// Parses an i64 directly from a byte slice without allocating a String.
+///
+/// Negative numbers are accumulated in the negative direction so that
+/// `i64::MIN` (-9223372036854775808) is representable without overflow.
+fn parse_i64_bytes(buf: &[u8]) -> Result<i64, ProtocolError> {
+    if buf.is_empty() {
+        return Err(ProtocolError::InvalidInteger);
+    }
+
+    let (negative, digits) = if buf[0] == b'-' {
+        (true, &buf[1..])
+    } else {
+        (false, buf)
+    };
+
+    if digits.is_empty() {
+        return Err(ProtocolError::InvalidInteger);
+    }
+
+    if negative {
+        // accumulate in the negative direction to handle i64::MIN
+        let mut n: i64 = 0;
+        for &b in digits {
+            if !b.is_ascii_digit() {
+                return Err(ProtocolError::InvalidInteger);
+            }
+            n = n
+                .checked_mul(10)
+                .and_then(|n| n.checked_sub((b - b'0') as i64))
+                .ok_or(ProtocolError::InvalidInteger)?;
+        }
+        Ok(n)
+    } else {
+        let mut n: i64 = 0;
+        for &b in digits {
+            if !b.is_ascii_digit() {
+                return Err(ProtocolError::InvalidInteger);
+            }
+            n = n
+                .checked_mul(10)
+                .and_then(|n| n.checked_add((b - b'0') as i64))
+                .ok_or(ProtocolError::InvalidInteger)?;
+        }
+        Ok(n)
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +336,14 @@ mod tests {
 
     fn must_parse(input: &[u8]) -> Frame {
         let (frame, consumed) = parse_frame(input)
+            .expect("parse should not error")
+            .expect("parse should return a frame");
+        assert_eq!(consumed, input.len(), "should consume entire input");
+        frame
+    }
+
+    fn must_parse_zerocopy(input: &Bytes) -> Frame {
+        let (frame, consumed) = parse_frame_bytes(input)
             .expect("parse should not error")
             .expect("parse should return a frame");
         assert_eq!(consumed, input.len(), "should consume entire input");
@@ -428,5 +530,50 @@ mod tests {
         let result = parse_frame(&buf);
         assert!(result.is_ok(), "64 levels of nesting should be accepted");
         assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn zerocopy_bulk_string() {
+        let input = Bytes::from_static(b"$5\r\nhello\r\n");
+        assert_eq!(
+            must_parse_zerocopy(&input),
+            Frame::Bulk(Bytes::from_static(b"hello"))
+        );
+    }
+
+    #[test]
+    fn zerocopy_array() {
+        let input = Bytes::from_static(b"*2\r\n$3\r\nGET\r\n$5\r\nmykey\r\n");
+        let frame = must_parse_zerocopy(&input);
+        assert_eq!(
+            frame,
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from_static(b"GET")),
+                Frame::Bulk(Bytes::from_static(b"mykey")),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_i64_bytes_valid() {
+        assert_eq!(parse_i64_bytes(b"0").unwrap(), 0);
+        assert_eq!(parse_i64_bytes(b"42").unwrap(), 42);
+        assert_eq!(parse_i64_bytes(b"-1").unwrap(), -1);
+        assert_eq!(
+            parse_i64_bytes(b"9223372036854775807").unwrap(),
+            i64::MAX
+        );
+        assert_eq!(
+            parse_i64_bytes(b"-9223372036854775808").unwrap(),
+            i64::MIN
+        );
+    }
+
+    #[test]
+    fn parse_i64_bytes_invalid() {
+        assert!(parse_i64_bytes(b"").is_err());
+        assert!(parse_i64_bytes(b"-").is_err());
+        assert!(parse_i64_bytes(b"abc").is_err());
+        assert!(parse_i64_bytes(b"12a").is_err());
     }
 }
