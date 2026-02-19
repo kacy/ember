@@ -246,7 +246,9 @@ impl ClusterCommand {
                     parse_host_port(addr).map_err(|e| format!("invalid address '{addr}': {e}"))?;
                 }
             }
-            Self::Reshard { slots, from, to, .. } => {
+            Self::Reshard {
+                slots, from, to, ..
+            } => {
                 if *slots == 0 {
                     return Err("--slots must be at least 1".into());
                 }
@@ -457,9 +459,7 @@ async fn run_cluster_create(
     let primary_count = addrs.len() / (1 + replicas);
     let replica_count = addrs.len() - primary_count;
 
-    println!(
-        ">>> creating cluster with {primary_count} primaries and {replica_count} replicas"
-    );
+    println!(">>> creating cluster with {primary_count} primaries and {replica_count} replicas");
 
     // connect to all nodes and collect their IDs
     let mut connections: Vec<(String, Connection, String)> = Vec::new(); // (addr, conn, node_id)
@@ -476,10 +476,7 @@ async fn run_cluster_create(
         let mut conn = match Connection::connect(&host, port, tls).await {
             Ok(c) => c,
             Err(e) => {
-                eprintln!(
-                    "{}",
-                    format!("could not connect to {addr}: {e}").red()
-                );
+                eprintln!("{}", format!("could not connect to {addr}: {e}").red());
                 return ExitCode::FAILURE;
             }
         };
@@ -507,7 +504,10 @@ async fn run_cluster_create(
                     if assigned != "0" {
                         eprintln!(
                             "{}",
-                            format!("{addr} already has {assigned} slots assigned — node must be empty").red()
+                            format!(
+                                "{addr} already has {assigned} slots assigned — node must be empty"
+                            )
+                            .red()
                         );
                         return ExitCode::FAILURE;
                     }
@@ -556,28 +556,44 @@ async fn run_cluster_create(
             Ok(frame) => {
                 eprintln!(
                     "{}",
-                    format!("ADDSLOTSRANGE failed on {addr}: {}", frame_to_string(&frame)).red()
+                    format!(
+                        "ADDSLOTSRANGE failed on {addr}: {}",
+                        frame_to_string(&frame)
+                    )
+                    .red()
                 );
                 return ExitCode::FAILURE;
             }
             Err(e) => {
-                eprintln!(
-                    "{}",
-                    format!("ADDSLOTSRANGE failed on {addr}: {e}").red()
-                );
+                eprintln!("{}", format!("ADDSLOTSRANGE failed on {addr}: {e}").red());
                 return ExitCode::FAILURE;
             }
         }
     }
 
     // CLUSTER MEET from node[0] to every other node
-    let (ref first_host, first_port) = parse_host_port(&connections[0].0).expect("already validated");
+    let (ref first_host, first_port) = match parse_host_port(&connections[0].0) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!("bad address '{}': {e}", connections[0].0).red()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
 
     println!(">>> sending CLUSTER MEET commands");
 
     for i in 1..connections.len() {
         let addr = connections[i].0.clone();
-        let (host, port) = parse_host_port(&addr).expect("already validated");
+        let (host, port) = match parse_host_port(&addr) {
+            Ok(hp) => hp,
+            Err(e) => {
+                eprintln!("{}", format!("bad address '{addr}': {e}").red());
+                return ExitCode::FAILURE;
+            }
+        };
         let first_addr = connections[0].0.clone();
 
         match connections[0]
@@ -591,15 +607,16 @@ async fn run_cluster_create(
             Ok(frame) => {
                 eprintln!(
                     "{}",
-                    format!("CLUSTER MEET failed for {addr}: {}", frame_to_string(&frame)).red()
+                    format!(
+                        "CLUSTER MEET failed for {addr}: {}",
+                        frame_to_string(&frame)
+                    )
+                    .red()
                 );
                 return ExitCode::FAILURE;
             }
             Err(e) => {
-                eprintln!(
-                    "{}",
-                    format!("CLUSTER MEET failed for {addr}: {e}").red()
-                );
+                eprintln!("{}", format!("CLUSTER MEET failed for {addr}: {e}").red());
                 return ExitCode::FAILURE;
             }
         }
@@ -630,10 +647,7 @@ async fn run_cluster_create(
                     if known < expected_nodes {
                         converged = false;
                         if attempt % 5 == 4 {
-                            println!(
-                                "  {} sees {known}/{expected_nodes} nodes...",
-                                addr.dimmed()
-                            );
+                            println!("  {} sees {known}/{expected_nodes} nodes...", addr.dimmed());
                         }
                         break;
                     }
@@ -679,7 +693,7 @@ async fn run_cluster_create(
                         "  {} -> replica of {} ({})",
                         replica_addr,
                         primary_addr,
-                        &primary_id[..std::cmp::min(8, primary_id.len())]
+                        truncate_id(&primary_id, 8)
                     );
                 }
                 Ok(frame) => {
@@ -737,10 +751,7 @@ async fn run_cluster_check(
     let mut conn = match Connection::connect(&host, port, tls).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "{}",
-                format!("could not connect to {addr}: {e}").red()
-            );
+            eprintln!("{}", format!("could not connect to {addr}: {e}").red());
             return ExitCode::FAILURE;
         }
     };
@@ -794,7 +805,7 @@ async fn run_cluster_check(
         }
 
         node_count += 1;
-        let node_id = &parts[0][..std::cmp::min(8, parts[0].len())];
+        let node_id = truncate_id(parts[0], 8);
         let addr_part = parts[1];
         let flags = parts[2];
 
@@ -961,7 +972,12 @@ async fn run_cluster_reshard(
         return ExitCode::FAILURE;
     }
 
-    let slots_to_move: Vec<u16> = source.slots.iter().copied().take(slot_count as usize).collect();
+    let slots_to_move: Vec<u16> = source
+        .slots
+        .iter()
+        .copied()
+        .take(slot_count as usize)
+        .collect();
     if slots_to_move.len() < slot_count as usize {
         eprintln!(
             "{}",
@@ -976,22 +992,28 @@ async fn run_cluster_reshard(
     println!(
         ">>> resharding {} slots from {} to {}",
         slots_to_move.len(),
-        &source.id[..std::cmp::min(8, source.id.len())],
-        &target.id[..std::cmp::min(8, target.id.len())]
+        truncate_id(&source.id, 8),
+        truncate_id(&target.id, 8)
     );
 
     // connect to source and target
     let (source_host, source_port) = match parse_host_port(&source.addr) {
         Ok(hp) => hp,
         Err(e) => {
-            eprintln!("{}", format!("invalid source address '{}': {e}", source.addr).red());
+            eprintln!(
+                "{}",
+                format!("invalid source address '{}': {e}", source.addr).red()
+            );
             return ExitCode::FAILURE;
         }
     };
     let (target_host, target_port) = match parse_host_port(&target.addr) {
         Ok(hp) => hp,
         Err(e) => {
-            eprintln!("{}", format!("invalid target address '{}': {e}", target.addr).red());
+            eprintln!(
+                "{}",
+                format!("invalid target address '{}': {e}", target.addr).red()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -1009,24 +1031,44 @@ async fn run_cluster_reshard(
     for &slot in &slots_to_move {
         // 1. SETSLOT IMPORTING on target
         let r = target_conn
-            .send_command_strs(&["CLUSTER", "SETSLOT", &slot.to_string(), "IMPORTING", &source.id])
+            .send_command_strs(&[
+                "CLUSTER",
+                "SETSLOT",
+                &slot.to_string(),
+                "IMPORTING",
+                &source.id,
+            ])
             .await;
         if !matches!(&r, Ok(f) if is_ok(f)) {
             eprintln!(
                 "{}",
-                format!("SETSLOT IMPORTING failed for slot {slot}: {}", result_msg(&r)).red()
+                format!(
+                    "SETSLOT IMPORTING failed for slot {slot}: {}",
+                    result_msg(&r)
+                )
+                .red()
             );
             break;
         }
 
         // 2. SETSLOT MIGRATING on source
         let r = source_conn
-            .send_command_strs(&["CLUSTER", "SETSLOT", &slot.to_string(), "MIGRATING", &target.id])
+            .send_command_strs(&[
+                "CLUSTER",
+                "SETSLOT",
+                &slot.to_string(),
+                "MIGRATING",
+                &target.id,
+            ])
             .await;
         if !matches!(&r, Ok(f) if is_ok(f)) {
             eprintln!(
                 "{}",
-                format!("SETSLOT MIGRATING failed for slot {slot}: {}", result_msg(&r)).red()
+                format!(
+                    "SETSLOT MIGRATING failed for slot {slot}: {}",
+                    result_msg(&r)
+                )
+                .red()
             );
             break;
         }
@@ -1067,8 +1109,11 @@ async fn run_cluster_reshard(
                 if !matches!(&r, Ok(f) if is_ok(f)) {
                     eprintln!(
                         "{}",
-                        format!("MIGRATE failed for key '{key}' in slot {slot}: {}", result_msg(&r))
-                            .red()
+                        format!(
+                            "MIGRATE failed for key '{key}' in slot {slot}: {}",
+                            result_msg(&r)
+                        )
+                        .red()
                     );
                     // continue with other keys
                 }
@@ -1094,12 +1139,19 @@ async fn run_cluster_reshard(
     conn.shutdown().await;
 
     if moved == slots_to_move.len() as u16 {
-        println!("{}", format!(">>> reshard complete: {moved} slots moved").green());
+        println!(
+            "{}",
+            format!(">>> reshard complete: {moved} slots moved").green()
+        );
         ExitCode::SUCCESS
     } else {
         eprintln!(
             "{}",
-            format!("reshard incomplete: {moved}/{} slots moved", slots_to_move.len()).yellow()
+            format!(
+                "reshard incomplete: {moved}/{} slots moved",
+                slots_to_move.len()
+            )
+            .yellow()
         );
         ExitCode::FAILURE
     }
@@ -1154,7 +1206,7 @@ async fn run_cluster_rebalance(
     // print current distribution
     println!("{}", "=== current distribution ===".bold());
     for p in &primaries {
-        let id_short = &p.id[..std::cmp::min(8, p.id.len())];
+        let id_short = truncate_id(&p.id, 8);
         let count = p.slots.len();
         let diff = count as i64 - ideal as i64;
         let diff_str = if diff > 0 {
@@ -1205,19 +1257,12 @@ async fn run_cluster_rebalance(
             }
 
             let slot = donors[donor_idx].1[donor_slot_idx];
-            plan.push((
-                donors[donor_idx].0.id.clone(),
-                receiver.id.clone(),
-                slot,
-            ));
+            plan.push((donors[donor_idx].0.id.clone(), receiver.id.clone(), slot));
             donor_slot_idx += 1;
         }
     }
 
-    println!(
-        "\n>>> rebalancing: {} slot migrations planned",
-        plan.len()
-    );
+    println!("\n>>> rebalancing: {} slot migrations planned", plan.len());
 
     if plan.is_empty() {
         println!("{}", "nothing to do".green());
@@ -1235,15 +1280,13 @@ async fn run_cluster_rebalance(
     }
 
     for ((from_id, to_id), slots) in &grouped {
-        let from_short = &from_id[..std::cmp::min(8, from_id.len())];
-        let to_short = &to_id[..std::cmp::min(8, to_id.len())];
-        println!(
-            "  {from_short} -> {to_short}: {} slots",
-            slots.len()
-        );
+        let from_short = truncate_id(from_id, 8);
+        let to_short = truncate_id(to_id, 8);
+        println!("  {from_short} -> {to_short}: {} slots", slots.len());
 
         // execute as a reshard operation
-        let result = run_cluster_reshard(addr, slots.len() as u16, from_id, to_id, password, tls).await;
+        let result =
+            run_cluster_reshard(addr, slots.len() as u16, from_id, to_id, password, tls).await;
         if result != ExitCode::SUCCESS {
             return result;
         }
@@ -1366,6 +1409,22 @@ fn result_msg(
         Ok(f) => frame_to_string(f),
         Err(e) => e.to_string(),
     }
+}
+
+/// Truncates a string to at most `max_len` bytes on a char boundary.
+///
+/// Node IDs are always hex UUIDs (ASCII), but this function is safe
+/// for any UTF-8 string — it will never split a multi-byte character.
+fn truncate_id(s: &str, max_len: usize) -> &str {
+    if s.len() <= max_len {
+        return s;
+    }
+    // find the largest char boundary <= max_len
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Parses a "host:port" string into (host, port).
@@ -1858,9 +1917,30 @@ ddd444eee555 127.0.0.1:7003@17003 slave bbb222ccc333 0 0 2 connected\n";
         };
         assert!(reshard.to_tokens().is_empty());
 
-        let rebalance = ClusterCommand::Rebalance {
-            node: "a:1".into(),
-        };
+        let rebalance = ClusterCommand::Rebalance { node: "a:1".into() };
         assert!(rebalance.to_tokens().is_empty());
+    }
+
+    #[test]
+    fn truncate_id_short_string() {
+        assert_eq!(truncate_id("abc", 8), "abc");
+    }
+
+    #[test]
+    fn truncate_id_exact_length() {
+        assert_eq!(truncate_id("abcdefgh", 8), "abcdefgh");
+    }
+
+    #[test]
+    fn truncate_id_long_string() {
+        assert_eq!(truncate_id("abcdefghijklmnop", 8), "abcdefgh");
+    }
+
+    #[test]
+    fn truncate_id_multibyte_boundary() {
+        // 2-byte char "é" straddles the boundary — should not panic
+        let s = "abcdefé"; // 'é' is 2 bytes at position 6-7
+        let t = truncate_id(s, 7);
+        assert_eq!(t, "abcdef"); // truncates before the multi-byte char
     }
 }

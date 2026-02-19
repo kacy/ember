@@ -229,8 +229,9 @@ async fn run_workload(
 
                 match conn.send_pipeline(batch).await {
                     Ok(elapsed) => {
-                        // record per-command latency
-                        let per_cmd = elapsed / batch as u32;
+                        // record per-command latency (guard against zero/overflow)
+                        let divisor = (batch as u32).max(1);
+                        let per_cmd = elapsed / divisor;
                         for _ in 0..batch {
                             latencies.push(per_cmd);
                         }
