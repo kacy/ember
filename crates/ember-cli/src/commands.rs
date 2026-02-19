@@ -380,6 +380,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "asynchronously save the dataset to disk",
     },
     CommandInfo {
+        name: "CONFIG",
+        args: "GET pattern | SET param value | REWRITE",
+        group: "server",
+        summary: "get, set, or rewrite server configuration",
+    },
+    CommandInfo {
         name: "DBSIZE",
         args: "",
         group: "server",
@@ -477,6 +483,7 @@ pub fn command_names() -> Vec<&'static str> {
 /// Used by the completer and hinter to provide second-token completion.
 pub fn subcommands(parent: &str) -> &'static [&'static str] {
     match parent.to_uppercase().as_str() {
+        "CONFIG" => &["GET", "REWRITE", "SET"],
         "CLUSTER" => &[
             "ADDSLOTS",
             "COUNTKEYSINSLOT",
@@ -503,7 +510,7 @@ pub fn subcommands(parent: &str) -> &'static [&'static str] {
 pub fn has_subcommands(name: &str) -> bool {
     matches!(
         name.to_uppercase().as_str(),
-        "CLUSTER" | "SLOWLOG" | "PUBSUB"
+        "CLUSTER" | "CONFIG" | "SLOWLOG" | "PUBSUB"
     )
 }
 
@@ -568,6 +575,8 @@ mod tests {
     fn has_subcommands_cluster() {
         assert!(has_subcommands("CLUSTER"));
         assert!(has_subcommands("cluster"));
+        assert!(has_subcommands("CONFIG"));
+        assert!(has_subcommands("config"));
         assert!(has_subcommands("SLOWLOG"));
         assert!(has_subcommands("PUBSUB"));
         assert!(!has_subcommands("SET"));
@@ -602,7 +611,7 @@ mod tests {
 
     #[test]
     fn subcommands_sorted() {
-        for parent in &["CLUSTER", "SLOWLOG", "PUBSUB"] {
+        for parent in &["CLUSTER", "CONFIG", "SLOWLOG", "PUBSUB"] {
             let subs = subcommands(parent);
             for i in 1..subs.len() {
                 assert!(
