@@ -756,15 +756,21 @@ impl GossipEngine {
                     if *node == self.local_id {
                         continue;
                     }
-                    if let Some(member) = self.members.get_mut(node) {
-                        // only accept if incarnation is at least as recent
+                    // clone the slot list once before the mutable borrow so we
+                    // can move it into the event after the borrow is released
+                    let owned = slots.clone();
+                    let should_emit = if let Some(member) = self.members.get_mut(node) {
                         if *incarnation >= member.incarnation {
-                            let owned = slots.clone();
                             member.slots = owned.clone();
-                            // release the mutable borrow before the async call
-                            drop(member);
-                            self.emit(GossipEvent::SlotsChanged(*node, owned)).await;
+                            true
+                        } else {
+                            false
                         }
+                    } else {
+                        false
+                    };
+                    if should_emit {
+                        self.emit(GossipEvent::SlotsChanged(*node, owned)).await;
                     }
                 }
 
