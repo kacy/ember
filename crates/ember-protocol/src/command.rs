@@ -968,18 +968,17 @@ fn parse_get(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::Get { key })
 }
 
-fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
-    if args.len() < 2 {
-        return Err(wrong_arity("SET"));
-    }
-
-    let key = extract_string(&args[0])?;
-    let value = extract_bytes(&args[1])?;
-
+/// Parses NX / XX / EX / PX options from a slice of command arguments.
+///
+/// Returns `(expire, nx, xx)`. `cmd` is used in error messages.
+fn parse_set_options(
+    args: &[Frame],
+    cmd: &'static str,
+) -> Result<(Option<SetExpire>, bool, bool), ProtocolError> {
     let mut expire = None;
     let mut nx = false;
     let mut xx = false;
-    let mut idx = 2;
+    let mut idx = 0;
 
     while idx < args.len() {
         let flag = extract_string(&args[idx])?.to_ascii_uppercase();
@@ -995,12 +994,12 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "EX" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(wrong_arity("SET"));
+                    return Err(wrong_arity(cmd));
                 }
-                let amount = parse_u64(&args[idx], "SET")?;
+                let amount = parse_u64(&args[idx], cmd)?;
                 if amount == 0 {
                     return Err(ProtocolError::InvalidCommandFrame(
-                        "invalid expire time in 'SET' command".into(),
+                        format!("invalid expire time in '{cmd}' command"),
                     ));
                 }
                 expire = Some(SetExpire::Ex(amount));
@@ -1009,12 +1008,12 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "PX" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(wrong_arity("SET"));
+                    return Err(wrong_arity(cmd));
                 }
-                let amount = parse_u64(&args[idx], "SET")?;
+                let amount = parse_u64(&args[idx], cmd)?;
                 if amount == 0 {
                     return Err(ProtocolError::InvalidCommandFrame(
-                        "invalid expire time in 'SET' command".into(),
+                        format!("invalid expire time in '{cmd}' command"),
                     ));
                 }
                 expire = Some(SetExpire::Px(amount));
@@ -1022,7 +1021,7 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             }
             _ => {
                 return Err(ProtocolError::InvalidCommandFrame(format!(
-                    "unsupported SET option '{flag}'"
+                    "unsupported {cmd} option '{flag}'"
                 )));
             }
         }
@@ -1033,6 +1032,18 @@ fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
             "XX and NX options at the same time are not compatible".into(),
         ));
     }
+
+    Ok((expire, nx, xx))
+}
+
+fn parse_set(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("SET"));
+    }
+
+    let key = extract_string(&args[0])?;
+    let value = extract_bytes(&args[1])?;
+    let (expire, nx, xx) = parse_set_options(&args[2..], "SET")?;
 
     Ok(Command::Set {
         key,
@@ -2091,6 +2102,106 @@ fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 // --- vector command parsers ---
 
+/// Parses METRIC / QUANT / M / EF flags from a slice of command arguments.
+///
+/// Returns `(metric, quantization, connectivity, expansion_add)`.
+/// `cmd` is used in error messages (e.g., "VADD" or "VADD_BATCH").
+fn parse_vector_flags(
+    args: &[Frame],
+    cmd: &'static str,
+) -> Result<(u8, u8, u32, u32), ProtocolError> {
+    let mut metric: u8 = 0; // cosine default
+    let mut quantization: u8 = 0; // f32 default
+    let mut connectivity: u32 = 16;
+    let mut expansion_add: u32 = 64;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
+        match flag.as_str() {
+            "METRIC" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        format!("{cmd}: METRIC requires a value"),
+                    ));
+                }
+                let val = extract_string(&args[idx])?.to_ascii_uppercase();
+                metric = match val.as_str() {
+                    "COSINE" => 0,
+                    "L2" => 1,
+                    "IP" => 2,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "{cmd}: unknown metric '{val}'"
+                        )))
+                    }
+                };
+                idx += 1;
+            }
+            "QUANT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        format!("{cmd}: QUANT requires a value"),
+                    ));
+                }
+                let val = extract_string(&args[idx])?.to_ascii_uppercase();
+                quantization = match val.as_str() {
+                    "F32" => 0,
+                    "F16" => 1,
+                    "I8" | "Q8" => 2,
+                    _ => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "{cmd}: unknown quantization '{val}'"
+                        )))
+                    }
+                };
+                idx += 1;
+            }
+            "M" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        format!("{cmd}: M requires a value"),
+                    ));
+                }
+                let m = parse_u64(&args[idx], cmd)?;
+                if m > MAX_HNSW_PARAM {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd}: M value {m} exceeds max {MAX_HNSW_PARAM}"
+                    )));
+                }
+                connectivity = m as u32;
+                idx += 1;
+            }
+            "EF" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        format!("{cmd}: EF requires a value"),
+                    ));
+                }
+                let ef = parse_u64(&args[idx], cmd)?;
+                if ef > MAX_HNSW_PARAM {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd}: EF value {ef} exceeds max {MAX_HNSW_PARAM}"
+                    )));
+                }
+                expansion_add = ef as u32;
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "{cmd}: unexpected argument '{flag}'"
+                )));
+            }
+        }
+    }
+
+    Ok((metric, quantization, connectivity, expansion_add))
+}
+
 /// VADD key element f32 [f32 ...] [METRIC COSINE|L2|IP] [QUANT F32|F16|I8] [M n] [EF n]
 fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     // minimum: key + element + at least one float
@@ -2131,93 +2242,8 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     // parse optional flags
-    let mut metric: u8 = 0; // cosine default
-    let mut quantization: u8 = 0; // f32 default
-    let mut connectivity: u32 = 16;
-    let mut expansion_add: u32 = 64;
-
-    while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
-            "METRIC" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD: METRIC requires a value".into(),
-                    ));
-                }
-                let val = extract_string(&args[idx])?.to_ascii_uppercase();
-                metric = match val.as_str() {
-                    "COSINE" => 0,
-                    "L2" => 1,
-                    "IP" => 2,
-                    _ => {
-                        return Err(ProtocolError::InvalidCommandFrame(format!(
-                            "VADD: unknown metric '{val}'"
-                        )))
-                    }
-                };
-                idx += 1;
-            }
-            "QUANT" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD: QUANT requires a value".into(),
-                    ));
-                }
-                let val = extract_string(&args[idx])?.to_ascii_uppercase();
-                quantization = match val.as_str() {
-                    "F32" => 0,
-                    "F16" => 1,
-                    "I8" | "Q8" => 2,
-                    _ => {
-                        return Err(ProtocolError::InvalidCommandFrame(format!(
-                            "VADD: unknown quantization '{val}'"
-                        )))
-                    }
-                };
-                idx += 1;
-            }
-            "M" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD: M requires a value".into(),
-                    ));
-                }
-                let m = parse_u64(&args[idx], "VADD")?;
-                if m > MAX_HNSW_PARAM {
-                    return Err(ProtocolError::InvalidCommandFrame(format!(
-                        "VADD: M value {m} exceeds max {MAX_HNSW_PARAM}"
-                    )));
-                }
-                connectivity = m as u32;
-                idx += 1;
-            }
-            "EF" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD: EF requires a value".into(),
-                    ));
-                }
-                let ef = parse_u64(&args[idx], "VADD")?;
-                if ef > MAX_HNSW_PARAM {
-                    return Err(ProtocolError::InvalidCommandFrame(format!(
-                        "VADD: EF value {ef} exceeds max {MAX_HNSW_PARAM}"
-                    )));
-                }
-                expansion_add = ef as u32;
-                idx += 1;
-            }
-            _ => {
-                return Err(ProtocolError::InvalidCommandFrame(format!(
-                    "VADD: unexpected argument '{flag}'"
-                )));
-            }
-        }
-    }
+    let (metric, quantization, connectivity, expansion_add) =
+        parse_vector_flags(&args[idx..], "VADD")?;
 
     Ok(Command::VAdd {
         key,
@@ -2311,93 +2337,8 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     // parse optional flags (same logic as parse_vadd)
-    let mut metric: u8 = 0;
-    let mut quantization: u8 = 0;
-    let mut connectivity: u32 = 16;
-    let mut expansion_add: u32 = 64;
-
-    while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
-            "METRIC" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD_BATCH: METRIC requires a value".into(),
-                    ));
-                }
-                let val = extract_string(&args[idx])?.to_ascii_uppercase();
-                metric = match val.as_str() {
-                    "COSINE" => 0,
-                    "L2" => 1,
-                    "IP" => 2,
-                    _ => {
-                        return Err(ProtocolError::InvalidCommandFrame(format!(
-                            "VADD_BATCH: unknown metric '{val}'"
-                        )))
-                    }
-                };
-                idx += 1;
-            }
-            "QUANT" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD_BATCH: QUANT requires a value".into(),
-                    ));
-                }
-                let val = extract_string(&args[idx])?.to_ascii_uppercase();
-                quantization = match val.as_str() {
-                    "F32" => 0,
-                    "F16" => 1,
-                    "I8" | "Q8" => 2,
-                    _ => {
-                        return Err(ProtocolError::InvalidCommandFrame(format!(
-                            "VADD_BATCH: unknown quantization '{val}'"
-                        )))
-                    }
-                };
-                idx += 1;
-            }
-            "M" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD_BATCH: M requires a value".into(),
-                    ));
-                }
-                let m = parse_u64(&args[idx], "VADD_BATCH")?;
-                if m > MAX_HNSW_PARAM {
-                    return Err(ProtocolError::InvalidCommandFrame(format!(
-                        "VADD_BATCH: M value {m} exceeds max {MAX_HNSW_PARAM}"
-                    )));
-                }
-                connectivity = m as u32;
-                idx += 1;
-            }
-            "EF" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "VADD_BATCH: EF requires a value".into(),
-                    ));
-                }
-                let ef = parse_u64(&args[idx], "VADD_BATCH")?;
-                if ef > MAX_HNSW_PARAM {
-                    return Err(ProtocolError::InvalidCommandFrame(format!(
-                        "VADD_BATCH: EF value {ef} exceeds max {MAX_HNSW_PARAM}"
-                    )));
-                }
-                expansion_add = ef as u32;
-                idx += 1;
-            }
-            _ => {
-                return Err(ProtocolError::InvalidCommandFrame(format!(
-                    "VADD_BATCH: unexpected argument '{flag}'"
-                )));
-            }
-        }
-    }
+    let (metric, quantization, connectivity, expansion_add) =
+        parse_vector_flags(&args[idx..], "VADD_BATCH")?;
 
     Ok(Command::VAddBatch {
         key,
@@ -2578,64 +2519,7 @@ fn parse_proto_set(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
     let type_name = extract_string(&args[1])?;
     let data = extract_bytes(&args[2])?;
-
-    let mut expire = None;
-    let mut nx = false;
-    let mut xx = false;
-    let mut idx = 3;
-
-    while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
-            "NX" => {
-                nx = true;
-                idx += 1;
-            }
-            "XX" => {
-                xx = true;
-                idx += 1;
-            }
-            "EX" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(wrong_arity("PROTO.SET"));
-                }
-                let amount = parse_u64(&args[idx], "PROTO.SET")?;
-                if amount == 0 {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "invalid expire time in 'PROTO.SET' command".into(),
-                    ));
-                }
-                expire = Some(SetExpire::Ex(amount));
-                idx += 1;
-            }
-            "PX" => {
-                idx += 1;
-                if idx >= args.len() {
-                    return Err(wrong_arity("PROTO.SET"));
-                }
-                let amount = parse_u64(&args[idx], "PROTO.SET")?;
-                if amount == 0 {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        "invalid expire time in 'PROTO.SET' command".into(),
-                    ));
-                }
-                expire = Some(SetExpire::Px(amount));
-                idx += 1;
-            }
-            _ => {
-                return Err(ProtocolError::InvalidCommandFrame(format!(
-                    "unsupported PROTO.SET option '{flag}'"
-                )));
-            }
-        }
-    }
-
-    if nx && xx {
-        return Err(ProtocolError::InvalidCommandFrame(
-            "XX and NX options at the same time are not compatible".into(),
-        ));
-    }
+    let (expire, nx, xx) = parse_set_options(&args[3..], "PROTO.SET")?;
 
     Ok(Command::ProtoSet {
         key,
