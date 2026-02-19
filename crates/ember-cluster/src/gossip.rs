@@ -67,6 +67,8 @@ pub struct MemberState {
     pub state: MemberStatus,
     pub state_change: Instant,
     pub is_primary: bool,
+    /// The primary this member replicates from, if it is a replica.
+    pub replicates: Option<NodeId>,
     pub slots: Vec<SlotRange>,
 }
 
@@ -94,6 +96,8 @@ pub enum GossipEvent {
     MemberAlive(NodeId),
     /// A node's slot ownership changed.
     SlotsChanged(NodeId, Vec<SlotRange>),
+    /// A node's role changed. Fields: node ID, is_primary, replicates.
+    RoleChanged(NodeId, bool, Option<NodeId>),
 }
 
 /// The gossip engine manages cluster membership and failure detection.
@@ -222,6 +226,25 @@ impl GossipEngine {
         });
     }
 
+    /// Queues a role change for gossip propagation.
+    ///
+    /// Called after this node changes from primary to replica (or vice versa).
+    /// The update will be piggybacked on the next outgoing Ping or Ack.
+    pub fn queue_role_update(
+        &mut self,
+        node: NodeId,
+        incarnation: u64,
+        is_primary: bool,
+        replicates: Option<NodeId>,
+    ) {
+        self.queue_update(NodeUpdate::RoleChanged {
+            node,
+            incarnation,
+            is_primary,
+            replicates,
+        });
+    }
+
     /// Adds a seed node to bootstrap cluster discovery.
     pub fn add_seed(&mut self, id: NodeId, addr: SocketAddr) {
         if id == self.local_id {
@@ -234,6 +257,7 @@ impl GossipEngine {
             state: MemberStatus::Alive,
             state_change: Instant::now(),
             is_primary: false,
+            replicates: None,
             slots: Vec::new(),
         });
     }
@@ -428,6 +452,7 @@ impl GossipEngine {
                             state: MemberStatus::Alive,
                             state_change: Instant::now(),
                             is_primary: member.is_primary,
+                            replicates: None,
                             slots: slots.clone(),
                         });
                         self.emit(GossipEvent::MemberJoined(member.id, member.addr, slots))
@@ -544,6 +569,7 @@ impl GossipEngine {
             state: MemberStatus::Alive,
             state_change: Instant::now(),
             is_primary: false,
+            replicates: None,
             slots: Vec::new(),
         });
     }
@@ -598,6 +624,7 @@ impl GossipEngine {
                                 state: MemberStatus::Alive,
                                 state_change: Instant::now(),
                                 is_primary: false,
+                                replicates: None,
                                 slots: Vec::new(),
                             },
                         );
@@ -697,6 +724,34 @@ impl GossipEngine {
                         if *incarnation >= member.incarnation {
                             member.slots = slots.clone();
                             self.emit(GossipEvent::SlotsChanged(*node, slots.clone()))
+                                .await;
+                        }
+                    }
+                }
+
+                NodeUpdate::RoleChanged {
+                    node,
+                    incarnation,
+                    is_primary,
+                    replicates,
+                } => {
+                    if *incarnation > MAX_INCARNATION {
+                        warn!(
+                            "rejecting role update for {} with excessive incarnation {}",
+                            node, incarnation
+                        );
+                        continue;
+                    }
+                    if *node == self.local_id {
+                        // we know our own role
+                        continue;
+                    }
+                    if let Some(member) = self.members.get_mut(node) {
+                        if *incarnation > member.incarnation {
+                            member.incarnation = *incarnation;
+                            member.is_primary = *is_primary;
+                            member.replicates = *replicates;
+                            self.emit(GossipEvent::RoleChanged(*node, *is_primary, *replicates))
                                 .await;
                         }
                     }
@@ -1054,6 +1109,7 @@ mod tests {
                 state: MemberStatus::Alive,
                 state_change: Instant::now(),
                 is_primary: true,
+                replicates: None,
                 slots: vec![SlotRange::new(0, 5460)],
             },
         );
@@ -1313,5 +1369,96 @@ mod tests {
 
         // stale entry should be cleaned up
         assert!(engine.relay_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_role_changed_updates_member() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let remote = NodeId::new();
+        let primary = NodeId::new();
+        engine.add_seed(remote, test_addr(6380));
+
+        // send a role change: remote becomes a replica of primary
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: remote,
+            updates: vec![NodeUpdate::RoleChanged {
+                node: remote,
+                incarnation: 2,
+                is_primary: false,
+                replicates: Some(primary),
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        let member = engine.members.get(&remote).unwrap();
+        assert!(!member.is_primary);
+        assert_eq!(member.replicates, Some(primary));
+        assert_eq!(member.incarnation, 2);
+
+        // should have emitted RoleChanged
+        let mut found = false;
+        while let Ok(event) = rx.try_recv() {
+            if let GossipEvent::RoleChanged(id, is_primary, replicates) = event {
+                if id == remote {
+                    assert!(!is_primary);
+                    assert_eq!(replicates, Some(primary));
+                    found = true;
+                    break;
+                }
+            }
+        }
+        assert!(found, "expected RoleChanged event for remote");
+    }
+
+    #[tokio::test]
+    async fn stale_role_changed_ignored() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let remote = NodeId::new();
+        engine.members.insert(
+            remote,
+            MemberState {
+                id: remote,
+                addr: test_addr(6380),
+                incarnation: 10,
+                state: MemberStatus::Alive,
+                state_change: Instant::now(),
+                is_primary: true,
+                replicates: None,
+                slots: vec![],
+            },
+        );
+
+        // send role change with old incarnation
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: remote,
+            updates: vec![NodeUpdate::RoleChanged {
+                node: remote,
+                incarnation: 5, // stale
+                is_primary: false,
+                replicates: None,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        // member should still be primary
+        let member = engine.members.get(&remote).unwrap();
+        assert!(member.is_primary, "stale update should not change role");
+
+        // drain events (MemberAlive from the Ping sender, but no RoleChanged)
+        let mut role_changed = false;
+        while let Ok(event) = rx.try_recv() {
+            if matches!(event, GossipEvent::RoleChanged(..)) {
+                role_changed = true;
+            }
+        }
+        assert!(!role_changed, "stale role update should not emit RoleChanged");
     }
 }

@@ -230,13 +230,14 @@ async fn cluster_getkeysinslot() {
     }
 }
 
-// -- stubs / error responses --
+// -- cluster replicate / failover --
 
 #[tokio::test]
-async fn cluster_replicate_stub() {
+async fn cluster_replicate_unknown_node() {
     let server = cluster_server();
     let mut c = server.connect().await;
 
+    // using a well-formed UUID that isn't in the cluster
     let err = c
         .err(&[
             "CLUSTER",
@@ -245,8 +246,34 @@ async fn cluster_replicate_stub() {
         ])
         .await;
     assert!(
-        err.contains("not yet supported"),
-        "expected stub error, got: {err}"
+        err.contains("Unknown node ID"),
+        "expected unknown node error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_replicate_self_rejected() {
+    let server = cluster_server();
+    let mut c = server.connect().await;
+
+    // fetch our own node ID first
+    let my_id = c.get_bulk(&["CLUSTER", "MYID"]).await.expect("MYID returned nil");
+    let err = c.err(&["CLUSTER", "REPLICATE", &my_id]).await;
+    assert!(
+        err.contains("Cannot replicate self"),
+        "expected self-replicate error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_replicate_invalid_id() {
+    let server = cluster_server();
+    let mut c = server.connect().await;
+
+    let err = c.err(&["CLUSTER", "REPLICATE", "not-a-uuid"]).await;
+    assert!(
+        err.contains("Invalid node ID"),
+        "expected invalid node ID error, got: {err}"
     );
 }
 
@@ -257,7 +284,7 @@ async fn cluster_failover_stub() {
 
     let err = c.err(&["CLUSTER", "FAILOVER"]).await;
     assert!(
-        err.contains("not yet supported"),
+        err.contains("not yet implemented"),
         "expected stub error, got: {err}"
     );
 }
