@@ -468,6 +468,7 @@ impl EmberConfig {
     }
 
     /// Returns the cluster auth-pass, or `None` if empty.
+    #[allow(dead_code)]
     pub fn cluster_auth_pass(&self) -> Option<String> {
         if self.cluster.auth_pass.is_empty() {
             None
@@ -511,7 +512,17 @@ impl std::fmt::Debug for ConfigRegistry {
 }
 
 /// Parameters that can be changed at runtime via CONFIG SET.
-const MUTABLE_PARAMS: &[&str] = &["slowlog-log-slower-than", "slowlog-max-len"];
+///
+/// Slowlog params take effect immediately. Connection-related params
+/// (maxclients, idle-timeout-secs, max-pipeline-depth) are stored in the
+/// registry and take effect for new connections.
+const MUTABLE_PARAMS: &[&str] = &[
+    "slowlog-log-slower-than",
+    "slowlog-max-len",
+    "maxclients",
+    "idle-timeout-secs",
+    "max-pipeline-depth",
+];
 
 impl ConfigRegistry {
     /// Creates a new registry from the initial parameter map.
@@ -539,8 +550,9 @@ impl ConfigRegistry {
 
     /// Sets a configuration parameter at runtime.
     ///
-    /// Only parameters in the mutable whitelist can be changed. Returns
-    /// the new value on success so the caller can apply it.
+    /// Only parameters in the mutable whitelist can be changed. Numeric
+    /// parameters are validated before storing. Returns the new value on
+    /// success so the caller can apply side-effects.
     pub fn set(&self, param: &str, value: &str) -> Result<(), String> {
         let key = param.to_ascii_lowercase();
         if !MUTABLE_PARAMS.contains(&key.as_str()) {
@@ -548,8 +560,113 @@ impl ConfigRegistry {
                 "ERR Unsupported CONFIG parameter: {param}"
             ));
         }
+
+        // validate numeric params before storing
+        match key.as_str() {
+            "slowlog-log-slower-than" => {
+                value.parse::<i64>().map_err(|_| {
+                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
+                })?;
+            }
+            "slowlog-max-len" | "maxclients" | "max-pipeline-depth" => {
+                value.parse::<usize>().map_err(|_| {
+                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
+                })?;
+            }
+            "idle-timeout-secs" => {
+                value.parse::<u64>().map_err(|_| {
+                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
+                })?;
+            }
+            _ => {}
+        }
+
         let mut params = self.params.write().unwrap_or_else(|e| e.into_inner());
         params.insert(key, value.to_string());
+        Ok(())
+    }
+
+    /// Writes the current configuration to a TOML file.
+    ///
+    /// Reads all current parameter values, builds an `EmberConfig`,
+    /// serializes to TOML, and writes atomically via a temp file + rename.
+    #[allow(clippy::field_reassign_with_default)]
+    pub fn rewrite(&self, config_path: &Path) -> Result<(), String> {
+        let params = self.params.read().unwrap_or_else(|e| e.into_inner());
+
+        // helper to read a param with a default fallback
+        let get = |key: &str, default: &str| -> String {
+            params.get(key).cloned().unwrap_or_else(|| default.into())
+        };
+
+        let mut cfg = EmberConfig::default();
+        cfg.port = get("port", "6379").parse().unwrap_or(6379);
+        cfg.bind = get("bind-address", "127.0.0.1");
+        cfg.maxclients = get("maxclients", "10000").parse().unwrap_or(10_000);
+        cfg.idle_timeout_secs = get("idle-timeout-secs", "300").parse().unwrap_or(300);
+        cfg.max_pipeline_depth = get("max-pipeline-depth", "10000").parse().unwrap_or(10_000);
+        cfg.max_auth_failures = get("max-auth-failures", "10").parse().unwrap_or(10);
+
+        // memory
+        let maxmem_bytes: u64 = get("maxmemory", "0").parse().unwrap_or(0);
+        cfg.maxmemory = if maxmem_bytes == 0 {
+            String::new()
+        } else {
+            maxmem_bytes.to_string()
+        };
+        cfg.maxmemory_policy = get("maxmemory-policy", "noeviction");
+
+        // persistence
+        cfg.appendonly = get("appendonly", "no") == "yes";
+        cfg.appendfsync = get("appendfsync", "everysec");
+        cfg.active_expiry_interval_ms = get("active-expiry-interval-ms", "100")
+            .parse()
+            .unwrap_or(100);
+        cfg.aof_fsync_interval_secs = get("aof-fsync-interval-secs", "1")
+            .parse()
+            .unwrap_or(1);
+
+        // monitoring
+        cfg.slowlog_log_slower_than = get("slowlog-log-slower-than", "10000")
+            .parse()
+            .unwrap_or(10_000);
+        cfg.slowlog_max_len = get("slowlog-max-len", "128").parse().unwrap_or(128);
+
+        // protocol limits
+        cfg.max_key_len = get("max-key-len", "512kb");
+        cfg.max_value_len = get("max-value-len", "512mb");
+        cfg.max_subscriptions_per_connection = get("max-subscriptions-per-connection", "10000")
+            .parse()
+            .unwrap_or(10_000);
+        cfg.max_pattern_len = get("max-pattern-len", "256").parse().unwrap_or(256);
+        cfg.read_buffer_capacity = get("read-buffer-capacity", "4096")
+            .parse()
+            .unwrap_or(4096);
+        cfg.max_buffer_size = get("max-buffer-size", "64mb");
+
+        // engine internals
+        cfg.engine.shard_channel_buffer = get("shard-channel-buffer", "256")
+            .parse()
+            .unwrap_or(256);
+        cfg.engine.replication_broadcast_capacity =
+            get("replication-broadcast-capacity", "65536")
+                .parse()
+                .unwrap_or(65_536);
+        cfg.engine.stats_poll_interval_secs = get("stats-poll-interval-secs", "5")
+            .parse()
+            .unwrap_or(5);
+
+        drop(params); // release read lock before file I/O
+
+        let toml_str = cfg.to_toml()?;
+
+        // atomic write: write to temp file, then rename
+        let tmp_path = config_path.with_extension("tmp");
+        std::fs::write(&tmp_path, toml_str.as_bytes())
+            .map_err(|e| format!("ERR failed to write config: {e}"))?;
+        std::fs::rename(&tmp_path, config_path)
+            .map_err(|e| format!("ERR failed to rename config file: {e}"))?;
+
         Ok(())
     }
 }
@@ -804,5 +921,59 @@ mod tests {
 
         cfg.maxmemory = "0".into();
         assert_eq!(cfg.max_memory_bytes().unwrap(), None);
+    }
+
+    #[test]
+    fn config_registry_set_new_mutable_params() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+
+        // maxclients should be mutable
+        assert!(registry.set("maxclients", "5000").is_ok());
+        let result = registry.get_matching("maxclients");
+        assert_eq!(result[0].1, "5000");
+
+        // idle-timeout-secs should be mutable
+        assert!(registry.set("idle-timeout-secs", "60").is_ok());
+        let result = registry.get_matching("idle-timeout-secs");
+        assert_eq!(result[0].1, "60");
+
+        // max-pipeline-depth should be mutable
+        assert!(registry.set("max-pipeline-depth", "500").is_ok());
+        let result = registry.get_matching("max-pipeline-depth");
+        assert_eq!(result[0].1, "500");
+    }
+
+    #[test]
+    fn config_registry_set_validates_numbers() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+
+        assert!(registry.set("maxclients", "not-a-number").is_err());
+        assert!(registry.set("idle-timeout-secs", "abc").is_err());
+        assert!(registry.set("slowlog-log-slower-than", "xyz").is_err());
+    }
+
+    #[test]
+    fn config_registry_rewrite_roundtrips() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+
+        // change a mutable param
+        registry.set("maxclients", "5000").unwrap();
+
+        let dir = std::env::temp_dir().join("ember-test-rewrite");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test-config.toml");
+
+        registry.rewrite(&path).unwrap();
+
+        // read it back and verify
+        let reloaded = EmberConfig::from_file(&path).unwrap();
+        assert_eq!(reloaded.maxclients, 5000);
+        assert_eq!(reloaded.port, 6379); // unchanged
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

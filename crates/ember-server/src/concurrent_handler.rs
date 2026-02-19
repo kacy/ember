@@ -496,6 +496,14 @@ async fn execute_concurrent(
             }
         }
 
+        Command::ConfigRewrite => match &ctx.config_path {
+            Some(path) => match ctx.config.rewrite(path) {
+                Ok(()) => Frame::Simple("OK".into()),
+                Err(e) => Frame::Error(e),
+            },
+            None => Frame::Error("ERR The server is running without a config file".into()),
+        },
+
         // -- pub/sub --
         Command::Publish { channel, message } => {
             let count = pubsub.publish(&channel, message);

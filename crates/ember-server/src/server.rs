@@ -4,6 +4,7 @@
 //! connections and waits for in-flight requests to drain before exiting.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,6 +48,8 @@ pub struct ServerContext {
     pub bind_addr: SocketAddr,
     /// Runtime configuration registry for CONFIG GET/SET.
     pub config: Arc<ConfigRegistry>,
+    /// Path to the config file loaded at startup (for CONFIG REWRITE).
+    pub config_path: Option<PathBuf>,
     /// Cluster coordinator, present when --cluster-enabled is set.
     pub cluster: Option<Arc<ClusterCoordinator>>,
     /// Runtime limits derived from EmberConfig.
@@ -78,6 +81,7 @@ pub async fn run(
     cluster: Option<Arc<ClusterCoordinator>>,
     config_registry: Arc<ConfigRegistry>,
     limits: ConnectionLimits,
+    config_path: Option<PathBuf>,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
@@ -125,6 +129,7 @@ pub async fn run(
         requirepass,
         bind_addr: addr,
         config: config_registry,
+        config_path,
         cluster,
         limits,
     });
@@ -376,6 +381,7 @@ pub async fn run_concurrent(
     tls: Option<(SocketAddr, TlsConfig)>,
     config_registry: Arc<ConfigRegistry>,
     limits: ConnectionLimits,
+    config_path: Option<PathBuf>,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
@@ -411,6 +417,7 @@ pub async fn run_concurrent(
         requirepass,
         bind_addr: addr,
         config: config_registry,
+        config_path,
         cluster: None,
         limits,
     });

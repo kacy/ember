@@ -145,6 +145,9 @@ pub enum Command {
     /// CONFIG SET `param` `value`. Sets a server configuration parameter at runtime.
     ConfigSet { param: String, value: String },
 
+    /// CONFIG REWRITE. Writes the current config to the file loaded at startup.
+    ConfigRewrite,
+
     /// MULTI. Starts a transaction — subsequent commands are queued until EXEC.
     Multi,
 
@@ -569,6 +572,7 @@ impl Command {
             Command::FlushDb { .. } => "flushdb",
             Command::ConfigGet { .. } => "config",
             Command::ConfigSet { .. } => "config",
+            Command::ConfigRewrite => "config",
             Command::Multi => "multi",
             Command::Exec => "exec",
             Command::Discard => "discard",
@@ -1961,6 +1965,12 @@ fn parse_config(args: &[Frame]) -> Result<Command, ProtocolError> {
             let param = extract_string(&args[1])?;
             let value = extract_string(&args[2])?;
             Ok(Command::ConfigSet { param, value })
+        }
+        "REWRITE" => {
+            if args.len() != 1 {
+                return Err(wrong_arity("CONFIG|REWRITE"));
+            }
+            Ok(Command::ConfigRewrite)
         }
         other => Err(ProtocolError::InvalidCommandFrame(format!(
             "unknown CONFIG subcommand '{other}'"
