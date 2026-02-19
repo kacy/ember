@@ -499,6 +499,9 @@ pub enum Command {
     /// QUIT. Requests the server to close the connection.
     Quit,
 
+    /// MONITOR. Streams all commands processed by the server.
+    Monitor,
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -536,6 +539,7 @@ impl Command {
             Command::Echo(_) => "echo",
             Command::Auth { .. } => "auth",
             Command::Quit => "quit",
+            Command::Monitor => "monitor",
 
             // strings
             Command::Get { .. } => "get",
@@ -929,6 +933,7 @@ impl Command {
             "PROTO.DELFIELD" => parse_proto_delfield(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
+            "MONITOR" => parse_monitor(&frames[1..]),
             _ => Ok(Command::Unknown(name)),
         }
     }
@@ -2744,6 +2749,13 @@ fn parse_quit(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("QUIT"));
     }
     Ok(Command::Quit)
+}
+
+fn parse_monitor(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(wrong_arity("MONITOR"));
+    }
+    Ok(Command::Monitor)
 }
 
 #[cfg(test)]

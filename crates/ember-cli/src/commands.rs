@@ -404,6 +404,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get information and statistics about the server",
     },
     CommandInfo {
+        name: "MONITOR",
+        args: "",
+        group: "server",
+        summary: "stream all commands processed by the server",
+    },
+    CommandInfo {
         name: "SLOWLOG",
         args: "GET [count] | LEN | RESET",
         group: "server",

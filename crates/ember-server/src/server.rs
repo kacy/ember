@@ -19,6 +19,7 @@ use tracing::{error, info, warn};
 use crate::cluster::ClusterCoordinator;
 use crate::config::{ConfigRegistry, ConnectionLimits};
 use crate::connection;
+use crate::connection_common::MonitorEvent;
 use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
 use crate::tls::TlsConfig;
@@ -54,6 +55,11 @@ pub struct ServerContext {
     pub cluster: Option<Arc<ClusterCoordinator>>,
     /// Runtime limits derived from EmberConfig.
     pub limits: ConnectionLimits,
+    /// Broadcast channel for MONITOR subscribers.
+    ///
+    /// When `sender.receiver_count() == 0`, the per-command check is a
+    /// single atomic load — true zero overhead when nobody is monitoring.
+    pub monitor_tx: tokio::sync::broadcast::Sender<MonitorEvent>,
 }
 
 /// Binds to `addr` and runs the accept loop.
@@ -132,6 +138,7 @@ pub async fn run(
         config_path,
         cluster,
         limits,
+        monitor_tx: tokio::sync::broadcast::channel(256).0,
     });
 
     if metrics_enabled {
@@ -209,7 +216,7 @@ pub async fn run(
                 let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, h.engine, &h.ctx, &h.slow_log, &h.pubsub).await {
+                    if let Err(e) = connection::handle(stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub).await {
                         error!("connection error from {peer}: {e}");
                     }
                     on_connection_done(&h.ctx);
@@ -235,7 +242,7 @@ pub async fn run(
 
                 tokio::spawn(async move {
                     if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
-                        if let Err(e) = connection::handle(tls_stream, h.engine, &h.ctx, &h.slow_log, &h.pubsub).await {
+                        if let Err(e) = connection::handle(tls_stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub).await {
                             error!("TLS connection error from {peer}: {e}");
                         }
                     }
@@ -420,6 +427,7 @@ pub async fn run_concurrent(
         config_path,
         cluster: None,
         limits,
+        monitor_tx: tokio::sync::broadcast::channel(256).0,
     });
 
     if metrics_enabled {
@@ -496,7 +504,7 @@ pub async fn run_concurrent(
 
                 tokio::spawn(async move {
                     if let Err(e) = crate::concurrent_handler::handle(
-                        stream, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                        stream, peer, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
                     ).await {
                         error!("connection error from {peer}: {e}");
                     }
@@ -525,7 +533,7 @@ pub async fn run_concurrent(
                 tokio::spawn(async move {
                     if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
                         if let Err(e) = crate::concurrent_handler::handle(
-                            tls_stream, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                            tls_stream, peer, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
                         ).await {
                             error!("TLS connection error from {peer}: {e}");
                         }
