@@ -262,41 +262,41 @@ impl SnapEntry {
 /// Used by MIGRATE/DUMP to serialize values for transfer between nodes.
 /// The format matches the per-entry body in snapshot files (minus the
 /// key and expire_ms).
-pub fn serialize_snap_value(value: &SnapValue) -> Vec<u8> {
+pub fn serialize_snap_value(value: &SnapValue) -> Result<Vec<u8>, FormatError> {
     let mut buf = Vec::new();
     match value {
         SnapValue::String(data) => {
-            format::write_u8(&mut buf, TYPE_STRING).unwrap();
-            format::write_bytes(&mut buf, data).unwrap();
+            format::write_u8(&mut buf, TYPE_STRING)?;
+            format::write_bytes(&mut buf, data)?;
         }
         SnapValue::List(deque) => {
-            format::write_u8(&mut buf, TYPE_LIST).unwrap();
-            format::write_len(&mut buf, deque.len()).unwrap();
+            format::write_u8(&mut buf, TYPE_LIST)?;
+            format::write_len(&mut buf, deque.len())?;
             for item in deque {
-                format::write_bytes(&mut buf, item).unwrap();
+                format::write_bytes(&mut buf, item)?;
             }
         }
         SnapValue::SortedSet(members) => {
-            format::write_u8(&mut buf, TYPE_SORTED_SET).unwrap();
-            format::write_len(&mut buf, members.len()).unwrap();
+            format::write_u8(&mut buf, TYPE_SORTED_SET)?;
+            format::write_len(&mut buf, members.len())?;
             for (score, member) in members {
-                format::write_f64(&mut buf, *score).unwrap();
-                format::write_bytes(&mut buf, member.as_bytes()).unwrap();
+                format::write_f64(&mut buf, *score)?;
+                format::write_bytes(&mut buf, member.as_bytes())?;
             }
         }
         SnapValue::Hash(map) => {
-            format::write_u8(&mut buf, TYPE_HASH).unwrap();
-            format::write_len(&mut buf, map.len()).unwrap();
+            format::write_u8(&mut buf, TYPE_HASH)?;
+            format::write_len(&mut buf, map.len())?;
             for (field, value) in map {
-                format::write_bytes(&mut buf, field.as_bytes()).unwrap();
-                format::write_bytes(&mut buf, value).unwrap();
+                format::write_bytes(&mut buf, field.as_bytes())?;
+                format::write_bytes(&mut buf, value)?;
             }
         }
         SnapValue::Set(set) => {
-            format::write_u8(&mut buf, TYPE_SET).unwrap();
-            format::write_len(&mut buf, set.len()).unwrap();
+            format::write_u8(&mut buf, TYPE_SET)?;
+            format::write_len(&mut buf, set.len())?;
             for member in set {
-                format::write_bytes(&mut buf, member.as_bytes()).unwrap();
+                format::write_bytes(&mut buf, member.as_bytes())?;
             }
         }
         #[cfg(feature = "vector")]
@@ -308,28 +308,28 @@ pub fn serialize_snap_value(value: &SnapValue) -> Vec<u8> {
             dim,
             elements,
         } => {
-            format::write_u8(&mut buf, TYPE_VECTOR).unwrap();
-            format::write_u8(&mut buf, *metric).unwrap();
-            format::write_u8(&mut buf, *quantization).unwrap();
-            format::write_u32(&mut buf, *connectivity).unwrap();
-            format::write_u32(&mut buf, *expansion_add).unwrap();
-            format::write_u32(&mut buf, *dim).unwrap();
-            format::write_len(&mut buf, elements.len()).unwrap();
+            format::write_u8(&mut buf, TYPE_VECTOR)?;
+            format::write_u8(&mut buf, *metric)?;
+            format::write_u8(&mut buf, *quantization)?;
+            format::write_u32(&mut buf, *connectivity)?;
+            format::write_u32(&mut buf, *expansion_add)?;
+            format::write_u32(&mut buf, *dim)?;
+            format::write_len(&mut buf, elements.len())?;
             for (name, vector) in elements {
-                format::write_bytes(&mut buf, name.as_bytes()).unwrap();
+                format::write_bytes(&mut buf, name.as_bytes())?;
                 for &v in vector {
-                    format::write_f32(&mut buf, v).unwrap();
+                    format::write_f32(&mut buf, v)?;
                 }
             }
         }
         #[cfg(feature = "protobuf")]
         SnapValue::Proto { type_name, data } => {
-            format::write_u8(&mut buf, TYPE_PROTO).unwrap();
-            format::write_bytes(&mut buf, type_name.as_bytes()).unwrap();
-            format::write_bytes(&mut buf, data).unwrap();
+            format::write_u8(&mut buf, TYPE_PROTO)?;
+            format::write_bytes(&mut buf, type_name.as_bytes())?;
+            format::write_bytes(&mut buf, data)?;
         }
     }
-    buf
+    Ok(buf)
 }
 
 /// Deserializes a `SnapValue` from bytes produced by [`serialize_snap_value`].
@@ -1723,7 +1723,7 @@ mod tests {
     #[test]
     fn snap_value_roundtrip_string() {
         let original = SnapValue::String(Bytes::from("hello world"));
-        let data = serialize_snap_value(&original);
+        let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
     }
@@ -1735,7 +1735,7 @@ mod tests {
             Bytes::from("b"),
             Bytes::from("c"),
         ]));
-        let data = serialize_snap_value(&original);
+        let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
     }
@@ -1743,7 +1743,7 @@ mod tests {
     #[test]
     fn snap_value_roundtrip_sorted_set() {
         let original = SnapValue::SortedSet(vec![(1.5, "alice".into()), (2.7, "bob".into())]);
-        let data = serialize_snap_value(&original);
+        let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
     }
@@ -1754,7 +1754,7 @@ mod tests {
         map.insert("field1".into(), Bytes::from("val1"));
         map.insert("field2".into(), Bytes::from("val2"));
         let original = SnapValue::Hash(map);
-        let data = serialize_snap_value(&original);
+        let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
     }
@@ -1766,7 +1766,7 @@ mod tests {
         set.insert("y".into());
         set.insert("z".into());
         let original = SnapValue::Set(set);
-        let data = serialize_snap_value(&original);
+        let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
     }
@@ -1774,7 +1774,7 @@ mod tests {
     #[test]
     fn snap_value_roundtrip_empty_string() {
         let original = SnapValue::String(Bytes::new());
-        let data = serialize_snap_value(&original);
+        let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
     }
