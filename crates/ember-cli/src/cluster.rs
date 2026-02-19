@@ -138,6 +138,39 @@ pub enum ClusterCommand {
         #[arg(default_value = "127.0.0.1:6379")]
         node: String,
     },
+
+    /// Move hash slots from one node to another.
+    ///
+    /// Migrates the specified number of slots (and their keys) from the
+    /// source node to the target node using the standard import/migrate
+    /// protocol.
+    Reshard {
+        /// Node address to connect to (default: 127.0.0.1:6379).
+        #[arg(default_value = "127.0.0.1:6379")]
+        node: String,
+
+        /// Number of slots to move.
+        #[arg(long)]
+        slots: u16,
+
+        /// Source node ID.
+        #[arg(long)]
+        from: String,
+
+        /// Target node ID.
+        #[arg(long)]
+        to: String,
+    },
+
+    /// Rebalance slots across all primaries.
+    ///
+    /// Computes the ideal distribution (16384 / primaries) and moves
+    /// slots from over-provisioned to under-provisioned nodes.
+    Rebalance {
+        /// Node address to connect to (default: 127.0.0.1:6379).
+        #[arg(default_value = "127.0.0.1:6379")]
+        node: String,
+    },
 }
 
 /// Actions for the `CLUSTER SETSLOT` command.
@@ -211,6 +244,17 @@ impl ClusterCommand {
                 }
                 for addr in nodes {
                     parse_host_port(addr).map_err(|e| format!("invalid address '{addr}': {e}"))?;
+                }
+            }
+            Self::Reshard { slots, from, to, .. } => {
+                if *slots == 0 {
+                    return Err("--slots must be at least 1".into());
+                }
+                if *slots > SLOT_COUNT {
+                    return Err(format!("--slots cannot exceed {SLOT_COUNT}"));
+                }
+                if from == to {
+                    return Err("--from and --to must be different nodes".into());
                 }
             }
             _ => {}
@@ -303,7 +347,10 @@ impl ClusterCommand {
                 count.to_string(),
             ],
             // orchestrated commands don't use tokens
-            Self::Create { .. } | Self::Check { .. } => vec![],
+            Self::Create { .. }
+            | Self::Check { .. }
+            | Self::Reshard { .. }
+            | Self::Rebalance { .. } => vec![],
         }
     }
 }
@@ -336,6 +383,17 @@ pub fn run_cluster(
         }
         ClusterCommand::Check { node } => {
             return rt.block_on(run_cluster_check(node, password, tls));
+        }
+        ClusterCommand::Reshard {
+            node,
+            slots,
+            from,
+            to,
+        } => {
+            return rt.block_on(run_cluster_reshard(node, *slots, from, to, password, tls));
+        }
+        ClusterCommand::Rebalance { node } => {
+            return rt.block_on(run_cluster_rebalance(node, password, tls));
         }
         _ => {}
     }
@@ -836,8 +894,479 @@ async fn run_cluster_check(
 }
 
 // ---------------------------------------------------------------------------
+// cluster reshard
+// ---------------------------------------------------------------------------
+
+/// Moves `slot_count` slots from one node to another.
+///
+/// For each slot: SETSLOT IMPORTING on target, SETSLOT MIGRATING on source,
+/// loop GETKEYSINSLOT + MIGRATE per key, then SETSLOT NODE on all nodes.
+async fn run_cluster_reshard(
+    addr: &str,
+    slot_count: u16,
+    from_id: &str,
+    to_id: &str,
+    password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
+) -> ExitCode {
+    let (host, port) = match parse_host_port(addr) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!("{}", format!("invalid address '{addr}': {e}").red());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut conn = match connect_and_auth(&host, port, password, tls).await {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    // get cluster nodes to find addresses and slot ownership
+    let nodes_output = match conn.send_command_strs(&["CLUSTER", "NODES"]).await {
+        Ok(frame) => frame_to_string(&frame),
+        Err(e) => {
+            eprintln!("{}", format!("CLUSTER NODES failed: {e}").red());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // parse nodes to find source, target, and their addresses
+    let node_map = parse_nodes_output(&nodes_output);
+
+    let source = match node_map.iter().find(|n| n.id.starts_with(from_id)) {
+        Some(n) => n.clone(),
+        None => {
+            eprintln!(
+                "{}",
+                format!("source node '{from_id}' not found in cluster").red()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let target = match node_map.iter().find(|n| n.id.starts_with(to_id)) {
+        Some(n) => n.clone(),
+        None => {
+            eprintln!(
+                "{}",
+                format!("target node '{to_id}' not found in cluster").red()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if source.slots.is_empty() {
+        eprintln!("{}", "source node has no slots to move".red());
+        return ExitCode::FAILURE;
+    }
+
+    let slots_to_move: Vec<u16> = source.slots.iter().copied().take(slot_count as usize).collect();
+    if slots_to_move.len() < slot_count as usize {
+        eprintln!(
+            "{}",
+            format!(
+                "source only has {} slots, requested {slot_count}",
+                slots_to_move.len()
+            )
+            .yellow()
+        );
+    }
+
+    println!(
+        ">>> resharding {} slots from {} to {}",
+        slots_to_move.len(),
+        &source.id[..std::cmp::min(8, source.id.len())],
+        &target.id[..std::cmp::min(8, target.id.len())]
+    );
+
+    // connect to source and target
+    let (source_host, source_port) = match parse_host_port(&source.addr) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!("{}", format!("invalid source address '{}': {e}", source.addr).red());
+            return ExitCode::FAILURE;
+        }
+    };
+    let (target_host, target_port) = match parse_host_port(&target.addr) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!("{}", format!("invalid target address '{}': {e}", target.addr).red());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut source_conn = match connect_and_auth(&source_host, source_port, password, tls).await {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+    let mut target_conn = match connect_and_auth(&target_host, target_port, password, tls).await {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    let mut moved = 0u16;
+    for &slot in &slots_to_move {
+        // 1. SETSLOT IMPORTING on target
+        let r = target_conn
+            .send_command_strs(&["CLUSTER", "SETSLOT", &slot.to_string(), "IMPORTING", &source.id])
+            .await;
+        if !matches!(&r, Ok(f) if is_ok(f)) {
+            eprintln!(
+                "{}",
+                format!("SETSLOT IMPORTING failed for slot {slot}: {}", result_msg(&r)).red()
+            );
+            break;
+        }
+
+        // 2. SETSLOT MIGRATING on source
+        let r = source_conn
+            .send_command_strs(&["CLUSTER", "SETSLOT", &slot.to_string(), "MIGRATING", &target.id])
+            .await;
+        if !matches!(&r, Ok(f) if is_ok(f)) {
+            eprintln!(
+                "{}",
+                format!("SETSLOT MIGRATING failed for slot {slot}: {}", result_msg(&r)).red()
+            );
+            break;
+        }
+
+        // 3. migrate keys
+        loop {
+            let keys_frame = match source_conn
+                .send_command_strs(&["CLUSTER", "GETKEYSINSLOT", &slot.to_string(), "100"])
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        format!("GETKEYSINSLOT failed for slot {slot}: {e}").red()
+                    );
+                    break;
+                }
+            };
+
+            let keys = frame_to_string_list(&keys_frame);
+            if keys.is_empty() {
+                break;
+            }
+
+            for key in &keys {
+                let r = source_conn
+                    .send_command_strs(&[
+                        "MIGRATE",
+                        &target_host,
+                        &target_port.to_string(),
+                        key,
+                        "0",
+                        "5000",
+                        "REPLACE",
+                    ])
+                    .await;
+                if !matches!(&r, Ok(f) if is_ok(f)) {
+                    eprintln!(
+                        "{}",
+                        format!("MIGRATE failed for key '{key}' in slot {slot}: {}", result_msg(&r))
+                            .red()
+                    );
+                    // continue with other keys
+                }
+            }
+        }
+
+        // 4. SETSLOT NODE on both source and target (and the node we're connected to)
+        let slot_s = slot.to_string();
+        for c in [&mut source_conn, &mut target_conn, &mut conn] {
+            let _ = c
+                .send_command_strs(&["CLUSTER", "SETSLOT", &slot_s, "NODE", &target.id])
+                .await;
+        }
+
+        moved += 1;
+        if moved.is_multiple_of(100) || moved == slots_to_move.len() as u16 {
+            println!("  moved {moved}/{} slots", slots_to_move.len());
+        }
+    }
+
+    source_conn.shutdown().await;
+    target_conn.shutdown().await;
+    conn.shutdown().await;
+
+    if moved == slots_to_move.len() as u16 {
+        println!("{}", format!(">>> reshard complete: {moved} slots moved").green());
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "{}",
+            format!("reshard incomplete: {moved}/{} slots moved", slots_to_move.len()).yellow()
+        );
+        ExitCode::FAILURE
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cluster rebalance
+// ---------------------------------------------------------------------------
+
+/// Rebalances slots across all primary nodes.
+///
+/// Computes the ideal distribution (16384 / primaries), then generates
+/// migrations from over-provisioned to under-provisioned nodes.
+async fn run_cluster_rebalance(
+    addr: &str,
+    password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
+) -> ExitCode {
+    let (host, port) = match parse_host_port(addr) {
+        Ok(hp) => hp,
+        Err(e) => {
+            eprintln!("{}", format!("invalid address '{addr}': {e}").red());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut conn = match connect_and_auth(&host, port, password, tls).await {
+        Ok(c) => c,
+        Err(code) => return code,
+    };
+
+    let nodes_output = match conn.send_command_strs(&["CLUSTER", "NODES"]).await {
+        Ok(frame) => frame_to_string(&frame),
+        Err(e) => {
+            eprintln!("{}", format!("CLUSTER NODES failed: {e}").red());
+            return ExitCode::FAILURE;
+        }
+    };
+    conn.shutdown().await;
+
+    let all_nodes = parse_nodes_output(&nodes_output);
+    let primaries: Vec<&NodeInfo> = all_nodes.iter().filter(|n| n.is_primary).collect();
+
+    if primaries.is_empty() {
+        eprintln!("{}", "no primary nodes found".red());
+        return ExitCode::FAILURE;
+    }
+
+    let ideal = SLOT_COUNT as usize / primaries.len();
+    let remainder = SLOT_COUNT as usize % primaries.len();
+
+    // print current distribution
+    println!("{}", "=== current distribution ===".bold());
+    for p in &primaries {
+        let id_short = &p.id[..std::cmp::min(8, p.id.len())];
+        let count = p.slots.len();
+        let diff = count as i64 - ideal as i64;
+        let diff_str = if diff > 0 {
+            format!("+{diff}").yellow().to_string()
+        } else if diff < 0 {
+            format!("{diff}").yellow().to_string()
+        } else {
+            "=".dimmed().to_string()
+        };
+        println!("  {id_short} ({}) : {} slots ({diff_str})", p.addr, count);
+    }
+    println!("  ideal: {ideal} slots per primary (+{remainder} remainder)");
+
+    // compute migrations: over-provisioned give to under-provisioned
+    let mut donors: Vec<(&NodeInfo, Vec<u16>)> = Vec::new();
+    let mut receivers: Vec<(&NodeInfo, usize)> = Vec::new();
+
+    for (i, p) in primaries.iter().enumerate() {
+        let target_count = ideal + if i < remainder { 1 } else { 0 };
+        if p.slots.len() > target_count {
+            let excess: Vec<u16> = p.slots[target_count..].to_vec();
+            donors.push((p, excess));
+        } else if p.slots.len() < target_count {
+            let deficit = target_count - p.slots.len();
+            receivers.push((p, deficit));
+        }
+    }
+
+    if donors.is_empty() && receivers.is_empty() {
+        println!("\n{}", "cluster is already balanced".green());
+        return ExitCode::SUCCESS;
+    }
+
+    // generate migration plan
+    let mut plan: Vec<(String, String, u16)> = Vec::new(); // (from_id, to_id, slot)
+    let mut donor_idx = 0;
+    let mut donor_slot_idx = 0;
+
+    for (receiver, deficit) in &receivers {
+        for _ in 0..*deficit {
+            // find next available donor slot
+            while donor_idx < donors.len() && donor_slot_idx >= donors[donor_idx].1.len() {
+                donor_idx += 1;
+                donor_slot_idx = 0;
+            }
+            if donor_idx >= donors.len() {
+                break;
+            }
+
+            let slot = donors[donor_idx].1[donor_slot_idx];
+            plan.push((
+                donors[donor_idx].0.id.clone(),
+                receiver.id.clone(),
+                slot,
+            ));
+            donor_slot_idx += 1;
+        }
+    }
+
+    println!(
+        "\n>>> rebalancing: {} slot migrations planned",
+        plan.len()
+    );
+
+    if plan.is_empty() {
+        println!("{}", "nothing to do".green());
+        return ExitCode::SUCCESS;
+    }
+
+    // execute migrations by grouping by (from, to) pair
+    let mut grouped: std::collections::BTreeMap<(String, String), Vec<u16>> =
+        std::collections::BTreeMap::new();
+    for (from, to, slot) in &plan {
+        grouped
+            .entry((from.clone(), to.clone()))
+            .or_default()
+            .push(*slot);
+    }
+
+    for ((from_id, to_id), slots) in &grouped {
+        let from_short = &from_id[..std::cmp::min(8, from_id.len())];
+        let to_short = &to_id[..std::cmp::min(8, to_id.len())];
+        println!(
+            "  {from_short} -> {to_short}: {} slots",
+            slots.len()
+        );
+
+        // execute as a reshard operation
+        let result = run_cluster_reshard(addr, slots.len() as u16, from_id, to_id, password, tls).await;
+        if result != ExitCode::SUCCESS {
+            return result;
+        }
+    }
+
+    // print final distribution
+    println!("\n{}", "=== rebalance complete ===".green());
+
+    ExitCode::SUCCESS
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/// Connects to a node and authenticates. Returns the connection or an error exit code.
+async fn connect_and_auth(
+    host: &str,
+    port: u16,
+    password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
+) -> Result<Connection, ExitCode> {
+    let mut conn = Connection::connect(host, port, tls).await.map_err(|e| {
+        eprintln!(
+            "{}",
+            format!("could not connect to {host}:{port}: {e}").red()
+        );
+        ExitCode::FAILURE
+    })?;
+
+    if let Some(pw) = password {
+        conn.authenticate(pw).await.map_err(|e| {
+            eprintln!("{}", format!("auth failed on {host}:{port}: {e}").red());
+            ExitCode::FAILURE
+        })?;
+    }
+
+    Ok(conn)
+}
+
+/// Parsed node info from CLUSTER NODES output.
+#[derive(Clone, Debug)]
+struct NodeInfo {
+    id: String,
+    addr: String,
+    is_primary: bool,
+    slots: Vec<u16>,
+}
+
+/// Parses CLUSTER NODES output into a list of NodeInfo.
+fn parse_nodes_output(output: &str) -> Vec<NodeInfo> {
+    let mut nodes = Vec::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 8 {
+            continue;
+        }
+
+        let id = parts[0].to_string();
+        // address format: host:port@gossip_port or host:port
+        let addr = parts[1].split('@').next().unwrap_or(parts[1]).to_string();
+        let flags = parts[2];
+        let is_primary = flags.contains("master") || !flags.contains("slave");
+
+        let mut slots = Vec::new();
+        for slot_spec in parts.iter().skip(8) {
+            if slot_spec.starts_with('[') {
+                continue;
+            }
+            if let Some((start_s, end_s)) = slot_spec.split_once('-') {
+                if let (Ok(start), Ok(end)) = (start_s.parse::<u16>(), end_s.parse::<u16>()) {
+                    for s in start..=end {
+                        slots.push(s);
+                    }
+                }
+            } else if let Ok(s) = slot_spec.parse::<u16>() {
+                slots.push(s);
+            }
+        }
+
+        nodes.push(NodeInfo {
+            id,
+            addr,
+            is_primary,
+            slots,
+        });
+    }
+
+    nodes
+}
+
+/// Extracts a list of strings from a Frame::Array response.
+fn frame_to_string_list(frame: &ember_protocol::types::Frame) -> Vec<String> {
+    match frame {
+        ember_protocol::types::Frame::Array(items) => items
+            .iter()
+            .filter_map(|f| match f {
+                ember_protocol::types::Frame::Bulk(b) => {
+                    Some(String::from_utf8_lossy(b).into_owned())
+                }
+                ember_protocol::types::Frame::Simple(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Extracts a human-readable message from a connection result.
+fn result_msg(
+    r: &Result<ember_protocol::types::Frame, crate::connection::ConnectionError>,
+) -> String {
+    match r {
+        Ok(f) => frame_to_string(f),
+        Err(e) => e.to_string(),
+    }
+}
 
 /// Parses a "host:port" string into (host, port).
 fn parse_host_port(addr: &str) -> Result<(String, u16), String> {
@@ -1223,5 +1752,115 @@ mod tests {
             replicas: 0,
         };
         assert!(cmd.validate().is_ok());
+    }
+
+    #[test]
+    fn reshard_validates_zero_slots() {
+        let cmd = ClusterCommand::Reshard {
+            node: "127.0.0.1:6379".into(),
+            slots: 0,
+            from: "aaa".into(),
+            to: "bbb".into(),
+        };
+        assert!(cmd.validate().is_err());
+    }
+
+    #[test]
+    fn reshard_validates_same_node() {
+        let cmd = ClusterCommand::Reshard {
+            node: "127.0.0.1:6379".into(),
+            slots: 100,
+            from: "aaa".into(),
+            to: "aaa".into(),
+        };
+        assert!(cmd.validate().is_err());
+    }
+
+    #[test]
+    fn reshard_validates_too_many_slots() {
+        let cmd = ClusterCommand::Reshard {
+            node: "127.0.0.1:6379".into(),
+            slots: 16385,
+            from: "aaa".into(),
+            to: "bbb".into(),
+        };
+        assert!(cmd.validate().is_err());
+    }
+
+    #[test]
+    fn reshard_valid() {
+        let cmd = ClusterCommand::Reshard {
+            node: "127.0.0.1:6379".into(),
+            slots: 100,
+            from: "aaa".into(),
+            to: "bbb".into(),
+        };
+        assert!(cmd.validate().is_ok());
+    }
+
+    #[test]
+    fn parse_nodes_output_basic() {
+        let output = "\
+abc123def456 127.0.0.1:7001@17001 myself,master - 0 0 1 connected 0-5460\n\
+bbb222ccc333 127.0.0.1:7002@17002 master - 0 0 2 connected 5461-10922\n\
+ddd444eee555 127.0.0.1:7003@17003 slave bbb222ccc333 0 0 2 connected\n";
+
+        let nodes = parse_nodes_output(output);
+        assert_eq!(nodes.len(), 3);
+
+        assert!(nodes[0].is_primary);
+        assert_eq!(nodes[0].addr, "127.0.0.1:7001");
+        assert_eq!(nodes[0].slots.len(), 5461); // 0-5460
+
+        assert!(nodes[1].is_primary);
+        assert_eq!(nodes[1].slots.len(), 5462); // 5461-10922
+
+        assert!(!nodes[2].is_primary);
+        assert!(nodes[2].slots.is_empty());
+    }
+
+    #[test]
+    fn parse_nodes_output_empty() {
+        assert!(parse_nodes_output("").is_empty());
+        assert!(parse_nodes_output("  \n  \n").is_empty());
+    }
+
+    #[test]
+    fn frame_to_string_list_extracts_bulk() {
+        use ember_protocol::types::Frame;
+
+        let frame = Frame::Array(vec![
+            Frame::Bulk(bytes::Bytes::from("key1")),
+            Frame::Bulk(bytes::Bytes::from("key2")),
+        ]);
+        assert_eq!(frame_to_string_list(&frame), vec!["key1", "key2"]);
+    }
+
+    #[test]
+    fn frame_to_string_list_empty_array() {
+        use ember_protocol::types::Frame;
+        assert!(frame_to_string_list(&Frame::Array(vec![])).is_empty());
+    }
+
+    #[test]
+    fn frame_to_string_list_non_array() {
+        use ember_protocol::types::Frame;
+        assert!(frame_to_string_list(&Frame::Simple("OK".into())).is_empty());
+    }
+
+    #[test]
+    fn reshard_and_rebalance_return_empty_tokens() {
+        let reshard = ClusterCommand::Reshard {
+            node: "a:1".into(),
+            slots: 10,
+            from: "x".into(),
+            to: "y".into(),
+        };
+        assert!(reshard.to_tokens().is_empty());
+
+        let rebalance = ClusterCommand::Rebalance {
+            node: "a:1".into(),
+        };
+        assert!(rebalance.to_tokens().is_empty());
     }
 }
