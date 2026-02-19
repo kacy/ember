@@ -20,6 +20,7 @@ use crate::cluster::ClusterCoordinator;
 use crate::config::{ConfigRegistry, ConnectionLimits};
 use crate::connection;
 use crate::connection_common::MonitorEvent;
+use crate::metrics::MemoryUsedBytes;
 use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
 use crate::tls::TlsConfig;
@@ -55,6 +56,10 @@ pub struct ServerContext {
     pub cluster: Option<Arc<ClusterCoordinator>>,
     /// Runtime limits derived from EmberConfig.
     pub limits: ConnectionLimits,
+    /// Memory used bytes, updated by the stats poller.
+    ///
+    /// Read by the /health endpoint to avoid querying shards per HTTP request.
+    pub memory_used_bytes: MemoryUsedBytes,
     /// Broadcast channel for MONITOR subscribers.
     ///
     /// When `sender.receiver_count() == 0`, the per-command check is a
@@ -80,7 +85,7 @@ pub async fn run(
     shard_count: usize,
     config: EngineConfig,
     max_connections: Option<usize>,
-    metrics_enabled: bool,
+    metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
@@ -120,6 +125,7 @@ pub async fn run(
 
     let tls_listener = setup_tls_listener(tls).await?;
 
+    let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
@@ -138,11 +144,13 @@ pub async fn run(
         config_path,
         cluster,
         limits,
+        memory_used_bytes: MemoryUsedBytes::new(),
         monitor_tx: tokio::sync::broadcast::channel(256).0,
     });
 
-    if metrics_enabled {
-        crate::metrics::spawn_stats_poller(engine.clone(), stats_poll_interval);
+    if let Some((metrics_addr, handle)) = metrics {
+        crate::metrics::spawn_http_server(metrics_addr, handle, Arc::clone(&ctx));
+        crate::metrics::spawn_stats_poller(engine.clone(), Arc::clone(&ctx), stats_poll_interval);
     }
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
@@ -382,7 +390,7 @@ pub async fn run_concurrent(
     max_memory: Option<usize>,
     eviction_policy: EvictionPolicy,
     max_connections: Option<usize>,
-    metrics_enabled: bool,
+    metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
@@ -409,6 +417,7 @@ pub async fn run_concurrent(
 
     let tls_listener = setup_tls_listener(tls).await?;
 
+    let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
@@ -427,11 +436,13 @@ pub async fn run_concurrent(
         config_path,
         cluster: None,
         limits,
+        memory_used_bytes: MemoryUsedBytes::new(),
         monitor_tx: tokio::sync::broadcast::channel(256).0,
     });
 
-    if metrics_enabled {
-        crate::metrics::spawn_stats_poller(engine.clone(), stats_poll_interval);
+    if let Some((metrics_addr, handle)) = metrics {
+        crate::metrics::spawn_http_server(metrics_addr, handle, Arc::clone(&ctx));
+        crate::metrics::spawn_stats_poller(engine.clone(), Arc::clone(&ctx), stats_poll_interval);
     }
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));

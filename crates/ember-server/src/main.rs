@@ -522,13 +522,17 @@ async fn main() {
         .connection_limits()
         .unwrap_or_else(|e| exit_err(format!("invalid connection limit: {e}")));
 
-    // install prometheus metrics exporter if metrics-port is set
-    if let Some(metrics_port) = cfg.metrics_port() {
+    // install prometheus recorder and prepare HTTP server address
+    let metrics_handle = if let Some(metrics_port) = cfg.metrics_port() {
         let metrics_addr = parse_bind_addr(&cfg.bind, metrics_port, "metrics");
-        if let Err(e) = metrics::install_exporter(metrics_addr) {
-            exit_err(format!("failed to start metrics exporter: {e}"));
-        }
-    }
+        let handle = match metrics::install_recorder() {
+            Ok(h) => h,
+            Err(e) => exit_err(format!("failed to install metrics recorder: {e}")),
+        };
+        Some((metrics_addr, handle))
+    } else {
+        None
+    };
 
     let slowlog_config = slowlog::SlowLogConfig {
         slower_than: std::time::Duration::from_micros(cfg.slowlog_log_slower_than.max(0) as u64),
@@ -757,7 +761,6 @@ async fn main() {
     let config_registry = Arc::new(cfg.to_registry());
 
     let requirepass = cfg.requirepass();
-    let metrics_enabled = cfg.metrics_port().is_some();
 
     let config_path = args.config.clone();
 
@@ -769,7 +772,7 @@ async fn main() {
             max_memory,
             eviction_policy,
             Some(cfg.maxclients),
-            metrics_enabled,
+            metrics_handle,
             slowlog_config,
             requirepass,
             tls_config,
@@ -786,7 +789,7 @@ async fn main() {
             shard_count,
             engine_config,
             Some(cfg.maxclients),
-            metrics_enabled,
+            metrics_handle,
             slowlog_config,
             requirepass,
             tls_config,
