@@ -130,19 +130,12 @@ impl ReplicationServer {
     ///
     /// Runs indefinitely in the background; returns immediately after
     /// spawning the accept loop task.
-    pub async fn start(
-        engine: Arc<Engine>,
-        primary_id: String,
-        port: u16,
-    ) -> std::io::Result<()> {
+    pub async fn start(engine: Arc<Engine>, primary_id: String, port: u16) -> std::io::Result<()> {
         let bind_addr = format!("0.0.0.0:{port}");
         let listener = TcpListener::bind(&bind_addr).await?;
         info!(port, "replication server listening");
 
-        let server = Arc::new(Self {
-            engine,
-            primary_id,
-        });
+        let server = Arc::new(Self { engine, primary_id });
 
         tokio::spawn(async move {
             loop {
@@ -191,9 +184,7 @@ impl ReplicationServer {
             write_u8(&mut stream, STATUS_SHARD_MISMATCH).await?;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "shard count mismatch: replica={replica_shards} primary={our_shards}"
-                ),
+                format!("shard count mismatch: replica={replica_shards} primary={our_shards}"),
             ));
         }
         write_u8(&mut stream, STATUS_OK).await?;
@@ -203,7 +194,9 @@ impl ReplicationServer {
         let mut rx = match self.engine.subscribe_replication() {
             Some(rx) => rx,
             None => {
-                return Err(std::io::Error::other("replication channel not configured on this engine"));
+                return Err(std::io::Error::other(
+                    "replication channel not configured on this engine",
+                ));
             }
         };
 
@@ -220,7 +213,9 @@ impl ReplicationServer {
             let (shard_id, data) = match resp {
                 ShardResponse::SnapshotData { shard_id, data } => (shard_id, data),
                 other => {
-                    return Err(std::io::Error::other(format!("unexpected shard response: {other:?}")));
+                    return Err(std::io::Error::other(format!(
+                        "unexpected shard response: {other:?}"
+                    )));
                 }
             };
 
@@ -251,10 +246,7 @@ impl ReplicationServer {
                         std::io::Error::other(format!("record serialization failed: {e}"))
                     })?;
                     let record_len = u32::try_from(record_bytes.len()).map_err(|_| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "record too large",
-                        )
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "record too large")
                     })?;
 
                     write_u8(&mut stream, MSG_RECORD).await?;
@@ -311,16 +303,14 @@ impl ReplicationClient {
         loop {
             info!(primary = %self.primary_addr, "connecting to primary for replication");
             match TcpStream::connect(self.primary_addr).await {
-                Ok(stream) => {
-                    match self.sync(stream).await {
-                        Ok(()) => {
-                            info!("replication connection ended cleanly");
-                        }
-                        Err(e) => {
-                            warn!("replication error: {e}");
-                        }
+                Ok(stream) => match self.sync(stream).await {
+                    Ok(()) => {
+                        info!("replication connection ended cleanly");
                     }
-                }
+                    Err(e) => {
+                        warn!("replication error: {e}");
+                    }
+                },
                 Err(e) => {
                     warn!(primary = %self.primary_addr, "failed to connect to primary: {e}");
                 }
@@ -660,8 +650,7 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             None
         }
         #[cfg(feature = "protobuf")]
-        AofRecord::ProtoSet { .. }
-        | AofRecord::ProtoRegister { .. } => {
+        AofRecord::ProtoSet { .. } | AofRecord::ProtoRegister { .. } => {
             // protobuf replication not yet supported
             None
         }
@@ -713,7 +702,13 @@ mod tests {
         };
         let req = aof_record_to_shard_request(&record).expect("Set should map to ShardRequest");
         match req {
-            ShardRequest::Set { key, value, expire, nx, xx } => {
+            ShardRequest::Set {
+                key,
+                value,
+                expire,
+                nx,
+                xx,
+            } => {
                 assert_eq!(key, "foo");
                 assert_eq!(value, Bytes::from("bar"));
                 assert_eq!(expire, Some(Duration::from_millis(5000)));

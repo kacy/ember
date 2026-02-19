@@ -1778,9 +1778,7 @@ async fn execute(
                     return Frame::Error(format!("MOVED {slot} {addr}"));
                 }
             }
-            return Frame::Error(
-                "READONLY You can't write against a read only replica.".into(),
-            );
+            return Frame::Error("READONLY You can't write against a read only replica.".into());
         }
     }
 

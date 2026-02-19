@@ -998,9 +998,9 @@ fn parse_set_options(
                 }
                 let amount = parse_u64(&args[idx], cmd)?;
                 if amount == 0 {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        format!("invalid expire time in '{cmd}' command"),
-                    ));
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "invalid expire time in '{cmd}' command"
+                    )));
                 }
                 expire = Some(SetExpire::Ex(amount));
                 idx += 1;
@@ -1012,9 +1012,9 @@ fn parse_set_options(
                 }
                 let amount = parse_u64(&args[idx], cmd)?;
                 if amount == 0 {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        format!("invalid expire time in '{cmd}' command"),
-                    ));
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "invalid expire time in '{cmd}' command"
+                    )));
                 }
                 expire = Some(SetExpire::Px(amount));
                 idx += 1;
@@ -2122,9 +2122,9 @@ fn parse_vector_flags(
             "METRIC" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        format!("{cmd}: METRIC requires a value"),
-                    ));
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd}: METRIC requires a value"
+                    )));
                 }
                 let val = extract_string(&args[idx])?.to_ascii_uppercase();
                 metric = match val.as_str() {
@@ -2142,9 +2142,9 @@ fn parse_vector_flags(
             "QUANT" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        format!("{cmd}: QUANT requires a value"),
-                    ));
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd}: QUANT requires a value"
+                    )));
                 }
                 let val = extract_string(&args[idx])?.to_ascii_uppercase();
                 quantization = match val.as_str() {
@@ -2162,9 +2162,9 @@ fn parse_vector_flags(
             "M" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        format!("{cmd}: M requires a value"),
-                    ));
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd}: M requires a value"
+                    )));
                 }
                 let m = parse_u64(&args[idx], cmd)?;
                 if m > MAX_HNSW_PARAM {
@@ -2178,9 +2178,9 @@ fn parse_vector_flags(
             "EF" => {
                 idx += 1;
                 if idx >= args.len() {
-                    return Err(ProtocolError::InvalidCommandFrame(
-                        format!("{cmd}: EF requires a value"),
-                    ));
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd}: EF requires a value"
+                    )));
                 }
                 let ef = parse_u64(&args[idx], cmd)?;
                 if ef > MAX_HNSW_PARAM {
@@ -5260,10 +5260,10 @@ mod tests {
     #[test]
     fn vadd_batch_single_entry() {
         assert_eq!(
-            Command::from_frame(cmd(&["VADD_BATCH", "vecs", "DIM", "1", "x", "3.14"])).unwrap(),
+            Command::from_frame(cmd(&["VADD_BATCH", "vecs", "DIM", "1", "x", "1.5"])).unwrap(),
             Command::VAddBatch {
                 key: "vecs".into(),
-                entries: vec![("x".into(), vec![3.14])],
+                entries: vec![("x".into(), vec![1.5])],
                 dim: 1,
                 metric: 0,
                 quantization: 0,
@@ -5553,28 +5553,43 @@ mod tests {
             xx: false,
         }
         .is_write());
-        assert!(Command::Del { keys: vec!["k".into()] }.is_write());
+        assert!(Command::Del {
+            keys: vec!["k".into()]
+        }
+        .is_write());
         assert!(Command::Incr { key: "k".into() }.is_write());
         assert!(Command::HSet {
             key: "k".into(),
             fields: vec![],
         }
         .is_write());
-        assert!(Command::LPush { key: "k".into(), values: vec![] }.is_write());
+        assert!(Command::LPush {
+            key: "k".into(),
+            values: vec![]
+        }
+        .is_write());
         assert!(Command::ZAdd {
             key: "k".into(),
             flags: crate::command::ZAddFlags::default(),
             members: vec![],
         }
         .is_write());
-        assert!(Command::SAdd { key: "k".into(), members: vec![] }.is_write());
+        assert!(Command::SAdd {
+            key: "k".into(),
+            members: vec![]
+        }
+        .is_write());
         assert!(Command::FlushDb { async_mode: false }.is_write());
     }
 
     #[test]
     fn is_write_returns_false_for_reads() {
         assert!(!Command::Get { key: "k".into() }.is_write());
-        assert!(!Command::HGet { key: "k".into(), field: "f".into() }.is_write());
+        assert!(!Command::HGet {
+            key: "k".into(),
+            field: "f".into()
+        }
+        .is_write());
         assert!(!Command::Ping(None).is_write());
         assert!(!Command::ClusterInfo.is_write());
         assert!(!Command::DbSize.is_write());
@@ -5583,11 +5598,17 @@ mod tests {
     #[test]
     fn primary_key_returns_first_key() {
         assert_eq!(
-            Command::Get { key: "hello".into() }.primary_key(),
+            Command::Get {
+                key: "hello".into()
+            }
+            .primary_key(),
             Some("hello")
         );
         assert_eq!(
-            Command::Del { keys: vec!["a".into(), "b".into()] }.primary_key(),
+            Command::Del {
+                keys: vec!["a".into(), "b".into()]
+            }
+            .primary_key(),
             Some("a")
         );
         assert_eq!(Command::Ping(None).primary_key(), None);

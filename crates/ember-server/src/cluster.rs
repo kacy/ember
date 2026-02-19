@@ -915,9 +915,7 @@ impl ClusterCoordinator {
             let total = state
                 .nodes
                 .values()
-                .filter(|n| {
-                    n.role == NodeRole::Primary && !n.flags.fail && n.id != failed_primary
-                })
+                .filter(|n| n.role == NodeRole::Primary && !n.flags.fail && n.id != failed_primary)
                 .count();
             let still_failed = state
                 .nodes
@@ -973,7 +971,10 @@ impl ClusterCoordinator {
         let mut guard = self.election.lock().await;
         if let Some(ref e) = *guard {
             if e.inner.epoch == epoch && !e.inner.is_promoted() {
-                warn!("election: timed out for epoch {} without reaching quorum", epoch);
+                warn!(
+                    "election: timed out for epoch {} without reaching quorum",
+                    epoch
+                );
                 *guard = None;
             }
         }
@@ -1022,12 +1023,7 @@ impl ClusterCoordinator {
     ///
     /// If this node is the intended candidate and has an in-progress election,
     /// records the vote. Triggers promotion when quorum is reached.
-    async fn handle_vote_granted(
-        self: &Arc<Self>,
-        from: NodeId,
-        candidate: NodeId,
-        epoch: u64,
-    ) {
+    async fn handle_vote_granted(self: &Arc<Self>, from: NodeId, candidate: NodeId, epoch: u64) {
         if candidate != self.local_id {
             return; // not meant for us
         }
@@ -1068,24 +1064,14 @@ impl ClusterCoordinator {
             let state = self.state.read().await;
             let local = match state.nodes.get(&self.local_id) {
                 Some(n) => n,
-                None => {
-                    return Frame::Error(
-                        "ERR local node not found in cluster state".into(),
-                    )
-                }
+                None => return Frame::Error("ERR local node not found in cluster state".into()),
             };
             if local.role != NodeRole::Replica {
-                return Frame::Error(
-                    "ERR You should send CLUSTER FAILOVER to a replica".into(),
-                );
+                return Frame::Error("ERR You should send CLUSTER FAILOVER to a replica".into());
             }
             match local.replicates {
                 Some(id) => id,
-                None => {
-                    return Frame::Error(
-                        "ERR No primary configured for this replica".into(),
-                    )
-                }
+                None => return Frame::Error("ERR No primary configured for this replica".into()),
             }
         };
 
@@ -1418,8 +1404,15 @@ impl ClusterCoordinator {
             enum PostAction {
                 None,
                 StartElection(NodeId),
-                HandleVoteRequest { candidate: NodeId, epoch: u64 },
-                HandleVoteGranted { from: NodeId, candidate: NodeId, epoch: u64 },
+                HandleVoteRequest {
+                    candidate: NodeId,
+                    epoch: u64,
+                },
+                HandleVoteGranted {
+                    from: NodeId,
+                    candidate: NodeId,
+                    epoch: u64,
+                },
             }
 
             while let Some(event) = event_rx.recv().await {
@@ -2187,10 +2180,16 @@ mod tests {
         }
 
         let resp = coord.cluster_replicate(&primary_id.0.to_string()).await;
-        assert!(matches!(resp, Frame::Simple(_)), "expected OK, got {resp:?}");
+        assert!(
+            matches!(resp, Frame::Simple(_)),
+            "expected OK, got {resp:?}"
+        );
 
         // local node should now be a replica
-        assert!(coord.is_replica().await, "node should be a replica after REPLICATE");
+        assert!(
+            coord.is_replica().await,
+            "node should be a replica after REPLICATE"
+        );
 
         // local node's replicates field should point to primary
         let state = coord.state.read().await;
@@ -2212,7 +2211,10 @@ mod tests {
     #[tokio::test]
     async fn is_replica_returns_false_initially() {
         let (coord, _rx) = test_coordinator();
-        assert!(!coord.is_replica().await, "new coordinator should be a primary");
+        assert!(
+            !coord.is_replica().await,
+            "new coordinator should be a primary"
+        );
     }
 
     #[tokio::test]
@@ -2256,14 +2258,26 @@ mod tests {
 
         // build a replica coordinator with the same state
         let replica_addr_sa: SocketAddr = "127.0.0.1:6380".parse().unwrap();
-        let (replica_coord, _rx2) =
-            ClusterCoordinator::new(replica_id, replica_addr_sa, GossipConfig::default(), false, None)
-                .unwrap();
+        let (replica_coord, _rx2) = ClusterCoordinator::new(
+            replica_id,
+            replica_addr_sa,
+            GossipConfig::default(),
+            false,
+            None,
+        )
+        .unwrap();
 
         // manually set up the replica's state
         {
             let mut state = replica_coord.state.write().await;
-            let primary_node = coord.state.read().await.nodes.get(&primary_id).unwrap().clone();
+            let primary_node = coord
+                .state
+                .read()
+                .await
+                .nodes
+                .get(&primary_id)
+                .unwrap()
+                .clone();
             state.add_node(primary_node);
             // set this node as a replica of primary
             if let Some(local) = state.nodes.get_mut(&replica_id) {
@@ -2278,7 +2292,10 @@ mod tests {
 
         // TAKEOVER: should succeed since no Raft is needed
         let result = replica_coord.cluster_failover(false, true).await;
-        assert!(matches!(result, Frame::Simple(_)), "expected OK, got {result:?}");
+        assert!(
+            matches!(result, Frame::Simple(_)),
+            "expected OK, got {result:?}"
+        );
 
         // verify the replica is now a primary
         assert!(
@@ -2349,7 +2366,10 @@ mod tests {
         // set up coord as a replica
         {
             let mut state = coord.state.write().await;
-            state.add_node(ClusterNode::new_primary(primary_id, "127.0.0.1:6379".parse().unwrap()));
+            state.add_node(ClusterNode::new_primary(
+                primary_id,
+                "127.0.0.1:6379".parse().unwrap(),
+            ));
             if let Some(n) = state.nodes.get_mut(&replica_id) {
                 n.role = NodeRole::Replica;
                 n.replicates = Some(primary_id);
@@ -2383,12 +2403,19 @@ mod tests {
         // set up coord as a replica with two peers owning all slots
         {
             let mut state = coord.state.write().await;
-            let mut primary_node = ClusterNode::new_primary(primary_id, "127.0.0.1:6379".parse().unwrap());
+            let mut primary_node =
+                ClusterNode::new_primary(primary_id, "127.0.0.1:6379".parse().unwrap());
             primary_node.slots = vec![SlotRange::new(0, 16383)];
             primary_node.flags.fail = true; // mark as failed
             state.add_node(primary_node.clone());
-            state.add_node(ClusterNode::new_primary(voter1, "127.0.0.1:6382".parse().unwrap()));
-            state.add_node(ClusterNode::new_primary(voter2, "127.0.0.1:6383".parse().unwrap()));
+            state.add_node(ClusterNode::new_primary(
+                voter1,
+                "127.0.0.1:6382".parse().unwrap(),
+            ));
+            state.add_node(ClusterNode::new_primary(
+                voter2,
+                "127.0.0.1:6383".parse().unwrap(),
+            ));
             // assign slots to primary
             for slot in 0..16384u16 {
                 state.slot_map.assign(slot, primary_id);
@@ -2411,10 +2438,18 @@ mod tests {
 
         // first vote: not yet promoted
         coord.handle_vote_granted(voter1, replica_id, 1).await;
-        assert!(!coord.is_replica().await || {
-            // either still replica (not yet quorum) or promoted — check election
-            coord.election.lock().await.as_ref().map(|e| !e.inner.is_promoted()).unwrap_or(true)
-        });
+        assert!(
+            !coord.is_replica().await || {
+                // either still replica (not yet quorum) or promoted — check election
+                coord
+                    .election
+                    .lock()
+                    .await
+                    .as_ref()
+                    .map(|e| !e.inner.is_promoted())
+                    .unwrap_or(true)
+            }
+        );
 
         // second vote: quorum reached
         coord.handle_vote_granted(voter2, replica_id, 1).await;

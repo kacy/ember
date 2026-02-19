@@ -257,7 +257,10 @@ async fn cluster_replicate_self_rejected() {
     let mut c = server.connect().await;
 
     // fetch our own node ID first
-    let my_id = c.get_bulk(&["CLUSTER", "MYID"]).await.expect("MYID returned nil");
+    let my_id = c
+        .get_bulk(&["CLUSTER", "MYID"])
+        .await
+        .expect("MYID returned nil");
     let err = c.err(&["CLUSTER", "REPLICATE", &my_id]).await;
     assert!(
         err.contains("Cannot replicate self"),
@@ -465,7 +468,7 @@ async fn cluster_moved_redirect() {
             // the redirect port must be one of our cluster nodes
             let redirected_port: u16 = msg
                 .split(':')
-                .last()
+                .next_back()
                 .and_then(|p| p.parse().ok())
                 .expect("MOVED should include a valid port");
             assert!(

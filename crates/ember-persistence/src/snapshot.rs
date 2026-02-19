@@ -1031,9 +1031,7 @@ fn serialize_entry(entry: &SnapEntry) -> Result<Vec<u8>, FormatError> {
 
 /// Reads a single entry from a cursor and also returns the raw bytes
 /// used for CRC computation.
-fn read_entry_with_bytes(
-    r: &mut io::Cursor<&[u8]>,
-) -> Result<(SnapEntry, Vec<u8>), FormatError> {
+fn read_entry_with_bytes(r: &mut io::Cursor<&[u8]>) -> Result<(SnapEntry, Vec<u8>), FormatError> {
     let mut entry_bytes = Vec::new();
 
     let key_bytes = format::read_bytes(r)?;
@@ -1156,7 +1154,14 @@ fn read_entry_with_bytes(
     let expire_ms = format::read_i64(r)?;
     format::write_i64(&mut entry_bytes, expire_ms)?;
 
-    Ok((SnapEntry { key, value, expire_ms }, entry_bytes))
+    Ok((
+        SnapEntry {
+            key,
+            value,
+            expire_ms,
+        },
+        entry_bytes,
+    ))
 }
 
 /// Returns the snapshot file path for a given shard in a data directory.

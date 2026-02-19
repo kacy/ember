@@ -9,7 +9,9 @@ use tokio::sync::broadcast;
 use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::keyspace::ShardConfig;
-use crate::shard::{self, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse};
+use crate::shard::{
+    self, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse,
+};
 
 /// Channel buffer size per shard. 256 is large enough to absorb
 /// bursts without putting meaningful back-pressure on connections.
