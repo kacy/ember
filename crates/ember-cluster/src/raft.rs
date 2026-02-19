@@ -29,7 +29,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, RwLock};
 use tracing::{debug, warn};
 
-use crate::raft_transport::{read_frame, write_frame, RaftRpc, RaftRpcResponse};
+use crate::auth::ClusterSecret;
+use crate::raft_transport::{
+    read_frame, read_frame_authenticated, write_frame, write_frame_authenticated, RaftRpc,
+    RaftRpcResponse,
+};
 use crate::slots::SLOT_COUNT;
 use crate::{NodeId, SlotRange};
 
@@ -545,6 +549,7 @@ impl RaftStorage<TypeConfig> for Arc<Storage> {
 /// one heartbeat per 500 ms per follower.
 pub struct RaftNetworkClient {
     target_addr: SocketAddr,
+    secret: Option<Arc<ClusterSecret>>,
 }
 
 impl RaftNetwork<TypeConfig> for RaftNetworkClient {
@@ -617,15 +622,25 @@ impl RaftNetworkClient {
 
     async fn send_rpc(&self, rpc: RaftRpc) -> std::io::Result<RaftRpcResponse> {
         let mut stream = TcpStream::connect(self.target_addr).await?;
-        write_frame(&mut stream, &rpc).await?;
-        read_frame(&mut stream).await
+        match &self.secret {
+            Some(secret) => {
+                write_frame_authenticated(&mut stream, &rpc, secret).await?;
+                read_frame_authenticated(&mut stream, secret).await
+            }
+            None => {
+                write_frame(&mut stream, &rpc).await?;
+                read_frame(&mut stream).await
+            }
+        }
     }
 }
 
 /// Factory that creates per-peer `RaftNetworkClient` instances.
 ///
 /// The `node.addr` field in `BasicNode` must contain `"ip:raft_port"`.
-pub struct RaftNetworkFactory;
+pub struct RaftNetworkFactory {
+    secret: Option<Arc<ClusterSecret>>,
+}
 
 impl RaftNetworkFactoryTrait<TypeConfig> for RaftNetworkFactory {
     type Network = RaftNetworkClient;
@@ -635,7 +650,10 @@ impl RaftNetworkFactoryTrait<TypeConfig> for RaftNetworkFactory {
             .addr
             .parse()
             .unwrap_or_else(|_| "127.0.0.1:0".parse().unwrap());
-        RaftNetworkClient { target_addr }
+        RaftNetworkClient {
+            target_addr,
+            secret: self.secret.clone(),
+        }
     }
 }
 
@@ -645,7 +663,12 @@ impl RaftNetworkFactoryTrait<TypeConfig> for RaftNetworkFactory {
 ///
 /// Reads one `RaftRpc` frame, dispatches to the local Raft instance,
 /// writes one `RaftRpcResponse` frame, then closes the connection.
-pub(crate) fn spawn_raft_listener(raft: Raft<TypeConfig>, bind_addr: SocketAddr) {
+/// When `secret` is `Some`, authenticated framing is used.
+pub(crate) fn spawn_raft_listener(
+    raft: Raft<TypeConfig>,
+    bind_addr: SocketAddr,
+    secret: Option<Arc<ClusterSecret>>,
+) {
     tokio::spawn(async move {
         let listener = match TcpListener::bind(bind_addr).await {
             Ok(l) => l,
@@ -667,13 +690,23 @@ pub(crate) fn spawn_raft_listener(raft: Raft<TypeConfig>, bind_addr: SocketAddr)
             };
 
             let raft = raft.clone();
+            let secret = secret.clone();
             tokio::spawn(async move {
-                let rpc: RaftRpc = match read_frame(&mut stream).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        debug!("raft read error from {peer}: {e}");
-                        return;
-                    }
+                let rpc: RaftRpc = match &secret {
+                    Some(s) => match read_frame_authenticated(&mut stream, s).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            debug!("raft auth/read error from {peer}: {e}");
+                            return;
+                        }
+                    },
+                    None => match read_frame(&mut stream).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            debug!("raft read error from {peer}: {e}");
+                            return;
+                        }
+                    },
                 };
 
                 let response = match rpc {
@@ -712,7 +745,11 @@ pub(crate) fn spawn_raft_listener(raft: Raft<TypeConfig>, bind_addr: SocketAddr)
                     }
                 };
 
-                if let Err(e) = write_frame(&mut stream, &response).await {
+                let write_result = match &secret {
+                    Some(s) => write_frame_authenticated(&mut stream, &response, s).await,
+                    None => write_frame(&mut stream, &response).await,
+                };
+                if let Err(e) = write_result {
                     debug!("raft write error to {peer}: {e}");
                 }
             });
@@ -757,11 +794,13 @@ impl RaftNode {
     /// Starts a Raft node bound to `raft_addr`.
     ///
     /// Creates the Raft consensus engine, wraps `storage` with the openraft
-    /// adaptor, and spawns the TCP listener for inbound RPCs.
+    /// adaptor, and spawns the TCP listener for inbound RPCs. When `secret`
+    /// is `Some`, all Raft frames are authenticated with HMAC-SHA256.
     pub async fn start(
         local_raft_id: u64,
         raft_addr: SocketAddr,
         storage: Arc<Storage>,
+        secret: Option<Arc<ClusterSecret>>,
     ) -> Result<Self, openraft::error::Fatal<u64>> {
         let config = Arc::new(
             Config {
@@ -777,16 +816,20 @@ impl RaftNode {
 
         let (log_store, state_machine) = Adaptor::new(Arc::clone(&storage));
 
+        let network_factory = RaftNetworkFactory {
+            secret: secret.clone(),
+        };
+
         let raft = Raft::new(
             local_raft_id,
             config,
-            RaftNetworkFactory,
+            network_factory,
             log_store,
             state_machine,
         )
         .await?;
 
-        spawn_raft_listener(raft.clone(), raft_addr);
+        spawn_raft_listener(raft.clone(), raft_addr, secret);
 
         Ok(Self {
             raft,

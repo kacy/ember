@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use crate::auth::{ClusterSecret, TAG_LEN};
 use crate::{NodeId, SlotRange};
 
 /// Maximum number of members in a Welcome message or updates in a Ping/Ack.
@@ -349,6 +350,35 @@ impl GossipMessage {
                 format!("unknown message type: {other}"),
             )),
         }
+    }
+
+    /// Encodes the message with a trailing HMAC-SHA256 tag.
+    pub fn encode_authenticated(&self, secret: &ClusterSecret) -> Bytes {
+        let mut buf = BytesMut::with_capacity(256);
+        self.encode_into(&mut buf);
+        let tag = secret.sign(&buf);
+        buf.extend_from_slice(&tag);
+        buf.freeze()
+    }
+
+    /// Decodes a message, verifying the trailing HMAC-SHA256 tag first.
+    ///
+    /// Returns an error if the buffer is too short or the tag doesn't match.
+    pub fn decode_authenticated(buf: &[u8], secret: &ClusterSecret) -> io::Result<Self> {
+        if buf.len() < TAG_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "message too short for auth tag",
+            ));
+        }
+        let (payload, tag) = buf.split_at(buf.len() - TAG_LEN);
+        if !secret.verify(payload, tag) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cluster auth failed",
+            ));
+        }
+        Self::decode(payload)
     }
 }
 
