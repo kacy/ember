@@ -3417,6 +3417,72 @@ mod tests {
         );
     }
 
+    // --- blpop ---
+
+    #[test]
+    fn blpop_single_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BLPOP", "mylist", "5"])).unwrap(),
+            Command::BLPop {
+                keys: vec!["mylist".into()],
+                timeout_secs: 5.0,
+            },
+        );
+    }
+
+    #[test]
+    fn blpop_multi_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BLPOP", "a", "b", "c", "0"])).unwrap(),
+            Command::BLPop {
+                keys: vec!["a".into(), "b".into(), "c".into()],
+                timeout_secs: 0.0,
+            },
+        );
+    }
+
+    #[test]
+    fn blpop_float_timeout() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BLPOP", "q", "1.5"])).unwrap(),
+            Command::BLPop {
+                keys: vec!["q".into()],
+                timeout_secs: 1.5,
+            },
+        );
+    }
+
+    #[test]
+    fn blpop_wrong_arity() {
+        let err = Command::from_frame(cmd(&["BLPOP"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn blpop_negative_timeout() {
+        let err = Command::from_frame(cmd(&["BLPOP", "k", "-1"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    // --- brpop ---
+
+    #[test]
+    fn brpop_single_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["BRPOP", "mylist", "10"])).unwrap(),
+            Command::BRPop {
+                keys: vec!["mylist".into()],
+                timeout_secs: 10.0,
+            },
+        );
+    }
+
+    #[test]
+    fn brpop_wrong_arity() {
+        let err = Command::from_frame(cmd(&["BRPOP"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
     // --- lrange ---
 
     #[test]

@@ -3360,4 +3360,163 @@ mod tests {
         assert_eq!(ks.hget("myhash2", "f1").unwrap(), Some(Bytes::from("v1")));
         assert_eq!(ks.hget("myhash2", "f2").unwrap(), Some(Bytes::from("v2")));
     }
+
+    // --- BLPOP / BRPOP ---
+
+    #[tokio::test]
+    async fn blpop_immediate_when_list_has_data() {
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+
+        // push data first
+        let resp = handle
+            .send(ShardRequest::LPush {
+                key: "mylist".into(),
+                values: vec![Bytes::from("hello")],
+            })
+            .await
+            .unwrap();
+        assert!(matches!(resp, ShardResponse::Len(1)));
+
+        // BLPop should return immediately
+        let (tx, mut rx) = mpsc::channel(1);
+        let _ = handle
+            .dispatch(ShardRequest::BLPop {
+                key: "mylist".into(),
+                waiter: tx,
+            })
+            .await;
+
+        // give the shard a moment to process
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let result = rx.try_recv();
+        assert!(result.is_ok());
+        let (key, data) = result.unwrap();
+        assert_eq!(key, "mylist");
+        assert_eq!(data, Bytes::from("hello"));
+    }
+
+    #[tokio::test]
+    async fn blpop_blocks_then_wakes_on_push() {
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+
+        // BLPop on empty list — registers waiter
+        let (tx, mut rx) = mpsc::channel(1);
+        let _ = handle
+            .dispatch(ShardRequest::BLPop {
+                key: "q".into(),
+                waiter: tx,
+            })
+            .await;
+
+        // give time for the shard to process
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // nothing yet
+        assert!(rx.try_recv().is_err());
+
+        // push an element — should wake the waiter
+        let resp = handle
+            .send(ShardRequest::LPush {
+                key: "q".into(),
+                values: vec![Bytes::from("task1")],
+            })
+            .await
+            .unwrap();
+        assert!(matches!(resp, ShardResponse::Len(1)));
+
+        // waiter should have received the element
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
+        assert!(result.is_ok());
+        let (key, data) = result.unwrap().unwrap();
+        assert_eq!(key, "q");
+        assert_eq!(data, Bytes::from("task1"));
+    }
+
+    #[tokio::test]
+    async fn brpop_immediate_when_list_has_data() {
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+
+        // push data: list is [a, b]
+        handle
+            .send(ShardRequest::RPush {
+                key: "mylist".into(),
+                values: vec![Bytes::from("a"), Bytes::from("b")],
+            })
+            .await
+            .unwrap();
+
+        // BRPop should pop from the tail (returns "b")
+        let (tx, mut rx) = mpsc::channel(1);
+        let _ = handle
+            .dispatch(ShardRequest::BRPop {
+                key: "mylist".into(),
+                waiter: tx,
+            })
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let (key, data) = rx.try_recv().unwrap();
+        assert_eq!(key, "mylist");
+        assert_eq!(data, Bytes::from("b"));
+    }
+
+    #[tokio::test]
+    async fn blpop_waiter_dropped_on_timeout() {
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+
+        // BLPop on empty list, then drop the receiver (simulating timeout)
+        let (tx, rx) = mpsc::channel(1);
+        let _ = handle
+            .dispatch(ShardRequest::BLPop {
+                key: "q".into(),
+                waiter: tx,
+            })
+            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(rx);
+
+        // push should succeed without error (dead waiter is skipped)
+        let resp = handle
+            .send(ShardRequest::LPush {
+                key: "q".into(),
+                values: vec![Bytes::from("data")],
+            })
+            .await
+            .unwrap();
+        // the push adds 1 element. the waiter was dead so no pop happened.
+        assert!(matches!(resp, ShardResponse::Len(1)));
+    }
 }
