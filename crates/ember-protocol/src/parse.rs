@@ -559,14 +559,8 @@ mod tests {
         assert_eq!(parse_i64_bytes(b"0").unwrap(), 0);
         assert_eq!(parse_i64_bytes(b"42").unwrap(), 42);
         assert_eq!(parse_i64_bytes(b"-1").unwrap(), -1);
-        assert_eq!(
-            parse_i64_bytes(b"9223372036854775807").unwrap(),
-            i64::MAX
-        );
-        assert_eq!(
-            parse_i64_bytes(b"-9223372036854775808").unwrap(),
-            i64::MIN
-        );
+        assert_eq!(parse_i64_bytes(b"9223372036854775807").unwrap(), i64::MAX);
+        assert_eq!(parse_i64_bytes(b"-9223372036854775808").unwrap(), i64::MIN);
     }
 
     #[test]
