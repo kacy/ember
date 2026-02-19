@@ -50,6 +50,18 @@ fn read_string_list(r: &mut impl io::Read, field: &str) -> Result<Vec<String>, F
     Ok(items)
 }
 
+/// Reads a count-prefixed list of raw byte blobs: `[count: u32][bytes]*`.
+/// Used by LPUSH and RPUSH deserialization.
+fn read_bytes_list(r: &mut impl io::Read, label: &str) -> Result<Vec<Bytes>, FormatError> {
+    let count = format::read_u32(r)?;
+    format::validate_collection_count(count, label)?;
+    let mut items = Vec::with_capacity(format::capped_capacity(count));
+    for _ in 0..count {
+        items.push(Bytes::from(format::read_bytes(r)?));
+    }
+    Ok(items)
+}
+
 // -- record tags --
 // values are stable and must not change (on-disk format).
 
@@ -526,12 +538,7 @@ impl AofRecord {
             }
             TAG_LPUSH | TAG_RPUSH => {
                 let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
-                format::validate_collection_count(count, "list")?;
-                let mut values = Vec::with_capacity(format::capped_capacity(count));
-                for _ in 0..count {
-                    values.push(Bytes::from(format::read_bytes(&mut cursor)?));
-                }
+                let values = read_bytes_list(&mut cursor, "list")?;
                 if tag == TAG_LPUSH {
                     Ok(AofRecord::LPush { key, values })
                 } else {
