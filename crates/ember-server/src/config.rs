@@ -360,6 +360,20 @@ impl EmberConfig {
             parse_byte_size(&self.max_buffer_size)?
         };
 
+        // sanity checks — catch misconfiguration early rather than at runtime
+        if max_buf_size < self.read_buffer_capacity {
+            return Err(format!(
+                "max-buffer-size ({max_buf_size}) must be >= read-buffer-capacity ({})",
+                self.read_buffer_capacity
+            ));
+        }
+        if max_key_len == 0 {
+            return Err("max-key-len must be > 0".into());
+        }
+        if max_value_len == 0 {
+            return Err("max-value-len must be > 0".into());
+        }
+
         Ok(ConnectionLimits {
             buf_capacity: self.read_buffer_capacity,
             max_buf_size,
@@ -379,13 +393,21 @@ impl EmberConfig {
         let mut params = HashMap::new();
         params.insert("port".into(), self.port.to_string());
         params.insert("bind-address".into(), self.bind.clone());
-        params.insert("maxmemory".into(), if self.maxmemory.is_empty() {
-            "0".into()
-        } else {
-            parse_byte_size(&self.maxmemory).map(|v| v.to_string()).unwrap_or_else(|_| "0".into())
-        });
+        params.insert(
+            "maxmemory".into(),
+            if self.maxmemory.is_empty() {
+                "0".into()
+            } else {
+                parse_byte_size(&self.maxmemory)
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|_| "0".into())
+            },
+        );
         params.insert("maxmemory-policy".into(), self.maxmemory_policy.clone());
-        params.insert("appendonly".into(), if self.appendonly { "yes" } else { "no" }.into());
+        params.insert(
+            "appendonly".into(),
+            if self.appendonly { "yes" } else { "no" }.into(),
+        );
         params.insert("appendfsync".into(), self.appendfsync.clone());
         params.insert(
             "slowlog-log-slower-than".into(),
@@ -393,20 +415,50 @@ impl EmberConfig {
         );
         params.insert("slowlog-max-len".into(), self.slowlog_max_len.to_string());
         params.insert("maxclients".into(), self.maxclients.to_string());
-        params.insert("idle-timeout-secs".into(), self.idle_timeout_secs.to_string());
-        params.insert("max-pipeline-depth".into(), self.max_pipeline_depth.to_string());
-        params.insert("max-auth-failures".into(), self.max_auth_failures.to_string());
-        params.insert("active-expiry-interval-ms".into(), self.active_expiry_interval_ms.to_string());
-        params.insert("aof-fsync-interval-secs".into(), self.aof_fsync_interval_secs.to_string());
+        params.insert(
+            "idle-timeout-secs".into(),
+            self.idle_timeout_secs.to_string(),
+        );
+        params.insert(
+            "max-pipeline-depth".into(),
+            self.max_pipeline_depth.to_string(),
+        );
+        params.insert(
+            "max-auth-failures".into(),
+            self.max_auth_failures.to_string(),
+        );
+        params.insert(
+            "active-expiry-interval-ms".into(),
+            self.active_expiry_interval_ms.to_string(),
+        );
+        params.insert(
+            "aof-fsync-interval-secs".into(),
+            self.aof_fsync_interval_secs.to_string(),
+        );
         params.insert("max-key-len".into(), self.max_key_len.clone());
         params.insert("max-value-len".into(), self.max_value_len.clone());
-        params.insert("max-subscriptions-per-connection".into(), self.max_subscriptions_per_connection.to_string());
+        params.insert(
+            "max-subscriptions-per-connection".into(),
+            self.max_subscriptions_per_connection.to_string(),
+        );
         params.insert("max-pattern-len".into(), self.max_pattern_len.to_string());
-        params.insert("read-buffer-capacity".into(), self.read_buffer_capacity.to_string());
+        params.insert(
+            "read-buffer-capacity".into(),
+            self.read_buffer_capacity.to_string(),
+        );
         params.insert("max-buffer-size".into(), self.max_buffer_size.clone());
-        params.insert("shard-channel-buffer".into(), self.engine.shard_channel_buffer.to_string());
-        params.insert("replication-broadcast-capacity".into(), self.engine.replication_broadcast_capacity.to_string());
-        params.insert("stats-poll-interval-secs".into(), self.engine.stats_poll_interval_secs.to_string());
+        params.insert(
+            "shard-channel-buffer".into(),
+            self.engine.shard_channel_buffer.to_string(),
+        );
+        params.insert(
+            "replication-broadcast-capacity".into(),
+            self.engine.replication_broadcast_capacity.to_string(),
+        );
+        params.insert(
+            "stats-poll-interval-secs".into(),
+            self.engine.stats_poll_interval_secs.to_string(),
+        );
         ConfigRegistry::new(params)
     }
 
@@ -556,9 +608,7 @@ impl ConfigRegistry {
     pub fn set(&self, param: &str, value: &str) -> Result<(), String> {
         let key = param.to_ascii_lowercase();
         if !MUTABLE_PARAMS.contains(&key.as_str()) {
-            return Err(format!(
-                "ERR Unsupported CONFIG parameter: {param}"
-            ));
+            return Err(format!("ERR Unsupported CONFIG parameter: {param}"));
         }
 
         // validate numeric params before storing
@@ -622,9 +672,7 @@ impl ConfigRegistry {
         cfg.active_expiry_interval_ms = get("active-expiry-interval-ms", "100")
             .parse()
             .unwrap_or(100);
-        cfg.aof_fsync_interval_secs = get("aof-fsync-interval-secs", "1")
-            .parse()
-            .unwrap_or(1);
+        cfg.aof_fsync_interval_secs = get("aof-fsync-interval-secs", "1").parse().unwrap_or(1);
 
         // monitoring
         cfg.slowlog_log_slower_than = get("slowlog-log-slower-than", "10000")
@@ -639,22 +687,16 @@ impl ConfigRegistry {
             .parse()
             .unwrap_or(10_000);
         cfg.max_pattern_len = get("max-pattern-len", "256").parse().unwrap_or(256);
-        cfg.read_buffer_capacity = get("read-buffer-capacity", "4096")
-            .parse()
-            .unwrap_or(4096);
+        cfg.read_buffer_capacity = get("read-buffer-capacity", "4096").parse().unwrap_or(4096);
         cfg.max_buffer_size = get("max-buffer-size", "64mb");
 
         // engine internals
-        cfg.engine.shard_channel_buffer = get("shard-channel-buffer", "256")
+        cfg.engine.shard_channel_buffer = get("shard-channel-buffer", "256").parse().unwrap_or(256);
+        cfg.engine.replication_broadcast_capacity = get("replication-broadcast-capacity", "65536")
             .parse()
-            .unwrap_or(256);
-        cfg.engine.replication_broadcast_capacity =
-            get("replication-broadcast-capacity", "65536")
-                .parse()
-                .unwrap_or(65_536);
-        cfg.engine.stats_poll_interval_secs = get("stats-poll-interval-secs", "5")
-            .parse()
-            .unwrap_or(5);
+            .unwrap_or(65_536);
+        cfg.engine.stats_poll_interval_secs =
+            get("stats-poll-interval-secs", "5").parse().unwrap_or(5);
 
         drop(params); // release read lock before file I/O
 
@@ -952,6 +994,24 @@ mod tests {
         assert!(registry.set("maxclients", "not-a-number").is_err());
         assert!(registry.set("idle-timeout-secs", "abc").is_err());
         assert!(registry.set("slowlog-log-slower-than", "xyz").is_err());
+    }
+
+    #[test]
+    fn connection_limits_rejects_buffer_mismatch() {
+        let mut cfg = EmberConfig::default();
+        cfg.read_buffer_capacity = 1024 * 1024; // 1 MB
+        cfg.max_buffer_size = "512KB".into(); // 512 KB < 1 MB
+        let result = cfg.connection_limits();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be >="));
+    }
+
+    #[test]
+    fn connection_limits_rejects_zero_key_len() {
+        let mut cfg = EmberConfig::default();
+        cfg.max_key_len = "0".into();
+        let result = cfg.connection_limits();
+        assert!(result.is_err());
     }
 
     #[test]

@@ -232,7 +232,7 @@ where
                     if success {
                         authenticated = true;
                     } else {
-                        auth_failures += 1;
+                        auth_failures = auth_failures.saturating_add(1);
                         if auth_failures >= ctx.limits.max_auth_failures {
                             Frame::Error("ERR too many AUTH failures, closing connection".into())
                                 .serialize(&mut out);
@@ -241,8 +241,16 @@ where
                         }
                     }
                 } else if is_allowed_before_auth(&frame) {
-                    let response =
-                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                    let response = process(
+                        frame,
+                        &engine,
+                        ctx,
+                        slow_log,
+                        pubsub,
+                        &mut asking,
+                        peer_addr,
+                    )
+                    .await;
                     response.serialize(&mut out);
                 } else {
                     Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
@@ -268,8 +276,16 @@ where
                     handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
                     return Ok(());
                 }
-                let response =
-                    process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                let response = process(
+                    frame,
+                    &engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    &mut asking,
+                    peer_addr,
+                )
+                .await;
                 response.serialize(&mut out);
             }
             if !out.is_empty() {
@@ -287,8 +303,16 @@ where
                 if is_subscribe_frame(&frame) {
                     sub_frames.push(frame);
                 } else {
-                    let response =
-                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                    let response = process(
+                        frame,
+                        &engine,
+                        ctx,
+                        slow_log,
+                        pubsub,
+                        &mut asking,
+                        peer_addr,
+                    )
+                    .await;
                     response.serialize(&mut out);
                 }
             }
@@ -299,7 +323,8 @@ where
 
             // enter subscriber mode — this blocks until all subscriptions
             // are removed or the client disconnects
-            handle_subscriber_mode(&mut stream, &mut buf, &mut out, ctx, pubsub, sub_frames).await?;
+            handle_subscriber_mode(&mut stream, &mut buf, &mut out, ctx, pubsub, sub_frames)
+                .await?;
             return Ok(());
         }
 
@@ -317,8 +342,16 @@ where
                 } else if is_blocking_pop_frame(&frame) {
                     blocking_frame = Some(frame);
                 } else {
-                    let response =
-                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                    let response = process(
+                        frame,
+                        &engine,
+                        ctx,
+                        slow_log,
+                        pubsub,
+                        &mut asking,
+                        peer_addr,
+                    )
+                    .await;
                     response.serialize(&mut out);
                 }
             }
@@ -340,8 +373,16 @@ where
 
             // process any remaining frames after the blocking op
             for frame in remaining {
-                let response =
-                    process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                let response = process(
+                    frame,
+                    &engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    &mut asking,
+                    peer_addr,
+                )
+                .await;
                 response.serialize(&mut out);
             }
             if !out.is_empty() {
@@ -381,8 +422,16 @@ where
                 // pipeline path: dispatch all commands to shards, then collect
                 let mut pending = Vec::with_capacity(frames.len());
                 for frame in frames.drain(..) {
-                    let p =
-                        dispatch_command(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                    let p = dispatch_command(
+                        frame,
+                        &engine,
+                        ctx,
+                        slow_log,
+                        pubsub,
+                        &mut asking,
+                        peer_addr,
+                    )
+                    .await;
                     pending.push(p);
                 }
                 for p in pending {
@@ -445,17 +494,14 @@ async fn handle_frame_with_tx(
         }
         TransactionState::Queuing { queue, error } => {
             match cmd_name.as_deref() {
-                Some("MULTI") => {
-                    Frame::Error("ERR MULTI calls can not be nested".into())
-                }
+                Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
                 Some("EXEC") => {
                     if *error {
                         let q = std::mem::take(queue);
                         *tx_state = TransactionState::None;
                         drop(q);
                         Frame::Error(
-                            "EXECABORT Transaction discarded because of previous errors."
-                                .into(),
+                            "EXECABORT Transaction discarded because of previous errors.".into(),
                         )
                     } else {
                         let q = std::mem::take(queue);
@@ -464,7 +510,13 @@ async fn handle_frame_with_tx(
                         let mut results = Vec::with_capacity(q.len());
                         for queued_frame in q {
                             let response = process(
-                                queued_frame, engine, ctx, slow_log, pubsub, asking, peer_addr,
+                                queued_frame,
+                                engine,
+                                ctx,
+                                slow_log,
+                                pubsub,
+                                asking,
+                                peer_addr,
                             )
                             .await;
                             results.push(response);
@@ -484,7 +536,8 @@ async fn handle_frame_with_tx(
                         Ok(cmd) => {
                             // AUTH and QUIT execute immediately, not queued
                             if matches!(cmd, Command::Auth { .. } | Command::Quit) {
-                                process(frame, engine, ctx, slow_log, pubsub, asking, peer_addr).await
+                                process(frame, engine, ctx, slow_log, pubsub, asking, peer_addr)
+                                    .await
                             } else {
                                 queue.push(frame);
                                 Frame::Simple("QUEUED".into())
@@ -529,8 +582,7 @@ fn is_transaction_frame(frame: &Frame) -> bool {
 fn is_blocking_pop_frame(frame: &Frame) -> bool {
     if let Frame::Array(parts) = frame {
         if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"BLPOP")
-                || name.eq_ignore_ascii_case(b"BRPOP");
+            return name.eq_ignore_ascii_case(b"BLPOP") || name.eq_ignore_ascii_case(b"BRPOP");
         }
     }
     false
@@ -567,7 +619,9 @@ async fn handle_blocking_pop_cmd(
         Err(e) => return Frame::Error(format!("ERR {e}")),
     };
 
-    if let Some(err) = validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len) {
+    if let Some(err) =
+        validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
+    {
         return err;
     }
 
@@ -1153,7 +1207,9 @@ async fn dispatch_command(
     };
 
     // reject oversized keys/values before any further processing
-    if let Some(err) = validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len) {
+    if let Some(err) =
+        validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
+    {
         return PendingResponse::Immediate(err);
     }
 
@@ -2762,9 +2818,9 @@ async fn execute(
 
         // blocking list ops are handled by handle_blocking_pop_cmd in the
         // main loop; reaching here means they're inside a transaction.
-        Command::BLPop { .. } | Command::BRPop { .. } => Frame::Error(
-            "ERR blocking commands are not allowed inside transactions".into(),
-        ),
+        Command::BLPop { .. } | Command::BRPop { .. } => {
+            Frame::Error("ERR blocking commands are not allowed inside transactions".into())
+        }
 
         Command::Type { key } => {
             let idx = engine.shard_for_key(&key);
