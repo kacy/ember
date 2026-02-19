@@ -191,16 +191,13 @@ pub async fn run(
                     None => continue,
                 };
 
-                let engine = engine.clone();
-                let ctx = Arc::clone(&ctx);
-                let slow_log = Arc::clone(&slow_log);
-                let pubsub = Arc::clone(&pubsub);
+                let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
 
                 tokio::spawn(async move {
-                    if let Err(e) = connection::handle(stream, engine, &ctx, &slow_log, &pubsub).await {
+                    if let Err(e) = connection::handle(stream, h.engine, &h.ctx, &h.slow_log, &h.pubsub).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    on_connection_done(&ctx);
+                    on_connection_done(&h.ctx);
                     drop(permit);
                 });
             }
@@ -219,18 +216,15 @@ pub async fn run(
                     None => continue,
                 };
 
-                let engine = engine.clone();
-                let ctx = Arc::clone(&ctx);
-                let slow_log = Arc::clone(&slow_log);
-                let pubsub = Arc::clone(&pubsub);
+                let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
 
                 tokio::spawn(async move {
                     if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
-                        if let Err(e) = connection::handle(tls_stream, engine, &ctx, &slow_log, &pubsub).await {
+                        if let Err(e) = connection::handle(tls_stream, h.engine, &h.ctx, &h.slow_log, &h.pubsub).await {
                             error!("TLS connection error from {peer}: {e}");
                         }
                     }
-                    on_connection_done(&ctx);
+                    on_connection_done(&h.ctx);
                     drop(permit);
                 });
             }
@@ -311,6 +305,32 @@ async fn drain_connections(semaphore: &Arc<Semaphore>, max_conn: usize) {
     match tokio::time::timeout(Duration::from_secs(30), drain).await {
         Ok(_) => info!("all connections drained, shutting down"),
         Err(_) => warn!("shutdown timeout after 30s, forcing exit"),
+    }
+}
+
+/// Bundles the Arc handles cloned into every connection handler task.
+///
+/// Avoids repeating the same four clone lines in each arm of the accept loop.
+struct ConnectionHandles {
+    engine: Engine,
+    ctx: Arc<ServerContext>,
+    slow_log: Arc<SlowLog>,
+    pubsub: Arc<PubSubManager>,
+}
+
+impl ConnectionHandles {
+    fn new(
+        engine: &Engine,
+        ctx: &Arc<ServerContext>,
+        slow_log: &Arc<SlowLog>,
+        pubsub: &Arc<PubSubManager>,
+    ) -> Self {
+        Self {
+            engine: engine.clone(),
+            ctx: Arc::clone(ctx),
+            slow_log: Arc::clone(slow_log),
+            pubsub: Arc::clone(pubsub),
+        }
     }
 }
 
@@ -450,18 +470,15 @@ pub async fn run_concurrent(
                 };
 
                 let keyspace = Arc::clone(&keyspace);
-                let engine = engine.clone();
-                let ctx = Arc::clone(&ctx);
-                let slow_log = Arc::clone(&slow_log);
-                let pubsub = Arc::clone(&pubsub);
+                let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
 
                 tokio::spawn(async move {
                     if let Err(e) = crate::concurrent_handler::handle(
-                        stream, keyspace, engine, &ctx, &slow_log, &pubsub
+                        stream, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
                     ).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    on_connection_done(&ctx);
+                    on_connection_done(&h.ctx);
                     drop(permit);
                 });
             }
@@ -481,20 +498,17 @@ pub async fn run_concurrent(
                 };
 
                 let keyspace = Arc::clone(&keyspace);
-                let engine = engine.clone();
-                let ctx = Arc::clone(&ctx);
-                let slow_log = Arc::clone(&slow_log);
-                let pubsub = Arc::clone(&pubsub);
+                let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
 
                 tokio::spawn(async move {
                     if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
                         if let Err(e) = crate::concurrent_handler::handle(
-                            tls_stream, keyspace, engine, &ctx, &slow_log, &pubsub
+                            tls_stream, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
                         ).await {
                             error!("TLS connection error from {peer}: {e}");
                         }
                     }
-                    on_connection_done(&ctx);
+                    on_connection_done(&h.ctx);
                     drop(permit);
                 });
             }
