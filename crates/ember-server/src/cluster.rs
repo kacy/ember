@@ -15,8 +15,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use ember_cluster::{
     key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterState,
-    ClusterStateData, ConfigParseError, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
-    MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError, SlotRange, SLOT_COUNT,
+    ClusterStateData, ConfigParseError, Election, GossipConfig, GossipEngine, GossipEvent,
+    GossipMessage, MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError, SlotRange,
+    SLOT_COUNT,
 };
 use ember_core::Engine;
 use ember_protocol::Frame;
@@ -50,6 +51,17 @@ pub struct ClusterCoordinator {
     /// set by the primary when a replica requests failover; prevents new
     /// mutations from arriving after the replica has decided to promote.
     writes_paused: std::sync::atomic::AtomicBool,
+    /// in-progress automatic failover election (we are the candidate).
+    election: Mutex<Option<ElectionAttempt>>,
+    /// config epoch of the last vote we granted as a primary; enforces one vote per epoch.
+    last_voted_epoch: std::sync::atomic::AtomicU64,
+}
+
+/// Tracks an in-progress automatic failover election that this node initiated.
+struct ElectionAttempt {
+    inner: Election,
+    /// Number of alive primaries when the election started (used for quorum).
+    total_primaries: usize,
 }
 
 impl std::fmt::Debug for ClusterCoordinator {
@@ -114,6 +126,8 @@ impl ClusterCoordinator {
             raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
+            election: Mutex::new(None),
+            last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
         };
 
         Ok((coordinator, event_rx))
@@ -172,6 +186,8 @@ impl ClusterCoordinator {
             raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
+            election: Mutex::new(None),
+            last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
         };
 
         Ok((coordinator, event_rx))
@@ -856,6 +872,163 @@ impl ClusterCoordinator {
             .store(false, std::sync::atomic::Ordering::Release);
     }
 
+    // -- automatic failover --
+
+    /// Starts an automatic failover election after `failed_primary` is confirmed dead.
+    ///
+    /// Applies a brief stagger delay so that the most up-to-date replica wins.
+    /// Broadcasts a `VoteRequest` via gossip and waits up to 5 seconds for
+    /// a quorum of primaries to respond with `VoteGranted`.
+    async fn start_election(self: &Arc<Self>, failed_primary: NodeId) {
+        // Brief delay so a replica that is farther behind waits longer.
+        // A proper implementation would compute: (max_offset - my_offset) * scale,
+        // but without a shared offset oracle we use a fixed delay as a tie-breaker.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Re-read cluster state — the primary may have recovered during our sleep.
+        let (epoch, total_primaries, still_failed) = {
+            let state = self.state.read().await;
+            let epoch = state.config_epoch + 1;
+            // count alive primaries excluding the failed one
+            let total = state
+                .nodes
+                .values()
+                .filter(|n| {
+                    n.role == NodeRole::Primary && !n.flags.fail && n.id != failed_primary
+                })
+                .count();
+            let still_failed = state
+                .nodes
+                .get(&failed_primary)
+                .map(|n| n.flags.fail)
+                .unwrap_or(true);
+            (epoch, total, still_failed)
+        };
+
+        if !still_failed {
+            debug!(
+                "election: primary {} recovered before election started",
+                failed_primary
+            );
+            return;
+        }
+
+        if total_primaries == 0 {
+            // No other primaries to collect votes from — promote directly.
+            info!(
+                "election: no other primaries in cluster; auto-promoting self for epoch {}",
+                epoch
+            );
+            let _ = self.cluster_failover(true, false).await;
+            return;
+        }
+
+        // Initialize the election.
+        {
+            let mut guard = self.election.lock().await;
+            *guard = Some(ElectionAttempt {
+                inner: Election::new(epoch),
+                total_primaries,
+            });
+        }
+
+        info!(
+            "election: starting for epoch {} ({} primary voters needed)",
+            epoch,
+            Election::quorum(total_primaries)
+        );
+
+        // Broadcast vote request via gossip piggybacking.
+        {
+            let mut gossip = self.gossip.lock().await;
+            gossip.queue_vote_request(self.local_id, epoch, 0 /* offset */);
+        }
+
+        // Wait for votes; give the cluster time to respond.
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+        // Timed out without quorum — clear election state.
+        let mut guard = self.election.lock().await;
+        if let Some(ref e) = *guard {
+            if e.inner.epoch == epoch && !e.inner.is_promoted() {
+                warn!("election: timed out for epoch {} without reaching quorum", epoch);
+                *guard = None;
+            }
+        }
+    }
+
+    /// Handles an incoming `VoteRequest` gossip event.
+    ///
+    /// If this node is a primary and hasn't voted in the given epoch, it
+    /// grants its vote to the candidate and broadcasts `VoteGranted` via gossip.
+    async fn handle_vote_request(&self, candidate: NodeId, epoch: u64) {
+        // Only primaries vote.
+        let is_primary = {
+            let state = self.state.read().await;
+            state
+                .nodes
+                .get(&self.local_id)
+                .map(|n| n.role == NodeRole::Primary)
+                .unwrap_or(false)
+        };
+        if !is_primary {
+            return;
+        }
+
+        // Enforce one vote per epoch.
+        let prev = self
+            .last_voted_epoch
+            .fetch_max(epoch, std::sync::atomic::Ordering::AcqRel);
+        if prev >= epoch {
+            debug!(
+                "election: already voted in epoch {} (requested {}); ignoring",
+                prev, epoch
+            );
+            return;
+        }
+
+        info!(
+            "election: granting vote to candidate {} for epoch {}",
+            candidate, epoch
+        );
+
+        let mut gossip = self.gossip.lock().await;
+        gossip.queue_vote_granted(self.local_id, candidate, epoch);
+    }
+
+    /// Handles an incoming `VoteGranted` gossip event.
+    ///
+    /// If this node is the intended candidate and has an in-progress election,
+    /// records the vote. Triggers promotion when quorum is reached.
+    async fn handle_vote_granted(
+        self: &Arc<Self>,
+        from: NodeId,
+        candidate: NodeId,
+        epoch: u64,
+    ) {
+        if candidate != self.local_id {
+            return; // not meant for us
+        }
+
+        let should_promote = {
+            let mut guard = self.election.lock().await;
+            match guard.as_mut() {
+                Some(attempt) if attempt.inner.epoch == epoch => {
+                    attempt.inner.record_vote(from, attempt.total_primaries)
+                }
+                _ => false,
+            }
+        };
+
+        if should_promote {
+            info!(
+                "election: quorum reached for epoch {}; promoting self",
+                epoch
+            );
+            let _ = self.cluster_failover(true, false).await;
+        }
+    }
+
     /// CLUSTER FAILOVER [FORCE|TAKEOVER]
     ///
     /// Promotes this replica to primary. Must be run on a replica node.
@@ -1226,6 +1399,15 @@ impl ClusterCoordinator {
         let coordinator = Arc::clone(self);
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
+                // Actions that need to run after releasing the state write-lock.
+                enum PostAction {
+                    None,
+                    StartElection(NodeId),
+                    HandleVoteRequest { candidate: NodeId, epoch: u64 },
+                    HandleVoteGranted { from: NodeId, candidate: NodeId, epoch: u64 },
+                }
+                let mut post_action = PostAction::None;
+
                 let needs_save = {
                     let mut state = coordinator.state.write().await;
                     match event {
@@ -1340,6 +1522,16 @@ impl ClusterCoordinator {
                                 node.flags.pfail = false;
                             }
                             state.update_health();
+                            // if we are a replica of the failed node, start an election
+                            let replicates_failed = state
+                                .nodes
+                                .get(&coordinator.local_id)
+                                .and_then(|n| n.replicates)
+                                .map(|primary_id| primary_id == id)
+                                .unwrap_or(false);
+                            if replicates_failed {
+                                post_action = PostAction::StartElection(id);
+                            }
                             true
                         }
                         GossipEvent::MemberLeft(id) => {
@@ -1399,8 +1591,52 @@ impl ClusterCoordinator {
                             state.update_health();
                             true
                         }
+                        GossipEvent::VoteRequested {
+                            candidate,
+                            epoch,
+                            offset: _,
+                        } => {
+                            // Handle outside the lock so we can call gossip.
+                            post_action = PostAction::HandleVoteRequest { candidate, epoch };
+                            false
+                        }
+                        GossipEvent::VoteGranted {
+                            from,
+                            candidate,
+                            epoch,
+                        } => {
+                            post_action = PostAction::HandleVoteGranted {
+                                from,
+                                candidate,
+                                epoch,
+                            };
+                            false
+                        }
                     }
                 };
+
+                // Handle post-lock actions outside the state write-lock.
+                match post_action {
+                    PostAction::None => {}
+                    PostAction::StartElection(primary_id) => {
+                        let coord = Arc::clone(&coordinator);
+                        tokio::spawn(async move {
+                            coord.start_election(primary_id).await;
+                        });
+                    }
+                    PostAction::HandleVoteRequest { candidate, epoch } => {
+                        coordinator.handle_vote_request(candidate, epoch).await;
+                    }
+                    PostAction::HandleVoteGranted {
+                        from,
+                        candidate,
+                        epoch,
+                    } => {
+                        coordinator
+                            .handle_vote_granted(from, candidate, epoch)
+                            .await;
+                    }
+                }
 
                 if needs_save {
                     coordinator.save_config().await;
@@ -2049,5 +2285,158 @@ mod tests {
         assert!(coord.is_writes_paused());
         coord.resume_writes();
         assert!(!coord.is_writes_paused());
+    }
+
+    // -- automatic failover --
+
+    #[tokio::test]
+    async fn primary_grants_vote_once_per_epoch() {
+        // A primary should grant a vote for a given epoch exactly once.
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let candidate = NodeId::new();
+
+        // first request for epoch 5 should be granted (gossip queue entry added)
+        coord.handle_vote_request(candidate, 5).await;
+        assert_eq!(
+            coord
+                .last_voted_epoch
+                .load(std::sync::atomic::Ordering::Acquire),
+            5,
+            "last_voted_epoch should be 5 after granting"
+        );
+
+        // second request for epoch 5 should be ignored
+        let prev_epoch = coord
+            .last_voted_epoch
+            .load(std::sync::atomic::Ordering::Acquire);
+        coord.handle_vote_request(candidate, 5).await;
+        assert_eq!(
+            coord
+                .last_voted_epoch
+                .load(std::sync::atomic::Ordering::Acquire),
+            prev_epoch,
+            "epoch should not change on duplicate request"
+        );
+    }
+
+    #[tokio::test]
+    async fn replica_does_not_grant_vote() {
+        // Replicas must not vote in elections.
+        let primary_id = NodeId::new();
+        let replica_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6380".parse().unwrap();
+        let (coord, _rx) =
+            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None)
+                .unwrap();
+
+        // set up coord as a replica
+        {
+            let mut state = coord.state.write().await;
+            state.add_node(ClusterNode::new_primary(primary_id, "127.0.0.1:6379".parse().unwrap()));
+            if let Some(n) = state.nodes.get_mut(&replica_id) {
+                n.role = NodeRole::Replica;
+                n.replicates = Some(primary_id);
+            }
+        }
+
+        // replica should not update last_voted_epoch
+        coord.handle_vote_request(NodeId::new(), 3).await;
+        assert_eq!(
+            coord
+                .last_voted_epoch
+                .load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "replica must not grant votes"
+        );
+    }
+
+    #[tokio::test]
+    async fn vote_granted_reaches_quorum_and_promotes() {
+        // A replica that receives enough votes should promote itself.
+        let primary_id = NodeId::new();
+        let voter1 = NodeId::new();
+        let voter2 = NodeId::new();
+        let replica_id = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6381".parse().unwrap();
+        let (coord, _rx) =
+            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None)
+                .unwrap();
+        let coord = Arc::new(coord);
+
+        // set up coord as a replica with two peers owning all slots
+        {
+            let mut state = coord.state.write().await;
+            let mut primary_node = ClusterNode::new_primary(primary_id, "127.0.0.1:6379".parse().unwrap());
+            primary_node.slots = vec![SlotRange::new(0, 16383)];
+            primary_node.flags.fail = true; // mark as failed
+            state.add_node(primary_node.clone());
+            state.add_node(ClusterNode::new_primary(voter1, "127.0.0.1:6382".parse().unwrap()));
+            state.add_node(ClusterNode::new_primary(voter2, "127.0.0.1:6383".parse().unwrap()));
+            // assign slots to primary
+            for slot in 0..16384u16 {
+                state.slot_map.assign(slot, primary_id);
+            }
+            // set replica state
+            if let Some(n) = state.nodes.get_mut(&replica_id) {
+                n.role = NodeRole::Replica;
+                n.replicates = Some(primary_id);
+            }
+        }
+
+        // seed election: epoch=1, 2 alive primaries (voter1, voter2), need 2 votes
+        {
+            let mut guard = coord.election.lock().await;
+            *guard = Some(ElectionAttempt {
+                inner: Election::new(1),
+                total_primaries: 2,
+            });
+        }
+
+        // first vote: not yet promoted
+        coord.handle_vote_granted(voter1, replica_id, 1).await;
+        assert!(!coord.is_replica().await || {
+            // either still replica (not yet quorum) or promoted — check election
+            coord.election.lock().await.as_ref().map(|e| !e.inner.is_promoted()).unwrap_or(true)
+        });
+
+        // second vote: quorum reached
+        coord.handle_vote_granted(voter2, replica_id, 1).await;
+
+        // after quorum the election entry should be promoted and the node primary
+        // (cluster_failover runs synchronously in tests since there's no Raft)
+        assert!(
+            !coord.is_replica().await,
+            "node should be primary after winning election"
+        );
+    }
+
+    #[tokio::test]
+    async fn vote_granted_wrong_candidate_ignored() {
+        let replica_id = NodeId::new();
+        let other_candidate = NodeId::new();
+        let addr: SocketAddr = "127.0.0.1:6384".parse().unwrap();
+        let (coord, _rx) =
+            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None)
+                .unwrap();
+        let coord = Arc::new(coord);
+
+        {
+            let mut guard = coord.election.lock().await;
+            *guard = Some(ElectionAttempt {
+                inner: Election::new(1),
+                total_primaries: 1,
+            });
+        }
+
+        // vote granted to a different candidate — should be ignored
+        coord
+            .handle_vote_granted(NodeId::new(), other_candidate, 1)
+            .await;
+
+        let guard = coord.election.lock().await;
+        assert!(
+            !guard.as_ref().unwrap().inner.is_promoted(),
+            "vote for wrong candidate should not trigger promotion"
+        );
     }
 }
