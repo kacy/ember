@@ -32,6 +32,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
 - **concurrent mode** — experimental DashMap-backed keyspace for lock-free GET/SET (2x faster than Redis)
+- **cluster mode** — distributed keyspace across multiple nodes: 16384 hash slots, SWIM gossip, Raft-based topology, MOVED/ASK redirects, live slot migration
 - **active expiration** — background sampling cleans up expired keys without client access
 - **memory limits** — per-shard byte-level accounting with configurable limits
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
@@ -122,7 +123,11 @@ ember-cli -p 6380 --tls --tls-insecure PING
 
 ## clustering
 
-spin up a 3-node local cluster with one command:
+ember distributes keys across 16384 hash slots using CRC16. each node owns a non-overlapping range of slots. gossip (SWIM) propagates membership and health; Raft commits topology changes; MOVED and ASK redirects keep clients pointing at the right node during normal operation and live slot migration.
+
+### quickstart
+
+the fastest way to get a 3-node cluster running locally:
 
 ```bash
 make cluster
@@ -146,6 +151,27 @@ cluster_known_nodes:3
 cluster_size:3
 ```
 
+to start nodes manually:
+
+```bash
+# node A — bootstrap a new cluster and own all slots initially
+./target/release/ember-server --port 6379 --cluster-enabled --cluster-bootstrap \
+  --data-dir ./data/node-a
+
+# node B and C — join with --cluster-enabled, then CLUSTER MEET into A
+./target/release/ember-server --port 6380 --cluster-enabled --data-dir ./data/node-b
+./target/release/ember-server --port 6381 --cluster-enabled --data-dir ./data/node-c
+
+# join B and C into the cluster
+ember-cli -p 6380 cluster meet 127.0.0.1 6379
+ember-cli -p 6381 cluster meet 127.0.0.1 6379
+
+# redistribute slots (5461 slots each after rebalancing)
+ember-cli -p 6379 cluster addslots $(seq 0 5460 | tr '\n' ' ')
+ember-cli -p 6380 cluster addslots $(seq 5461 10922 | tr '\n' ' ')
+ember-cli -p 6381 cluster addslots $(seq 10923 16383 | tr '\n' ' ')
+```
+
 connect to any node and start writing:
 
 ```bash
@@ -156,7 +182,7 @@ ember-cli -p 6379 cluster info      # cluster_state:ok, 16384 slots assigned
 ember-cli -p 6380 cluster nodes     # 3 nodes, each with correct slot range
 ```
 
-clients that support cluster mode (including `redis-cli --cluster`) follow `MOVED` redirects automatically. the built-in `ember-cli` sends each command to the right node based on the key's hash slot.
+clients that support cluster mode (including `redis-cli --cluster`) follow `MOVED` redirects automatically. `ember-cli` routes each command to the correct node based on the key's CRC16 hash slot.
 
 stop the cluster and clean up:
 
@@ -164,6 +190,28 @@ stop the cluster and clean up:
 make cluster-stop   # SIGTERM the nodes, keep data
 make cluster-clean  # stop + delete ./data/cluster/
 ```
+
+### cluster commands
+
+| command | description |
+|---------|-------------|
+| `CLUSTER INFO` | cluster state, slot counts, node count |
+| `CLUSTER NODES` | list all known nodes with their slot ranges |
+| `CLUSTER SLOTS` | slot-to-node mapping in array form |
+| `CLUSTER KEYSLOT key` | return the hash slot for a key |
+| `CLUSTER MYID` | return this node's ID |
+| `CLUSTER MEET host port` | join another node into the cluster |
+| `CLUSTER ADDSLOTS slot [slot ...]` | assign slots to this node |
+| `CLUSTER DELSLOTS slot [slot ...]` | remove slot assignments from this node |
+| `CLUSTER FORGET node-id` | remove a node from the cluster view |
+| `CLUSTER SETSLOT slot IMPORTING\|MIGRATING\|NODE\|STABLE ...` | manage slot migration state |
+| `CLUSTER COUNTKEYSINSLOT slot` | count keys owned by a slot on this node |
+| `CLUSTER GETKEYSINSLOT slot count` | list keys in a slot (used during migration) |
+| `MIGRATE host port key db timeout [COPY] [REPLACE]` | move a key to another node |
+| `RESTORE key ttl payload` | receive a migrated key |
+| `ASKING` | tell the server to honor an ASK redirect for the next command |
+
+replication commands (REPLICATE, FAILOVER) are coming in the next phase — see the status table below.
 
 see [ARCHITECTURE.md](ARCHITECTURE.md) for how clustering works under the hood (raft, gossip, hash slots, migration).
 
@@ -256,6 +304,10 @@ distance metrics: **COSINE** (default), **L2** (squared euclidean), **IP** (inne
 | `--tls-ca-cert-file` | — | path to CA certificate for client verification |
 | `--tls-auth-clients` | no | require client certificates (`yes` or `no`) |
 | `--encryption-key-file` | — | path to 32-byte key file for AES-256-GCM encryption at rest (requires `--features encryption`) |
+| `--cluster-enabled` | false | enable cluster mode with gossip-based discovery and slot routing |
+| `--cluster-bootstrap` | false | bootstrap a new cluster as a single node owning all 16384 slots |
+| `--cluster-port-offset` | 10000 | port offset for the cluster gossip bus (data_port + offset) |
+| `--cluster-node-timeout` | 5000 | node timeout in milliseconds for failure detection |
 
 ## build & development
 
@@ -333,11 +385,13 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 
 ## architecture
 
-ember offers two execution modes:
+ember offers two execution modes for the local keyspace:
 
-**sharded mode** (default): thread-per-core with channel-based routing. supports all data types (lists, hashes, sets, sorted sets). has channel overhead but enables atomic multi-key operations.
+**sharded mode** (default): thread-per-core with channel-based routing. each shard owns a partition of the keyspace with no cross-shard locking on the hot path. supports all data types and enables atomic multi-key operations.
 
-**concurrent mode** (`--concurrent`): lock-free DashMap access. 2-3x faster than Redis but only supports string operations.
+**concurrent mode** (`--concurrent`): lock-free DashMap access. 2-3x faster than Redis for simple GET/SET but limited to string operations.
+
+**cluster mode** (`--cluster-enabled`): multiple ember nodes, each running in sharded or concurrent mode, form a single distributed cache. the keyspace is partitioned into 16384 hash slots using CRC16 — each node owns a non-overlapping range. SWIM gossip propagates membership and health across nodes; topology changes (adding nodes, reassigning slots) go through a Raft consensus group so the cluster view is always consistent. clients are routed via MOVED redirects when a key lands on a different node, and ASK redirects during live slot migration.
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -350,8 +404,11 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 3 | data types (sorted sets, lists, hashes, sets) | ✅ complete |
 | 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
 | 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
+| 6 | replication and high availability | 🔜 next |
 
-**current**: 107 commands, 971+ tests, ~22k lines of code (excluding tests and comments)
+phase 6 will add leader/replica data streaming, `CLUSTER REPLICATE`, automatic failover via epoch-based elections, and `CLUSTER FAILOVER` for manual promotion. the topology structs already carry replica tracking fields; the commands are parsed — the replication stream is what remains.
+
+**current**: 107 commands, 1,049 tests, ~22k lines of code (~41k including tests and comments)
 
 ## security
 
