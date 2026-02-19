@@ -184,11 +184,17 @@ pub enum Command {
 
     /// BLPOP `key` \[key ...\] `timeout`. Blocks until an element is available
     /// at the head of one of the given lists, or the timeout expires.
-    BLPop { keys: Vec<String>, timeout_secs: f64 },
+    BLPop {
+        keys: Vec<String>,
+        timeout_secs: f64,
+    },
 
     /// BRPOP `key` \[key ...\] `timeout`. Blocks until an element is available
     /// at the tail of one of the given lists, or the timeout expires.
-    BRPop { keys: Vec<String>, timeout_secs: f64 },
+    BRPop {
+        keys: Vec<String>,
+        timeout_secs: f64,
+    },
 
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },
@@ -1942,7 +1948,11 @@ fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::Asking)
 }
 
-fn parse_no_args(name: &'static str, args: &[Frame], cmd: Command) -> Result<Command, ProtocolError> {
+fn parse_no_args(
+    name: &'static str,
+    args: &[Frame],
+    cmd: Command,
+) -> Result<Command, ProtocolError> {
     if !args.is_empty() {
         return Err(wrong_arity(name));
     }

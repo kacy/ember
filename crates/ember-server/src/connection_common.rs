@@ -239,8 +239,12 @@ pub fn format_monitor_event(event: &MonitorEvent) -> String {
     use std::fmt::Write;
     let mut out = format!("{:.6} [{}]", event.timestamp, event.client_addr);
     for arg in &event.args {
-        write!(out, " \"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
-            .expect("write to string never fails");
+        write!(
+            out,
+            " \"{}\"",
+            arg.replace('\\', "\\\\").replace('"', "\\\"")
+        )
+        .expect("write to string never fails");
     }
     out
 }
@@ -360,8 +364,18 @@ mod tests {
 
     #[test]
     fn commands_without_keys_pass() {
-        assert!(validate_command_sizes(&Command::Ping(None), DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).is_none());
-        assert!(validate_command_sizes(&Command::DbSize, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).is_none());
+        assert!(validate_command_sizes(
+            &Command::Ping(None),
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN
+        )
+        .is_none());
+        assert!(validate_command_sizes(
+            &Command::DbSize,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN
+        )
+        .is_none());
     }
 
     #[test]
@@ -384,7 +398,10 @@ mod tests {
             args: vec!["SET".into(), "key".into(), "value".into()],
         };
         let output = format_monitor_event(&event);
-        assert_eq!(output, "1234567890.123456 [127.0.0.1:52431] \"SET\" \"key\" \"value\"");
+        assert_eq!(
+            output,
+            "1234567890.123456 [127.0.0.1:52431] \"SET\" \"key\" \"value\""
+        );
     }
 
     #[test]
