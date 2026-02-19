@@ -210,6 +210,60 @@ pub fn validate_command_sizes(
     None
 }
 
+/// Checks if a raw frame is a MONITOR command.
+pub fn is_monitor_frame(frame: &Frame) -> bool {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return name.eq_ignore_ascii_case(b"MONITOR");
+        }
+    }
+    false
+}
+
+/// Event broadcast to MONITOR subscribers.
+#[derive(Clone, Debug)]
+pub struct MonitorEvent {
+    /// Unix timestamp with microsecond precision.
+    pub timestamp: f64,
+    /// Client address (e.g. "127.0.0.1:52431").
+    pub client_addr: String,
+    /// Raw command arguments as strings (e.g. ["SET", "key", "value"]).
+    pub args: Vec<String>,
+}
+
+/// Formats a MONITOR event as a Redis-compatible status line.
+///
+/// Output matches Redis format:
+///   +1234567890.123456 [127.0.0.1:52431] "SET" "key" "value"
+pub fn format_monitor_event(event: &MonitorEvent) -> String {
+    use std::fmt::Write;
+    let mut out = format!("{:.6} [{}]", event.timestamp, event.client_addr);
+    for arg in &event.args {
+        write!(out, " \"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
+            .expect("write to string never fails");
+    }
+    out
+}
+
+/// Extracts command arguments from a raw frame as strings for MONITOR.
+///
+/// Returns an empty vec for non-array frames. Binary data is lossy-converted
+/// to UTF-8 (matching Redis behavior for MONITOR output).
+pub fn frame_to_monitor_args(frame: &Frame) -> Vec<String> {
+    let Frame::Array(parts) = frame else {
+        return Vec::new();
+    };
+    parts
+        .iter()
+        .map(|p| match p {
+            Frame::Bulk(b) => String::from_utf8_lossy(b).into_owned(),
+            Frame::Simple(s) => s.clone(),
+            Frame::Integer(n) => n.to_string(),
+            _ => String::new(),
+        })
+        .collect()
+}
+
 /// Per-connection transaction state for MULTI/EXEC/DISCARD.
 ///
 /// When a client sends MULTI, subsequent commands are queued as raw frames
@@ -308,5 +362,56 @@ mod tests {
     fn commands_without_keys_pass() {
         assert!(validate_command_sizes(&Command::Ping(None), DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).is_none());
         assert!(validate_command_sizes(&Command::DbSize, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).is_none());
+    }
+
+    #[test]
+    fn is_monitor_frame_detects_monitor() {
+        let frame = Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"MONITOR"))]);
+        assert!(is_monitor_frame(&frame));
+
+        let frame = Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"monitor"))]);
+        assert!(is_monitor_frame(&frame));
+
+        let frame = Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"GET"))]);
+        assert!(!is_monitor_frame(&frame));
+    }
+
+    #[test]
+    fn format_monitor_event_matches_redis_format() {
+        let event = MonitorEvent {
+            timestamp: 1234567890.123456,
+            client_addr: "127.0.0.1:52431".into(),
+            args: vec!["SET".into(), "key".into(), "value".into()],
+        };
+        let output = format_monitor_event(&event);
+        assert_eq!(output, "1234567890.123456 [127.0.0.1:52431] \"SET\" \"key\" \"value\"");
+    }
+
+    #[test]
+    fn format_monitor_event_escapes_quotes() {
+        let event = MonitorEvent {
+            timestamp: 1.0,
+            client_addr: "127.0.0.1:1".into(),
+            args: vec!["SET".into(), "key".into(), "val\"ue".into()],
+        };
+        let output = format_monitor_event(&event);
+        assert!(output.contains("\"val\\\"ue\""));
+    }
+
+    #[test]
+    fn frame_to_monitor_args_extracts_bulk_strings() {
+        let frame = Frame::Array(vec![
+            Frame::Bulk(Bytes::from_static(b"SET")),
+            Frame::Bulk(Bytes::from_static(b"mykey")),
+            Frame::Bulk(Bytes::from_static(b"myvalue")),
+        ]);
+        let args = frame_to_monitor_args(&frame);
+        assert_eq!(args, vec!["SET", "mykey", "myvalue"]);
+    }
+
+    #[test]
+    fn frame_to_monitor_args_non_array_is_empty() {
+        let frame = Frame::Simple("OK".into());
+        assert!(frame_to_monitor_args(&frame).is_empty());
     }
 }

@@ -12,9 +12,10 @@
 //! - Processes frames serially (vs parallel dispatch in sharded mode)
 //! - Falls back to error for unsupported commands (lists, hashes, etc.)
 
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use bytes::BytesMut;
@@ -24,7 +25,8 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, validate_command_sizes, TransactionState,
+    frame_to_monitor_args, is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth,
+    validate_command_sizes, MonitorEvent, TransactionState,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
@@ -36,6 +38,7 @@ use crate::slowlog::SlowLog;
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
 pub async fn handle<S>(
     mut stream: S,
+    peer_addr: SocketAddr,
     keyspace: Arc<ConcurrentKeyspace>,
     engine: Engine, // fallback for complex commands
     ctx: &Arc<ServerContext>,
@@ -104,7 +107,30 @@ where
                             Frame::Error("NOAUTH Authentication required.".into())
                                 .serialize(&mut out);
                         }
+                    } else if is_monitor_frame(&frame) {
+                        // enter monitor mode
+                        Frame::Simple("OK".into()).serialize(&mut out);
+                        stream.write_all(&out).await?;
+                        out.clear();
+                        handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
+                        return Ok(());
                     } else {
+                        // broadcast to MONITOR subscribers
+                        if ctx.monitor_tx.receiver_count() > 0 {
+                            let args = frame_to_monitor_args(&frame);
+                            if !args.is_empty() {
+                                let ts = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs_f64();
+                                let _ = ctx.monitor_tx.send(MonitorEvent {
+                                    timestamp: ts,
+                                    client_addr: peer_addr.to_string(),
+                                    args,
+                                });
+                            }
+                        }
+
                         let response = handle_frame_with_tx(
                             frame,
                             &mut tx_state,
@@ -130,6 +156,55 @@ where
 
         if !out.is_empty() {
             stream.write_all(&out).await?;
+        }
+    }
+}
+
+/// Monitor mode for the concurrent handler. Identical to the sharded
+/// variant — subscribes to the broadcast channel and streams events.
+async fn handle_monitor_mode<S>(
+    stream: &mut S,
+    buf: &mut BytesMut,
+    ctx: &Arc<ServerContext>,
+    peer_addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    use crate::connection_common::format_monitor_event;
+    use tokio::sync::broadcast;
+
+    let mut rx = ctx.monitor_tx.subscribe();
+    let mut out = BytesMut::with_capacity(4096);
+    let _ = peer_addr;
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        let line = format_monitor_event(&event);
+                        Frame::Simple(line).serialize(&mut out);
+                        stream.write_all(&out).await?;
+                        out.clear();
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        let msg = format!("monitor: skipped {n} events (slow consumer)");
+                        Frame::Simple(msg).serialize(&mut out);
+                        stream.write_all(&out).await?;
+                        out.clear();
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Ok(());
+                    }
+                }
+            }
+            result = stream.read_buf(buf) => {
+                match result {
+                    Ok(0) | Err(_) => return Ok(()),
+                    Ok(_) => { buf.clear(); }
+                }
+            }
         }
     }
 }
@@ -809,6 +884,9 @@ async fn execute_concurrent(
         }
 
         Command::Quit => Frame::Simple("OK".into()),
+
+        // MONITOR is handled at the frame level
+        Command::Monitor => Frame::Simple("OK".into()),
 
         // For unsupported commands, return an error
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),

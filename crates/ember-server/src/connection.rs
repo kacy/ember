@@ -8,9 +8,10 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
@@ -20,7 +21,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, try_auth, validate_command_sizes, TransactionState,
+    format_monitor_event, frame_to_monitor_args, is_allowed_before_auth, is_auth_frame,
+    is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent, TransactionState,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
@@ -155,6 +157,7 @@ enum ResponseTag {
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
 pub async fn handle<S>(
     mut stream: S,
+    peer_addr: SocketAddr,
     engine: Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
@@ -239,7 +242,7 @@ where
                     }
                 } else if is_allowed_before_auth(&frame) {
                     let response =
-                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
                     response.serialize(&mut out);
                 } else {
                     Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
@@ -253,6 +256,28 @@ where
 
         // check if any frame is a subscribe command — if so, we need
         // to enter subscriber mode which changes the connection loop
+        // check for MONITOR — enters a dedicated output loop
+        if frames.iter().any(is_monitor_frame) {
+            // process any non-MONITOR frames first
+            for frame in frames.drain(..) {
+                if is_monitor_frame(&frame) {
+                    // write +OK and enter monitor mode
+                    Frame::Simple("OK".into()).serialize(&mut out);
+                    stream.write_all(&out).await?;
+                    out.clear();
+                    handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
+                    return Ok(());
+                }
+                let response =
+                    process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
+                response.serialize(&mut out);
+            }
+            if !out.is_empty() {
+                stream.write_all(&out).await?;
+            }
+            continue;
+        }
+
         let enter_sub = frames.iter().any(is_subscribe_frame);
 
         if enter_sub {
@@ -263,7 +288,7 @@ where
                     sub_frames.push(frame);
                 } else {
                     let response =
-                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
                     response.serialize(&mut out);
                 }
             }
@@ -293,7 +318,7 @@ where
                     blocking_frame = Some(frame);
                 } else {
                     let response =
-                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                        process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
                     response.serialize(&mut out);
                 }
             }
@@ -316,7 +341,7 @@ where
             // process any remaining frames after the blocking op
             for frame in remaining {
                 let response =
-                    process(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                    process(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
                 response.serialize(&mut out);
             }
             if !out.is_empty() {
@@ -347,6 +372,7 @@ where
                         slow_log,
                         pubsub,
                         &mut asking,
+                        peer_addr,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -356,7 +382,7 @@ where
                 let mut pending = Vec::with_capacity(frames.len());
                 for frame in frames.drain(..) {
                     let p =
-                        dispatch_command(frame, &engine, ctx, slow_log, pubsub, &mut asking).await;
+                        dispatch_command(frame, &engine, ctx, slow_log, pubsub, &mut asking, peer_addr).await;
                     pending.push(p);
                 }
                 for p in pending {
@@ -379,6 +405,7 @@ where
 /// serial execution since transactions break the pipeline model). When
 /// queuing, most frames are buffered and `+QUEUED` is returned. EXEC replays
 /// the queue through the normal dispatch path and returns an array of results.
+#[allow(clippy::too_many_arguments)]
 async fn handle_frame_with_tx(
     frame: Frame,
     tx_state: &mut TransactionState,
@@ -387,6 +414,7 @@ async fn handle_frame_with_tx(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
+    peer_addr: SocketAddr,
 ) -> Frame {
     // peek at the command name without consuming the frame
     let cmd_name = peek_command_name(&frame);
@@ -412,7 +440,7 @@ async fn handle_frame_with_tx(
                 Frame::Error("ERR DISCARD without MULTI".into())
             } else {
                 // normal dispatch path (process() increments commands_processed)
-                process(frame, engine, ctx, slow_log, pubsub, asking).await
+                process(frame, engine, ctx, slow_log, pubsub, asking, peer_addr).await
             }
         }
         TransactionState::Queuing { queue, error } => {
@@ -436,7 +464,7 @@ async fn handle_frame_with_tx(
                         let mut results = Vec::with_capacity(q.len());
                         for queued_frame in q {
                             let response = process(
-                                queued_frame, engine, ctx, slow_log, pubsub, asking,
+                                queued_frame, engine, ctx, slow_log, pubsub, asking, peer_addr,
                             )
                             .await;
                             results.push(response);
@@ -456,7 +484,7 @@ async fn handle_frame_with_tx(
                         Ok(cmd) => {
                             // AUTH and QUIT execute immediately, not queued
                             if matches!(cmd, Command::Auth { .. } | Command::Quit) {
-                                process(frame, engine, ctx, slow_log, pubsub, asking).await
+                                process(frame, engine, ctx, slow_log, pubsub, asking, peer_addr).await
                             } else {
                                 queue.push(frame);
                                 Frame::Simple("QUEUED".into())
@@ -627,6 +655,61 @@ async fn handle_blocking_pop_cmd(
 
 /// Subscriber mode: listens for both broadcast messages and client commands.
 ///
+/// Streams all commands processed by the server to this connection.
+///
+/// Subscribes to the `monitor_tx` broadcast channel and writes each
+/// event as a RESP simple string. The connection stays in monitor mode
+/// until the client disconnects.
+async fn handle_monitor_mode<S>(
+    stream: &mut S,
+    buf: &mut BytesMut,
+    ctx: &Arc<ServerContext>,
+    peer_addr: SocketAddr,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut rx = ctx.monitor_tx.subscribe();
+    let mut out = BytesMut::with_capacity(4096);
+    let _ = peer_addr; // available for future per-client filtering
+
+    loop {
+        tokio::select! {
+            event = rx.recv() => {
+                match event {
+                    Ok(event) => {
+                        let line = format_monitor_event(&event);
+                        Frame::Simple(line).serialize(&mut out);
+                        stream.write_all(&out).await?;
+                        out.clear();
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // subscriber fell behind — skip missed events
+                        let msg = format!("monitor: skipped {n} events (slow consumer)");
+                        Frame::Simple(msg).serialize(&mut out);
+                        stream.write_all(&out).await?;
+                        out.clear();
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        return Ok(());
+                    }
+                }
+            }
+            // detect client disconnect
+            result = stream.read_buf(buf) => {
+                match result {
+                    Ok(0) | Err(_) => return Ok(()),
+                    Ok(_) => {
+                        // discard any data sent while in monitor mode
+                        // (redis does the same — MONITOR clients can't send commands)
+                        buf.clear();
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// In this mode the connection can only process SUBSCRIBE, UNSUBSCRIBE,
 /// PSUBSCRIBE, PUNSUBSCRIBE, and PING. All other commands return an error.
 /// Returns to the caller when all subscriptions are removed or the client
@@ -974,7 +1057,24 @@ async fn process(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
+    peer_addr: SocketAddr,
 ) -> Frame {
+    // broadcast to MONITOR subscribers
+    if ctx.monitor_tx.receiver_count() > 0 {
+        let args = frame_to_monitor_args(&frame);
+        if !args.is_empty() {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            let _ = ctx.monitor_tx.send(MonitorEvent {
+                timestamp: ts,
+                client_addr: peer_addr.to_string(),
+                args,
+            });
+        }
+    }
+
     match Command::from_frame(frame) {
         Ok(cmd) => {
             // handle ASKING: set the flag and return OK immediately
@@ -1029,7 +1129,24 @@ async fn dispatch_command(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
+    peer_addr: SocketAddr,
 ) -> PendingResponse {
+    // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
+    if ctx.monitor_tx.receiver_count() > 0 {
+        let args = frame_to_monitor_args(&frame);
+        if !args.is_empty() {
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            let _ = ctx.monitor_tx.send(MonitorEvent {
+                timestamp: ts,
+                client_addr: peer_addr.to_string(),
+                args,
+            });
+        }
+    }
+
     let cmd = match Command::from_frame(frame) {
         Ok(cmd) => cmd,
         Err(e) => return PendingResponse::Immediate(Frame::Error(format!("ERR {e}"))),
@@ -3718,6 +3835,10 @@ async fn execute(
         Command::Multi => Frame::Error("ERR MULTI calls can not be nested".into()),
         Command::Exec => Frame::Error("ERR EXEC without MULTI".into()),
         Command::Discard => Frame::Error("ERR DISCARD without MULTI".into()),
+
+        // MONITOR is handled at the frame level before process() is called.
+        // If it arrives here (e.g. during a transaction), just return OK.
+        Command::Monitor => Frame::Simple("OK".into()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
