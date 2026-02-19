@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
     is_allowed_before_auth, is_auth_frame, try_auth, BUF_CAPACITY, IDLE_TIMEOUT, MAX_AUTH_FAILURES,
-    MAX_BUF_SIZE, MAX_PIPELINE_DEPTH,
+    MAX_BUF_SIZE, MAX_PIPELINE_DEPTH, TransactionState,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
@@ -48,6 +48,7 @@ where
 {
     let mut authenticated = ctx.requirepass.is_none();
     let mut auth_failures: u32 = 0;
+    let mut tx_state = TransactionState::None;
 
     let mut buf = BytesMut::with_capacity(BUF_CAPACITY);
     let mut out = BytesMut::with_capacity(BUF_CAPACITY);
@@ -105,8 +106,16 @@ where
                                 .serialize(&mut out);
                         }
                     } else {
-                        let response =
-                            process(frame, &keyspace, &engine, ctx, slow_log, pubsub).await;
+                        let response = handle_frame_with_tx(
+                            frame,
+                            &mut tx_state,
+                            &keyspace,
+                            &engine,
+                            ctx,
+                            slow_log,
+                            pubsub,
+                        )
+                        .await;
                         response.serialize(&mut out);
                     }
                 }
@@ -165,6 +174,98 @@ async fn process(
         }
         Err(e) => Frame::Error(format!("ERR {e}")),
     }
+}
+
+/// Handles a single frame with transaction awareness (concurrent mode).
+async fn handle_frame_with_tx(
+    frame: Frame,
+    tx_state: &mut TransactionState,
+    keyspace: &Arc<ConcurrentKeyspace>,
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
+    pubsub: &Arc<PubSubManager>,
+) -> Frame {
+    let cmd_name = peek_command_name(&frame);
+
+    match tx_state {
+        TransactionState::None => {
+            if cmd_name.as_deref() == Some("MULTI") {
+                match Command::from_frame(frame) {
+                    Ok(Command::Multi) => {
+                        *tx_state = TransactionState::Queuing {
+                            queue: Vec::new(),
+                            error: false,
+                        };
+                        Frame::Simple("OK".into())
+                    }
+                    Ok(_) => unreachable!(),
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                }
+            } else if cmd_name.as_deref() == Some("EXEC") {
+                Frame::Error("ERR EXEC without MULTI".into())
+            } else if cmd_name.as_deref() == Some("DISCARD") {
+                Frame::Error("ERR DISCARD without MULTI".into())
+            } else {
+                process(frame, keyspace, engine, ctx, slow_log, pubsub).await
+            }
+        }
+        TransactionState::Queuing { queue, error } => match cmd_name.as_deref() {
+            Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
+            Some("EXEC") => {
+                if *error {
+                    let q = std::mem::take(queue);
+                    *tx_state = TransactionState::None;
+                    drop(q);
+                    Frame::Error(
+                        "EXECABORT Transaction discarded because of previous errors.".into(),
+                    )
+                } else {
+                    let q = std::mem::take(queue);
+                    *tx_state = TransactionState::None;
+                    let mut results = Vec::with_capacity(q.len());
+                    for queued_frame in q {
+                        let response =
+                            process(queued_frame, keyspace, engine, ctx, slow_log, pubsub).await;
+                        results.push(response);
+                    }
+                    Frame::Array(results)
+                }
+            }
+            Some("DISCARD") => {
+                let q = std::mem::take(queue);
+                *tx_state = TransactionState::None;
+                drop(q);
+                Frame::Simple("OK".into())
+            }
+            _ => match Command::from_frame(frame.clone()) {
+                Ok(cmd) => {
+                    if matches!(cmd, Command::Auth { .. } | Command::Quit) {
+                        process(frame, keyspace, engine, ctx, slow_log, pubsub).await
+                    } else {
+                        queue.push(frame);
+                        Frame::Simple("QUEUED".into())
+                    }
+                }
+                Err(e) => {
+                    *error = true;
+                    Frame::Error(format!("ERR {e}"))
+                }
+            },
+        },
+    }
+}
+
+/// Peeks at the command name from a raw frame without consuming it.
+fn peek_command_name(frame: &Frame) -> Option<String> {
+    if let Frame::Array(parts) = frame {
+        if let Some(Frame::Bulk(name)) = parts.first() {
+            return String::from_utf8(name.to_vec())
+                .ok()
+                .map(|s| s.to_ascii_uppercase());
+        }
+    }
+    None
 }
 
 /// Execute commands using concurrent keyspace for GET/SET, fallback for others.

@@ -145,6 +145,15 @@ pub enum Command {
     /// CONFIG SET `param` `value`. Sets a server configuration parameter at runtime.
     ConfigSet { param: String, value: String },
 
+    /// MULTI. Starts a transaction — subsequent commands are queued until EXEC.
+    Multi,
+
+    /// EXEC. Executes all queued commands atomically, returning an array of results.
+    Exec,
+
+    /// DISCARD. Aborts a transaction, discarding all queued commands.
+    Discard,
+
     /// SCAN `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates keys.
     Scan {
         cursor: u64,
@@ -552,6 +561,9 @@ impl Command {
             Command::FlushDb { .. } => "flushdb",
             Command::ConfigGet { .. } => "config",
             Command::ConfigSet { .. } => "config",
+            Command::Multi => "multi",
+            Command::Exec => "exec",
+            Command::Discard => "discard",
 
             // list
             Command::LPush { .. } => "lpush",
@@ -693,6 +705,7 @@ impl Command {
             // server / persistence
                 | Command::FlushDb { .. }
                 | Command::ConfigSet { .. }
+                | Command::Exec
                 | Command::BgRewriteAof
                 | Command::BgSave
                 | Command::Restore { .. }
@@ -867,6 +880,9 @@ impl Command {
             "MIGRATE" => parse_migrate(&frames[1..]),
             "RESTORE" => parse_restore(&frames[1..]),
             "CONFIG" => parse_config(&frames[1..]),
+            "MULTI" => parse_no_args("MULTI", &frames[1..], Command::Multi),
+            "EXEC" => parse_no_args("EXEC", &frames[1..], Command::Exec),
+            "DISCARD" => parse_no_args("DISCARD", &frames[1..], Command::Discard),
             "SLOWLOG" => parse_slowlog(&frames[1..]),
             "SUBSCRIBE" => parse_subscribe(&frames[1..]),
             "UNSUBSCRIBE" => parse_unsubscribe(&frames[1..]),
@@ -1862,6 +1878,13 @@ fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("ASKING"));
     }
     Ok(Command::Asking)
+}
+
+fn parse_no_args(name: &'static str, args: &[Frame], cmd: Command) -> Result<Command, ProtocolError> {
+    if !args.is_empty() {
+        return Err(wrong_arity(name));
+    }
+    Ok(cmd)
 }
 
 fn parse_config(args: &[Frame]) -> Result<Command, ProtocolError> {

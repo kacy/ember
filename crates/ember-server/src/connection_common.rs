@@ -239,6 +239,23 @@ pub fn validate_command_sizes(cmd: &Command) -> Option<Frame> {
     None
 }
 
+/// Per-connection transaction state for MULTI/EXEC/DISCARD.
+///
+/// When a client sends MULTI, subsequent commands are queued as raw frames
+/// rather than dispatched. EXEC replays them in order and collects results
+/// into a single Array response. DISCARD drops the queue.
+pub enum TransactionState {
+    /// Normal mode — commands are dispatched immediately.
+    None,
+    /// Queuing mode — frames accumulate until EXEC or DISCARD.
+    Queuing {
+        queue: Vec<Frame>,
+        /// Set when a command in the queue had a parse error. EXEC returns
+        /// EXECABORT instead of executing.
+        error: bool,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
