@@ -49,7 +49,7 @@ pub struct ServerContext {
     pub config: Arc<ConfigRegistry>,
     /// Cluster coordinator, present when --cluster-enabled is set.
     pub cluster: Option<Arc<ClusterCoordinator>>,
-    /// Connection-level limits derived from EmberConfig.
+    /// Runtime limits derived from EmberConfig.
     pub limits: ConnectionLimits,
 }
 
@@ -104,16 +104,13 @@ pub async fn run(
         coordinator.start_replication_server().await;
     }
 
-    if metrics_enabled {
-        crate::metrics::spawn_stats_poller(engine.clone());
-    }
-
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
 
     let tls_listener = setup_tls_listener(tls).await?;
 
+    let stats_poll_interval = limits.stats_poll_interval;
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
         version: env!("CARGO_PKG_VERSION"),
@@ -131,6 +128,10 @@ pub async fn run(
         cluster,
         limits,
     });
+
+    if metrics_enabled {
+        crate::metrics::spawn_stats_poller(engine.clone(), stats_poll_interval);
+    }
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
@@ -389,16 +390,13 @@ pub async fn run_concurrent(
     // Also create the sharded engine for fallback on complex commands
     let engine = Engine::with_config(shard_count, config);
 
-    if metrics_enabled {
-        crate::metrics::spawn_stats_poller(engine.clone());
-    }
-
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
 
     let tls_listener = setup_tls_listener(tls).await?;
 
+    let stats_poll_interval = limits.stats_poll_interval;
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
         version: env!("CARGO_PKG_VERSION"),
@@ -416,6 +414,10 @@ pub async fn run_concurrent(
         cluster: None,
         limits,
     });
+
+    if metrics_enabled {
+        crate::metrics::spawn_stats_poller(engine.clone(), stats_poll_interval);
+    }
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());

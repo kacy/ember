@@ -31,8 +31,6 @@ const HISTOGRAM_BUCKETS: &[f64] = &[
     0.1,       // 100ms
 ];
 
-/// How often the stats poller queries shards and updates gauges.
-const STATS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Installs the prometheus exporter and starts the HTTP listener.
 ///
@@ -49,14 +47,14 @@ pub fn install_exporter(addr: SocketAddr) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-/// Spawns a background task that polls shard stats every 5 seconds
-/// and publishes them as prometheus gauges.
+/// Spawns a background task that polls shard stats and publishes them
+/// as prometheus gauges.
 ///
 /// Keeps `ember-core` free of metrics dependencies — the poller
 /// pulls stats through the existing `ShardRequest::Stats` broadcast.
-pub fn spawn_stats_poller(engine: Engine) {
+pub fn spawn_stats_poller(engine: Engine, poll_interval: Duration) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(STATS_POLL_INTERVAL);
+        let mut interval = tokio::time::interval(poll_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
