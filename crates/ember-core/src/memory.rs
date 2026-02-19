@@ -45,10 +45,10 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 
 /// Estimated overhead per entry in the HashMap.
 ///
-/// Accounts for: the String key struct (24 bytes ptr+len+cap), Entry struct
-/// fields (Value enum tag + Bytes/collection inline storage + expires_at_ms
-/// + last_access_ms), plus hashbrown per-entry bookkeeping (1 control byte
-/// + empty slot waste at ~87.5% load factor).
+/// Accounts for: the Box<str> key struct (16 bytes ptr+len on 64-bit),
+/// Entry struct fields (Value enum tag + Bytes/collection inline storage
+/// + expires_at_ms + last_access_ms), plus hashbrown per-entry bookkeeping
+/// (1 control byte + empty slot waste at ~87.5% load factor).
 ///
 /// This is calibrated from `std::mem::size_of` on 64-bit platforms. The
 /// exact value varies by compiler version, but precision isn't critical —
@@ -58,7 +58,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// The `entry_overhead_not_too_small` test validates this constant against
 /// the actual struct sizes on each platform.
-pub(crate) const ENTRY_OVERHEAD: usize = 128;
+pub(crate) const ENTRY_OVERHEAD: usize = 120;
 
 /// Tracks memory usage for a single keyspace.
 ///
@@ -318,7 +318,7 @@ mod tests {
         use crate::keyspace::Entry;
 
         let entry_size = std::mem::size_of::<Entry>();
-        let key_struct_size = std::mem::size_of::<String>();
+        let key_struct_size = std::mem::size_of::<Box<str>>();
         // hashbrown uses 1 control byte per slot + ~14% empty slot waste.
         // 8 bytes is a conservative lower bound for per-entry hash overhead.
         let hashmap_per_entry = 8;
@@ -327,7 +327,7 @@ mod tests {
         assert!(
             ENTRY_OVERHEAD >= minimum,
             "ENTRY_OVERHEAD ({ENTRY_OVERHEAD}) is less than measured minimum \
-             ({minimum} = Entry({entry_size}) + String({key_struct_size}) + \
+             ({minimum} = Entry({entry_size}) + Box<str>({key_struct_size}) + \
              hashmap({hashmap_per_entry}))"
         );
     }
@@ -419,7 +419,7 @@ mod tests {
         for i in 0..=LAZY_FREE_THRESHOLD {
             m.insert(format!("f{i}"), Bytes::from("v"));
         }
-        assert!(is_large_value(&Value::Hash(m)));
+        assert!(is_large_value(&Value::Hash(Box::new(m))));
     }
 
     #[test]
@@ -428,6 +428,6 @@ mod tests {
         for i in 0..=LAZY_FREE_THRESHOLD {
             s.insert(format!("m{i}"));
         }
-        assert!(is_large_value(&Value::Set(s)));
+        assert!(is_large_value(&Value::Set(Box::new(s))));
     }
 }

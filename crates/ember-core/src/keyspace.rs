@@ -1,6 +1,6 @@
 //! The keyspace: Ember's core key-value store.
 //!
-//! A `Keyspace` owns a flat `HashMap<String, Entry>` and handles
+//! A `Keyspace` owns a flat `AHashMap<Box<str>, Entry>` and handles
 //! get, set, delete, existence checks, and TTL management. Expired
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
@@ -8,6 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
+use ahash::AHashMap;
 use bytes::Bytes;
 use rand::seq::IteratorRandom;
 
@@ -292,7 +293,7 @@ const EVICTION_SAMPLE_SIZE: usize = 16;
 /// All operations are single-threaded per shard — no internal locking.
 /// Memory usage is tracked incrementally on every mutation.
 pub struct Keyspace {
-    entries: HashMap<String, Entry>,
+    entries: AHashMap<Box<str>, Entry>,
     memory: MemoryTracker,
     config: ShardConfig,
     /// Number of entries that currently have an expiration set.
@@ -315,7 +316,7 @@ impl Keyspace {
     /// Creates a new, empty keyspace with the given config.
     pub fn with_config(config: ShardConfig) -> Self {
         Self {
-            entries: HashMap::new(),
+            entries: AHashMap::new(),
             memory: MemoryTracker::new(),
             config,
             expiry_count: 0,
@@ -397,7 +398,7 @@ impl Keyspace {
     /// collection-write methods after type-checking and memory reservation.
     fn insert_empty(&mut self, key: &str, value: Value) {
         self.memory.add(key, &value);
-        self.entries.insert(key.to_owned(), Entry::new(value, None));
+        self.entries.insert(Box::from(key), Entry::new(value, None));
     }
 
     /// Measures entry size before and after a mutation, adjusting the
@@ -492,7 +493,7 @@ impl Keyspace {
         let new_size = memory::entry_size(&key, &new_value);
         let old_size = self
             .entries
-            .get(&key)
+            .get(key.as_str())
             .map(|e| memory::entry_size(&key, &e.value))
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_size);
@@ -501,7 +502,7 @@ impl Keyspace {
             return SetResult::OutOfMemory;
         }
 
-        if let Some(old_entry) = self.entries.get(&key) {
+        if let Some(old_entry) = self.entries.get(key.as_str()) {
             self.memory.replace(&key, &old_entry.value, &new_value);
             self.adjust_expiry_count(old_entry.expires_at_ms != 0, has_expiry);
         } else {
@@ -511,7 +512,8 @@ impl Keyspace {
             }
         }
 
-        self.entries.insert(key, Entry::new(new_value, expire));
+        self.entries
+            .insert(key.into_boxed_str(), Entry::new(new_value, expire));
         SetResult::Ok
     }
 
@@ -546,22 +548,22 @@ impl Keyspace {
             if seen <= EVICTION_SAMPLE_SIZE {
                 if entry.last_access_ms < best_access {
                     best_access = entry.last_access_ms;
-                    best_key = Some(key.as_str());
+                    best_key = Some(&**key);
                 }
             } else {
                 use rand::Rng;
                 let j = rng.random_range(0..seen);
                 if j < EVICTION_SAMPLE_SIZE && entry.last_access_ms < best_access {
                     best_access = entry.last_access_ms;
-                    best_key = Some(key.as_str());
+                    best_key = Some(&**key);
                 }
             }
         }
 
         if let Some(victim) = best_key {
-            // we need an owned key to remove from the map
+            // own the key to break the immutable borrow on self.entries
             let victim = victim.to_owned();
-            if let Some(entry) = self.entries.remove(&victim) {
+            if let Some(entry) = self.entries.remove(victim.as_str()) {
                 self.memory.remove(&victim, &entry.value);
                 self.decrement_expiry_if_set(&entry);
                 self.evicted_total += 1;
@@ -640,7 +642,7 @@ impl Keyspace {
     /// Replaces the entries map with an empty one and resets memory
     /// tracking. Returns the old entries so the caller can send them
     /// to the background drop thread.
-    pub(crate) fn flush_async(&mut self) -> HashMap<String, Entry> {
+    pub(crate) fn flush_async(&mut self) -> AHashMap<Box<str>, Entry> {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
         self.expiry_count = 0;
@@ -897,7 +899,7 @@ impl Keyspace {
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
             .filter(|(key, _)| compiled.matches(key))
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| String::from(&**key))
             .collect()
     }
 
@@ -921,7 +923,7 @@ impl Keyspace {
             .filter(|(_, entry)| !entry.is_expired())
             .filter(|(key, _)| ember_cluster::key_slot(key.as_bytes()) == slot)
             .take(count)
-            .map(|(key, _)| key.clone())
+            .map(|(key, _)| String::from(&**key))
             .collect()
     }
 
@@ -951,7 +953,7 @@ impl Keyspace {
         if entry.expires_at_ms != 0 {
             self.expiry_count += 1;
         }
-        self.entries.insert(newkey.to_owned(), entry);
+        self.entries.insert(Box::from(newkey), entry);
         Ok(())
     }
 
@@ -1021,7 +1023,7 @@ impl Keyspace {
                 }
             }
 
-            keys.push(key.clone());
+            keys.push(String::from(&**key));
             position += 1;
 
             if keys.len() >= target_count {
@@ -1063,7 +1065,7 @@ impl Keyspace {
                 Some(ms) => ms.min(i64::MAX as u64) as i64,
                 None => -1,
             };
-            Some((key.as_str(), &entry.value, ttl_ms))
+            Some((&**key, &entry.value, ttl_ms))
         })
     }
 
@@ -1076,7 +1078,7 @@ impl Keyspace {
         let has_expiry = ttl.is_some();
 
         // if replacing an existing entry, adjust memory tracking
-        if let Some(old) = self.entries.get(&key) {
+        if let Some(old) = self.entries.get(key.as_str()) {
             self.memory.replace(&key, &old.value, &value);
             self.adjust_expiry_count(old.expires_at_ms != 0, has_expiry);
         } else {
@@ -1086,7 +1088,8 @@ impl Keyspace {
             }
         }
 
-        self.entries.insert(key, Entry::new(value, ttl));
+        self.entries
+            .insert(key.into_boxed_str(), Entry::new(value, ttl));
     }
 
     // -- list operations --
@@ -1280,7 +1283,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, SortedSet::BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::SortedSet(SortedSet::new()));
+            self.insert_empty(key, Value::SortedSet(Box::new(SortedSet::new())));
         }
 
         let (count, applied) = self
@@ -1471,7 +1474,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, memory::HASHMAP_BASE_OVERHEAD, field_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::Hash(HashMap::new()));
+            self.insert_empty(key, Value::Hash(Box::new(HashMap::new())));
         }
 
         let added = self
@@ -1628,9 +1631,9 @@ impl Keyspace {
         }
 
         if is_new {
-            let value = Value::Hash(HashMap::new());
+            let value = Value::Hash(Box::new(HashMap::new()));
             self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.entries.insert(Box::from(key), Entry::new(value, None));
         }
 
         // safe: key was either just inserted above or verified to exist
@@ -1739,7 +1742,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, memory::HASHSET_BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::Set(std::collections::HashSet::new()));
+            self.insert_empty(key, Value::Set(Box::new(std::collections::HashSet::new())));
         }
 
         let added = self
@@ -1861,7 +1864,7 @@ impl Keyspace {
             .keys()
             .choose_multiple(&mut rng, count)
             .into_iter()
-            .cloned()
+            .map(|k| String::from(&**k))
             .collect();
 
         let mut removed = 0;
@@ -1946,7 +1949,7 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.entries.insert(Box::from(key), Entry::new(value, None));
         }
 
         let entry = match self.entries.get_mut(key) {
@@ -2051,7 +2054,7 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            self.entries.insert(key.to_owned(), Entry::new(value, None));
+            self.entries.insert(Box::from(key), Entry::new(value, None));
         }
 
         let entry = match self.entries.get_mut(key) {
