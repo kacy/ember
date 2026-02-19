@@ -8,8 +8,9 @@
 //! because dropping data structures is CPU-bound work that would starve
 //! the async executor.
 
-use std::collections::HashMap;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
+
+use ahash::AHashMap;
 
 use crate::keyspace::Entry;
 use crate::memory::is_large_value;
@@ -28,7 +29,7 @@ enum Droppable {
     /// A single value removed from the keyspace (e.g. DEL, UNLINK, eviction).
     Value(Value),
     /// All entries from a FLUSHDB ASYNC — dropped in bulk.
-    Entries(HashMap<String, Entry>),
+    Entries(AHashMap<Box<str>, Entry>),
 }
 
 /// A cloneable handle for deferring expensive drops to the background thread.
@@ -86,7 +87,7 @@ impl DropHandle {
 
     /// Defers dropping all entries from a flush operation. Always deferred
     /// since a full keyspace is always worth offloading.
-    pub(crate) fn defer_entries(&self, entries: HashMap<String, Entry>) {
+    pub(crate) fn defer_entries(&self, entries: AHashMap<Box<str>, Entry>) {
         if entries.is_empty() {
             return;
         }
@@ -128,10 +129,10 @@ mod tests {
     #[test]
     fn defer_entries_from_flush() {
         let handle = DropHandle::spawn();
-        let mut entries = HashMap::new();
+        let mut entries = AHashMap::new();
         for i in 0..10 {
             entries.insert(
-                format!("key-{i}"),
+                Box::from(format!("key-{i}").as_str()),
                 Entry {
                     value: Value::String(Bytes::from(format!("val-{i}"))),
                     expires_at_ms: 0,
@@ -146,6 +147,6 @@ mod tests {
     #[test]
     fn empty_entries_skipped() {
         let handle = DropHandle::spawn();
-        handle.defer_entries(HashMap::new());
+        handle.defer_entries(AHashMap::new());
     }
 }
