@@ -31,8 +31,7 @@ use tracing::warn;
 
 use crate::cluster::ClusterCoordinator;
 use crate::config::{
-    build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy,
-    ConfigRegistry, EmberConfig,
+    build_engine_config, parse_eviction_policy, parse_fsync_policy, EmberConfig,
 };
 
 #[derive(Parser)]
@@ -760,6 +759,8 @@ async fn main() {
     let requirepass = cfg.requirepass();
     let metrics_enabled = cfg.metrics_port().is_some();
 
+    let config_path = args.config.clone();
+
     let result = if cfg.concurrent {
         server::run_concurrent(
             addr,
@@ -774,6 +775,7 @@ async fn main() {
             tls_config,
             config_registry,
             limits,
+            config_path,
             #[cfg(feature = "grpc")]
             grpc_addr,
         )
@@ -791,6 +793,7 @@ async fn main() {
             cluster,
             config_registry,
             limits,
+            config_path,
             #[cfg(feature = "grpc")]
             grpc_addr,
         )

@@ -2415,6 +2415,14 @@ async fn execute(
             }
         }
 
+        Command::ConfigRewrite => match &ctx.config_path {
+            Some(path) => match ctx.config.rewrite(path) {
+                Ok(()) => Frame::Simple("OK".into()),
+                Err(e) => Frame::Error(e),
+            },
+            None => Frame::Error("ERR The server is running without a config file".into()),
+        },
+
         Command::BgSave => match engine.broadcast(|| ShardRequest::Snapshot).await {
             Ok(_) => Frame::Simple("Background saving started".into()),
             Err(e) => Frame::Error(format!("ERR {e}")),

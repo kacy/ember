@@ -4,8 +4,6 @@
 //! handler (`concurrent_handler.rs`) use these defaults and helpers.
 //! Actual runtime values come from `ctx.limits` (derived from EmberConfig).
 
-use std::time::Duration;
-
 use ember_protocol::types::Frame;
 use ember_protocol::Command;
 use subtle::ConstantTimeEq;
