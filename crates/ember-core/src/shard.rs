@@ -1117,8 +1117,10 @@ fn dispatch(
         ShardRequest::DumpKey { key } => match ks.dump(key) {
             Some((value, ttl_ms)) => {
                 let snap = value_to_snap(value);
-                let data = snapshot::serialize_snap_value(&snap);
-                ShardResponse::KeyDump { data, ttl_ms }
+                match snapshot::serialize_snap_value(&snap) {
+                    Ok(data) => ShardResponse::KeyDump { data, ttl_ms },
+                    Err(e) => ShardResponse::Err(format!("ERR snapshot serialization failed: {e}")),
+                }
             }
             None => ShardResponse::Value(None),
         },
@@ -3005,7 +3007,7 @@ mod tests {
     fn restore_key_inserts_value() {
         let mut ks = Keyspace::new();
         let snap = SnapValue::String(Bytes::from("restored"));
-        let data = snapshot::serialize_snap_value(&snap);
+        let data = snapshot::serialize_snap_value(&snap).unwrap();
 
         let resp = test_dispatch(
             &mut ks,
@@ -3027,7 +3029,7 @@ mod tests {
     fn restore_key_with_ttl() {
         let mut ks = Keyspace::new();
         let snap = SnapValue::String(Bytes::from("temp"));
-        let data = snapshot::serialize_snap_value(&snap);
+        let data = snapshot::serialize_snap_value(&snap).unwrap();
 
         let resp = test_dispatch(
             &mut ks,
@@ -3051,7 +3053,7 @@ mod tests {
         ks.set("existing".into(), Bytes::from("old"), None);
 
         let snap = SnapValue::String(Bytes::from("new"));
-        let data = snapshot::serialize_snap_value(&snap);
+        let data = snapshot::serialize_snap_value(&snap).unwrap();
 
         let resp = test_dispatch(
             &mut ks,
@@ -3076,7 +3078,7 @@ mod tests {
         ks.set("existing".into(), Bytes::from("old"), None);
 
         let snap = SnapValue::String(Bytes::from("new"));
-        let data = snapshot::serialize_snap_value(&snap);
+        let data = snapshot::serialize_snap_value(&snap).unwrap();
 
         let resp = test_dispatch(
             &mut ks,
