@@ -28,12 +28,25 @@ fn sanitize(s: &str) -> String {
     let mut chars = s.chars();
     while let Some(ch) = chars.next() {
         if ch == '\x1b' {
-            // skip the ESC and the rest of the ANSI sequence
+            // skip the ESC and the rest of the ANSI/terminal sequence
             if let Some(next) = chars.next() {
                 if next == '[' {
-                    // CSI sequence — consume until a letter
+                    // CSI sequence — consume until a letter terminates it
                     for c in chars.by_ref() {
                         if c.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                } else if next == ']' {
+                    // OSC sequence (e.g. title changes) — consume until ST
+                    // (BEL \x07 or ESC \\ are both valid terminators)
+                    for c in chars.by_ref() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            // consume the backslash of ESC \ (ST)
+                            let _ = chars.next();
                             break;
                         }
                     }
@@ -234,5 +247,17 @@ mod tests {
     fn sanitize_server_response_with_escape() {
         let out = no_color(|| format_response(&Frame::Simple("\x1b[31mfake-error\x1b[0m".into())));
         assert_eq!(out, "fake-error");
+    }
+
+    #[test]
+    fn sanitize_strips_osc_with_bel() {
+        // OSC title-change: ESC ] 0 ; evil-title BEL
+        assert_eq!(sanitize("before\x1b]0;evil-title\x07after"), "beforeafter");
+    }
+
+    #[test]
+    fn sanitize_strips_osc_with_st() {
+        // OSC terminated by ST (ESC \)
+        assert_eq!(sanitize("before\x1b]0;evil\x1b\\after"), "beforeafter");
     }
 }
