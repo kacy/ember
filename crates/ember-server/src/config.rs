@@ -715,4 +715,94 @@ mod tests {
 
         assert!(registry.set("maxmemory", "200").is_err());
     }
+
+    // -- EmberConfig tests --
+
+    #[test]
+    fn default_config_roundtrips_through_toml() {
+        let cfg = EmberConfig::default();
+        let toml_str = cfg.to_toml().unwrap();
+        let parsed: EmberConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.port, 6379);
+        assert_eq!(parsed.bind, "127.0.0.1");
+        assert_eq!(parsed.maxclients, 10_000);
+        assert_eq!(parsed.cluster.port_offset, 10_000);
+        assert_eq!(parsed.engine.shard_channel_buffer, 256);
+    }
+
+    #[test]
+    fn partial_toml_uses_defaults() {
+        let toml_str = r#"
+            port = 7777
+            [cluster]
+            enabled = true
+        "#;
+        let cfg: EmberConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.port, 7777);
+        assert!(cfg.cluster.enabled);
+        // everything else should be default
+        assert_eq!(cfg.bind, "127.0.0.1");
+        assert_eq!(cfg.maxclients, 10_000);
+        assert!(!cfg.appendonly);
+    }
+
+    #[test]
+    fn unknown_field_rejected() {
+        let toml_str = r#"
+            port = 6379
+            bogus_field = "nope"
+        "#;
+        let result: Result<EmberConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn connection_limits_from_defaults() {
+        let cfg = EmberConfig::default();
+        let limits = cfg.connection_limits().unwrap();
+        assert_eq!(limits.buf_capacity, 4096);
+        assert_eq!(limits.max_buf_size, 64 * 1024 * 1024);
+        assert_eq!(limits.idle_timeout, Duration::from_secs(300));
+        assert_eq!(limits.max_key_len, 512 * 1024);
+        assert_eq!(limits.max_value_len, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn config_to_registry_populates_params() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+        let all = registry.get_matching("*");
+        assert!(all.len() > 10);
+
+        let port = registry.get_matching("port");
+        assert_eq!(port.len(), 1);
+        assert_eq!(port[0].1, "6379");
+    }
+
+    #[test]
+    fn resolved_shard_count_auto_detects() {
+        let cfg = EmberConfig::default();
+        assert_eq!(cfg.shards, 0);
+        let count = cfg.resolved_shard_count();
+        assert!(count >= 1);
+    }
+
+    #[test]
+    fn resolved_shard_count_explicit() {
+        let mut cfg = EmberConfig::default();
+        cfg.shards = 4;
+        assert_eq!(cfg.resolved_shard_count(), 4);
+    }
+
+    #[test]
+    fn max_memory_bytes_parsing() {
+        let mut cfg = EmberConfig::default();
+        assert_eq!(cfg.max_memory_bytes().unwrap(), None);
+
+        cfg.maxmemory = "100M".into();
+        assert_eq!(cfg.max_memory_bytes().unwrap(), Some(100 * 1024 * 1024));
+
+        cfg.maxmemory = "0".into();
+        assert_eq!(cfg.max_memory_bytes().unwrap(), None);
+    }
 }
