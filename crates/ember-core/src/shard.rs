@@ -713,10 +713,8 @@ async fn run_shard(
     let mut replication_offset: u64 = 0;
 
     // waiter registries for blocking list operations (BLPOP/BRPOP)
-    let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> =
-        HashMap::new();
-    let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> =
-        HashMap::new();
+    let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
+    let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
 
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(EXPIRY_TICK);
@@ -812,15 +810,11 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     // normal dispatch → response path.
     match msg.request {
         ShardRequest::BLPop { key, waiter } => {
-            handle_blocking_pop(
-                &key, waiter, true, msg.reply, ctx,
-            );
+            handle_blocking_pop(&key, waiter, true, msg.reply, ctx);
             return;
         }
         ShardRequest::BRPop { key, waiter } => {
-            handle_blocking_pop(
-                &key, waiter, false, msg.reply, ctx,
-            );
+            handle_blocking_pop(&key, waiter, false, msg.reply, ctx);
             return;
         }
         _ => {}
@@ -838,9 +832,7 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     let records = to_aof_records(&msg.request, &response);
 
     // after LPush/RPush, check if any blocked clients are waiting
-    if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } =
-        msg.request
-    {
+    if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } = msg.request {
         if matches!(response, ShardResponse::Len(_)) {
             wake_blocked_waiters(key, ctx);
         }
@@ -971,12 +963,7 @@ fn handle_blocking_pop(
                 }
             };
             write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
-            broadcast_replication(
-                record,
-                ctx.replication_tx,
-                ctx.replication_offset,
-                shard_id,
-            );
+            broadcast_replication(record, ctx.replication_tx, ctx.replication_offset, shard_id);
         }
         Ok(None) => {
             // list is empty or doesn't exist — register the waiter
@@ -985,9 +972,7 @@ fn handle_blocking_pop(
             } else {
                 &mut *ctx.rpop_waiters
             };
-            map.entry(key.to_owned())
-                .or_default()
-                .push_back(waiter);
+            map.entry(key.to_owned()).or_default().push_back(waiter);
             // drop reply — connection handler doesn't await it for blocking ops
             drop(reply);
         }

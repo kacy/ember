@@ -30,9 +30,7 @@ use tracing::info;
 use tracing::warn;
 
 use crate::cluster::ClusterCoordinator;
-use crate::config::{
-    build_engine_config, parse_eviction_policy, parse_fsync_policy, EmberConfig,
-};
+use crate::config::{build_engine_config, parse_eviction_policy, parse_fsync_policy, EmberConfig};
 
 #[derive(Parser)]
 #[command(name = "ember-server", about = "ember cache server")]
@@ -473,14 +471,13 @@ async fn main() {
     );
 
     #[allow(unused_mut)]
-    let mut engine_config =
-        build_engine_config(
-            max_memory,
-            eviction_policy,
-            shard_count,
-            persistence,
-            cfg.engine.shard_channel_buffer,
-        );
+    let mut engine_config = build_engine_config(
+        max_memory,
+        eviction_policy,
+        shard_count,
+        persistence,
+        cfg.engine.shard_channel_buffer,
+    );
 
     #[cfg(feature = "protobuf")]
     if args.protobuf {
@@ -625,14 +622,14 @@ async fn main() {
             .persistence
             .as_ref()
             .map(|p| p.data_dir.clone())
-            .unwrap_or_else(|| {
-                exit_err("error: data-dir is required when cluster is enabled")
-            });
+            .unwrap_or_else(|| exit_err("error: data-dir is required when cluster is enabled"));
 
         let gossip_config = GossipConfig {
             gossip_port_offset: cfg.cluster.port_offset,
             probe_timeout: std::time::Duration::from_millis(cfg.cluster.node_timeout_ms / 2),
-            protocol_period: std::time::Duration::from_millis(cfg.cluster.gossip.protocol_period_ms),
+            protocol_period: std::time::Duration::from_millis(
+                cfg.cluster.gossip.protocol_period_ms,
+            ),
             suspicion_mult: cfg.cluster.gossip.suspicion_multiplier,
             indirect_probes: cfg.cluster.gossip.indirect_probes,
             max_piggyback: cfg.cluster.gossip.max_piggyback,
