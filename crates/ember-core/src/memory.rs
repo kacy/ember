@@ -419,7 +419,7 @@ mod tests {
         for i in 0..=LAZY_FREE_THRESHOLD {
             m.insert(format!("f{i}"), Bytes::from("v"));
         }
-        assert!(is_large_value(&Value::Hash(m)));
+        assert!(is_large_value(&Value::Hash(Box::new(m))));
     }
 
     #[test]
@@ -428,6 +428,6 @@ mod tests {
         for i in 0..=LAZY_FREE_THRESHOLD {
             s.insert(format!("m{i}"));
         }
-        assert!(is_large_value(&Value::Set(s)));
+        assert!(is_large_value(&Value::Set(Box::new(s))));
     }
 }

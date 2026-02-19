@@ -1283,7 +1283,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, SortedSet::BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::SortedSet(SortedSet::new()));
+            self.insert_empty(key, Value::SortedSet(Box::new(SortedSet::new())));
         }
 
         let (count, applied) = self
@@ -1474,7 +1474,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, memory::HASHMAP_BASE_OVERHEAD, field_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::Hash(HashMap::new()));
+            self.insert_empty(key, Value::Hash(Box::new(HashMap::new())));
         }
 
         let added = self
@@ -1631,7 +1631,7 @@ impl Keyspace {
         }
 
         if is_new {
-            let value = Value::Hash(HashMap::new());
+            let value = Value::Hash(Box::new(HashMap::new()));
             self.memory.add(key, &value);
             self.entries.insert(Box::from(key), Entry::new(value, None));
         }
@@ -1742,7 +1742,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, memory::HASHSET_BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::Set(std::collections::HashSet::new()));
+            self.insert_empty(key, Value::Set(Box::new(std::collections::HashSet::new())));
         }
 
         let added = self

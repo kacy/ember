@@ -613,10 +613,10 @@ async fn run_shard(
                     for (score, member) in members {
                         ss.add(member, score);
                     }
-                    Value::SortedSet(ss)
+                    Value::SortedSet(Box::new(ss))
                 }
-                RecoveredValue::Hash(map) => Value::Hash(map),
-                RecoveredValue::Set(set) => Value::Set(set),
+                RecoveredValue::Hash(map) => Value::Hash(Box::new(map)),
+                RecoveredValue::Set(set) => Value::Set(Box::new(set)),
                 #[cfg(feature = "vector")]
                 RecoveredValue::Vector {
                     metric,
@@ -1951,8 +1951,8 @@ fn value_to_snap(value: &Value) -> SnapValue {
                 .collect();
             SnapValue::SortedSet(members)
         }
-        Value::Hash(map) => SnapValue::Hash(map.clone()),
-        Value::Set(set) => SnapValue::Set(set.clone()),
+        Value::Hash(map) => SnapValue::Hash((**map).clone()),
+        Value::Set(set) => SnapValue::Set((**set).clone()),
         #[cfg(feature = "vector")]
         Value::Vector(ref vs) => {
             let mut elements = Vec::with_capacity(vs.len());
@@ -1988,10 +1988,10 @@ fn snap_to_value(snap: SnapValue) -> Value {
             for (score, member) in members {
                 ss.add(member, score);
             }
-            Value::SortedSet(ss)
+            Value::SortedSet(Box::new(ss))
         }
-        SnapValue::Hash(map) => Value::Hash(map),
-        SnapValue::Set(set) => Value::Set(set),
+        SnapValue::Hash(map) => Value::Hash(Box::new(map)),
+        SnapValue::Set(set) => Value::Set(Box::new(set)),
         #[cfg(feature = "vector")]
         SnapValue::Vector {
             metric,

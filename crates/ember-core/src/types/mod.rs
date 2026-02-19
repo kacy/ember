@@ -29,15 +29,18 @@ pub enum Value {
     List(VecDeque<Bytes>),
 
     /// Sorted set of unique string members, each with a float score.
-    /// Members are ordered by (score, member_name).
-    SortedSet(SortedSet),
+    /// Members are ordered by (score, member_name). Boxed to keep the
+    /// Value enum small — SortedSet is the largest variant by far.
+    SortedSet(Box<SortedSet>),
 
     /// Hash map of field names to values. Fields are unique strings,
-    /// values are binary-safe byte sequences.
-    Hash(HashMap<String, Bytes>),
+    /// values are binary-safe byte sequences. Boxed to reduce inline
+    /// Value enum size.
+    Hash(Box<HashMap<String, Bytes>>),
 
-    /// Unordered set of unique string members.
-    Set(HashSet<String>),
+    /// Unordered set of unique string members. Boxed to reduce inline
+    /// Value enum size.
+    Set(Box<HashSet<String>>),
 
     /// HNSW-backed vector set for similarity search. Each element is a
     /// named string mapped to a dense float vector.
