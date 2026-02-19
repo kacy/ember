@@ -38,6 +38,13 @@ const FAILOVER_GRACE_MS: u64 = 500;
 /// TCP port offset from the data port to the replication stream port.
 const REPLICATION_PORT_OFFSET: u16 = 2;
 
+/// Snapshot of cluster health for the /health HTTP endpoint.
+pub struct ClusterHealthSummary {
+    pub state: String,
+    pub known_nodes: usize,
+    pub slots_assigned: usize,
+}
+
 /// Integration struct wrapping cluster crate types for the running server.
 ///
 /// Thread-safe via interior mutability: `RwLock` for state (many readers,
@@ -325,6 +332,19 @@ impl ClusterCoordinator {
             RaftProposalError::Fatal(msg) => format!("raft error: {msg}"),
         };
         Frame::Error(format!("ERR {msg}"))
+    }
+
+    /// Returns a snapshot of cluster health for the /health HTTP endpoint.
+    ///
+    /// Acquires a read lock briefly to copy out the summary values.
+    pub async fn health_summary(&self) -> ClusterHealthSummary {
+        let state = self.state.read().await;
+        let assigned = SLOT_COUNT as usize - state.slot_map.unassigned_count();
+        ClusterHealthSummary {
+            state: state.state.to_string(),
+            known_nodes: state.nodes.len(),
+            slots_assigned: assigned,
+        }
     }
 
     // -- cluster command handlers --
