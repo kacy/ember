@@ -1,7 +1,11 @@
-//! Server configuration parsing.
+//! Server configuration parsing and runtime config registry.
 //!
 //! Handles conversion from CLI-friendly strings (like "100M", "1G")
-//! to the internal config types used by the engine.
+//! to the internal config types used by the engine. Also provides a
+//! `ConfigRegistry` for CONFIG GET/SET support at runtime.
+
+use std::collections::HashMap;
+use std::sync::RwLock;
 
 use ember_core::{EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig};
 use ember_persistence::aof::FsyncPolicy;
@@ -101,6 +105,85 @@ pub fn build_engine_config(
     }
 }
 
+/// Runtime configuration registry for CONFIG GET/SET.
+///
+/// Stores all server parameters as strings (matching Redis convention).
+/// Only a small whitelist of parameters are mutable at runtime — the
+/// rest return an error on CONFIG SET.
+pub struct ConfigRegistry {
+    params: RwLock<HashMap<String, String>>,
+}
+
+impl std::fmt::Debug for ConfigRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConfigRegistry").finish_non_exhaustive()
+    }
+}
+
+/// Parameters that can be changed at runtime via CONFIG SET.
+const MUTABLE_PARAMS: &[&str] = &["slowlog-log-slower-than", "slowlog-max-len"];
+
+impl ConfigRegistry {
+    /// Creates a new registry from the initial parameter map.
+    pub fn new(params: HashMap<String, String>) -> Self {
+        Self {
+            params: RwLock::new(params),
+        }
+    }
+
+    /// Returns all parameters matching the glob pattern.
+    ///
+    /// Supports `*` as a wildcard prefix/suffix/standalone. Simple glob
+    /// matching is sufficient — monitoring tools typically use `*` or
+    /// exact names.
+    pub fn get_matching(&self, pattern: &str) -> Vec<(String, String)> {
+        let params = self.params.read().unwrap_or_else(|e| e.into_inner());
+        let mut results: Vec<_> = params
+            .iter()
+            .filter(|(k, _)| glob_match(pattern, k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        results.sort_by(|a, b| a.0.cmp(&b.0));
+        results
+    }
+
+    /// Sets a configuration parameter at runtime.
+    ///
+    /// Only parameters in the mutable whitelist can be changed. Returns
+    /// the new value on success so the caller can apply it.
+    pub fn set(&self, param: &str, value: &str) -> Result<(), String> {
+        let key = param.to_ascii_lowercase();
+        if !MUTABLE_PARAMS.contains(&key.as_str()) {
+            return Err(format!(
+                "ERR Unsupported CONFIG parameter: {param}"
+            ));
+        }
+        let mut params = self.params.write().unwrap_or_else(|e| e.into_inner());
+        params.insert(key, value.to_string());
+        Ok(())
+    }
+}
+
+/// Simple glob matching for CONFIG GET patterns.
+///
+/// Supports `*` (match everything), `foo*` (prefix), `*foo` (suffix),
+/// and exact match. This covers the patterns that monitoring tools use.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let lower_pattern = pattern.to_ascii_lowercase();
+    let lower_name = name.to_ascii_lowercase();
+
+    if let Some(prefix) = lower_pattern.strip_suffix('*') {
+        lower_name.starts_with(prefix)
+    } else if let Some(suffix) = lower_pattern.strip_prefix('*') {
+        lower_name.ends_with(suffix)
+    } else {
+        lower_pattern == lower_name
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +271,58 @@ mod tests {
     fn build_config_no_limit() {
         let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None);
         assert_eq!(cfg.shard.max_memory, None);
+    }
+
+    #[test]
+    fn glob_match_wildcard() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("slow*", "slowlog-log-slower-than"));
+        assert!(glob_match("slow*", "slowlog-max-len"));
+        assert!(!glob_match("slow*", "maxmemory"));
+        assert!(glob_match("*memory", "maxmemory"));
+        assert!(!glob_match("*memory", "slowlog-max-len"));
+    }
+
+    #[test]
+    fn glob_match_exact() {
+        assert!(glob_match("port", "port"));
+        assert!(glob_match("PORT", "port")); // case insensitive
+        assert!(!glob_match("port", "maxmemory"));
+    }
+
+    #[test]
+    fn config_registry_get_matching() {
+        let mut params = HashMap::new();
+        params.insert("port".into(), "6379".into());
+        params.insert("maxmemory".into(), "0".into());
+        params.insert("slowlog-log-slower-than".into(), "10000".into());
+        let registry = ConfigRegistry::new(params);
+
+        let all = registry.get_matching("*");
+        assert_eq!(all.len(), 3);
+
+        let slow = registry.get_matching("slow*");
+        assert_eq!(slow.len(), 1);
+        assert_eq!(slow[0].0, "slowlog-log-slower-than");
+    }
+
+    #[test]
+    fn config_registry_set_mutable() {
+        let mut params = HashMap::new();
+        params.insert("slowlog-log-slower-than".into(), "10000".into());
+        let registry = ConfigRegistry::new(params);
+
+        assert!(registry.set("slowlog-log-slower-than", "5000").is_ok());
+        let result = registry.get_matching("slowlog-log-slower-than");
+        assert_eq!(result[0].1, "5000");
+    }
+
+    #[test]
+    fn config_registry_set_immutable_rejected() {
+        let mut params = HashMap::new();
+        params.insert("maxmemory".into(), "100".into());
+        let registry = ConfigRegistry::new(params);
+
+        assert!(registry.set("maxmemory", "200").is_err());
     }
 }

@@ -149,7 +149,7 @@ async fn process(
                 None
             };
 
-            let response = execute_concurrent(cmd, keyspace, engine, ctx, pubsub).await;
+            let response = execute_concurrent(cmd, keyspace, engine, ctx, slow_log, pubsub).await;
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
@@ -173,6 +173,7 @@ async fn execute_concurrent(
     keyspace: &Arc<ConcurrentKeyspace>,
     _engine: &Engine,
     ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
 ) -> Frame {
     match cmd {
@@ -366,6 +367,34 @@ async fn execute_concurrent(
         },
 
         Command::Info { section } => render_concurrent_info(keyspace, ctx, section.as_deref()),
+
+        Command::ConfigGet { pattern } => {
+            let pairs = ctx.config.get_matching(&pattern);
+            let mut frames = Vec::with_capacity(pairs.len() * 2);
+            for (key, value) in pairs {
+                frames.push(Frame::Bulk(Bytes::from(key)));
+                frames.push(Frame::Bulk(Bytes::from(value)));
+            }
+            Frame::Array(frames)
+        }
+
+        Command::ConfigSet { param, value } => {
+            if let Err(e) = ctx.config.set(&param, &value) {
+                Frame::Error(e)
+            } else {
+                let key = param.to_ascii_lowercase();
+                if key == "slowlog-log-slower-than" {
+                    if let Ok(us) = value.parse::<i64>() {
+                        slow_log.update_threshold(us);
+                    }
+                } else if key == "slowlog-max-len" {
+                    if let Ok(len) = value.parse::<usize>() {
+                        slow_log.update_max_len(len);
+                    }
+                }
+                Frame::Simple("OK".into())
+            }
+        }
 
         // -- pub/sub --
         Command::Publish { channel, message } => {

@@ -32,6 +32,7 @@ use tracing::warn;
 use crate::cluster::ClusterCoordinator;
 use crate::config::{
     build_engine_config, parse_byte_size, parse_eviction_policy, parse_fsync_policy,
+    ConfigRegistry,
 };
 
 #[derive(Parser)]
@@ -609,6 +610,31 @@ async fn main() {
         None
     };
 
+    // build runtime config registry from parsed args
+    let config_registry = {
+        let mut params = std::collections::HashMap::new();
+        params.insert("port".into(), args.port.to_string());
+        params.insert("bind-address".into(), args.host.clone());
+        if let Some(mem) = max_memory {
+            params.insert("maxmemory".into(), mem.to_string());
+        } else {
+            params.insert("maxmemory".into(), "0".into());
+        }
+        params.insert("maxmemory-policy".into(), args.eviction_policy.clone());
+        params.insert("appendonly".into(), if args.appendonly { "yes" } else { "no" }.into());
+        params.insert("appendfsync".into(), args.appendfsync.clone());
+        params.insert(
+            "slowlog-log-slower-than".into(),
+            args.slowlog_log_slower_than.to_string(),
+        );
+        params.insert("slowlog-max-len".into(), args.slowlog_max_len.to_string());
+        params.insert(
+            "maxclients".into(),
+            "10000".into(), // DEFAULT_MAX_CONNECTIONS
+        );
+        Arc::new(ConfigRegistry::new(params))
+    };
+
     let result = if args.concurrent {
         server::run_concurrent(
             addr,
@@ -621,6 +647,7 @@ async fn main() {
             slowlog_config,
             args.requirepass,
             tls_config,
+            Arc::clone(&config_registry),
             #[cfg(feature = "grpc")]
             grpc_addr,
         )
@@ -636,6 +663,7 @@ async fn main() {
             args.requirepass,
             tls_config,
             cluster,
+            Arc::clone(&config_registry),
             #[cfg(feature = "grpc")]
             grpc_addr,
         )

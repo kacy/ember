@@ -139,6 +139,12 @@ pub enum Command {
     /// FLUSHDB \[ASYNC\]. Removes all keys from the database.
     FlushDb { async_mode: bool },
 
+    /// CONFIG GET `pattern`. Returns matching server configuration parameters.
+    ConfigGet { pattern: String },
+
+    /// CONFIG SET `param` `value`. Sets a server configuration parameter at runtime.
+    ConfigSet { param: String, value: String },
+
     /// SCAN `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates keys.
     Scan {
         cursor: u64,
@@ -544,6 +550,8 @@ impl Command {
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
             Command::FlushDb { .. } => "flushdb",
+            Command::ConfigGet { .. } => "config",
+            Command::ConfigSet { .. } => "config",
 
             // list
             Command::LPush { .. } => "lpush",
@@ -684,6 +692,7 @@ impl Command {
                 | Command::SRem { .. }
             // server / persistence
                 | Command::FlushDb { .. }
+                | Command::ConfigSet { .. }
                 | Command::BgRewriteAof
                 | Command::BgSave
                 | Command::Restore { .. }
@@ -857,6 +866,7 @@ impl Command {
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
             "RESTORE" => parse_restore(&frames[1..]),
+            "CONFIG" => parse_config(&frames[1..]),
             "SLOWLOG" => parse_slowlog(&frames[1..]),
             "SUBSCRIBE" => parse_subscribe(&frames[1..]),
             "UNSUBSCRIBE" => parse_unsubscribe(&frames[1..]),
@@ -1852,6 +1862,34 @@ fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("ASKING"));
     }
     Ok(Command::Asking)
+}
+
+fn parse_config(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("CONFIG"));
+    }
+
+    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
+    match subcmd.as_str() {
+        "GET" => {
+            if args.len() != 2 {
+                return Err(wrong_arity("CONFIG|GET"));
+            }
+            let pattern = extract_string(&args[1])?;
+            Ok(Command::ConfigGet { pattern })
+        }
+        "SET" => {
+            if args.len() != 3 {
+                return Err(wrong_arity("CONFIG|SET"));
+            }
+            let param = extract_string(&args[1])?;
+            let value = extract_string(&args[2])?;
+            Ok(Command::ConfigSet { param, value })
+        }
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown CONFIG subcommand '{other}'"
+        ))),
+    }
 }
 
 fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {

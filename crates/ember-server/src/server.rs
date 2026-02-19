@@ -16,6 +16,7 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 use crate::cluster::ClusterCoordinator;
+use crate::config::ConfigRegistry;
 use crate::connection;
 use crate::pubsub::PubSubManager;
 use crate::slowlog::{SlowLog, SlowLogConfig};
@@ -44,6 +45,8 @@ pub struct ServerContext {
     pub requirepass: Option<String>,
     /// The address the server is bound to (for protected mode checks).
     pub bind_addr: SocketAddr,
+    /// Runtime configuration registry for CONFIG GET/SET.
+    pub config: Arc<ConfigRegistry>,
     /// Cluster coordinator, present when --cluster-enabled is set.
     pub cluster: Option<Arc<ClusterCoordinator>>,
 }
@@ -71,6 +74,7 @@ pub async fn run(
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
     cluster: Option<Arc<ClusterCoordinator>>,
+    config_registry: Arc<ConfigRegistry>,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // ensure data directory exists if persistence is configured
@@ -120,6 +124,7 @@ pub async fn run(
         commands_processed: AtomicU64::new(0),
         requirepass,
         bind_addr: addr,
+        config: config_registry,
         cluster,
     });
 
@@ -364,6 +369,7 @@ pub async fn run_concurrent(
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
     tls: Option<(SocketAddr, TlsConfig)>,
+    config_registry: Arc<ConfigRegistry>,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
@@ -401,6 +407,7 @@ pub async fn run_concurrent(
         commands_processed: AtomicU64::new(0),
         requirepass,
         bind_addr: addr,
+        config: config_registry,
         cluster: None,
     });
 
