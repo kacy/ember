@@ -5,6 +5,7 @@
 //! go back on a per-request oneshot. A background tick drives active
 //! expiration of TTL'd keys.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -151,6 +152,19 @@ pub enum ShardRequest {
     },
     RPop {
         key: String,
+    },
+    /// Blocking left-pop. If the list has elements, pops immediately and sends
+    /// the result on `waiter`. If empty, the shard registers the waiter to be
+    /// woken when an element is pushed. Uses an mpsc sender so multiple shards
+    /// can race to deliver the first result to a single receiver.
+    BLPop {
+        key: String,
+        waiter: mpsc::Sender<(String, Bytes)>,
+    },
+    /// Blocking right-pop. Same semantics as BLPop but pops from the tail.
+    BRPop {
+        key: String,
+        waiter: mpsc::Sender<(String, Bytes)>,
     },
     LRange {
         key: String,
@@ -698,6 +712,12 @@ async fn run_shard(
     // monotonically increasing per-shard replication offset
     let mut replication_offset: u64 = 0;
 
+    // waiter registries for blocking list operations (BLPOP/BRPOP)
+    let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> =
+        HashMap::new();
+    let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> =
+        HashMap::new();
+
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(EXPIRY_TICK);
     expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -719,6 +739,8 @@ async fn run_shard(
                             shard_id,
                             replication_tx: &replication_tx,
                             replication_offset: &mut replication_offset,
+                            lpop_waiters: &mut lpop_waiters,
+                            rpop_waiters: &mut rpop_waiters,
                             #[cfg(feature = "protobuf")]
                             schema_registry: &schema_registry,
                         };
@@ -767,6 +789,10 @@ struct ProcessCtx<'a> {
     shard_id: u16,
     replication_tx: &'a Option<broadcast::Sender<ReplicationEvent>>,
     replication_offset: &'a mut u64,
+    /// Waiters for BLPOP — keyed by list name, FIFO order.
+    lpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
+    /// Waiters for BRPOP — keyed by list name, FIFO order.
+    rpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
     #[cfg(feature = "protobuf")]
     schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -781,6 +807,25 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     let fsync_policy = ctx.fsync_policy;
     let shard_id = ctx.shard_id;
 
+    // handle blocking pop requests before dispatch — they carry a waiter
+    // oneshot that must be consumed here rather than going through the
+    // normal dispatch → response path.
+    match msg.request {
+        ShardRequest::BLPop { key, waiter } => {
+            handle_blocking_pop(
+                &key, waiter, true, msg.reply, ctx,
+            );
+            return;
+        }
+        ShardRequest::BRPop { key, waiter } => {
+            handle_blocking_pop(
+                &key, waiter, false, msg.reply, ctx,
+            );
+            return;
+        }
+        _ => {}
+    }
+
     let request_kind = describe_request(&msg.request);
     let response = dispatch(
         ctx.keyspace,
@@ -791,6 +836,15 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
 
     // collect mutation records once; used for both AOF and replication
     let records = to_aof_records(&msg.request, &response);
+
+    // after LPush/RPush, check if any blocked clients are waiting
+    if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } =
+        msg.request
+    {
+        if matches!(response, ShardResponse::Len(_)) {
+            wake_blocked_waiters(key, ctx);
+        }
+    }
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
@@ -874,6 +928,174 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
         ShardRequest::RewriteAof => RequestKind::RewriteAof,
         ShardRequest::FlushDbAsync => RequestKind::FlushDbAsync,
         _ => RequestKind::Other,
+    }
+}
+
+/// Handles a BLPOP or BRPOP request.
+///
+/// Tries to pop immediately. If the list has an element, sends the result
+/// on the waiter oneshot and records the AOF mutation. If the list is empty
+/// (or doesn't exist), registers the waiter in the appropriate map for
+/// later wake-up by an LPush/RPush.
+fn handle_blocking_pop(
+    key: &str,
+    waiter: mpsc::Sender<(String, Bytes)>,
+    is_left: bool,
+    reply: oneshot::Sender<ShardResponse>,
+    ctx: &mut ProcessCtx<'_>,
+) {
+    let fsync_policy = ctx.fsync_policy;
+    let shard_id = ctx.shard_id;
+
+    // try to pop immediately
+    let result = if is_left {
+        ctx.keyspace.lpop(key)
+    } else {
+        ctx.keyspace.rpop(key)
+    };
+
+    match result {
+        Ok(Some(data)) => {
+            // got an element — send to waiter and record the mutation
+            let _ = waiter.try_send((key.to_owned(), data));
+            let _ = reply.send(ShardResponse::Ok);
+
+            // AOF + replication for the pop
+            let record = if is_left {
+                AofRecord::LPop {
+                    key: key.to_owned(),
+                }
+            } else {
+                AofRecord::RPop {
+                    key: key.to_owned(),
+                }
+            };
+            write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
+            broadcast_replication(
+                record,
+                ctx.replication_tx,
+                ctx.replication_offset,
+                shard_id,
+            );
+        }
+        Ok(None) => {
+            // list is empty or doesn't exist — register the waiter
+            let map = if is_left {
+                &mut *ctx.lpop_waiters
+            } else {
+                &mut *ctx.rpop_waiters
+            };
+            map.entry(key.to_owned())
+                .or_default()
+                .push_back(waiter);
+            // drop reply — connection handler doesn't await it for blocking ops
+            drop(reply);
+        }
+        Err(_) => {
+            // WRONGTYPE — drop the waiter (connection sees the receiver close)
+            // and send an error on the reply channel
+            let _ = reply.send(ShardResponse::WrongType);
+        }
+    }
+}
+
+/// Checks if any BLPOP/BRPOP waiters are blocked on a key after a push
+/// operation. Pops elements from the list and sends them to waiters until
+/// either no more waiters remain or the list is empty.
+fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
+    let fsync_policy = ctx.fsync_policy;
+    let shard_id = ctx.shard_id;
+
+    // try BLPOP waiters first (left-pop), then BRPOP (right-pop)
+    for is_left in [true, false] {
+        let map = if is_left {
+            &mut *ctx.lpop_waiters
+        } else {
+            &mut *ctx.rpop_waiters
+        };
+
+        if let Some(waiters) = map.get_mut(key) {
+            while let Some(waiter) = waiters.pop_front() {
+                // skip dead waiters (client disconnected / timed out)
+                if waiter.is_closed() {
+                    continue;
+                }
+
+                let result = if is_left {
+                    ctx.keyspace.lpop(key)
+                } else {
+                    ctx.keyspace.rpop(key)
+                };
+
+                match result {
+                    Ok(Some(data)) => {
+                        let _ = waiter.try_send((key.to_owned(), data));
+
+                        // record AOF + replication for the pop
+                        let record = if is_left {
+                            AofRecord::LPop {
+                                key: key.to_owned(),
+                            }
+                        } else {
+                            AofRecord::RPop {
+                                key: key.to_owned(),
+                            }
+                        };
+                        write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
+                        broadcast_replication(
+                            record,
+                            ctx.replication_tx,
+                            ctx.replication_offset,
+                            shard_id,
+                        );
+                    }
+                    _ => break, // list is empty or wrong type — stop waking
+                }
+            }
+
+            // clean up empty waiter lists
+            if waiters.is_empty() {
+                map.remove(key);
+            }
+        }
+    }
+}
+
+/// Writes a single AOF record, used by blocking pop operations that
+/// bypass the normal dispatch → to_aof_records path.
+fn write_aof_record(
+    record: &AofRecord,
+    aof_writer: &mut Option<AofWriter>,
+    fsync_policy: FsyncPolicy,
+    shard_id: u16,
+) {
+    if let Some(ref mut writer) = *aof_writer {
+        if let Err(e) = writer.write_record(record) {
+            warn!(shard_id, "aof write failed: {e}");
+        }
+        if fsync_policy == FsyncPolicy::Always {
+            if let Err(e) = writer.sync() {
+                warn!(shard_id, "aof sync failed: {e}");
+            }
+        }
+    }
+}
+
+/// Broadcasts a single replication event, used by blocking pop operations
+/// that bypass the normal process_message path.
+fn broadcast_replication(
+    record: AofRecord,
+    replication_tx: &Option<broadcast::Sender<ReplicationEvent>>,
+    replication_offset: &mut u64,
+    shard_id: u16,
+) {
+    if let Some(ref tx) = *replication_tx {
+        *replication_offset += 1;
+        let _ = tx.send(ReplicationEvent {
+            shard_id,
+            offset: *replication_offset,
+            record,
+        });
     }
 }
 
@@ -1330,7 +1552,9 @@ fn dispatch(
         ShardRequest::Snapshot
         | ShardRequest::SerializeSnapshot
         | ShardRequest::RewriteAof
-        | ShardRequest::FlushDbAsync => ShardResponse::Ok,
+        | ShardRequest::FlushDbAsync
+        | ShardRequest::BLPop { .. }
+        | ShardRequest::BRPop { .. } => ShardResponse::Ok,
     }
 }
 

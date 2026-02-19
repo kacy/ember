@@ -158,7 +158,9 @@ pub fn validate_command_sizes(cmd: &Command) -> Option<Frame> {
         Command::Del { keys }
         | Command::Unlink { keys }
         | Command::Exists { keys }
-        | Command::MGet { keys } => {
+        | Command::MGet { keys }
+        | Command::BLPop { keys, .. }
+        | Command::BRPop { keys, .. } => {
             for k in keys {
                 if k.len() > MAX_KEY_LEN {
                     return Some(Frame::Error(format!(
