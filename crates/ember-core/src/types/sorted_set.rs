@@ -4,14 +4,21 @@
 //! are ordered by (score, member) — ties in score are broken
 //! lexicographically, matching Redis semantics.
 //!
-//! Implementation uses a `BTreeMap<(OrderedFloat<f64>, Arc<str>), ()>` for
-//! ordered iteration and a `HashMap<Arc<str>, OrderedFloat<f64>>` for O(1)
-//! member→score lookups. Member strings are shared via `Arc<str>` between
-//! both indexes, cutting per-member memory roughly in half vs storing
-//! two independent `String`s. `Arc` (vs `Rc`) is required because shards
-//! are spawned as tokio tasks which require `Send`.
+//! Implementation uses a sorted `Vec<(OrderedFloat<f64>, Arc<str>)>` for
+//! O(log n) rank queries and fast iteration, plus a
+//! `HashMap<Arc<str>, OrderedFloat<f64>>` for O(1) member→score lookups.
+//! Member strings are shared via `Arc<str>` between both structures,
+//! so each string is stored once on the heap.
+//!
+//! Compared to a BTreeMap-based design, the sorted Vec gives:
+//! - O(log n) `rank()` via binary search (was O(n) with BTreeMap::range.count())
+//! - Better cache locality for iteration (contiguous memory vs pointer-chasing)
+//! - Lower memory per member (~24 bytes for a Vec slot vs ~64 for a BTreeMap node)
+//! The tradeoff is O(n) insert/remove due to Vec shifting, but for typical
+//! sorted set sizes that shifting is cache-friendly memmove and faster than
+//! BTreeMap's O(log n) with high constant factor.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
@@ -53,22 +60,26 @@ impl AddResult {
 /// Members are ordered by `(score, member_name)`. Rank is determined by
 /// position in this ordering (0-based, lowest score first).
 ///
-/// Member strings are shared between the score index and the member index
+/// Member strings are shared between the score index and the sorted index
 /// via `Arc<str>`, so each string is stored once on the heap.
 #[derive(Debug, Clone)]
 pub struct SortedSet {
-    /// Score→member index for ordered iteration.
-    tree: BTreeMap<(OrderedFloat<f64>, Arc<str>), ()>,
+    /// Score-ordered index for rank queries and iteration.
+    /// Kept sorted by `(score, member_name)` at all times.
+    sorted: Vec<(OrderedFloat<f64>, Arc<str>)>,
     /// Member→score index for O(1) lookups.
     scores: HashMap<Arc<str>, OrderedFloat<f64>>,
+    /// Cached sum of member string lengths for O(1) `memory_usage()`.
+    data_bytes: usize,
 }
 
 impl SortedSet {
     /// Creates an empty sorted set.
     pub fn new() -> Self {
         Self {
-            tree: BTreeMap::new(),
+            sorted: Vec::new(),
             scores: HashMap::new(),
+            data_bytes: 0,
         }
     }
 
@@ -91,28 +102,35 @@ impl SortedSet {
             {
                 return AddResult::UNCHANGED;
             }
-            // update: remove old tree entry, reuse the Rc for the new one
+            // reuse the existing Arc from scores to avoid a new heap allocation
             let name: Arc<str> = self
                 .scores
                 .get_key_value(member.as_str())
                 .unwrap()
                 .0
                 .clone();
-            self.tree.remove(&(old_score, name.clone()));
+            // remove old position in sorted vec
+            let old_idx = self.search_idx(old_score, &name).unwrap();
+            self.sorted.remove(old_idx);
+            // update score and insert at new sorted position
             self.scores.insert(name.clone(), new_score);
-            self.tree.insert((new_score, name), ());
+            let new_idx = self.search_idx(new_score, &name).unwrap_err();
+            self.sorted.insert(new_idx, (new_score, name));
+            // data_bytes unchanged — member string stays the same
             AddResult {
                 added: false,
                 updated: true,
             }
         } else {
-            // new member — XX means only update, so skip
+            // new member — XX means only update existing, so skip
             if flags.xx {
                 return AddResult::UNCHANGED;
             }
-            let name: Arc<str> = Arc::from(member);
+            let name: Arc<str> = Arc::from(member.as_str());
+            self.data_bytes += member.len();
             self.scores.insert(name.clone(), new_score);
-            self.tree.insert((new_score, name), ());
+            let idx = self.search_idx(new_score, &name).unwrap_err();
+            self.sorted.insert(idx, (new_score, name));
             AddResult {
                 added: true,
                 updated: false,
@@ -123,7 +141,9 @@ impl SortedSet {
     /// Removes a member from the sorted set. Returns `true` if it existed.
     pub fn remove(&mut self, member: &str) -> bool {
         if let Some((name, score)) = self.scores.remove_entry(member) {
-            self.tree.remove(&(score, name));
+            let idx = self.search_idx(score, &name).unwrap();
+            self.sorted.remove(idx);
+            self.data_bytes -= name.len();
             true
         } else {
             false
@@ -138,32 +158,25 @@ impl SortedSet {
     /// Returns the 0-based rank of a member (lowest score = rank 0).
     /// Returns `None` if the member is not present.
     ///
-    /// O(n) — walks the BTreeMap up to the target entry. Acceptable for
-    /// small-to-medium sets; a skip list with rank counts would give
-    /// O(log n) if this becomes a bottleneck.
+    /// O(log n) — binary search over the sorted Vec.
     pub fn rank(&self, member: &str) -> Option<usize> {
         let (name, &score) = self.scores.get_key_value(member)?;
-        let key = (score, name.clone());
-        // count entries before this one
-        Some(self.tree.range(..&key).count())
+        Some(self.search_idx(score, name).unwrap())
     }
 
     /// Returns members in the given rank range, inclusive on both ends.
     /// Supports negative indices: -1 = last, -2 = second to last, etc.
     pub fn range_by_rank(&self, start: i64, stop: i64) -> Vec<(&str, f64)> {
-        let len = self.tree.len() as i64;
+        let len = self.sorted.len() as i64;
         let (s, e) = super::normalize_range(start, stop, len);
         if s > e {
             return Vec::new();
         }
-
         let s = s as usize;
         let e = e as usize;
 
-        self.tree
-            .keys()
-            .skip(s)
-            .take(e - s + 1)
+        self.sorted[s..=e]
+            .iter()
             .map(|(score, member)| (&**member, score.0))
             .collect()
     }
@@ -180,40 +193,45 @@ impl SortedSet {
 
     /// Returns an iterator over (member, score) pairs in sorted order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, f64)> {
-        self.tree.keys().map(|(score, member)| (&**member, score.0))
+        self.sorted
+            .iter()
+            .map(|(score, member)| (&**member, score.0))
     }
 
     /// Estimates memory usage in bytes.
     ///
-    /// This is an approximation: BTreeMap and HashMap have internal
-    /// overhead that varies, but we account for the per-entry costs
-    /// and the string data.
+    /// O(1) — uses the cached `data_bytes` sum plus a fixed overhead per member.
     pub fn memory_usage(&self) -> usize {
-        let per_entry: usize = self
-            .scores
-            .keys()
-            .map(|k| Self::estimated_member_cost(k))
-            .sum();
-
-        Self::BASE_OVERHEAD + per_entry
+        Self::BASE_OVERHEAD + self.scores.len() * Self::MEMBER_FIXED_OVERHEAD + self.data_bytes
     }
 
-    /// Base overhead of an empty sorted set (BTreeMap + HashMap shells).
-    pub const BASE_OVERHEAD: usize = 24 + 48; // BTREE_BASE + HASHMAP_BASE
+    /// Base overhead of an empty sorted set (Vec shell + HashMap shell + usize).
+    pub const BASE_OVERHEAD: usize = 24 + 48 + 8; // VEC_BASE + HASHMAP_BASE + data_bytes field
+
+    /// Fixed per-member overhead, excluding the variable-length string data.
+    ///
+    /// Accounts for:
+    /// - Vec entry: `(OrderedFloat<f64>, Arc<str>)` = 8 + 16 = 24 bytes
+    /// - HashMap entry: Arc<str> key + OrderedFloat value + bucket overhead = 56 bytes
+    /// - Arc heap header: 16 bytes (strong + weak counts, stored once)
+    /// - Second Arc pointer: 8 bytes (Arc<str> clone shared between sorted and scores)
+    const MEMBER_FIXED_OVERHEAD: usize = 24 + 56 + 16 + 8;
 
     /// Estimates the memory cost of storing a single member.
     ///
-    /// Includes BTreeMap entry overhead (64), HashMap entry overhead (56),
-    /// two Arc<str> pointers (8 bytes each), the shared string data once
-    /// (with Arc overhead of 16 bytes for strong + weak counts), and the
-    /// OrderedFloat in both.
+    /// Includes fixed structural overhead plus the variable string length.
+    /// Used for worst-case memory reservation during ZADD.
     pub fn estimated_member_cost(member: &str) -> usize {
-        const BTREE_ENTRY: usize = 64;
-        const HASHMAP_ENTRY: usize = 56;
-        const RC_PTR: usize = 8; // pointer per Rc clone
-        const RC_HEADER: usize = 16; // strong + weak counts
-                                     // string data stored once + Rc header + 2 Rc pointers + 2 OrderedFloat
-        BTREE_ENTRY + HASHMAP_ENTRY + member.len() + RC_HEADER + RC_PTR * 2 + 16
+        Self::MEMBER_FIXED_OVERHEAD + member.len()
+    }
+
+    /// Finds the position of `(score, name)` in the sorted Vec.
+    ///
+    /// Returns `Ok(idx)` if found, `Err(insertion_point)` if not found.
+    /// The sort key is `(score, member_name)` — same ordering as the set itself.
+    fn search_idx(&self, score: OrderedFloat<f64>, name: &Arc<str>) -> Result<usize, usize> {
+        self.sorted
+            .binary_search_by(|(s, m)| s.cmp(&score).then_with(|| (**m).cmp(&**name)))
     }
 }
 
@@ -223,8 +241,6 @@ impl Default for SortedSet {
     }
 }
 
-/// Converts a possibly-negative index to a non-negative index.
-/// Negative indices count back from `len` (-1 = len-1).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +439,16 @@ mod tests {
     }
 
     #[test]
+    fn memory_usage_shrinks_on_remove() {
+        let mut ss = SortedSet::new();
+        ss.add("alice".into(), 100.0);
+        ss.add("bob".into(), 200.0);
+        let before = ss.memory_usage();
+        ss.remove("alice");
+        assert!(ss.memory_usage() < before);
+    }
+
+    #[test]
     fn iter_sorted_order() {
         let mut ss = SortedSet::new();
         ss.add("c".into(), 3.0);
@@ -516,5 +542,39 @@ mod tests {
 
         assert_eq!(ss.len(), 0);
         assert!(ss.range_by_rank(0, -1).is_empty());
+    }
+
+    #[test]
+    fn data_bytes_stays_consistent() {
+        let mut ss = SortedSet::new();
+        assert_eq!(ss.data_bytes, 0);
+
+        ss.add("hello".into(), 1.0); // len = 5
+        assert_eq!(ss.data_bytes, 5);
+
+        ss.add("world".into(), 2.0); // len = 5
+        assert_eq!(ss.data_bytes, 10);
+
+        // update doesn't change data_bytes
+        ss.add("hello".into(), 99.0);
+        assert_eq!(ss.data_bytes, 10);
+
+        ss.remove("hello");
+        assert_eq!(ss.data_bytes, 5);
+
+        ss.remove("world");
+        assert_eq!(ss.data_bytes, 0);
+    }
+
+    #[test]
+    fn rank_is_o_log_n() {
+        // verify rank is correct for a larger set (regression guard for binary search)
+        let mut ss = SortedSet::new();
+        for i in 0..100 {
+            ss.add(format!("member:{i:03}"), i as f64);
+        }
+        for i in 0..100 {
+            assert_eq!(ss.rank(&format!("member:{i:03}")), Some(i));
+        }
     }
 }
