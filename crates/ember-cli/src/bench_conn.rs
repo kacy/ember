@@ -99,6 +99,26 @@ impl BenchConnection {
         Ok(start.elapsed())
     }
 
+    /// Writes a batch of distinct pre-serialized commands, flushes, then reads
+    /// one response per command. Each entry in `cmds` is a complete RESP frame.
+    ///
+    /// Unlike `send_pipeline`, which repeats the same command N times, this
+    /// method sends distinct commands — required for realistic key distribution.
+    pub async fn send_many(&mut self, cmds: &[Bytes]) -> Result<Duration, std::io::Error> {
+        let start = Instant::now();
+
+        for cmd in cmds {
+            self.stream.write_all(cmd).await?;
+        }
+        self.stream.flush().await?;
+
+        for _ in 0..cmds.len() {
+            self.read_one_response().await?;
+        }
+
+        Ok(start.elapsed())
+    }
+
     /// Reads and discards a single RESP3 response.
     async fn read_one_response(&mut self) -> Result<(), std::io::Error> {
         loop {
