@@ -133,6 +133,24 @@ impl MemoryTracker {
             .saturating_add(new_entry_size);
     }
 
+    /// Increases used bytes by `delta` without scanning the entry.
+    ///
+    /// Use this when the caller already knows the exact number of bytes
+    /// being added (e.g. list push where element sizes are precomputed).
+    /// Does not change the key count.
+    pub fn grow_by(&mut self, delta: usize) {
+        self.used_bytes = self.used_bytes.saturating_add(delta);
+    }
+
+    /// Decreases used bytes by `delta` without scanning the entry.
+    ///
+    /// Use this when the caller already knows the exact number of bytes
+    /// being removed (e.g. list pop where the popped element length is known).
+    /// Does not change the key count.
+    pub fn shrink_by(&mut self, delta: usize) {
+        self.used_bytes = self.used_bytes.saturating_sub(delta);
+    }
+
     /// Removes an entry with an explicit size, useful when the value has
     /// already been mutated and the original size was captured beforehand.
     pub fn remove_with_size(&mut self, size: usize) {
