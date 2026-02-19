@@ -20,9 +20,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::auth::{ClusterSecret, TAG_LEN};
 use crate::raft::TypeConfig;
 
-/// Maximum Raft frame size (64MB). Raft snapshots can be large, but anything
-/// beyond this is almost certainly a bug or an attack.
-pub(crate) const MAX_RAFT_FRAME_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum Raft frame size (10 MB). Raft snapshots can be large, but anything
+/// beyond this is almost certainly a bug or an attack. The previous 64 MB limit
+/// allowed a single unauthenticated frame to force a 64 MB heap allocation;
+/// 10 MB is generous for JSON-encoded Raft RPCs while limiting the blast radius.
+pub(crate) const MAX_RAFT_FRAME_SIZE: usize = 10 * 1024 * 1024;
 
 /// An inbound Raft RPC message.
 #[derive(Serialize, Deserialize)]

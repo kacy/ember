@@ -28,6 +28,12 @@ use crate::{NodeId, SlotRange};
 /// sending u64::MAX and permanently disabling suspicion refutation.
 const MAX_INCARNATION: u64 = u64::MAX / 2;
 
+/// Maximum allowed single-hop incarnation jump. A legitimate node increments
+/// its incarnation by 1 when refuting suspicion, so jumps larger than this
+/// threshold indicate either a bug or a DoS attempt trying to exhaust the
+/// incarnation space.
+const MAX_INCARNATION_JUMP: u64 = 1000;
+
 /// Configuration for the gossip protocol.
 #[derive(Debug, Clone)]
 pub struct GossipConfig {
@@ -643,6 +649,14 @@ impl GossipEngine {
                     }
                     if let Some(member) = self.members.get_mut(node) {
                         if *incarnation > member.incarnation {
+                            let jump = incarnation - member.incarnation;
+                            if jump > MAX_INCARNATION_JUMP {
+                                warn!(
+                                    "rejecting alive update for {}: incarnation jump {} exceeds limit",
+                                    node, jump
+                                );
+                                continue;
+                            }
                             member.incarnation = *incarnation;
                             member.addr = *addr;
                             if member.state != MemberStatus::Alive {
@@ -1534,6 +1548,64 @@ mod tests {
         assert!(
             !role_changed,
             "stale role update should not emit RoleChanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn excessive_incarnation_jump_rejected() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let remote = NodeId::new();
+        engine.add_seed(remote, test_addr(6380));
+        // seed starts at incarnation 0
+
+        // a jump larger than MAX_INCARNATION_JUMP should be rejected
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: remote,
+            updates: vec![NodeUpdate::Alive {
+                node: remote,
+                addr: test_addr(6380),
+                incarnation: MAX_INCARNATION_JUMP + 1,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        // incarnation should NOT have changed
+        let member = engine.members.get(&remote).unwrap();
+        assert_eq!(
+            member.incarnation, 0,
+            "incarnation should not change after excessive jump"
+        );
+    }
+
+    #[tokio::test]
+    async fn valid_incarnation_jump_accepted() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+
+        let remote = NodeId::new();
+        engine.add_seed(remote, test_addr(6380));
+
+        // a jump within the limit should be accepted
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: remote,
+            updates: vec![NodeUpdate::Alive {
+                node: remote,
+                addr: test_addr(6380),
+                incarnation: MAX_INCARNATION_JUMP,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380)).await;
+
+        let member = engine.members.get(&remote).unwrap();
+        assert_eq!(
+            member.incarnation, MAX_INCARNATION_JUMP,
+            "valid incarnation jump should be accepted"
         );
     }
 }
