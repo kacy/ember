@@ -294,8 +294,32 @@ distance metrics: **COSINE** (default), **L2** (squared euclidean), **IP** (inne
 
 ## configuration
 
+ember supports a TOML config file, environment variables, and CLI flags. the resolution order is: **defaults → config file → env vars → CLI flags** (highest priority wins).
+
+```bash
+# generate a config file with all defaults
+ember-server --config-template > ember.toml
+
+# start with a config file
+ember-server --config ember.toml
+
+# config file + CLI override
+ember-server --config ember.toml --port 7777
+
+# env vars use the EMBER_ prefix
+EMBER_PORT=8888 ember-server --config ember.toml
+```
+
+see [`ember.example.toml`](ember.example.toml) for the full annotated config with all available options.
+
+runtime changes via `CONFIG SET` persist in memory. use `CONFIG REWRITE` to flush them back to the config file.
+
+### common flags
+
 | flag | default | description |
 |------|---------|-------------|
+| `--config` / `-c` | — | path to TOML config file |
+| `--config-template` | — | print default config to stdout and exit |
 | `--host` | 127.0.0.1 | address to bind to |
 | `--port` | 6379 | port to listen on |
 | `--shards` | CPU cores | number of worker threads (shards) |
@@ -304,7 +328,7 @@ distance metrics: **COSINE** (default), **L2** (squared euclidean), **IP** (inne
 | `--data-dir` | — | directory for persistence files |
 | `--appendonly` | false | enable append-only file logging |
 | `--appendfsync` | everysec | fsync policy: `always`, `everysec`, `no` |
-| `--metrics-port` | — | prometheus metrics HTTP port (disabled when not set) |
+| `--metrics-port` | — | prometheus /metrics and /health HTTP port |
 | `--slowlog-log-slower-than` | 10000 | log commands slower than N microseconds (-1 disables) |
 | `--slowlog-max-len` | 128 | max entries in slow log ring buffer |
 | `--concurrent` | false | use DashMap-backed keyspace (experimental, faster GET/SET) |
