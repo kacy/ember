@@ -1630,6 +1630,12 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
 async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) -> Option<Frame> {
     let cluster = ctx.cluster.as_ref()?;
 
+    // Replicas serve all reads locally — skip slot routing.
+    // Write rejection is handled separately in execute() before this call.
+    if cluster.is_replica().await {
+        return None;
+    }
+
     match cmd {
         // single-key commands — check slot ownership for the key
         Command::Get { ref key }
@@ -1756,6 +1762,22 @@ async fn execute(
     pubsub: &Arc<PubSubManager>,
     asking: bool,
 ) -> Frame {
+    // Replica write rejection: redirect mutations to the primary.
+    if let Some(ref cluster) = ctx.cluster {
+        if cluster.is_replica().await && cmd.is_write() {
+            if let Some(key) = cmd.primary_key() {
+                use ember_cluster::key_slot;
+                let slot = key_slot(key.as_bytes());
+                if let Some(addr) = cluster.primary_addr_for_slot(slot).await {
+                    return Frame::Error(format!("MOVED {slot} {addr}"));
+                }
+            }
+            return Frame::Error(
+                "READONLY You can't write against a read only replica.".into(),
+            );
+        }
+    }
+
     // cluster slot validation — check whether we own the slot for this key.
     // when `asking` is true, importing slots are allowed through.
     if let Some(redirect) = cluster_slot_check(ctx, &cmd, asking).await {
@@ -2684,9 +2706,14 @@ async fn execute(
             }
         }
 
-        Command::ClusterReplicate { .. } => Frame::Error("ERR REPLICATE not yet supported".into()),
+        Command::ClusterReplicate { node_id } => match &ctx.cluster {
+            Some(c) => c.cluster_replicate(&node_id).await,
+            None => Frame::Error("ERR This instance has cluster support disabled".into()),
+        },
 
-        Command::ClusterFailover { .. } => Frame::Error("ERR FAILOVER not yet supported".into()),
+        Command::ClusterFailover { .. } => {
+            Frame::Error("ERR FAILOVER not yet implemented".into())
+        }
 
         Command::Migrate {
             host,

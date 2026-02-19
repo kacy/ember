@@ -16,7 +16,7 @@ use bytes::Bytes;
 use ember_cluster::{
     key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterState,
     ClusterStateData, ConfigParseError, GossipConfig, GossipEngine, GossipEvent, GossipMessage,
-    MigrationManager, NodeId, RaftNode, RaftProposalError, SlotRange, SLOT_COUNT,
+    MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError, SlotRange, SLOT_COUNT,
 };
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
@@ -729,6 +729,88 @@ impl ClusterCoordinator {
         Ok(())
     }
 
+    // -- replication --
+
+    /// CLUSTER REPLICATE node-id
+    ///
+    /// Makes this node a replica of the given primary. Updates local topology,
+    /// queues a role-change gossip announcement, and persists nodes.conf.
+    pub async fn cluster_replicate(&self, primary_id_str: &str) -> Frame {
+        let primary_id = match NodeId::parse(primary_id_str) {
+            Ok(id) => id,
+            Err(_) => return Frame::Error("ERR Invalid node ID".into()),
+        };
+
+        if primary_id == self.local_id {
+            return Frame::Error("ERR Cannot replicate self".into());
+        }
+
+        // verify the target exists and is a primary
+        {
+            let state = self.state.read().await;
+            match state.nodes.get(&primary_id) {
+                None => return Frame::Error("ERR Unknown node ID".into()),
+                Some(node) if node.role != NodeRole::Primary => {
+                    return Frame::Error("ERR Target node is not a primary".into())
+                }
+                _ => {}
+            }
+        }
+
+        // update local cluster state
+        {
+            let mut state = self.state.write().await;
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.role = NodeRole::Replica;
+                node.replicates = Some(primary_id);
+            }
+            // register ourselves in the primary's replica list
+            if let Some(primary) = state.nodes.get_mut(&primary_id) {
+                if !primary.replicas.contains(&self.local_id) {
+                    primary.replicas.push(self.local_id);
+                }
+            }
+            state.update_health();
+        }
+
+        // queue role change for epidemic dissemination
+        let incarnation = {
+            let mut gossip = self.gossip.lock().await;
+            let inc = gossip.local_incarnation();
+            gossip.queue_role_update(self.local_id, inc, false, Some(primary_id));
+            inc
+        };
+        let _ = incarnation; // used only to hold the lock briefly
+
+        self.save_config().await;
+        Frame::Simple("OK".into())
+    }
+
+    /// Returns `true` if this node is currently configured as a replica.
+    pub async fn is_replica(&self) -> bool {
+        let state = self.state.read().await;
+        state
+            .nodes
+            .get(&self.local_id)
+            .map(|n| n.role == NodeRole::Replica)
+            .unwrap_or(false)
+    }
+
+    /// Returns the address of the primary that owns the given slot.
+    ///
+    /// Used when redirecting write commands on replicas via MOVED.
+    pub async fn primary_addr_for_slot(&self, slot: u16) -> Option<std::net::SocketAddr> {
+        let state = self.state.read().await;
+        let owner_id = state.slot_map.owner(slot)?;
+        let node = state.nodes.get(&owner_id)?;
+        // Only redirect to primaries; if the owner is somehow a replica, skip.
+        if node.role == NodeRole::Primary {
+            Some(node.addr)
+        } else {
+            None
+        }
+    }
+
     /// Pushes the local node's current slot ownership into the gossip engine
     /// so it propagates to the rest of the cluster.
     async fn broadcast_local_slots(&self, slots: Vec<SlotRange>) {
@@ -1021,6 +1103,23 @@ impl ClusterCoordinator {
                             }
                             if let Some(node) = state.nodes.get_mut(&id) {
                                 node.slots = slots;
+                            }
+                            state.update_health();
+                            true
+                        }
+                        GossipEvent::RoleChanged(id, is_primary, replicates) => {
+                            debug!(
+                                "cluster: node {} role changed to {}",
+                                id,
+                                if is_primary { "primary" } else { "replica" }
+                            );
+                            if let Some(node) = state.nodes.get_mut(&id) {
+                                node.role = if is_primary {
+                                    NodeRole::Primary
+                                } else {
+                                    NodeRole::Replica
+                                };
+                                node.replicates = replicates;
                             }
                             state.update_health();
                             true
@@ -1502,5 +1601,79 @@ mod tests {
             }
             other => panic!("expected ASK redirect, got {other:?}"),
         }
+    }
+
+    // -- cluster_replicate --
+
+    #[tokio::test]
+    async fn cluster_replicate_self_rejected() {
+        let (coord, _rx) = test_coordinator();
+        let resp = coord.cluster_replicate(&coord.local_id.0.to_string()).await;
+        match resp {
+            Frame::Error(msg) => assert!(msg.contains("Cannot replicate self")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cluster_replicate_invalid_id_rejected() {
+        let (coord, _rx) = test_coordinator();
+        let resp = coord.cluster_replicate("not-a-uuid").await;
+        match resp {
+            Frame::Error(msg) => assert!(msg.contains("Invalid node ID")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cluster_replicate_unknown_node_rejected() {
+        let (coord, _rx) = test_coordinator();
+        let unknown = NodeId::new();
+        let resp = coord.cluster_replicate(&unknown.0.to_string()).await;
+        match resp {
+            Frame::Error(msg) => assert!(msg.contains("Unknown node ID")),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cluster_replicate_updates_state() {
+        let (coord, _rx) = test_coordinator();
+        let primary_id = NodeId::new();
+
+        // add a primary node to replicate from
+        {
+            let mut state = coord.state.write().await;
+            let primary = ClusterNode::new_primary(primary_id, "127.0.0.1:6380".parse().unwrap());
+            state.add_node(primary);
+        }
+
+        let resp = coord.cluster_replicate(&primary_id.0.to_string()).await;
+        assert!(matches!(resp, Frame::Simple(_)), "expected OK, got {resp:?}");
+
+        // local node should now be a replica
+        assert!(coord.is_replica().await, "node should be a replica after REPLICATE");
+
+        // local node's replicates field should point to primary
+        let state = coord.state.read().await;
+        let local = state.nodes.get(&coord.local_id).unwrap();
+        assert_eq!(local.replicates, Some(primary_id));
+        assert!(state.nodes[&primary_id].replicas.contains(&coord.local_id));
+    }
+
+    #[tokio::test]
+    async fn primary_addr_for_slot_returns_primary_addr() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+
+        // the bootstrap coordinator owns all slots — find any one
+        let addr = coord.primary_addr_for_slot(0).await;
+        assert!(addr.is_some(), "should find primary for slot 0");
+        assert_eq!(addr.unwrap().port(), 6379);
+    }
+
+    #[tokio::test]
+    async fn is_replica_returns_false_initially() {
+        let (coord, _rx) = test_coordinator();
+        assert!(!coord.is_replica().await, "new coordinator should be a primary");
     }
 }

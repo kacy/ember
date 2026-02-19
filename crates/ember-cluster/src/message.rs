@@ -107,6 +107,15 @@ pub enum NodeUpdate {
         incarnation: u64,
         slots: Vec<SlotRange>,
     },
+    /// Node's role changed (primary ↔ replica).
+    RoleChanged {
+        node: NodeId,
+        incarnation: u64,
+        /// `true` if the node is now a primary, `false` if replica.
+        is_primary: bool,
+        /// The primary this node replicates from, if it is a replica.
+        replicates: Option<NodeId>,
+    },
 }
 
 /// Information about a cluster member.
@@ -132,6 +141,7 @@ const UPDATE_SUSPECT: u8 = 2;
 const UPDATE_DEAD: u8 = 3;
 const UPDATE_LEFT: u8 = 4;
 const UPDATE_SLOTS_CHANGED: u8 = 5;
+const UPDATE_ROLE_CHANGED: u8 = 6;
 
 impl GossipMessage {
     /// Serializes the message to bytes.
@@ -427,6 +437,26 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
                 buf.put_u16_le(slot.end);
             }
         }
+        NodeUpdate::RoleChanged {
+            node,
+            incarnation,
+            is_primary,
+            replicates,
+        } => {
+            buf.put_u8(UPDATE_ROLE_CHANGED);
+            encode_node_id(buf, node);
+            buf.put_u64_le(*incarnation);
+            buf.put_u8(if *is_primary { 1 } else { 0 });
+            match replicates {
+                Some(primary_id) => {
+                    buf.put_u8(1);
+                    encode_node_id(buf, primary_id);
+                }
+                None => {
+                    buf.put_u8(0);
+                }
+            }
+        }
     }
 }
 
@@ -492,6 +522,23 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
                 node,
                 incarnation,
                 slots,
+            })
+        }
+        UPDATE_ROLE_CHANGED => {
+            let node = decode_node_id(buf)?;
+            let incarnation = safe_get_u64_le(buf)?;
+            let is_primary = safe_get_u8(buf)? != 0;
+            let has_replicates = safe_get_u8(buf)? != 0;
+            let replicates = if has_replicates {
+                Some(decode_node_id(buf)?)
+            } else {
+                None
+            };
+            Ok(NodeUpdate::RoleChanged {
+                node,
+                incarnation,
+                is_primary,
+                replicates,
             })
         }
         other => Err(io::Error::new(
@@ -664,6 +711,42 @@ mod tests {
         let encoded = msg.encode();
         let decoded = GossipMessage::decode(&encoded).unwrap();
         assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn role_changed_roundtrip() {
+        let node = NodeId::new();
+        let primary = NodeId::new();
+
+        // replica variant
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: node,
+            updates: vec![NodeUpdate::RoleChanged {
+                node,
+                incarnation: 7,
+                is_primary: false,
+                replicates: Some(primary),
+            }],
+        };
+        let encoded = msg.encode();
+        let decoded = GossipMessage::decode(&encoded).unwrap();
+        assert_eq!(msg, decoded);
+
+        // primary variant (no replicates field)
+        let msg2 = GossipMessage::Ping {
+            seq: 2,
+            sender: node,
+            updates: vec![NodeUpdate::RoleChanged {
+                node,
+                incarnation: 8,
+                is_primary: true,
+                replicates: None,
+            }],
+        };
+        let encoded2 = msg2.encode();
+        let decoded2 = GossipMessage::decode(&encoded2).unwrap();
+        assert_eq!(msg2, decoded2);
     }
 
     #[test]
