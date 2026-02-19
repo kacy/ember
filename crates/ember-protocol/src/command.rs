@@ -617,6 +617,126 @@ impl Command {
         }
     }
 
+    /// Returns `true` if this command mutates state.
+    ///
+    /// Used by the replica write-rejection layer: any command matching this
+    /// predicate is redirected to the primary via MOVED rather than executed
+    /// locally on a read-only replica.
+    pub fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Command::Set { .. }
+                | Command::Del { .. }
+                | Command::Unlink { .. }
+                | Command::Incr { .. }
+                | Command::Decr { .. }
+                | Command::IncrBy { .. }
+                | Command::DecrBy { .. }
+                | Command::IncrByFloat { .. }
+                | Command::Append { .. }
+                | Command::Rename { .. }
+                | Command::Expire { .. }
+                | Command::Persist { .. }
+                | Command::Pexpire { .. }
+                | Command::MSet { .. }
+                | Command::LPush { .. }
+                | Command::LPop { .. }
+                | Command::RPush { .. }
+                | Command::RPop { .. }
+                | Command::ZAdd { .. }
+                | Command::ZRem { .. }
+                | Command::HSet { .. }
+                | Command::HDel { .. }
+                | Command::HIncrBy { .. }
+                | Command::SAdd { .. }
+                | Command::SRem { .. }
+                | Command::FlushDb { .. }
+                | Command::BgRewriteAof
+                | Command::BgSave
+                | Command::Restore { .. }
+                | Command::VAdd { .. }
+                | Command::VAddBatch { .. }
+                | Command::VRem { .. }
+                | Command::ProtoRegister { .. }
+                | Command::ProtoSet { .. }
+                | Command::ProtoSetField { .. }
+                | Command::ProtoDelField { .. }
+        )
+    }
+
+    /// Returns the primary key for this command, if there is one.
+    ///
+    /// Used to calculate the hash slot for MOVED redirects on replicas.
+    /// For multi-key commands, returns the first key.
+    pub fn primary_key(&self) -> Option<&str> {
+        match self {
+            Command::Get { key }
+            | Command::Set { key, .. }
+            | Command::Incr { key }
+            | Command::Decr { key }
+            | Command::IncrBy { key, .. }
+            | Command::DecrBy { key, .. }
+            | Command::IncrByFloat { key, .. }
+            | Command::Append { key, .. }
+            | Command::Strlen { key }
+            | Command::Persist { key }
+            | Command::Expire { key, .. }
+            | Command::Pexpire { key, .. }
+            | Command::Ttl { key }
+            | Command::Pttl { key }
+            | Command::Type { key }
+            | Command::Rename { key, .. }
+            | Command::LPush { key, .. }
+            | Command::RPush { key, .. }
+            | Command::LPop { key }
+            | Command::RPop { key }
+            | Command::LRange { key, .. }
+            | Command::LLen { key }
+            | Command::ZAdd { key, .. }
+            | Command::ZRem { key, .. }
+            | Command::ZScore { key, .. }
+            | Command::ZRank { key, .. }
+            | Command::ZRange { key, .. }
+            | Command::ZCard { key }
+            | Command::HSet { key, .. }
+            | Command::HGet { key, .. }
+            | Command::HGetAll { key }
+            | Command::HDel { key, .. }
+            | Command::HExists { key, .. }
+            | Command::HLen { key }
+            | Command::HIncrBy { key, .. }
+            | Command::HKeys { key }
+            | Command::HVals { key }
+            | Command::HMGet { key, .. }
+            | Command::SAdd { key, .. }
+            | Command::SRem { key, .. }
+            | Command::SMembers { key }
+            | Command::SIsMember { key, .. }
+            | Command::SCard { key }
+            | Command::VAdd { key, .. }
+            | Command::VAddBatch { key, .. }
+            | Command::VSim { key, .. }
+            | Command::VRem { key, .. }
+            | Command::VGet { key, .. }
+            | Command::VCard { key }
+            | Command::VDim { key }
+            | Command::VInfo { key }
+            | Command::ProtoSet { key, .. }
+            | Command::ProtoGet { key }
+            | Command::ProtoType { key }
+            | Command::ProtoGetField { key, .. }
+            | Command::ProtoSetField { key, .. }
+            | Command::ProtoDelField { key, .. }
+            | Command::Restore { key, .. } => Some(key),
+            Command::Del { keys }
+            | Command::Unlink { keys }
+            | Command::Exists { keys }
+            | Command::MGet { keys } => keys.first().map(String::as_str),
+            Command::MSet { pairs } => pairs.first().map(|(k, _)| k.as_str()),
+            _ => None,
+        }
+    }
+
     /// Parses a [`Frame`] into a [`Command`].
     ///
     /// Expects an array frame where the first element is the command name
@@ -5495,5 +5615,58 @@ mod tests {
     fn restore_wrong_arity() {
         let err = Command::from_frame(cmd(&["RESTORE", "key"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // -- is_write / primary_key --
+
+    #[test]
+    fn is_write_returns_true_for_mutations() {
+        assert!(Command::Set {
+            key: "k".into(),
+            value: bytes::Bytes::new(),
+            expire: None,
+            nx: false,
+            xx: false,
+        }
+        .is_write());
+        assert!(Command::Del { keys: vec!["k".into()] }.is_write());
+        assert!(Command::Incr { key: "k".into() }.is_write());
+        assert!(Command::HSet {
+            key: "k".into(),
+            fields: vec![],
+        }
+        .is_write());
+        assert!(Command::LPush { key: "k".into(), values: vec![] }.is_write());
+        assert!(Command::ZAdd {
+            key: "k".into(),
+            flags: crate::command::ZAddFlags::default(),
+            members: vec![],
+        }
+        .is_write());
+        assert!(Command::SAdd { key: "k".into(), members: vec![] }.is_write());
+        assert!(Command::FlushDb { async_mode: false }.is_write());
+    }
+
+    #[test]
+    fn is_write_returns_false_for_reads() {
+        assert!(!Command::Get { key: "k".into() }.is_write());
+        assert!(!Command::HGet { key: "k".into(), field: "f".into() }.is_write());
+        assert!(!Command::Ping(None).is_write());
+        assert!(!Command::ClusterInfo.is_write());
+        assert!(!Command::DbSize.is_write());
+    }
+
+    #[test]
+    fn primary_key_returns_first_key() {
+        assert_eq!(
+            Command::Get { key: "hello".into() }.primary_key(),
+            Some("hello")
+        );
+        assert_eq!(
+            Command::Del { keys: vec!["a".into(), "b".into()] }.primary_key(),
+            Some("a")
+        );
+        assert_eq!(Command::Ping(None).primary_key(), None);
+        assert_eq!(Command::DbSize.primary_key(), None);
     }
 }
