@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
+use crate::auth::{ClusterSecret, TAG_LEN};
 use crate::{NodeId, SlotRange};
 
 /// Maximum number of members in a Welcome message or updates in a Ping/Ack.
@@ -349,6 +350,35 @@ impl GossipMessage {
                 format!("unknown message type: {other}"),
             )),
         }
+    }
+
+    /// Encodes the message with a trailing HMAC-SHA256 tag.
+    pub fn encode_authenticated(&self, secret: &ClusterSecret) -> Bytes {
+        let mut buf = BytesMut::with_capacity(256);
+        self.encode_into(&mut buf);
+        let tag = secret.sign(&buf);
+        buf.extend_from_slice(&tag);
+        buf.freeze()
+    }
+
+    /// Decodes a message, verifying the trailing HMAC-SHA256 tag first.
+    ///
+    /// Returns an error if the buffer is too short or the tag doesn't match.
+    pub fn decode_authenticated(buf: &[u8], secret: &ClusterSecret) -> io::Result<Self> {
+        if buf.len() < TAG_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "message too short for auth tag",
+            ));
+        }
+        let (payload, tag) = buf.split_at(buf.len() - TAG_LEN);
+        if !secret.verify(payload, tag) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "cluster auth failed",
+            ));
+        }
+        Self::decode(payload)
     }
 }
 
@@ -973,5 +1003,43 @@ mod tests {
 
         let result = GossipMessage::decode(&buf);
         assert!(result.is_err(), "should reject slot >= 16384");
+    }
+
+    // -- authenticated encode/decode tests --
+
+    #[test]
+    fn authenticated_roundtrip() {
+        let secret = ClusterSecret::from_password("cluster-pass");
+        let msg = GossipMessage::Ping {
+            seq: 42,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let encoded = msg.encode_authenticated(&secret);
+        let decoded =
+            GossipMessage::decode_authenticated(&encoded, &secret).expect("auth roundtrip");
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn wrong_secret_rejected() {
+        let s1 = ClusterSecret::from_password("secret-a");
+        let s2 = ClusterSecret::from_password("secret-b");
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let encoded = msg.encode_authenticated(&s1);
+        let result = GossipMessage::decode_authenticated(&encoded, &s2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn truncated_auth_message_rejected() {
+        let secret = ClusterSecret::from_password("test");
+        // too short to even contain a 32-byte tag
+        let result = GossipMessage::decode_authenticated(&[0u8; 16], &secret);
+        assert!(result.is_err());
     }
 }

@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use ember_cluster::{
-    key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterState,
-    ClusterStateData, ConfigParseError, Election, GossipConfig, GossipEngine, GossipEvent,
-    GossipMessage, MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError, SlotRange,
-    SLOT_COUNT,
+    key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterSecret,
+    ClusterState, ClusterStateData, ConfigParseError, Election, GossipConfig, GossipEngine,
+    GossipEvent, GossipMessage, MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError,
+    SlotRange, SLOT_COUNT,
 };
 use ember_core::Engine;
 use ember_protocol::Frame;
@@ -68,6 +68,8 @@ pub struct ClusterCoordinator {
     election: Mutex<Option<ElectionAttempt>>,
     /// config epoch of the last vote we granted as a primary; enforces one vote per epoch.
     last_voted_epoch: std::sync::atomic::AtomicU64,
+    /// optional shared secret for authenticating cluster transport messages.
+    secret: Option<Arc<ClusterSecret>>,
 }
 
 /// Tracks an in-progress automatic failover election that this node initiated.
@@ -100,6 +102,7 @@ impl ClusterCoordinator {
         gossip_config: GossipConfig,
         bootstrap: bool,
         data_dir: Option<PathBuf>,
+        secret: Option<Arc<ClusterSecret>>,
     ) -> Result<(Self, mpsc::Receiver<GossipEvent>), String> {
         let (event_tx, event_rx) = mpsc::channel(256);
 
@@ -141,6 +144,7 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
+            secret,
         };
 
         Ok((coordinator, event_rx))
@@ -155,6 +159,7 @@ impl ClusterCoordinator {
         bind_addr: SocketAddr,
         gossip_config: GossipConfig,
         data_dir: PathBuf,
+        secret: Option<Arc<ClusterSecret>>,
     ) -> Result<(Self, mpsc::Receiver<GossipEvent>), ConfigParseError> {
         let (state, incarnation) = ClusterState::from_nodes_conf(data)?;
         let local_id = state.local_id;
@@ -201,6 +206,7 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
+            secret,
         };
 
         Ok((coordinator, event_rx))
@@ -209,6 +215,11 @@ impl ClusterCoordinator {
     /// Returns the local node ID.
     pub fn local_id(&self) -> NodeId {
         self.local_id
+    }
+
+    /// Returns the cluster transport secret, if configured.
+    pub fn cluster_secret(&self) -> Option<Arc<ClusterSecret>> {
+        self.secret.clone()
     }
 
     // -- raft integration --
@@ -393,7 +404,11 @@ impl ClusterCoordinator {
         let encoded = {
             let mut gossip = self.gossip.lock().await;
             gossip.add_seed(new_id, gossip_addr);
-            gossip.create_join_message().encode()
+            let msg = gossip.create_join_message();
+            match &self.secret {
+                Some(s) => msg.encode_authenticated(s),
+                None => msg.encode(),
+            }
         };
 
         // send join message via UDP
@@ -1277,7 +1292,11 @@ impl ClusterCoordinator {
                 incarnation,
                 slots,
             };
-            (gossip.alive_member_addrs(), msg.encode())
+            let encoded = match &self.secret {
+                Some(s) => msg.encode_authenticated(s),
+                None => msg.encode(),
+            };
+            (gossip.alive_member_addrs(), encoded)
         };
 
         // Send directly to all alive peers (gossip lock released).
@@ -1362,7 +1381,10 @@ impl ClusterCoordinator {
                     _ = tick_interval.tick() => {
                         let mut gossip = coordinator.gossip.lock().await;
                         for (target_addr, msg) in gossip.tick() {
-                            let encoded = msg.encode();
+                            let encoded = match &coordinator.secret {
+                                Some(s) => msg.encode_authenticated(s),
+                                None => msg.encode(),
+                            };
                             if let Err(e) = sock.send_to(&encoded, target_addr).await {
                                 debug!("gossip send error to {target_addr}: {e}");
                             }
@@ -1372,11 +1394,18 @@ impl ClusterCoordinator {
                     result = sock.recv_from(&mut recv_buf) => {
                         match result {
                             Ok((len, from)) => {
-                                match GossipMessage::decode(&recv_buf[..len]) {
+                                let decode_result = match &coordinator.secret {
+                                    Some(s) => GossipMessage::decode_authenticated(&recv_buf[..len], s),
+                                    None => GossipMessage::decode(&recv_buf[..len]),
+                                };
+                                match decode_result {
                                     Ok(msg) => {
                                         let mut gossip = coordinator.gossip.lock().await;
                                         for (addr, reply) in gossip.handle_message(msg, from).await {
-                                            let encoded = reply.encode();
+                                            let encoded = match &coordinator.secret {
+                                                Some(s) => reply.encode_authenticated(s),
+                                                None => reply.encode(),
+                                            };
                                             if let Err(e) = sock.send_to(&encoded, addr).await {
                                                 debug!("gossip reply error to {addr}: {e}");
                                             }
@@ -1714,7 +1743,7 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        ClusterCoordinator::new(local_id, addr, config, false, None).unwrap()
+        ClusterCoordinator::new(local_id, addr, config, false, None, None).unwrap()
     }
 
     /// Creates a test coordinator bootstrapped with all 16384 slots.
@@ -1722,7 +1751,7 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        ClusterCoordinator::new(local_id, addr, config, true, None).unwrap()
+        ClusterCoordinator::new(local_id, addr, config, true, None, None).unwrap()
     }
 
     #[test]
@@ -1734,7 +1763,7 @@ mod tests {
             gossip_port_offset: 2000,
             ..GossipConfig::default()
         };
-        let result = ClusterCoordinator::new(local_id, addr, config, false, None);
+        let result = ClusterCoordinator::new(local_id, addr, config, false, None, None);
         assert!(result.is_err(), "expected port overflow error");
     }
 
@@ -2047,9 +2076,15 @@ mod tests {
         let local_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
-        let (coord, _rx) =
-            ClusterCoordinator::new(local_id, addr, config, true, Some(dir.path().to_path_buf()))
-                .unwrap();
+        let (coord, _rx) = ClusterCoordinator::new(
+            local_id,
+            addr,
+            config,
+            true,
+            Some(dir.path().to_path_buf()),
+            None,
+        )
+        .unwrap();
 
         // add some slots and save
         coord.save_config().await;
@@ -2074,6 +2109,7 @@ mod tests {
             config.clone(),
             true,
             Some(dir.path().to_path_buf()),
+            None,
         )
         .unwrap();
 
@@ -2081,7 +2117,7 @@ mod tests {
 
         let content = std::fs::read_to_string(dir.path().join("nodes.conf")).unwrap();
         let (restored_coord, _rx) =
-            ClusterCoordinator::from_config(&content, addr, config, dir.path().to_path_buf())
+            ClusterCoordinator::from_config(&content, addr, config, dir.path().to_path_buf(), None)
                 .unwrap();
 
         assert_eq!(restored_coord.local_id, local_id);
@@ -2264,6 +2300,7 @@ mod tests {
             GossipConfig::default(),
             false,
             None,
+            None,
         )
         .unwrap();
 
@@ -2360,7 +2397,7 @@ mod tests {
         let replica_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6380".parse().unwrap();
         let (coord, _rx) =
-            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None)
+            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None, None)
                 .unwrap();
 
         // set up coord as a replica
@@ -2396,7 +2433,7 @@ mod tests {
         let replica_id = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6381".parse().unwrap();
         let (coord, _rx) =
-            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None)
+            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None, None)
                 .unwrap();
         let coord = Arc::new(coord);
 
@@ -2468,7 +2505,7 @@ mod tests {
         let other_candidate = NodeId::new();
         let addr: SocketAddr = "127.0.0.1:6384".parse().unwrap();
         let (coord, _rx) =
-            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None)
+            ClusterCoordinator::new(replica_id, addr, GossipConfig::default(), false, None, None)
                 .unwrap();
         let coord = Arc::new(coord);
 
