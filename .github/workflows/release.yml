@@ -22,15 +22,19 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: ember-server-linux-amd64
+            artifact_suffix: linux-amd64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: ember-server-linux-arm64
+            artifact_suffix: linux-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
             artifact: ember-server-darwin-amd64
+            artifact_suffix: darwin-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: ember-server-darwin-arm64
+            artifact_suffix: darwin-arm64
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -58,12 +62,19 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/ember-server dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/emberkv-cli dist/ember-cli-${{ matrix.artifact_suffix }}
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
+
+      - name: upload cli artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ember-cli-${{ matrix.artifact_suffix }}
+          path: dist/ember-cli-${{ matrix.artifact_suffix }}
 
   docker:
     name: docker
@@ -107,12 +118,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: ember-server-*
+          pattern: "ember-*"
 
       - name: collect binaries
         run: |
           mkdir -p release
-          find artifacts -type f -name 'ember-server-*' -exec cp {} release/ \;
+          find artifacts -type f \( -name 'ember-server-*' -o -name 'ember-cli-*' \) -exec cp {} release/ \;
           cd release && sha256sum * > checksums.txt
 
       - name: create release
