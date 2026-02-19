@@ -398,13 +398,8 @@ async fn cluster_meet_adds_peer() {
     let mut ca = a.connect().await;
 
     // introduce b to a
-    ca.ok(&[
-        "CLUSTER",
-        "MEET",
-        "127.0.0.1",
-        &b.port.to_string(),
-    ])
-    .await;
+    ca.ok(&["CLUSTER", "MEET", "127.0.0.1", &b.port.to_string()])
+        .await;
 
     // node a should immediately see b in its local state
     let resp = ca.cmd(&["CLUSTER", "NODES"]).await;
