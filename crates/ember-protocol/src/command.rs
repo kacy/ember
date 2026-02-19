@@ -842,10 +842,22 @@ impl Command {
             ));
         }
 
-        let name = extract_string(&frames[0])?;
-        let name_upper = name.to_ascii_uppercase();
+        // command names are short ASCII keywords — uppercase on the stack to
+        // avoid two heap allocations (extract_string + to_ascii_uppercase).
+        let name_bytes = extract_raw_bytes(&frames[0])?;
+        let mut upper = [0u8; MAX_KEYWORD_LEN];
+        let len = name_bytes.len();
+        if len > MAX_KEYWORD_LEN {
+            let name = extract_string(&frames[0])?;
+            return Ok(Command::Unknown(name));
+        }
+        upper[..len].copy_from_slice(name_bytes);
+        upper[..len].make_ascii_uppercase();
+        let name_upper = std::str::from_utf8(&upper[..len]).map_err(|_| {
+            ProtocolError::InvalidCommandFrame("command name is not valid utf-8".into())
+        })?;
 
-        match name_upper.as_str() {
+        match name_upper {
             "PING" => parse_ping(&frames[1..]),
             "ECHO" => parse_echo(&frames[1..]),
             "GET" => parse_get(&frames[1..]),
@@ -940,7 +952,11 @@ impl Command {
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             "MONITOR" => parse_monitor(&frames[1..]),
-            _ => Ok(Command::Unknown(name)),
+            _ => {
+                // only allocate for truly unknown commands
+                let name = extract_string(&frames[0])?;
+                Ok(Command::Unknown(name))
+            }
         }
     }
 }
@@ -985,12 +1001,64 @@ fn extract_bytes_vec(frames: &[Frame]) -> Result<Vec<Bytes>, ProtocolError> {
     frames.iter().map(extract_bytes).collect()
 }
 
-/// Parses a string argument as a positive u64.
+/// Maximum length for a command name or keyword uppercased on the stack.
+/// All Redis/Ember commands and subcommands are well under this limit.
+const MAX_KEYWORD_LEN: usize = 32;
+
+/// Returns the raw bytes of a Bulk or Simple frame without allocating.
+fn extract_raw_bytes(frame: &Frame) -> Result<&[u8], ProtocolError> {
+    match frame {
+        Frame::Bulk(data) => Ok(data.as_ref()),
+        Frame::Simple(s) => Ok(s.as_bytes()),
+        _ => Err(ProtocolError::InvalidCommandFrame(
+            "expected bulk or simple string".into(),
+        )),
+    }
+}
+
+/// Uppercases a frame's bytes into a stack buffer and returns the result as `&str`.
+///
+/// Used for command names, subcommands, and option flags where the value is always
+/// a short ASCII keyword. Avoids the two heap allocations that
+/// `extract_string()?.to_ascii_uppercase()` would require.
+fn uppercase_arg<'b>(
+    frame: &Frame,
+    buf: &'b mut [u8; MAX_KEYWORD_LEN],
+) -> Result<&'b str, ProtocolError> {
+    let bytes = extract_raw_bytes(frame)?;
+    let len = bytes.len();
+    if len > MAX_KEYWORD_LEN {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "keyword too long".into(),
+        ));
+    }
+    buf[..len].copy_from_slice(bytes);
+    buf[..len].make_ascii_uppercase();
+    std::str::from_utf8(&buf[..len])
+        .map_err(|_| ProtocolError::InvalidCommandFrame("keyword is not valid utf-8".into()))
+}
+
+/// Parses a frame's bytes directly as a positive u64 without allocating a String.
 fn parse_u64(frame: &Frame, cmd: &str) -> Result<u64, ProtocolError> {
-    let s = extract_string(frame)?;
-    s.parse::<u64>().map_err(|_| {
+    let bytes = extract_raw_bytes(frame)?;
+    parse_u64_bytes(bytes).ok_or_else(|| {
         ProtocolError::InvalidCommandFrame(format!("value is not a valid integer for '{cmd}'"))
     })
+}
+
+/// Parses an unsigned integer directly from a byte slice.
+fn parse_u64_bytes(buf: &[u8]) -> Option<u64> {
+    if buf.is_empty() {
+        return None;
+    }
+    let mut n: u64 = 0;
+    for &b in buf {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        n = n.checked_mul(10)?.checked_add((b - b'0') as u64)?;
+    }
+    Some(n)
 }
 
 /// Shorthand for the wrong-arity error returned by every parser.
@@ -1038,8 +1106,9 @@ fn parse_set_options(
     let mut idx = 0;
 
     while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
             "NX" => {
                 nx = true;
                 idx += 1;
@@ -1355,8 +1424,9 @@ fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
     let mut idx = 1;
 
     while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
             "MATCH" => {
                 idx += 1;
                 if idx >= args.len() {
@@ -1394,12 +1464,47 @@ fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
     })
 }
 
-/// Parses a string argument as an i64. Used by LRANGE for start/stop indices.
+/// Parses a frame's bytes directly as an i64 without allocating a String.
 fn parse_i64(frame: &Frame, cmd: &str) -> Result<i64, ProtocolError> {
-    let s = extract_string(frame)?;
-    s.parse::<i64>().map_err(|_| {
+    let bytes = extract_raw_bytes(frame)?;
+    parse_i64_bytes(bytes).ok_or_else(|| {
         ProtocolError::InvalidCommandFrame(format!("value is not a valid integer for '{cmd}'"))
     })
+}
+
+/// Parses a signed integer directly from a byte slice. Accumulates in the
+/// negative direction for negative numbers so that `i64::MIN` is representable.
+fn parse_i64_bytes(buf: &[u8]) -> Option<i64> {
+    if buf.is_empty() {
+        return None;
+    }
+    let (negative, digits) = if buf[0] == b'-' {
+        (true, &buf[1..])
+    } else {
+        (false, buf)
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    if negative {
+        let mut n: i64 = 0;
+        for &b in digits {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            n = n.checked_mul(10)?.checked_sub((b - b'0') as i64)?;
+        }
+        Some(n)
+    } else {
+        let mut n: i64 = 0;
+        for &b in digits {
+            if !b.is_ascii_digit() {
+                return None;
+            }
+            n = n.checked_mul(10)?.checked_add((b - b'0') as i64)?;
+        }
+        Some(n)
+    }
 }
 
 fn parse_lpush(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -1477,7 +1582,12 @@ fn parse_brpop(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// Extracts the timeout argument for BLPOP/BRPOP. Redis accepts integer or
 /// float seconds; negative values are an error.
 fn parse_timeout(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
-    let s = extract_string(frame)?;
+    let bytes = extract_raw_bytes(frame)?;
+    let s = std::str::from_utf8(bytes).map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!(
+            "timeout is not a float or out of range for '{cmd}'"
+        ))
+    })?;
     let val: f64 = s.parse().map_err(|_| {
         ProtocolError::InvalidCommandFrame(format!(
             "timeout is not a float or out of range for '{cmd}'"
@@ -1501,7 +1611,10 @@ fn parse_type(args: &[Frame]) -> Result<Command, ProtocolError> {
 
 /// Parses a string argument as an f64 score.
 fn parse_f64(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
-    let s = extract_string(frame)?;
+    let bytes = extract_raw_bytes(frame)?;
+    let s = std::str::from_utf8(bytes).map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!("value is not a valid float for '{cmd}'"))
+    })?;
     let v = s.parse::<f64>().map_err(|_| {
         ProtocolError::InvalidCommandFrame(format!("value is not a valid float for '{cmd}'"))
     })?;
@@ -1525,8 +1638,9 @@ fn parse_zadd(args: &[Frame]) -> Result<Command, ProtocolError> {
 
     // parse optional flags before score/member pairs
     while idx < args.len() {
-        let s = extract_string(&args[idx])?.to_ascii_uppercase();
-        match s.as_str() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let s = uppercase_arg(&args[idx], &mut kw)?;
+        match s {
             "NX" => {
                 flags.nx = true;
                 idx += 1;
@@ -1628,7 +1742,8 @@ fn parse_zrange(args: &[Frame]) -> Result<Command, ProtocolError> {
     let stop = parse_i64(&args[2], "ZRANGE")?;
 
     let with_scores = if args.len() == 4 {
-        let opt = extract_string(&args[3])?.to_ascii_uppercase();
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let opt = uppercase_arg(&args[3], &mut kw)?;
         if opt != "WITHSCORES" {
             return Err(ProtocolError::InvalidCommandFrame(format!(
                 "unsupported ZRANGE option '{opt}'"
@@ -1799,8 +1914,9 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("CLUSTER"));
     }
 
-    let subcommand = extract_string(&args[0])?.to_ascii_uppercase();
-    match subcommand.as_str() {
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcommand = uppercase_arg(&args[0], &mut kw)?;
+    match subcommand {
         "INFO" => {
             if args.len() != 1 {
                 return Err(wrong_arity("CLUSTER INFO"));
@@ -1838,9 +1954,8 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
                 return Err(wrong_arity("CLUSTER MEET"));
             }
             let ip = extract_string(&args[1])?;
-            let port_str = extract_string(&args[2])?;
-            let port: u16 = port_str
-                .parse()
+            let p = parse_u64(&args[2], "CLUSTER MEET")?;
+            let port = u16::try_from(p)
                 .map_err(|_| ProtocolError::InvalidCommandFrame("invalid port number".into()))?;
             Ok(Command::ClusterMeet { ip, port })
         }
@@ -1858,11 +1973,11 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
             }
             let mut ranges = Vec::new();
             for pair in args[1..].chunks(2) {
-                let start: u16 = extract_string(&pair[0])?
-                    .parse()
+                let s = parse_u64(&pair[0], "CLUSTER ADDSLOTSRANGE")?;
+                let start = u16::try_from(s)
                     .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot".into()))?;
-                let end: u16 = extract_string(&pair[1])?
-                    .parse()
+                let e = parse_u64(&pair[1], "CLUSTER ADDSLOTSRANGE")?;
+                let end = u16::try_from(e)
                     .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot".into()))?;
                 if start > end || end >= 16384 {
                     return Err(ProtocolError::InvalidCommandFrame(
@@ -1898,8 +2013,9 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
             let mut force = false;
             let mut takeover = false;
             for arg in &args[1..] {
-                let opt = extract_string(arg)?.to_ascii_uppercase();
-                match opt.as_str() {
+                let mut kw2 = [0u8; MAX_KEYWORD_LEN];
+                let opt = uppercase_arg(arg, &mut kw2)?;
+                match opt {
                     "FORCE" => force = true,
                     "TAKEOVER" => takeover = true,
                     _ => {
@@ -1915,24 +2031,24 @@ fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
             if args.len() != 2 {
                 return Err(wrong_arity("CLUSTER COUNTKEYSINSLOT"));
             }
-            let slot_str = extract_string(&args[1])?;
-            let slot: u16 = slot_str
-                .parse()
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+            let n = parse_u64(&args[1], "CLUSTER COUNTKEYSINSLOT")?;
+            let slot = u16::try_from(n).map_err(|_| {
+                ProtocolError::InvalidCommandFrame("invalid slot number".into())
+            })?;
             Ok(Command::ClusterCountKeysInSlot { slot })
         }
         "GETKEYSINSLOT" => {
             if args.len() != 3 {
                 return Err(wrong_arity("CLUSTER GETKEYSINSLOT"));
             }
-            let slot_str = extract_string(&args[1])?;
-            let slot: u16 = slot_str
-                .parse()
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
-            let count_str = extract_string(&args[2])?;
-            let count: u32 = count_str
-                .parse()
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid count".into()))?;
+            let n = parse_u64(&args[1], "CLUSTER GETKEYSINSLOT")?;
+            let slot = u16::try_from(n).map_err(|_| {
+                ProtocolError::InvalidCommandFrame("invalid slot number".into())
+            })?;
+            let c = parse_u64(&args[2], "CLUSTER GETKEYSINSLOT")?;
+            let count = u32::try_from(c).map_err(|_| {
+                ProtocolError::InvalidCommandFrame("invalid count".into())
+            })?;
             Ok(Command::ClusterGetKeysInSlot { slot, count })
         }
         _ => Err(ProtocolError::InvalidCommandFrame(format!(
@@ -1964,8 +2080,9 @@ fn parse_config(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("CONFIG"));
     }
 
-    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
-    match subcmd.as_str() {
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcmd = uppercase_arg(&args[0], &mut kw)?;
+    match subcmd {
         "GET" => {
             if args.len() != 2 {
                 return Err(wrong_arity("CONFIG|GET"));
@@ -1998,14 +2115,12 @@ fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("SLOWLOG"));
     }
 
-    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
-    match subcmd.as_str() {
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcmd = uppercase_arg(&args[0], &mut kw)?;
+    match subcmd {
         "GET" => {
             let count = if args.len() > 1 {
-                let n: usize = extract_string(&args[1])?.parse().map_err(|_| {
-                    ProtocolError::InvalidCommandFrame("invalid count for SLOWLOG GET".into())
-                })?;
-                Some(n)
+                Some(parse_u64(&args[1], "SLOWLOG")? as usize)
             } else {
                 None
             };
@@ -2022,9 +2137,8 @@ fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {
 fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
     let mut slots = Vec::with_capacity(args.len());
     for arg in args {
-        let slot_str = extract_string(arg)?;
-        let slot: u16 = slot_str
-            .parse()
+        let n = parse_u64(arg, "CLUSTER")?;
+        let slot = u16::try_from(n)
             .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
         if slot >= 16384 {
             return Err(ProtocolError::InvalidCommandFrame(format!(
@@ -2041,9 +2155,8 @@ fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("CLUSTER SETSLOT"));
     }
 
-    let slot_str = extract_string(&args[0])?;
-    let slot: u16 = slot_str
-        .parse()
+    let n = parse_u64(&args[0], "CLUSTER SETSLOT")?;
+    let slot = u16::try_from(n)
         .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
     if slot >= 16384 {
         return Err(ProtocolError::InvalidCommandFrame(format!(
@@ -2055,8 +2168,9 @@ fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("CLUSTER SETSLOT"));
     }
 
-    let action = extract_string(&args[1])?.to_ascii_uppercase();
-    match action.as_str() {
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let action = uppercase_arg(&args[1], &mut kw)?;
+    match action {
         "IMPORTING" => {
             if args.len() != 3 {
                 return Err(ProtocolError::WrongArity(
@@ -2101,26 +2215,22 @@ fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     let host = extract_string(&args[0])?;
-    let port_str = extract_string(&args[1])?;
-    let port: u16 = port_str
-        .parse()
+    let p = parse_u64(&args[1], "MIGRATE")?;
+    let port = u16::try_from(p)
         .map_err(|_| ProtocolError::InvalidCommandFrame("invalid port number".into()))?;
     let key = extract_string(&args[2])?;
-    let db_str = extract_string(&args[3])?;
-    let db: u32 = db_str
-        .parse()
+    let d = parse_u64(&args[3], "MIGRATE")?;
+    let db = u32::try_from(d)
         .map_err(|_| ProtocolError::InvalidCommandFrame("invalid db number".into()))?;
-    let timeout_str = extract_string(&args[4])?;
-    let timeout_ms: u64 = timeout_str
-        .parse()
-        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid timeout".into()))?;
+    let timeout_ms = parse_u64(&args[4], "MIGRATE")?;
 
     let mut copy = false;
     let mut replace = false;
 
     for arg in &args[5..] {
-        let opt = extract_string(arg)?.to_ascii_uppercase();
-        match opt.as_str() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let opt = uppercase_arg(arg, &mut kw)?;
+        match opt {
             "COPY" => copy = true,
             "REPLACE" => replace = true,
             _ => {
@@ -2149,15 +2259,13 @@ fn parse_restore(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     let key = extract_string(&args[0])?;
-    let ttl_str = extract_string(&args[1])?;
-    let ttl_ms: u64 = ttl_str
-        .parse()
-        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid ttl".into()))?;
+    let ttl_ms = parse_u64(&args[1], "RESTORE")?;
     let data = extract_bytes(&args[2])?;
 
     let mut replace = false;
     for arg in &args[3..] {
-        let opt = extract_string(arg)?.to_ascii_uppercase();
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let opt = uppercase_arg(arg, &mut kw)?;
         if opt == "REPLACE" {
             replace = true;
         } else {
@@ -2215,8 +2323,9 @@ fn parse_pubsub(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("PUBSUB"));
     }
 
-    let subcmd = extract_string(&args[0])?.to_ascii_uppercase();
-    match subcmd.as_str() {
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcmd = uppercase_arg(&args[0], &mut kw)?;
+    match subcmd {
         "CHANNELS" => {
             let pattern = if args.len() > 1 {
                 Some(extract_string(&args[1])?)
@@ -2256,8 +2365,9 @@ fn parse_vector_flags(
     let mut idx = 0;
 
     while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
             "METRIC" => {
                 idx += 1;
                 if idx >= args.len() {
@@ -2265,8 +2375,9 @@ fn parse_vector_flags(
                         "{cmd}: METRIC requires a value"
                     )));
                 }
-                let val = extract_string(&args[idx])?.to_ascii_uppercase();
-                metric = match val.as_str() {
+                let mut kw2 = [0u8; MAX_KEYWORD_LEN];
+                let val = uppercase_arg(&args[idx], &mut kw2)?;
+                metric = match val {
                     "COSINE" => 0,
                     "L2" => 1,
                     "IP" => 2,
@@ -2285,8 +2396,9 @@ fn parse_vector_flags(
                         "{cmd}: QUANT requires a value"
                     )));
                 }
-                let val = extract_string(&args[idx])?.to_ascii_uppercase();
-                quantization = match val.as_str() {
+                let mut kw2 = [0u8; MAX_KEYWORD_LEN];
+                let val = uppercase_arg(&args[idx], &mut kw2)?;
+                quantization = match val {
                     "F32" => 0,
                     "F16" => 1,
                     "I8" | "Q8" => 2,
@@ -2406,7 +2518,8 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
 
     // require DIM keyword
-    let dim_kw = extract_string(&args[1])?.to_ascii_uppercase();
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let dim_kw = uppercase_arg(&args[1], &mut kw)?;
     if dim_kw != "DIM" {
         return Err(ProtocolError::InvalidCommandFrame(
             "VADD_BATCH: expected DIM keyword".into(),
@@ -2534,8 +2647,9 @@ fn parse_vsim(args: &[Frame]) -> Result<Command, ProtocolError> {
     let mut with_scores = false;
 
     while idx < args.len() {
-        let flag = extract_string(&args[idx])?.to_ascii_uppercase();
-        match flag.as_str() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
             "COUNT" => {
                 idx += 1;
                 if idx >= args.len() {
