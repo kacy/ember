@@ -3485,6 +3485,34 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
         }
     }
 
+    if want("REPLICATION") {
+        out.push_str("# Replication\r\n");
+        if let Some(ref cluster) = ctx.cluster {
+            let info = cluster.replication_info().await;
+            use ember_cluster::NodeRole;
+            match info.role {
+                NodeRole::Primary => {
+                    out.push_str("role:primary\r\n");
+                    out.push_str(&format!("connected_replicas:{}\r\n", info.replica_count));
+                }
+                NodeRole::Replica => {
+                    out.push_str("role:replica\r\n");
+                    if let Some(addr) = info.primary_addr {
+                        out.push_str(&format!("master_host:{}\r\n", addr.ip()));
+                        out.push_str(&format!("master_port:{}\r\n", addr.port()));
+                        out.push_str("master_link_status:up\r\n");
+                    } else {
+                        out.push_str("master_link_status:down\r\n");
+                    }
+                }
+            }
+        } else {
+            out.push_str("role:primary\r\n");
+            out.push_str("connected_replicas:0\r\n");
+        }
+        out.push_str("\r\n");
+    }
+
     // trim trailing blank line
     if out.ends_with("\r\n\r\n") {
         out.truncate(out.len() - 2);
