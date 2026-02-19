@@ -46,7 +46,7 @@ the routing api on `Engine` has five methods:
 | `send_to_shard(idx, req)` | direct shard access by index (SCAN) |
 | `dispatch_to_shard(idx, req)` | non-blocking dispatch returning a oneshot receiver |
 
-sharded mode supports all five data types and all 107 commands.
+sharded mode supports all five data types and all 114 commands.
 
 ### concurrent mode (`--concurrent`)
 

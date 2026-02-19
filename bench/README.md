@@ -52,11 +52,10 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 dragonfly in particular offers features ember simply doesn't have:
 
-- full Redis API compatibility (200+ commands vs ember's ~107)
+- full Redis API compatibility (200+ commands vs ember's ~114)
 - sophisticated memory management (dashtable for ~25% of Redis memory usage)
-- transactional semantics (MULTI/EXEC, Lua scripting)
+- Lua scripting
 - fork-free snapshotting
-- mature replication and clustering
 - streams, modules, and much more
 
 ember's concurrent mode shows higher throughput on simple GET/SET because it's architecturally minimal — essentially a concurrent hashmap with RESP3 parsing. this simplicity is a tradeoff, not an advantage. for anything resembling production use, Redis and Dragonfly are the sensible choices. ember exists primarily as a learning project and for workloads where simplicity matters more than features.

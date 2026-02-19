@@ -88,8 +88,8 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | LPOS | ✗ | not implemented |
 | LMOVE | ✗ | not implemented |
 | LMPOP | ✗ | not implemented |
-| BLPOP | ✗ | blocking operations not implemented |
-| BRPOP | ✗ | blocking operations not implemented |
+| BLPOP | ✓ | multi-key with timeout, blocks until element available |
+| BRPOP | ✓ | multi-key with timeout, blocks until element available |
 | BLMOVE | ✗ | blocking operations not implemented |
 | LPUSHX | ✗ | not implemented |
 | RPUSHX | ✗ | not implemented |
@@ -218,8 +218,8 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | SLOWLOG LEN | ✓ | |
 | SLOWLOG RESET | ✓ | |
 | DEBUG | ✗ | not implemented |
-| CONFIG GET | ✗ | not implemented |
-| CONFIG SET | ✗ | not implemented |
+| CONFIG GET | ✓ | glob pattern matching |
+| CONFIG SET | ✓ | mutable params: slowlog-log-slower-than, slowlog-max-len |
 | CONFIG REWRITE | ✗ | not implemented |
 | CONFIG RESETSTAT | ✗ | not implemented |
 | COMMAND | ✗ | not implemented |
@@ -244,6 +244,20 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | REPLICAOF | ✗ | use CLUSTER REPLICATE instead |
 | SLAVEOF | ✗ | use CLUSTER REPLICATE instead |
 | PSYNC | ✗ | internal protocol, not for client use |
+
+---
+
+## transactions
+
+| command | status | notes |
+|---------|--------|-------|
+| MULTI | ✓ | starts command queuing |
+| EXEC | ✓ | executes queued commands atomically (single-shard) |
+| DISCARD | ✓ | discards queued commands |
+| WATCH | ✗ | not yet implemented |
+| UNWATCH | ✗ | not yet implemented |
+
+single-shard transactions are truly atomic (the shard is single-threaded). cross-shard transactions execute in order but are not globally atomic — same limitation as Redis Cluster. blocking commands (BLPOP, BRPOP) inside MULTI return an error.
 
 ---
 
@@ -296,7 +310,8 @@ Some Redis commands are explicitly not planned for Ember:
 - `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — not implemented yet.
 
 **multi/exec**
-- `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH` — transactions not yet implemented.
+- `MULTI`, `EXEC`, `DISCARD` — supported. single-shard transactions are atomic; cross-shard transactions execute in order but are not globally atomic (same as Redis Cluster).
+- `WATCH`, `UNWATCH` — not yet implemented.
 
 **other**
 - `LOLWUT` — not implemented.
