@@ -29,6 +29,7 @@
 //! assert!(cluster.owns_slot(slot));
 //! ```
 
+mod election;
 mod error;
 mod gossip;
 mod message;
@@ -38,6 +39,7 @@ mod raft_transport;
 mod slots;
 mod topology;
 
+pub use election::Election;
 pub use error::ClusterError;
 pub use gossip::{GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus};
 pub use message::{GossipMessage, MemberInfo, NodeUpdate};

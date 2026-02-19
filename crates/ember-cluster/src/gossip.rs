@@ -98,6 +98,19 @@ pub enum GossipEvent {
     SlotsChanged(NodeId, Vec<SlotRange>),
     /// A node's role changed. Fields: node ID, is_primary, replicates.
     RoleChanged(NodeId, bool, Option<NodeId>),
+    /// A replica requested votes for a failover election.
+    VoteRequested {
+        candidate: NodeId,
+        epoch: u64,
+        /// Candidate's replication offset at the time of the request.
+        offset: u64,
+    },
+    /// A primary granted its vote to a candidate.
+    VoteGranted {
+        from: NodeId,
+        candidate: NodeId,
+        epoch: u64,
+    },
 }
 
 /// The gossip engine manages cluster membership and failure detection.
@@ -242,6 +255,30 @@ impl GossipEngine {
             incarnation,
             is_primary,
             replicates,
+        });
+    }
+
+    /// Queues a vote request for gossip propagation.
+    ///
+    /// Called by a replica that is starting an automatic failover election.
+    /// The update will be piggybacked on the next outgoing Ping or Ack.
+    pub fn queue_vote_request(&mut self, candidate: NodeId, epoch: u64, offset: u64) {
+        self.queue_update(NodeUpdate::VoteRequest {
+            candidate,
+            epoch,
+            offset,
+        });
+    }
+
+    /// Queues a vote grant for gossip propagation.
+    ///
+    /// Called by a primary that has decided to vote for the given candidate.
+    /// The update will be piggybacked on the next outgoing Ping or Ack.
+    pub fn queue_vote_granted(&mut self, from: NodeId, candidate: NodeId, epoch: u64) {
+        self.queue_update(NodeUpdate::VoteGranted {
+            from,
+            candidate,
+            epoch,
         });
     }
 
@@ -755,6 +792,36 @@ impl GossipEngine {
                                 .await;
                         }
                     }
+                }
+
+                NodeUpdate::VoteRequest {
+                    candidate,
+                    epoch,
+                    offset,
+                } => {
+                    // Relay to the server layer to decide whether to grant.
+                    // No incarnation check needed: epoch ordering is handled upstream.
+                    if *candidate != self.local_id {
+                        self.emit(GossipEvent::VoteRequested {
+                            candidate: *candidate,
+                            epoch: *epoch,
+                            offset: *offset,
+                        })
+                        .await;
+                    }
+                }
+
+                NodeUpdate::VoteGranted {
+                    from,
+                    candidate,
+                    epoch,
+                } => {
+                    self.emit(GossipEvent::VoteGranted {
+                        from: *from,
+                        candidate: *candidate,
+                        epoch: *epoch,
+                    })
+                    .await;
                 }
             }
         }
