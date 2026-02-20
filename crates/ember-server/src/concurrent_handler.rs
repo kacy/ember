@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
-use ember_protocol::{parse_frame_bytes, Command, Frame, SetExpire};
+use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -71,24 +71,21 @@ where
             Err(_) => return Ok(()),
         }
 
-        // freeze the buffer for zero-copy parsing: bulk string data in
-        // parsed frames references the original receive buffer via
-        // Bytes::slice() instead of copying.
+        // parse frames using split_to — O(1) pointer adjustment, no
+        // memcpy for unconsumed data. bulk strings are copied during
+        // parsing rather than zero-copy sliced from a frozen buffer.
         out.clear();
-        let frozen = buf.split().freeze();
-        let mut offset = 0;
         let mut pipeline_count: usize = 0;
         loop {
             if pipeline_count >= ctx.limits.max_pipeline_depth {
                 break; // process this batch, remaining data stays in buf
             }
-            let remaining = frozen.slice(offset..);
-            if remaining.is_empty() {
+            if buf.is_empty() {
                 break;
             }
-            match parse_frame_bytes(&remaining) {
+            match parse_frame(&buf) {
                 Ok(Some((frame, consumed))) => {
-                    offset += consumed;
+                    let _ = buf.split_to(consumed);
                     pipeline_count += 1;
 
                     if !authenticated {
@@ -162,10 +159,7 @@ where
                 }
             }
         }
-        // put unconsumed remainder back for the next read
-        if offset < frozen.len() {
-            buf.extend_from_slice(&frozen[offset..]);
-        }
+        // unconsumed bytes remain in buf for the next read — no copy needed
 
         if !out.is_empty() {
             stream.write_all(&out).await?;
