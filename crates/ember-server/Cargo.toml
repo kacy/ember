@@ -39,6 +39,7 @@ serde_json = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+socket2 = { workspace = true }
 
 # tls
 tokio-rustls = { workspace = true }

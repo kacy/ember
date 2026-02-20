@@ -79,7 +79,7 @@ pub struct ServerContext {
 ///
 /// On SIGINT or SIGTERM the server stops accepting new connections,
 /// waits for existing handlers to finish, then exits cleanly.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub async fn run(
     addr: SocketAddr,
     shard_count: usize,
@@ -558,6 +558,325 @@ pub async fn run_concurrent(
 
     drain_connections(&semaphore, max_conn).await;
     Ok(())
+}
+
+/// Thread-per-core server: each OS thread gets its own single-threaded
+/// tokio runtime, SO_REUSEPORT listener, and runs one shard.
+///
+/// Management tasks (metrics, gRPC, stats poller) run on the caller's
+/// runtime. Worker threads are joined after shutdown is signaled.
+///
+/// This replaces `run()` for the sharded path — same semantics but with
+/// pinned shard-per-thread affinity and parallel accepts.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_threaded(
+    addr: SocketAddr,
+    shard_count: usize,
+    config: EngineConfig,
+    max_connections: Option<usize>,
+    metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
+    slowlog_config: SlowLogConfig,
+    requirepass: Option<String>,
+    tls: Option<(SocketAddr, TlsConfig)>,
+    cluster: Option<Arc<ClusterCoordinator>>,
+    config_registry: Arc<ConfigRegistry>,
+    limits: ConnectionLimits,
+    config_path: Option<PathBuf>,
+    #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // ensure data directory exists if persistence is configured
+    if let Some(ref pcfg) = config.persistence {
+        std::fs::create_dir_all(&pcfg.data_dir)?;
+    }
+
+    let aof_enabled = config
+        .persistence
+        .as_ref()
+        .map(|p| p.append_only)
+        .unwrap_or(false);
+    let max_memory = config
+        .shard
+        .max_memory
+        .map(|per_shard| per_shard * shard_count);
+
+    let (engine, prepared_shards) = Engine::prepare(shard_count, config);
+
+    // wire replication: give the cluster coordinator access to the engine
+    // and start the replication server so replicas can connect
+    if let Some(ref coordinator) = cluster {
+        coordinator.set_engine(Arc::new(engine.clone()));
+        coordinator.start_replication_server().await;
+    }
+
+    let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
+    let semaphore = Arc::new(Semaphore::new(max_conn));
+
+    let metrics_enabled = metrics.is_some();
+    let stats_poll_interval = limits.stats_poll_interval;
+    let ctx = Arc::new(ServerContext {
+        start_time: Instant::now(),
+        version: env!("CARGO_PKG_VERSION"),
+        shard_count,
+        max_connections: max_conn,
+        max_memory,
+        aof_enabled,
+        metrics_enabled,
+        connections_accepted: AtomicU64::new(0),
+        connections_active: AtomicU64::new(0),
+        commands_processed: AtomicU64::new(0),
+        requirepass,
+        bind_addr: addr,
+        config: config_registry,
+        config_path,
+        cluster,
+        limits,
+        memory_used_bytes: MemoryUsedBytes::new(),
+        monitor_tx: tokio::sync::broadcast::channel(256).0,
+    });
+
+    // management tasks run on the caller's runtime (not the hot path)
+    if let Some((metrics_addr, handle)) = metrics {
+        crate::metrics::spawn_http_server(metrics_addr, handle, Arc::clone(&ctx));
+        crate::metrics::spawn_stats_poller(engine.clone(), Arc::clone(&ctx), stats_poll_interval);
+    }
+
+    let slow_log = Arc::new(SlowLog::new(slowlog_config));
+    let pubsub = Arc::new(PubSubManager::new());
+
+    #[cfg(feature = "grpc")]
+    let _grpc_handle = if let Some(grpc_addr) = grpc_addr {
+        let svc = crate::grpc::EmberService::new(
+            engine.clone(),
+            Arc::clone(&ctx),
+            Arc::clone(&slow_log),
+            Arc::clone(&pubsub),
+        );
+        info!("gRPC listening on {grpc_addr}");
+        let server = tonic::transport::Server::builder()
+            .concurrency_limit_per_connection(256)
+            .add_service(svc.into_service())
+            .serve(grpc_addr);
+        Some(tokio::spawn(async move {
+            if let Err(e) = server.await {
+                error!("gRPC server error: {e}");
+            }
+        }))
+    } else {
+        None
+    };
+
+    // build shared TLS acceptor (if configured) — each worker clones it
+    let tls_acceptor: Option<(SocketAddr, TlsAcceptor)> = match tls {
+        Some((tls_addr, tls_config)) => {
+            let acceptor = crate::tls::load_tls_acceptor(&tls_config)?;
+            info!("TLS on {tls_addr} (thread-per-core)");
+            Some((tls_addr, acceptor))
+        }
+        None => None,
+    };
+
+    let shutdown = Arc::new(tokio::sync::Notify::new());
+
+    // spawn one OS thread per shard, each with its own single-threaded runtime
+    let workers: Vec<std::thread::JoinHandle<()>> = prepared_shards
+        .into_iter()
+        .enumerate()
+        .map(|(id, prepared)| {
+            let engine = engine.clone();
+            let ctx = Arc::clone(&ctx);
+            let slow_log = Arc::clone(&slow_log);
+            let pubsub = Arc::clone(&pubsub);
+            let semaphore = Arc::clone(&semaphore);
+            let shutdown = Arc::clone(&shutdown);
+            let tls = tls_acceptor.as_ref().map(|(a, b)| (*a, b.clone()));
+
+            std::thread::Builder::new()
+                .name(format!("ember-worker-{id}"))
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("failed to build worker runtime");
+
+                    rt.block_on(worker_main(
+                        id, prepared, addr, engine, ctx, slow_log, pubsub, semaphore, tls,
+                        shutdown,
+                    ));
+
+                    // give in-flight connection handlers time to finish
+                    rt.shutdown_timeout(Duration::from_secs(30));
+                })
+                .expect("failed to spawn worker thread")
+        })
+        .collect();
+
+    info!(
+        "listening on {addr} with {shard_count} shards, thread-per-core (max {max_conn} connections)"
+    );
+
+    // await shutdown signal on the management runtime
+    let _ = tokio::signal::ctrl_c().await;
+    info!("shutdown signal received, stopping workers...");
+    shutdown.notify_waiters();
+
+    // join worker threads (blocking — use spawn_blocking to avoid starving
+    // the management runtime while threads drain)
+    tokio::task::spawn_blocking(move || {
+        for (id, handle) in workers.into_iter().enumerate() {
+            if let Err(e) = handle.join() {
+                error!("worker {id} panicked: {e:?}");
+            }
+        }
+    })
+    .await?;
+
+    info!("all workers stopped");
+    Ok(())
+}
+
+/// Per-worker accept loop: runs one shard and accepts connections on a
+/// SO_REUSEPORT listener pinned to this thread's single-threaded runtime.
+#[allow(clippy::too_many_arguments)]
+async fn worker_main(
+    id: usize,
+    prepared: ember_core::PreparedShard,
+    addr: SocketAddr,
+    engine: Engine,
+    ctx: Arc<ServerContext>,
+    slow_log: Arc<SlowLog>,
+    pubsub: Arc<PubSubManager>,
+    semaphore: Arc<Semaphore>,
+    tls: Option<(SocketAddr, TlsAcceptor)>,
+    shutdown: Arc<tokio::sync::Notify>,
+) {
+    // run the shard task on this worker's runtime
+    tokio::spawn(ember_core::run_prepared(prepared));
+
+    // bind SO_REUSEPORT listener — the kernel distributes connections
+    // across all workers listening on the same port
+    let listener = match bind_reuse_port(addr) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("worker {id}: failed to bind {addr}: {e}");
+            return;
+        }
+    };
+
+    let tls_listener: Option<(TcpListener, TlsAcceptor)> = match tls {
+        Some((tls_addr, acceptor)) => match bind_reuse_port(tls_addr) {
+            Ok(l) => Some((l, acceptor)),
+            Err(e) => {
+                error!("worker {id}: failed to bind TLS {tls_addr}: {e}");
+                return;
+            }
+        },
+        None => None,
+    };
+
+    let shutdown_fut = shutdown.notified();
+    tokio::pin!(shutdown_fut);
+
+    // helper to accept from TLS listener or pend forever if disabled
+    let tls_accept = || async {
+        match &tls_listener {
+            Some((listener, acceptor)) => {
+                let (stream, addr) = listener.accept().await?;
+                Ok::<_, std::io::Error>((stream, addr, acceptor.clone()))
+            }
+            None => std::future::pending().await,
+        }
+    };
+
+    loop {
+        tokio::select! {
+            biased;
+
+            _ = &mut shutdown_fut => break,
+
+            result = listener.accept() => {
+                let (stream, peer) = match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("worker {id}: accept error: {e}");
+                        continue;
+                    }
+                };
+
+                if is_protected_mode_violation(&ctx, &peer) {
+                    reject_protected_mode(stream).await;
+                    continue;
+                }
+
+                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
+
+                tokio::spawn(async move {
+                    if let Err(e) = connection::handle(
+                        stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                    ).await {
+                        error!("connection error from {peer}: {e}");
+                    }
+                    on_connection_done(&h.ctx);
+                    drop(permit);
+                });
+            }
+
+            result = tls_accept() => {
+                let (stream, peer, acceptor) = match result {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!("worker {id}: TLS accept error: {e}");
+                        continue;
+                    }
+                };
+
+                if is_protected_mode_violation(&ctx, &peer) {
+                    reject_protected_mode(stream).await;
+                    continue;
+                }
+
+                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                    Some(p) => p,
+                    None => continue,
+                };
+
+                let h = ConnectionHandles::new(&engine, &ctx, &slow_log, &pubsub);
+
+                tokio::spawn(async move {
+                    if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
+                        if let Err(e) = connection::handle(
+                            tls_stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                        ).await {
+                            error!("TLS connection error from {peer}: {e}");
+                        }
+                    }
+                    on_connection_done(&h.ctx);
+                    drop(permit);
+                });
+            }
+        }
+    }
+}
+
+/// Creates a TCP listener with SO_REUSEPORT so multiple workers can
+/// accept on the same address. The kernel distributes incoming connections
+/// across all listeners, giving us parallel accepts without contention.
+fn bind_reuse_port(addr: SocketAddr) -> std::io::Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_port(true)?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(1024)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    TcpListener::from_std(std_listener)
 }
 
 /// Binds a TLS listener if TLS is configured, otherwise returns `None`.

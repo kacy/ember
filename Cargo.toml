@@ -77,6 +77,9 @@ prost-reflect = "0.16"
 # HNSW vector similarity search
 usearch = "2.23"
 
+# SO_REUSEPORT socket setup for thread-per-core
+socket2 = { version = "0.5", features = ["all"] }
+
 # grpc
 tonic = "0.13"
 prost = "0.13"
