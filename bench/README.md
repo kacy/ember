@@ -14,12 +14,12 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 |------|------------------|---------------|-------|-----------|
 | SET (3B, P=16) | **1,735,172** | 1,152,574 | 1,032,082 | 903,207 |
 | GET (3B, P=16) | **2,096,333** | 1,437,085 | 1,151,080 | 1,012,202 |
-| SET (64B, P=16) | **1,760,000** | 1,221,707 | 971,961 | 830,942 |
-| GET (64B, P=16) | **2,181,565** | 1,522,666 | 1,137,636 | 856,615 |
+| SET (64B, P=16) | **1,760,000** | 1,563,500 | 971,961 | 830,942 |
+| GET (64B, P=16) | **2,181,565** | 1,961,726 | 1,137,636 | 856,615 |
 | SET (1KB, P=16) | **993,059** | 710,737 | 588,764 | 694,400 |
 | GET (1KB, P=16) | **1,728,534** | 1,284,692 | 667,913 | 332,092 |
-| SET (64B, P=1) | 133,155 | 133,155 | 99,900 | **199,600** |
-| GET (64B, P=1) | 132,978 | 133,155 | 100,000 | **199,203** |
+| SET (64B, P=1) | 133,155 | **222,222** | 99,900 | 199,600 |
+| GET (64B, P=1) | 132,978 | **222,124** | 100,000 | 199,203 |
 
 #### memtier_benchmark (4 threads, 12 clients/thread, 50k req/client)
 
@@ -39,14 +39,14 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
 | ember concurrent | **1.8x** | **1.8x** | best for simple GET/SET workloads |
-| ember sharded | **1.2x** | **1.3x** | supports all data types, beats redis at all test points |
+| ember sharded | **1.6x** | **1.7x** | supports all data types, beats redis at all test points |
 
 ### vs dragonfly (redis-benchmark, 64B P=16)
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
 | ember concurrent | **2.0x** | **2.4x** | pipelined |
-| ember sharded | **1.4x** | **1.8x** | consistent wins across value sizes |
+| ember sharded | **1.9x** | **2.3x** | consistent wins across value sizes |
 
 **important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
@@ -138,13 +138,13 @@ throughput vs pipeline depth on sharded mode, showing how the dispatch-collect p
 
 | pipeline depth | SET (ops/sec) | GET (ops/sec) |
 |----------------|---------------|---------------|
-| P=1 | — | — |
-| P=4 | — | — |
-| P=16 | — | — |
-| P=64 | — | — |
-| P=256 | — | — |
+| P=1 | 222,222 | 222,124 |
+| P=4 | 764,642 | 763,518 |
+| P=16 | 1,563,500 | 1,961,726 |
+| P=64 | 1,947,448 | 3,209,173 |
+| P=256 | 2,066,922 | 4,081,341 |
 
-*numbers pending — re-run `bench/bench.sh` on GCP c2-standard-8 after thread-per-core merge.*
+throughput scales monotonically with pipeline depth. the batch dispatch optimization (PR #232) groups commands by target shard and sends one channel message per shard, eliminating head-of-line blocking at high pipeline depths.
 
 ### transaction overhead
 
@@ -248,7 +248,7 @@ ember offers two modes with different tradeoffs:
 - each CPU core owns a keyspace partition
 - requests routed via tokio channels with dispatch-collect pipelining
 - supports all data types (lists, hashes, sets, sorted sets)
-- 1.3-1.4x redis throughput with pipelining, 1.3x without
+- 1.6-1.7x redis throughput with pipelining, 2.2x without
 
 ## running benchmarks
 
