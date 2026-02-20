@@ -123,10 +123,26 @@ async fn run_benchmark_async(
                     return ExitCode::FAILURE;
                 }
             }
+            "multi" => {
+                if run_workload(
+                    args,
+                    host,
+                    port,
+                    password,
+                    tls,
+                    "MULTI/SET/EXEC",
+                    WorkloadKind::Multi,
+                )
+                .await
+                .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+            }
             other => {
                 eprintln!(
                     "{}",
-                    format!("unknown workload: {other} (valid: ping, set, get)").yellow()
+                    format!("unknown workload: {other} (valid: ping, set, get, multi)").yellow()
                 );
             }
         }
@@ -141,6 +157,8 @@ enum WorkloadKind {
     Ping,
     Set,
     Get,
+    /// MULTI + SET + EXEC per operation — measures transaction overhead.
+    Multi,
 }
 
 /// Runs a single workload benchmark.
@@ -211,6 +229,17 @@ async fn run_workload(
             // re-allocating on every iteration
             let mut ser_buf = BytesMut::new();
 
+            // pre-serialize MULTI and EXEC frames for transaction workloads
+            let (multi_bytes, exec_bytes) = if matches!(kind, WorkloadKind::Multi) {
+                let mut mb = BytesMut::new();
+                Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"MULTI"))]).serialize(&mut mb);
+                let mut eb = BytesMut::new();
+                Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"EXEC"))]).serialize(&mut eb);
+                (mb.freeze(), eb.freeze())
+            } else {
+                (Bytes::new(), Bytes::new())
+            };
+
             while sent < count {
                 let batch = pipeline.min((count - sent) as usize);
 
@@ -224,7 +253,7 @@ async fn run_workload(
                         WorkloadKind::Ping => {
                             Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"PING"))])
                         }
-                        WorkloadKind::Set => Frame::Array(vec![
+                        WorkloadKind::Set | WorkloadKind::Multi => Frame::Array(vec![
                             Frame::Bulk(Bytes::from_static(b"SET")),
                             Frame::Bulk(Bytes::from(key)),
                             Frame::Bulk(Bytes::from(value.clone())),
@@ -238,7 +267,13 @@ async fn run_workload(
                     cmds.push(ser_buf.split().freeze());
                 }
 
-                match conn.send_many(&cmds).await {
+                let result = if matches!(kind, WorkloadKind::Multi) {
+                    conn.send_transactions(&cmds, &multi_bytes, &exec_bytes).await
+                } else {
+                    conn.send_many(&cmds).await
+                };
+
+                match result {
                     Ok(elapsed) => {
                         // record per-command latency (guard against zero/overflow)
                         let divisor = (batch as u32).max(1);

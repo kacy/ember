@@ -92,6 +92,46 @@ echo -n "  GET: "
 redis-benchmark -p $REDIS_PORT -t get -n $REQUESTS -c $CLIENTS -P $PIPELINE -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
 
 echo ""
+echo "=== PIPELINE SCALING (sharded, $THREADS threads) ==="
+echo ""
+
+# sweep pipeline depths to show how throughput scales with batching.
+# this validates the dispatch-collect pattern efficiency.
+for P in 1 4 16 64 256; do
+  echo -n "  P=$P SET: "
+  redis-benchmark -p $EMBER_SHARDED_PORT -t set -n $REQUESTS -c $CLIENTS -P $P -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
+  echo -n "  P=$P GET: "
+  redis-benchmark -p $EMBER_SHARDED_PORT -t get -n $REQUESTS -c $CLIENTS -P $P -d $VALUE_SIZE --threads $THREADS 2>/dev/null | grep "requests per second" | awk '{print $1}'
+done
+
+echo ""
+echo "=== TRANSACTION OVERHEAD ==="
+echo ""
+
+# compare bare SET vs MULTI+SET+EXEC to quantify transaction cost.
+# transactions force serial execution (no parallel shard dispatch).
+MULTI_REQUESTS=${MULTI_REQUESTS:-100000}
+
+echo "ember sharded (P=1):"
+echo -n "  bare SET:       "
+redis-benchmark -p $EMBER_SHARDED_PORT -t set -n $MULTI_REQUESTS -c $CLIENTS -P 1 -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+echo -n "  MULTI/SET/EXEC: "
+redis-benchmark -p $EMBER_SHARDED_PORT -n $MULTI_REQUESTS -c $CLIENTS -P 1 \
+  eval "redis.call('MULTI'); redis.call('SET','__rand_int__','__data__'); return redis.call('EXEC')" 0 \
+  2>/dev/null | grep "requests per second" | awk '{print $1}' || \
+  echo "(skipped — redis-benchmark eval not supported)"
+
+echo ""
+echo "redis (P=1):"
+echo -n "  bare SET:       "
+redis-benchmark -p $REDIS_PORT -t set -n $MULTI_REQUESTS -c $CLIENTS -P 1 -d $VALUE_SIZE 2>/dev/null | grep "requests per second" | awk '{print $1}'
+echo -n "  MULTI/SET/EXEC: "
+redis-benchmark -p $REDIS_PORT -n $MULTI_REQUESTS -c $CLIENTS -P 1 \
+  eval "redis.call('MULTI'); redis.call('SET','__rand_int__','__data__'); return redis.call('EXEC')" 0 \
+  2>/dev/null | grep "requests per second" | awk '{print $1}' || \
+  echo "(skipped — redis-benchmark eval not supported)"
+
+echo ""
 echo "=== LATENCY (P=1, single thread) ==="
 echo ""
 

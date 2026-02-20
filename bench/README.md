@@ -132,6 +132,39 @@ ember's query throughput is 3.2x chromadb, 1.4x pgvector, and 2.1x qdrant, with 
 
 *run `bench/bench-vector.sh --sift --qdrant` on a c2-standard-8 (32GB) to populate. SIFT1M is 1M × 128 × 4B = 512MB raw data; ember HNSW peaks around 1.5GB RSS, well within 32GB.*
 
+### pipeline scaling (ember sharded)
+
+throughput vs pipeline depth on sharded mode, showing how the dispatch-collect pattern scales with batching. tested with redis-benchmark, 50 clients, 8 threads.
+
+| pipeline depth | SET (ops/sec) | GET (ops/sec) |
+|----------------|---------------|---------------|
+| P=1 | — | — |
+| P=4 | — | — |
+| P=16 | — | — |
+| P=64 | — | — |
+| P=256 | — | — |
+
+*numbers pending — re-run `bench/bench.sh` on GCP c2-standard-8 after thread-per-core merge.*
+
+### transaction overhead
+
+MULTI/SET/EXEC vs bare SET to quantify the cost of transaction wrapping. transactions force serial execution (no parallel shard dispatch), so they represent a worst-case for the sharded architecture.
+
+| test | ember sharded | redis |
+|------|---------------|-------|
+| bare SET (P=1) | — | — |
+| MULTI/SET/EXEC (P=1) | — | — |
+| overhead | — | — |
+
+*numbers pending — run `bench/bench.sh` or `ember-cli benchmark -t set,multi` on GCP.*
+
+the built-in CLI benchmark also supports transaction workloads:
+
+```bash
+# compare SET vs MULTI/SET/EXEC
+ember-cli benchmark -t set,multi -n 100000 -c 50
+```
+
 ### scaling efficiency
 
 | cores | ember sharded SET | scaling factor |
@@ -382,6 +415,9 @@ ember-cli benchmark -n 1000000 -c 50 -P 16
 
 # specific workloads
 ember-cli benchmark -t set,get,ping -d 128
+
+# transaction overhead (MULTI/SET/EXEC vs bare SET)
+ember-cli benchmark -t set,multi -n 100000 -c 50
 ```
 
 see `ember-cli benchmark --help` for all options.
