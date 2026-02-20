@@ -57,8 +57,7 @@ impl Keyspace {
         // clean up if the set is still empty (e.g. XX flag on a new key)
         if let Some(entry) = self.entries.get(key) {
             if matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty()) {
-                self.memory
-                    .remove_with_size(memory::entry_size(key, &entry.value));
+                self.memory.remove_with_size(entry.entry_size(key));
                 self.entries.remove(key);
             }
         }
@@ -86,7 +85,7 @@ impl Keyspace {
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_entry_size = entry.entry_size(key);
         let mut removed = Vec::new();
         let mut removed_bytes: usize = 0;
         if let Value::SortedSet(ref mut ss) = entry.value {

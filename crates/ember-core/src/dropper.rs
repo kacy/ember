@@ -136,7 +136,8 @@ mod tests {
                 Entry {
                     value: Value::String(Bytes::from(format!("val-{i}"))),
                     expires_at_ms: 0,
-                    last_access_ms: 0,
+                    cached_value_size: 0,
+                    last_access_secs: 0,
                 },
             );
         }

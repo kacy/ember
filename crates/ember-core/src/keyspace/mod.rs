@@ -229,23 +229,33 @@ pub enum SetResult {
 /// A single entry in the keyspace: a value plus optional expiration
 /// and last access time for LRU approximation.
 ///
-/// Memory optimized: uses u64 timestamps instead of Option<Instant>.
-/// Saves 8 bytes per entry (24 bytes down from 32 for metadata).
+/// Field order is chosen for cache-line packing: `value` and
+/// `expires_at_ms` (the hot-path read fields) sit at the front so
+/// they share the first L1 cache line with the HashMap key pointer.
+/// `cached_value_size` is warm (used on writes). `last_access_secs`
+/// is cold (only used during eviction sampling).
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub(crate) value: Value,
     /// Monotonic expiry timestamp in ms. 0 = no expiry.
     pub(crate) expires_at_ms: u64,
-    /// Monotonic last access timestamp in ms (for LRU).
-    pub(crate) last_access_ms: u64,
+    /// Cached result of `memory::value_size(&self.value)`. Updated on
+    /// every mutation so that memory accounting is O(1) instead of
+    /// walking entire collections.
+    pub(crate) cached_value_size: usize,
+    /// Monotonic last access time in seconds since process start (for LRU).
+    /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
+    pub(crate) last_access_secs: u32,
 }
 
 impl Entry {
     fn new(value: Value, ttl: Option<Duration>) -> Self {
+        let cached_value_size = memory::value_size(&value);
         Self {
             value,
             expires_at_ms: time::expiry_from_duration(ttl),
-            last_access_ms: time::now_ms(),
+            cached_value_size,
+            last_access_secs: time::now_secs(),
         }
     }
 
@@ -256,7 +266,13 @@ impl Entry {
 
     /// Marks this entry as accessed right now.
     fn touch(&mut self) {
-        self.last_access_ms = time::now_ms();
+        self.last_access_secs = time::now_secs();
+    }
+
+    /// Returns the full estimated memory footprint of this entry
+    /// (key + value + overhead) using the cached value size.
+    fn entry_size(&self, key: &str) -> usize {
+        key.len() + self.cached_value_size + memory::ENTRY_OVERHEAD
     }
 }
 
@@ -356,7 +372,8 @@ impl Keyspace {
     /// set, hash, or set). If the collection is now empty, removes the key
     /// entirely and subtracts `old_size` from the memory tracker. Otherwise
     /// subtracts `removed_bytes` (the byte cost of the removed element(s))
-    /// without rescanning the remaining collection.
+    /// without rescanning the remaining collection, and updates the cached
+    /// value size.
     fn cleanup_after_remove(
         &mut self,
         key: &str,
@@ -371,6 +388,9 @@ impl Keyspace {
             self.memory.remove_with_size(old_size);
         } else {
             self.memory.shrink_by(removed_bytes);
+            if let Some(entry) = self.entries.get_mut(key) {
+                entry.cached_value_size = entry.cached_value_size.saturating_sub(removed_bytes);
+            }
         }
     }
 
@@ -420,13 +440,20 @@ impl Keyspace {
     }
 
     /// Measures entry size before and after a mutation, adjusting the
-    /// memory tracker for the difference. Touches the entry afterwards.
+    /// memory tracker for the difference.
+    ///
+    /// Uses `cached_value_size` for the pre-mutation size (O(1)) and
+    /// recomputes after the mutation to update the cache. This halves
+    /// the cost of memory tracking for large collections.
     fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
         let entry = self.entries.get_mut(key)?;
-        let old_size = memory::entry_size(key, &entry.value);
+        let old_size = entry.entry_size(key);
         let result = f(entry);
-        let entry = self.entries.get(key)?;
-        let new_size = memory::entry_size(key, &entry.value);
+        // re-lookup after mutation (f consumed the borrow)
+        let entry = self.entries.get_mut(key)?;
+        let new_value_size = memory::value_size(&entry.value);
+        entry.cached_value_size = new_value_size;
+        let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_size, new_size);
         Some(result)
     }
@@ -458,10 +485,10 @@ impl Keyspace {
         let mut rng = rand::rng();
 
         // reservoir sample k=1 from the iterator, tracking the oldest
-        // entry by last_access_ms. this replaces choose_multiple() which
+        // entry by last_access_secs. this replaces choose_multiple() which
         // allocates a Vec internally.
         let mut best_key: Option<&str> = None;
-        let mut best_access = u64::MAX;
+        let mut best_access = u32::MAX;
         let mut seen = 0usize;
 
         for (key, entry) in &self.entries {
@@ -470,15 +497,15 @@ impl Keyspace {
             // enough candidates
             seen += 1;
             if seen <= EVICTION_SAMPLE_SIZE {
-                if entry.last_access_ms < best_access {
-                    best_access = entry.last_access_ms;
+                if entry.last_access_secs < best_access {
+                    best_access = entry.last_access_secs;
                     best_key = Some(&**key);
                 }
             } else {
                 use rand::Rng;
                 let j = rng.random_range(0..seen);
-                if j < EVICTION_SAMPLE_SIZE && entry.last_access_ms < best_access {
-                    best_access = entry.last_access_ms;
+                if j < EVICTION_SAMPLE_SIZE && entry.last_access_secs < best_access {
+                    best_access = entry.last_access_secs;
                     best_key = Some(&**key);
                 }
             }
@@ -911,6 +938,18 @@ impl Keyspace {
             }
         }
         removed
+    }
+
+    /// Removes a key that is already known to be expired. Used by
+    /// fused lookup paths that check expiry inline via `get_mut()` and
+    /// need a second probe only on the rare expired path.
+    fn remove_expired_entry(&mut self, key: &str) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.memory.remove(key, &entry.value);
+            self.decrement_expiry_if_set(&entry);
+            self.expired_total += 1;
+            self.defer_drop(entry.value);
+        }
     }
 
     /// Checks if a key is expired and removes it if so. Returns `true`

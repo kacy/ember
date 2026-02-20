@@ -488,7 +488,7 @@ async fn handle_frame_with_tx(
 
     match tx_state {
         TransactionState::None => {
-            if cmd_name.as_deref() == Some("MULTI") {
+            if cmd_name == Some("MULTI") {
                 // validate the frame parses correctly
                 match Command::from_frame(frame) {
                     Ok(Command::Multi) => {
@@ -501,9 +501,9 @@ async fn handle_frame_with_tx(
                     Ok(_) => unreachable!(),
                     Err(e) => Frame::Error(format!("ERR {e}")),
                 }
-            } else if cmd_name.as_deref() == Some("EXEC") {
+            } else if cmd_name == Some("EXEC") {
                 Frame::Error("ERR EXEC without MULTI".into())
-            } else if cmd_name.as_deref() == Some("DISCARD") {
+            } else if cmd_name == Some("DISCARD") {
                 Frame::Error("ERR DISCARD without MULTI".into())
             } else {
                 // normal dispatch path (process() increments commands_processed)
@@ -511,7 +511,7 @@ async fn handle_frame_with_tx(
             }
         }
         TransactionState::Queuing { queue, error } => {
-            match cmd_name.as_deref() {
+            match cmd_name {
                 Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
                 Some("EXEC") => {
                     if *error {
@@ -573,12 +573,21 @@ async fn handle_frame_with_tx(
 }
 
 /// Peeks at the command name from a raw frame without consuming it.
-fn peek_command_name(frame: &Frame) -> Option<String> {
+///
+/// Returns a `&'static str` for known transaction commands, avoiding
+/// the heap allocations of to_vec + from_utf8 + to_ascii_uppercase.
+fn peek_command_name(frame: &Frame) -> Option<&'static str> {
     if let Frame::Array(parts) = frame {
         if let Some(Frame::Bulk(name)) = parts.first() {
-            return String::from_utf8(name.to_vec())
-                .ok()
-                .map(|s| s.to_ascii_uppercase());
+            if name.eq_ignore_ascii_case(b"MULTI") {
+                return Some("MULTI");
+            }
+            if name.eq_ignore_ascii_case(b"EXEC") {
+                return Some("EXEC");
+            }
+            if name.eq_ignore_ascii_case(b"DISCARD") {
+                return Some("DISCARD");
+            }
         }
     }
     None

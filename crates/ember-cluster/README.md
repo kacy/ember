@@ -9,6 +9,8 @@ distributed coordination for [ember](https://github.com/kacy/ember). provides cl
 - **SWIM gossip** — failure detection with configurable probe intervals and suspicion timeouts
 - **raft consensus** — cluster configuration changes via [openraft](https://github.com/datafuselabs/openraft)
 - **live migration** — slot resharding without downtime, MOVED/ASK redirects
+- **authentication** — HMAC-SHA256 signing and constant-time verification for cluster transport messages
+- **automatic failover** — replica election state machine; first replica to reach quorum is promoted via raft
 
 ## modules
 
@@ -21,6 +23,9 @@ distributed coordination for [ember](https://github.com/kacy/ember). provides cl
 | `migration` | migration state machine, batch streaming, key tracking |
 | `message` | binary wire format for gossip messages |
 | `error` | cluster-specific error types with MOVED/ASK support |
+| `auth` | HMAC-SHA256 cluster transport authentication |
+| `election` | replica failover election state machine |
+| `raft_transport` | raft network transport over TCP |
 
 ## usage
 
@@ -70,7 +75,7 @@ the following CLUSTER commands are supported at the protocol layer:
 
 | crate | what it does |
 |-------|-------------|
-| [emberkv-core](../ember-core) | storage engine, keyspace, sharding |
+| [ember-core](../ember-core) | storage engine, keyspace, sharding |
 | [ember-protocol](../ember-protocol) | RESP3 parsing and command dispatch |
 | [ember-persistence](../ember-persistence) | AOF, snapshots, and crash recovery |
 | [ember-server](../ember-server) | TCP server and connection handling |

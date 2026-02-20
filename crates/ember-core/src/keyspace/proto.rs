@@ -19,7 +19,7 @@ impl Keyspace {
         let old_size = self
             .entries
             .get(&key)
-            .map(|e| memory::entry_size(&key, &e.value))
+            .map(|e| e.entry_size(&key))
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_size);
 
