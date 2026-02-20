@@ -190,12 +190,6 @@ pub static COMMANDS: &[CommandInfo] = &[
     },
     // --- list ---
     CommandInfo {
-        name: "LLEN",
-        args: "key",
-        group: "list",
-        summary: "get the length of a list",
-    },
-    CommandInfo {
         name: "BLPOP",
         args: "key [key ...] timeout",
         group: "list",
@@ -206,6 +200,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key [key ...] timeout",
         group: "list",
         summary: "remove and return the last element, or block until one is available",
+    },
+    CommandInfo {
+        name: "LLEN",
+        args: "key",
+        group: "list",
+        summary: "get the length of a list",
     },
     CommandInfo {
         name: "LPOP",
