@@ -58,7 +58,7 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_entry_size = entry.entry_size(key);
 
         let mut removed = 0;
         let mut removed_bytes: usize = 0;

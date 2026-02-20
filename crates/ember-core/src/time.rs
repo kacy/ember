@@ -14,6 +14,18 @@ pub fn now_ms() -> u64 {
     start.elapsed().as_millis() as u64
 }
 
+/// Returns current monotonic time in seconds since process start, as u32.
+///
+/// Used for LRU last-access tracking where millisecond precision isn't
+/// needed and the smaller type improves cache-line packing. Wraps after
+/// ~136 years — well beyond any realistic process lifetime.
+#[inline]
+pub fn now_secs() -> u32 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    let start = START.get_or_init(Instant::now);
+    start.elapsed().as_secs() as u32
+}
+
 /// Sentinel value meaning "no expiry".
 pub const NO_EXPIRY: u64 = 0;
 

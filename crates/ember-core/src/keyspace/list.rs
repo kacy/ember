@@ -130,6 +130,7 @@ impl Keyspace {
         }
         let len = deque.len();
         entry.touch();
+        entry.cached_value_size += element_increase;
 
         // apply the known delta — no need to rescan the entire list
         self.memory.grow_by(element_increase);

@@ -47,7 +47,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// Accounts for: the Box<str> key struct (16 bytes ptr+len on 64-bit),
 /// Entry struct fields (Value enum tag + Bytes/collection inline storage
-/// + expires_at_ms + last_access_ms), plus hashbrown per-entry bookkeeping
+/// + expires_at_ms + cached_value_size + last_access_secs), plus hashbrown per-entry bookkeeping
 /// (1 control byte + empty slot waste at ~87.5% load factor).
 ///
 /// This is calibrated from `std::mem::size_of` on 64-bit platforms. The

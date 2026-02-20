@@ -98,7 +98,7 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_entry_size = entry.entry_size(key);
         let mut removed = Vec::new();
         let mut removed_bytes: usize = 0;
         let is_empty = if let Value::Hash(ref mut map) = entry.value {
@@ -189,7 +189,7 @@ impl Keyspace {
         let Some(entry) = self.entries.get_mut(key) else {
             return Err(IncrError::WrongType);
         };
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_entry_size = entry.entry_size(key);
 
         let Value::Hash(ref mut map) = entry.value else {
             return Err(IncrError::WrongType);
@@ -205,7 +205,9 @@ impl Keyspace {
         map.insert(field.to_owned(), Bytes::from(new_val.to_string()));
         entry.touch();
 
-        let new_entry_size = memory::entry_size(key, &entry.value);
+        let new_value_size = memory::value_size(&entry.value);
+        entry.cached_value_size = new_value_size;
+        let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
 
         Ok(new_val)

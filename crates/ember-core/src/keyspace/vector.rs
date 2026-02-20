@@ -60,7 +60,7 @@ impl Keyspace {
             Some(e) => e,
             None => return Err(VectorWriteError::IndexError("entry missing".into())),
         };
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_entry_size = entry.entry_size(key);
 
         let added = match entry.value {
             Value::Vector(ref mut vs) => vs
@@ -70,7 +70,9 @@ impl Keyspace {
         };
         entry.touch();
 
-        let new_entry_size = memory::entry_size(key, &entry.value);
+        let new_value_size = memory::value_size(&entry.value);
+        entry.cached_value_size = new_value_size;
+        let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
 
         Ok(VAddResult {
@@ -164,7 +166,7 @@ impl Keyspace {
             Some(e) => e,
             None => return Err(VectorWriteError::IndexError("entry missing".into())),
         };
-        let old_entry_size = memory::entry_size(key, &entry.value);
+        let old_entry_size = entry.entry_size(key);
 
         let mut added_count = 0;
         let mut applied = Vec::with_capacity(entries.len());
@@ -183,7 +185,9 @@ impl Keyspace {
                             // partial insert: return applied vectors so they can
                             // be persisted to AOF despite the error
                             entry.touch();
-                            let new_entry_size = memory::entry_size(key, &entry.value);
+                            let new_vs = memory::value_size(&entry.value);
+                            entry.cached_value_size = new_vs;
+                            let new_entry_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
                             self.memory.adjust(old_entry_size, new_entry_size);
                             return Err(VectorWriteError::PartialBatch {
                                 message: format!(
@@ -201,7 +205,9 @@ impl Keyspace {
         }
 
         entry.touch();
-        let new_entry_size = memory::entry_size(key, &entry.value);
+        let new_vs = memory::value_size(&entry.value);
+        entry.cached_value_size = new_vs;
+        let new_entry_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
 
         Ok(VAddBatchResult {
@@ -251,7 +257,7 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let old_size = memory::entry_size(key, &entry.value);
+        let old_size = entry.entry_size(key);
 
         let removed = match entry.value {
             Value::Vector(ref mut vs) => vs.remove(element),
@@ -261,7 +267,9 @@ impl Keyspace {
         if removed {
             entry.touch();
             let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
-            let new_size = memory::entry_size(key, &entry.value);
+            let new_vs = memory::value_size(&entry.value);
+            entry.cached_value_size = new_vs;
+            let new_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
             self.memory.adjust(old_size, new_size);
 
             if is_empty {

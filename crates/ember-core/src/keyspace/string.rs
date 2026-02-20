@@ -6,42 +6,54 @@ impl Keyspace {
     /// Returns `Err(WrongType)` if the key holds a non-string value.
     /// Expired keys are removed lazily on access. Successful reads update
     /// the entry's last access time for LRU tracking.
+    ///
+    /// Uses a single hash probe on the common (non-expired) path.
+    /// The expired path (rare) does a second probe to remove.
     pub fn get(&mut self, key: &str) -> Result<Option<Value>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(None);
+        let expired = match self.entries.get_mut(key) {
+            Some(e) if e.is_expired() => true,
+            Some(e) => {
+                return match &e.value {
+                    Value::String(_) => {
+                        e.touch();
+                        Ok(Some(e.value.clone()))
+                    }
+                    _ => Err(WrongType),
+                };
+            }
+            None => return Ok(None),
+        };
+        if expired {
+            self.remove_expired_entry(key);
         }
-        match self.entries.get_mut(key) {
-            Some(e) => match &e.value {
-                Value::String(_) => {
-                    e.touch();
-                    // Value::String wraps Bytes — clone is a cheap refcount increment.
-                    Ok(Some(e.value.clone()))
-                }
-                _ => Err(WrongType),
-            },
-            None => Ok(None),
-        }
+        Ok(None)
     }
 
     /// Retrieves the raw `Bytes` for a string key, avoiding the `Value`
     /// enum wrapper. `Bytes::clone()` is a cheap refcount increment.
     ///
     /// Returns `Err(WrongType)` if the key holds a non-string value.
+    ///
+    /// Uses a single hash probe on the common (non-expired) path.
     pub fn get_string(&mut self, key: &str) -> Result<Option<Bytes>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(None);
+        let expired = match self.entries.get_mut(key) {
+            Some(e) if e.is_expired() => true,
+            Some(e) => {
+                return match &e.value {
+                    Value::String(b) => {
+                        let data = b.clone();
+                        e.touch();
+                        Ok(Some(data))
+                    }
+                    _ => Err(WrongType),
+                };
+            }
+            None => return Ok(None),
+        };
+        if expired {
+            self.remove_expired_entry(key);
         }
-        match self.entries.get_mut(key) {
-            Some(e) => match &e.value {
-                Value::String(b) => {
-                    let data = b.clone(); // Bytes::clone is a refcount bump
-                    e.touch();
-                    Ok(Some(data))
-                }
-                _ => Err(WrongType),
-            },
-            None => Ok(None),
-        }
+        Ok(None)
     }
 
     /// Returns the type name of the value at `key`, or "none" if missing.
@@ -77,12 +89,13 @@ impl Keyspace {
         let new_size = memory::entry_size(&key, &new_value);
 
         // single lookup: check existence, gather old size and expiry state.
-        // treat expired entries as non-existent.
+        // treat expired entries as non-existent. uses cached_value_size
+        // for O(1) size lookup instead of walking the value.
         let old_info = self.entries.get(key.as_str()).and_then(|e| {
             if e.is_expired() {
                 None
             } else {
-                Some((memory::entry_size(&key, &e.value), e.expires_at_ms != 0))
+                Some((e.entry_size(&key), e.expires_at_ms != 0))
             }
         });
 
