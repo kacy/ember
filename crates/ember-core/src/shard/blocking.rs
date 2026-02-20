@@ -40,7 +40,12 @@ pub(super) fn handle_blocking_pop(
                 }
             };
             aof::write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
-            aof::broadcast_replication(record, ctx.replication_tx, ctx.replication_offset, shard_id);
+            aof::broadcast_replication(
+                record,
+                ctx.replication_tx,
+                ctx.replication_offset,
+                shard_id,
+            );
         }
         Ok(None) => {
             // list is empty or doesn't exist — register the waiter

@@ -1426,7 +1426,7 @@ fn dispatch(
                 return ShardResponse::Value(None);
             }
             match ks.proto_set(key.clone(), type_name.clone(), data.clone(), *expire) {
-                SetResult::Ok => ShardResponse::Ok,
+                SetResult::Ok | SetResult::Blocked => ShardResponse::Ok,
                 SetResult::OutOfMemory => ShardResponse::OutOfMemory,
             }
         }

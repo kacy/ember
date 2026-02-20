@@ -14,9 +14,9 @@
 //! - O(log n) `rank()` via binary search (was O(n) with BTreeMap::range.count())
 //! - Better cache locality for iteration (contiguous memory vs pointer-chasing)
 //! - Lower memory per member (~24 bytes for a Vec slot vs ~64 for a BTreeMap node)
-//! The tradeoff is O(n) insert/remove due to Vec shifting, but for typical
-//! sorted set sizes that shifting is cache-friendly memmove and faster than
-//! BTreeMap's O(log n) with high constant factor.
+//!   The tradeoff is O(n) insert/remove due to Vec shifting, but for typical
+//!   sorted set sizes that shifting is cache-friendly memmove and faster than
+//!   BTreeMap's O(log n) with high constant factor.
 
 use std::collections::HashMap;
 use std::sync::Arc;

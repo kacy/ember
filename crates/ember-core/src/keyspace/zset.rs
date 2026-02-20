@@ -26,7 +26,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, SortedSet::BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::SortedSet(Box::new(SortedSet::new())));
+            self.insert_empty(key, Value::SortedSet(Box::default()));
         }
 
         let (count, applied) = self

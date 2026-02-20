@@ -21,7 +21,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, memory::HASHSET_BASE_OVERHEAD, member_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::Set(Box::new(std::collections::HashSet::new())));
+            self.insert_empty(key, Value::Set(Box::default()));
         }
 
         let added = self

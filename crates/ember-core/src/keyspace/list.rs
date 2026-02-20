@@ -139,11 +139,7 @@ impl Keyspace {
     }
 
     /// Internal pop implementation shared by lpop/rpop.
-    pub(super) fn list_pop(
-        &mut self,
-        key: &str,
-        left: bool,
-    ) -> Result<Option<Bytes>, WrongType> {
+    pub(super) fn list_pop(&mut self, key: &str, left: bool) -> Result<Option<Bytes>, WrongType> {
         if self.remove_if_expired(key) {
             return Ok(None);
         }

@@ -5,7 +5,7 @@
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use ahash::AHashMap;
@@ -21,15 +21,15 @@ use crate::time;
 use crate::types::sorted_set::{SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
-mod string;
-mod list;
 mod hash;
-mod set;
-mod zset;
-#[cfg(feature = "vector")]
-mod vector;
+mod list;
 #[cfg(feature = "protobuf")]
 mod proto;
+mod set;
+mod string;
+#[cfg(feature = "vector")]
+mod vector;
+mod zset;
 
 const WRONGTYPE_MSG: &str = "WRONGTYPE Operation against a key holding the wrong kind of value";
 const OOM_MSG: &str = "OOM command not allowed when used memory > 'maxmemory'";

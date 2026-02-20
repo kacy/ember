@@ -699,8 +699,7 @@ pub async fn run_threaded(
                         .expect("failed to build worker runtime");
 
                     rt.block_on(worker_main(
-                        id, prepared, addr, engine, ctx, slow_log, pubsub, semaphore, tls,
-                        shutdown,
+                        id, prepared, addr, engine, ctx, slow_log, pubsub, semaphore, tls, shutdown,
                     ));
 
                     // give in-flight connection handlers time to finish

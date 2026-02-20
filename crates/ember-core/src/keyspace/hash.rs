@@ -21,7 +21,7 @@ impl Keyspace {
         self.reserve_memory(is_new, key, memory::HASHMAP_BASE_OVERHEAD, field_increase)?;
 
         if is_new {
-            self.insert_empty(key, Value::Hash(Box::new(HashMap::new())));
+            self.insert_empty(key, Value::Hash(Box::default()));
         }
 
         let added = self
@@ -180,9 +180,10 @@ impl Keyspace {
         }
 
         if is_new {
-            let value = Value::Hash(Box::new(HashMap::new()));
+            let value = Value::Hash(Box::default());
             self.memory.add(key, &value);
-            self.entries.insert(CompactString::from(key), Entry::new(value, None));
+            self.entries
+                .insert(CompactString::from(key), Entry::new(value, None));
         }
 
         // safe: key was either just inserted above or verified to exist

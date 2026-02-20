@@ -18,7 +18,7 @@ impl Keyspace {
         let new_size = memory::entry_size(&key, &new_value);
         let old_size = self
             .entries
-            .get(&key)
+            .get(key.as_str())
             .map(|e| e.entry_size(&key))
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_size);
@@ -27,7 +27,7 @@ impl Keyspace {
             return SetResult::OutOfMemory;
         }
 
-        if let Some(old_entry) = self.entries.get(&key) {
+        if let Some(old_entry) = self.entries.get(key.as_str()) {
             self.memory.replace(&key, &old_entry.value, &new_value);
             let had_expiry = old_entry.expires_at_ms != 0;
             match (had_expiry, has_expiry) {
@@ -42,7 +42,8 @@ impl Keyspace {
             }
         }
 
-        self.entries.insert(key, Entry::new(new_value, expire));
+        self.entries
+            .insert(CompactString::from(key), Entry::new(new_value, expire));
         SetResult::Ok
     }
 

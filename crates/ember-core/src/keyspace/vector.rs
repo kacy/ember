@@ -53,7 +53,8 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            self.entries.insert(CompactString::from(key), Entry::new(value, None));
+            self.entries
+                .insert(CompactString::from(key), Entry::new(value, None));
         }
 
         let entry = match self.entries.get_mut(key) {
@@ -159,7 +160,8 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            self.entries.insert(CompactString::from(key), Entry::new(value, None));
+            self.entries
+                .insert(CompactString::from(key), Entry::new(value, None));
         }
 
         let entry = match self.entries.get_mut(key) {
