@@ -10,7 +10,8 @@ use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::keyspace::ShardConfig;
 use crate::shard::{
-    self, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest, ShardResponse,
+    self, PreparedShard, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest,
+    ShardResponse,
 };
 
 /// Default channel buffer size per shard. At 500k+ ops/sec/core, 256 can
@@ -104,6 +105,57 @@ impl Engine {
             #[cfg(feature = "protobuf")]
             schema_registry: config.schema_registry,
         }
+    }
+
+    /// Creates the engine and prepared shards without spawning any tasks.
+    ///
+    /// The caller is responsible for running each [`PreparedShard`] on the
+    /// desired runtime via [`shard::run_prepared`]. This is the entry
+    /// point for thread-per-core deployment where each OS thread runs its
+    /// own single-threaded tokio runtime and one shard.
+    ///
+    /// Panics if `shard_count` is zero.
+    pub fn prepare(shard_count: usize, config: EngineConfig) -> (Self, Vec<PreparedShard>) {
+        assert!(shard_count > 0, "shard count must be at least 1");
+        assert!(
+            shard_count <= u16::MAX as usize,
+            "shard count must fit in u16"
+        );
+
+        let drop_handle = DropHandle::spawn();
+        let buffer = if config.shard_channel_buffer == 0 {
+            DEFAULT_SHARD_BUFFER
+        } else {
+            config.shard_channel_buffer
+        };
+
+        let mut handles = Vec::with_capacity(shard_count);
+        let mut prepared = Vec::with_capacity(shard_count);
+
+        for i in 0..shard_count {
+            let mut shard_config = config.shard.clone();
+            shard_config.shard_id = i as u16;
+            let (handle, shard) = shard::prepare_shard(
+                buffer,
+                shard_config,
+                config.persistence.clone(),
+                Some(drop_handle.clone()),
+                config.replication_tx.clone(),
+                #[cfg(feature = "protobuf")]
+                config.schema_registry.clone(),
+            );
+            handles.push(handle);
+            prepared.push(shard);
+        }
+
+        let engine = Self {
+            shards: handles,
+            replication_tx: config.replication_tx,
+            #[cfg(feature = "protobuf")]
+            schema_registry: config.schema_registry,
+        };
+
+        (engine, prepared)
     }
 
     /// Creates an engine with one shard per available CPU core.
