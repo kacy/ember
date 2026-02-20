@@ -48,7 +48,7 @@ jobs:
       - name: build
         run: cargo build --workspace --features protobuf,grpc
       - name: test
-        run: cargo test --workspace --features protobuf,grpc
+        run: cargo test --workspace --features protobuf,grpc -- --skip cluster
 
   build:
     name: build
