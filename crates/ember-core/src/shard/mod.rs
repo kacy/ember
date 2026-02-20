@@ -1,9 +1,51 @@
 //! Shard: an independent partition of the keyspace.
 //!
-//! Each shard runs as its own tokio task, owning a `Keyspace` with no
-//! internal locking. Commands arrive over an mpsc channel and responses
-//! go back on a per-request oneshot. A background tick drives active
-//! expiration of TTL'd keys.
+//! ## thread-per-core, shared-nothing model
+//!
+//! Each shard runs as a single tokio task that exclusively owns its [`Keyspace`]
+//! partition. All mutations execute serially inside one task — no mutex, no
+//! read-write lock, no cross-thread coordination on the hot path. This is the
+//! core design choice that enables predictable latency: a shard thread can never
+//! be stalled waiting for another thread to release a lock.
+//!
+//! ## backpressure via bounded channel
+//!
+//! The mpsc buffer (1,024 items) is the system's flow-control valve. When a shard
+//! is fully loaded, `try_send` returns `Err(Full)` immediately, giving the caller a
+//! clear signal to shed load or return an error to the client rather than quietly
+//! growing an unbounded queue. This prevents memory blow-up under sustained overload.
+//!
+//! ## per-request oneshot channels
+//!
+//! Each [`ShardMessage`] carries a `oneshot::Sender<ShardResponse>`. The caller
+//! blocks on the receiver while the shard processes the request. This gives O(1)
+//! delivery with no shared response queue and no head-of-line blocking between
+//! concurrent callers — each caller waits only on its own future.
+//!
+//! ## pipeline draining
+//!
+//! After waking from `select!`, the event loop drains the channel with `try_recv()`
+//! before re-entering `select!`. This amortizes scheduler wake-up overhead across
+//! burst traffic — essential for pipelined clients that send dozens of commands
+//! back-to-back without waiting for individual responses.
+//!
+//! ## AOF linearizability
+//!
+//! Because all mutations execute serially in one task, the AOF record sequence is a
+//! perfect linearized history of the keyspace. The per-shard monotonically increasing
+//! offset is a consistent position marker that replicas use to detect gaps and
+//! trigger re-sync when they fall behind.
+//!
+//! ## mechanical sympathy
+//!
+//! The hot path (`recv → dispatch → respond`) touches only shard-local memory. No
+//! cross-thread cache-line contention. This is why sharded mode outperforms
+//! mutex-per-command designs by 3–5× on write-heavy workloads — the CPU's cache
+//! hierarchy can stay warm on data that belongs to this core.
+
+mod aof;
+mod blocking;
+mod persistence;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
@@ -811,11 +853,11 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     // normal dispatch → response path.
     match msg.request {
         ShardRequest::BLPop { key, waiter } => {
-            handle_blocking_pop(&key, waiter, true, msg.reply, ctx);
+            blocking::handle_blocking_pop(&key, waiter, true, msg.reply, ctx);
             return;
         }
         ShardRequest::BRPop { key, waiter } => {
-            handle_blocking_pop(&key, waiter, false, msg.reply, ctx);
+            blocking::handle_blocking_pop(&key, waiter, false, msg.reply, ctx);
             return;
         }
         _ => {}
@@ -833,12 +875,12 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     // done before consuming the request so we can borrow the key.
     if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } = msg.request {
         if matches!(response, ShardResponse::Len(_)) {
-            wake_blocked_waiters(key, ctx);
+            blocking::wake_blocked_waiters(key, ctx);
         }
     }
 
     // consume the request to move owned data into AOF records (avoids cloning)
-    let records = to_aof_records(msg.request, &response);
+    let records = aof::to_aof_records(msg.request, &response);
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
@@ -870,17 +912,17 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     // handle special requests that need access to persistence state
     match request_kind {
         RequestKind::Snapshot => {
-            let resp = handle_snapshot(ctx.keyspace, ctx.persistence, shard_id);
+            let resp = persistence::handle_snapshot(ctx.keyspace, ctx.persistence, shard_id);
             let _ = msg.reply.send(resp);
             return;
         }
         RequestKind::SerializeSnapshot => {
-            let resp = handle_serialize_snapshot(ctx.keyspace, shard_id);
+            let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id);
             let _ = msg.reply.send(resp);
             return;
         }
         RequestKind::RewriteAof => {
-            let resp = handle_rewrite(
+            let resp = persistence::handle_rewrite(
                 ctx.keyspace,
                 ctx.persistence,
                 ctx.aof_writer,
@@ -922,167 +964,6 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
         ShardRequest::RewriteAof => RequestKind::RewriteAof,
         ShardRequest::FlushDbAsync => RequestKind::FlushDbAsync,
         _ => RequestKind::Other,
-    }
-}
-
-/// Handles a BLPOP or BRPOP request.
-///
-/// Tries to pop immediately. If the list has an element, sends the result
-/// on the waiter oneshot and records the AOF mutation. If the list is empty
-/// (or doesn't exist), registers the waiter in the appropriate map for
-/// later wake-up by an LPush/RPush.
-fn handle_blocking_pop(
-    key: &str,
-    waiter: mpsc::Sender<(String, Bytes)>,
-    is_left: bool,
-    reply: oneshot::Sender<ShardResponse>,
-    ctx: &mut ProcessCtx<'_>,
-) {
-    let fsync_policy = ctx.fsync_policy;
-    let shard_id = ctx.shard_id;
-
-    // try to pop immediately
-    let result = if is_left {
-        ctx.keyspace.lpop(key)
-    } else {
-        ctx.keyspace.rpop(key)
-    };
-
-    match result {
-        Ok(Some(data)) => {
-            // got an element — send to waiter and record the mutation
-            let _ = waiter.try_send((key.to_owned(), data));
-            let _ = reply.send(ShardResponse::Ok);
-
-            // AOF + replication for the pop
-            let record = if is_left {
-                AofRecord::LPop {
-                    key: key.to_owned(),
-                }
-            } else {
-                AofRecord::RPop {
-                    key: key.to_owned(),
-                }
-            };
-            write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
-            broadcast_replication(record, ctx.replication_tx, ctx.replication_offset, shard_id);
-        }
-        Ok(None) => {
-            // list is empty or doesn't exist — register the waiter
-            let map = if is_left {
-                &mut *ctx.lpop_waiters
-            } else {
-                &mut *ctx.rpop_waiters
-            };
-            map.entry(key.to_owned()).or_default().push_back(waiter);
-            // drop reply — connection handler doesn't await it for blocking ops
-            drop(reply);
-        }
-        Err(_) => {
-            // WRONGTYPE — drop the waiter (connection sees the receiver close)
-            // and send an error on the reply channel
-            let _ = reply.send(ShardResponse::WrongType);
-        }
-    }
-}
-
-/// Checks if any BLPOP/BRPOP waiters are blocked on a key after a push
-/// operation. Pops elements from the list and sends them to waiters until
-/// either no more waiters remain or the list is empty.
-fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
-    let fsync_policy = ctx.fsync_policy;
-    let shard_id = ctx.shard_id;
-
-    // try BLPOP waiters first (left-pop), then BRPOP (right-pop)
-    for is_left in [true, false] {
-        let map = if is_left {
-            &mut *ctx.lpop_waiters
-        } else {
-            &mut *ctx.rpop_waiters
-        };
-
-        if let Some(waiters) = map.get_mut(key) {
-            while let Some(waiter) = waiters.pop_front() {
-                // skip dead waiters (client disconnected / timed out)
-                if waiter.is_closed() {
-                    continue;
-                }
-
-                let result = if is_left {
-                    ctx.keyspace.lpop(key)
-                } else {
-                    ctx.keyspace.rpop(key)
-                };
-
-                match result {
-                    Ok(Some(data)) => {
-                        let _ = waiter.try_send((key.to_owned(), data));
-
-                        // record AOF + replication for the pop
-                        let record = if is_left {
-                            AofRecord::LPop {
-                                key: key.to_owned(),
-                            }
-                        } else {
-                            AofRecord::RPop {
-                                key: key.to_owned(),
-                            }
-                        };
-                        write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
-                        broadcast_replication(
-                            record,
-                            ctx.replication_tx,
-                            ctx.replication_offset,
-                            shard_id,
-                        );
-                    }
-                    _ => break, // list is empty or wrong type — stop waking
-                }
-            }
-
-            // clean up empty waiter lists
-            if waiters.is_empty() {
-                map.remove(key);
-            }
-        }
-    }
-}
-
-/// Writes a single AOF record, used by blocking pop operations that
-/// bypass the normal dispatch → to_aof_records path.
-fn write_aof_record(
-    record: &AofRecord,
-    aof_writer: &mut Option<AofWriter>,
-    fsync_policy: FsyncPolicy,
-    shard_id: u16,
-) {
-    if let Some(ref mut writer) = *aof_writer {
-        if let Err(e) = writer.write_record(record) {
-            warn!(shard_id, "aof write failed: {e}");
-        }
-        if fsync_policy == FsyncPolicy::Always {
-            if let Err(e) = writer.sync() {
-                warn!(shard_id, "aof sync failed: {e}");
-            }
-        }
-    }
-}
-
-/// Broadcasts a single replication event, used by blocking pop operations
-/// that bypass the normal process_message path.
-fn broadcast_replication(
-    record: AofRecord,
-    replication_tx: &Option<broadcast::Sender<ReplicationEvent>>,
-    replication_offset: &mut u64,
-    shard_id: u16,
-) {
-    if let Some(ref tx) = *replication_tx {
-        *replication_offset += 1;
-        let _ = tx.send(ReplicationEvent {
-            shard_id,
-            offset: *replication_offset,
-            record,
-        });
     }
 }
 
@@ -1316,7 +1197,7 @@ fn dispatch(
         }
         ShardRequest::DumpKey { key } => match ks.dump(key) {
             Some((value, ttl_ms)) => {
-                let snap = value_to_snap(value);
+                let snap = persistence::value_to_snap(value);
                 match snapshot::serialize_snap_value(&snap) {
                     Ok(data) => ShardResponse::KeyDump { data, ttl_ms },
                     Err(e) => ShardResponse::Err(format!("ERR snapshot serialization failed: {e}")),
@@ -1335,7 +1216,7 @@ fn dispatch(
                 if exists && !replace {
                     ShardResponse::Err("ERR Target key name already exists".into())
                 } else {
-                    let value = snap_to_value(snap);
+                    let value = persistence::snap_to_value(snap);
                     let ttl = if *ttl_ms == 0 {
                         None
                     } else {
@@ -1590,459 +1471,6 @@ where
     resp
 }
 
-/// Clamps a duration's millisecond value to fit in i64.
-///
-/// `Duration::as_millis()` returns u128 which silently wraps when cast
-/// to i64 for TTLs longer than ~292 million years. This caps at i64::MAX
-/// instead, preserving "very long TTL" semantics without sign corruption.
-fn duration_to_expire_ms(d: Duration) -> i64 {
-    let ms = d.as_millis();
-    if ms > i64::MAX as u128 {
-        i64::MAX
-    } else {
-        ms as i64
-    }
-}
-
-/// Converts a successful mutation request+response pair into AOF records.
-///
-/// Takes ownership of the request to move keys and values directly into
-/// the records, avoiding heap allocations from cloning. Returns SmallVec
-/// since 99%+ of commands produce 0 or 1 records.
-fn to_aof_records(req: ShardRequest, resp: &ShardResponse) -> SmallVec<[AofRecord; 1]> {
-    match (req, resp) {
-        (
-            ShardRequest::Set {
-                key, value, expire, ..
-            },
-            ShardResponse::Ok,
-        ) => {
-            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            smallvec![AofRecord::Set {
-                key,
-                value,
-                expire_ms,
-            }]
-        }
-        (ShardRequest::Del { key }, ShardResponse::Bool(true))
-        | (ShardRequest::Unlink { key }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::Del { key }]
-        }
-        (ShardRequest::Expire { key, seconds }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::Expire { key, seconds }]
-        }
-        (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => {
-            smallvec![AofRecord::LPush { key, values }]
-        }
-        (ShardRequest::RPush { key, values }, ShardResponse::Len(_)) => {
-            smallvec![AofRecord::RPush { key, values }]
-        }
-        (ShardRequest::LPop { key }, ShardResponse::Value(Some(_))) => {
-            smallvec![AofRecord::LPop { key }]
-        }
-        (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
-            smallvec![AofRecord::RPop { key }]
-        }
-        (ShardRequest::ZAdd { key, .. }, ShardResponse::ZAddLen { applied, .. })
-            if !applied.is_empty() =>
-        {
-            smallvec![AofRecord::ZAdd {
-                key,
-                members: applied.clone(),
-            }]
-        }
-        (ShardRequest::ZRem { key, .. }, ShardResponse::ZRemLen { removed, .. })
-            if !removed.is_empty() =>
-        {
-            smallvec![AofRecord::ZRem {
-                key,
-                members: removed.clone(),
-            }]
-        }
-        (ShardRequest::Incr { key }, ShardResponse::Integer(_)) => {
-            smallvec![AofRecord::Incr { key }]
-        }
-        (ShardRequest::Decr { key }, ShardResponse::Integer(_)) => {
-            smallvec![AofRecord::Decr { key }]
-        }
-        (ShardRequest::IncrBy { key, delta }, ShardResponse::Integer(_)) => {
-            smallvec![AofRecord::IncrBy { key, delta }]
-        }
-        (ShardRequest::DecrBy { key, delta }, ShardResponse::Integer(_)) => {
-            smallvec![AofRecord::DecrBy { key, delta }]
-        }
-        // INCRBYFLOAT: record as a SET with the resulting value to avoid
-        // float rounding drift during replay.
-        (ShardRequest::IncrByFloat { key, .. }, ShardResponse::BulkString(val)) => {
-            smallvec![AofRecord::Set {
-                key,
-                value: Bytes::from(val.clone()),
-                expire_ms: -1,
-            }]
-        }
-        // APPEND: record the appended value for replay
-        (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => {
-            smallvec![AofRecord::Append { key, value }]
-        }
-        (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => {
-            smallvec![AofRecord::Rename { key, newkey }]
-        }
-        (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::Persist { key }]
-        }
-        (ShardRequest::Pexpire { key, milliseconds }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::Pexpire { key, milliseconds }]
-        }
-        // Hash commands
-        (ShardRequest::HSet { key, fields }, ShardResponse::Len(_)) => {
-            smallvec![AofRecord::HSet { key, fields }]
-        }
-        (ShardRequest::HDel { key, .. }, ShardResponse::HDelLen { removed, .. })
-            if !removed.is_empty() =>
-        {
-            smallvec![AofRecord::HDel {
-                key,
-                fields: removed.clone(),
-            }]
-        }
-        (ShardRequest::HIncrBy { key, field, delta }, ShardResponse::Integer(_)) => {
-            smallvec![AofRecord::HIncrBy { key, field, delta }]
-        }
-        // Set commands
-        (ShardRequest::SAdd { key, members }, ShardResponse::Len(count)) if *count > 0 => {
-            smallvec![AofRecord::SAdd { key, members }]
-        }
-        (ShardRequest::SRem { key, members }, ShardResponse::Len(count)) if *count > 0 => {
-            smallvec![AofRecord::SRem { key, members }]
-        }
-        // Proto commands
-        #[cfg(feature = "protobuf")]
-        (
-            ShardRequest::ProtoSet {
-                key,
-                type_name,
-                data,
-                expire,
-                ..
-            },
-            ShardResponse::Ok,
-        ) => {
-            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            smallvec![AofRecord::ProtoSet {
-                key,
-                type_name,
-                data,
-                expire_ms,
-            }]
-        }
-        #[cfg(feature = "protobuf")]
-        (ShardRequest::ProtoRegisterAof { name, descriptor }, ShardResponse::Ok) => {
-            smallvec![AofRecord::ProtoRegister { name, descriptor }]
-        }
-        // atomic field ops persist as a full ProtoSet (the whole re-encoded value)
-        #[cfg(feature = "protobuf")]
-        (
-            ShardRequest::ProtoSetField { key, .. } | ShardRequest::ProtoDelField { key, .. },
-            ShardResponse::ProtoFieldUpdated {
-                type_name,
-                data,
-                expire,
-            },
-        ) => {
-            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            smallvec![AofRecord::ProtoSet {
-                key,
-                type_name: type_name.clone(),
-                data: data.clone(),
-                expire_ms,
-            }]
-        }
-        // Vector commands
-        #[cfg(feature = "vector")]
-        (
-            ShardRequest::VAdd {
-                key,
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-                ..
-            },
-            ShardResponse::VAddResult {
-                element, vector, ..
-            },
-        ) => smallvec![AofRecord::VAdd {
-            key,
-            element: element.clone(),
-            vector: vector.clone(),
-            metric,
-            quantization,
-            connectivity,
-            expansion_add,
-        }],
-        // VADD_BATCH: expand each applied entry into its own AofRecord::VAdd
-        #[cfg(feature = "vector")]
-        (
-            ShardRequest::VAddBatch {
-                key,
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-                ..
-            },
-            ShardResponse::VAddBatchResult { applied, .. },
-        ) => applied
-            .iter()
-            .map(|(element, vector)| AofRecord::VAdd {
-                key: key.clone(),
-                element: element.clone(),
-                vector: vector.clone(),
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-            })
-            .collect(),
-        #[cfg(feature = "vector")]
-        (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::VRem { key, element }]
-        }
-        _ => SmallVec::new(),
-    }
-}
-
-/// Writes a snapshot of the current keyspace.
-fn handle_snapshot(
-    keyspace: &Keyspace,
-    persistence: &Option<ShardPersistenceConfig>,
-    shard_id: u16,
-) -> ShardResponse {
-    let pcfg = match persistence {
-        Some(p) => p,
-        None => return ShardResponse::Err("persistence not configured".into()),
-    };
-
-    let path = snapshot::snapshot_path(&pcfg.data_dir, shard_id);
-    let result = write_snapshot(
-        keyspace,
-        &path,
-        shard_id,
-        #[cfg(feature = "encryption")]
-        pcfg.encryption_key.as_ref(),
-    );
-    match result {
-        Ok(count) => {
-            info!(shard_id, entries = count, "snapshot written");
-            ShardResponse::Ok
-        }
-        Err(e) => {
-            warn!(shard_id, "snapshot failed: {e}");
-            ShardResponse::Err(format!("snapshot failed: {e}"))
-        }
-    }
-}
-
-/// Serializes the current shard state to bytes without filesystem I/O.
-///
-/// Used by the replication server to capture a snapshot for transmission
-/// to a new replica. The format matches the file-based snapshot and can
-/// be loaded via [`ember_persistence::snapshot::read_snapshot_from_bytes`].
-fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> ShardResponse {
-    let entries: Vec<SnapEntry> = keyspace
-        .iter_entries()
-        .map(|(key, value, expire_ms)| SnapEntry {
-            key: key.to_owned(),
-            value: value_to_snap(value),
-            expire_ms,
-        })
-        .collect();
-
-    match snapshot::write_snapshot_bytes(shard_id, &entries) {
-        Ok(data) => ShardResponse::SnapshotData { shard_id, data },
-        Err(e) => {
-            warn!(shard_id, "snapshot serialization failed: {e}");
-            ShardResponse::Err(format!("snapshot failed: {e}"))
-        }
-    }
-}
-
-/// Writes a snapshot and then truncates the AOF.
-///
-/// When protobuf is enabled, re-persists all registered schemas to the
-/// AOF after truncation so they survive the next restart.
-fn handle_rewrite(
-    keyspace: &Keyspace,
-    persistence: &Option<ShardPersistenceConfig>,
-    aof_writer: &mut Option<AofWriter>,
-    shard_id: u16,
-    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
-) -> ShardResponse {
-    let pcfg = match persistence {
-        Some(p) => p,
-        None => return ShardResponse::Err("persistence not configured".into()),
-    };
-
-    let path = snapshot::snapshot_path(&pcfg.data_dir, shard_id);
-    let result = write_snapshot(
-        keyspace,
-        &path,
-        shard_id,
-        #[cfg(feature = "encryption")]
-        pcfg.encryption_key.as_ref(),
-    );
-    match result {
-        Ok(count) => {
-            // truncate AOF after successful snapshot
-            if let Some(ref mut writer) = aof_writer {
-                if let Err(e) = writer.truncate() {
-                    warn!(shard_id, "aof truncate after rewrite failed: {e}");
-                }
-
-                // re-persist schemas so they survive the next recovery
-                #[cfg(feature = "protobuf")]
-                if let Some(ref registry) = schema_registry {
-                    if let Ok(reg) = registry.read() {
-                        for (name, descriptor) in reg.iter_schemas() {
-                            let record = AofRecord::ProtoRegister {
-                                name: name.to_owned(),
-                                descriptor: descriptor.clone(),
-                            };
-                            if let Err(e) = writer.write_record(&record) {
-                                warn!(shard_id, "failed to re-persist schema after rewrite: {e}");
-                            }
-                        }
-                    }
-                }
-
-                // flush so schemas are durable before we report success
-                if let Err(e) = writer.sync() {
-                    warn!(shard_id, "aof sync after rewrite failed: {e}");
-                }
-            }
-            info!(shard_id, entries = count, "aof rewrite complete");
-            ShardResponse::Ok
-        }
-        Err(e) => {
-            warn!(shard_id, "aof rewrite failed: {e}");
-            ShardResponse::Err(format!("rewrite failed: {e}"))
-        }
-    }
-}
-
-/// Converts a `Value` reference to a `SnapValue` for serialization.
-fn value_to_snap(value: &Value) -> SnapValue {
-    match value {
-        Value::String(data) => SnapValue::String(data.clone()),
-        Value::List(deque) => SnapValue::List(deque.clone()),
-        Value::SortedSet(ss) => {
-            let members: Vec<(f64, String)> = ss
-                .iter()
-                .map(|(member, score)| (score, member.to_owned()))
-                .collect();
-            SnapValue::SortedSet(members)
-        }
-        Value::Hash(map) => SnapValue::Hash((**map).clone()),
-        Value::Set(set) => SnapValue::Set((**set).clone()),
-        #[cfg(feature = "vector")]
-        Value::Vector(ref vs) => {
-            let mut elements = Vec::with_capacity(vs.len());
-            for name in vs.elements() {
-                if let Some(vec) = vs.get(name) {
-                    elements.push((name.to_owned(), vec));
-                }
-            }
-            SnapValue::Vector {
-                metric: vs.metric().into(),
-                quantization: vs.quantization().into(),
-                connectivity: vs.connectivity() as u32,
-                expansion_add: vs.expansion_add() as u32,
-                dim: vs.dim() as u32,
-                elements,
-            }
-        }
-        #[cfg(feature = "protobuf")]
-        Value::Proto { type_name, data } => SnapValue::Proto {
-            type_name: type_name.clone(),
-            data: data.clone(),
-        },
-    }
-}
-
-/// Converts a `SnapValue` into a `Value` for insertion into the keyspace.
-fn snap_to_value(snap: SnapValue) -> Value {
-    match snap {
-        SnapValue::String(data) => Value::String(data),
-        SnapValue::List(deque) => Value::List(deque),
-        SnapValue::SortedSet(members) => {
-            let mut ss = crate::types::sorted_set::SortedSet::new();
-            for (score, member) in members {
-                ss.add(member, score);
-            }
-            Value::SortedSet(Box::new(ss))
-        }
-        SnapValue::Hash(map) => Value::Hash(Box::new(map)),
-        SnapValue::Set(set) => Value::Set(Box::new(set)),
-        #[cfg(feature = "vector")]
-        SnapValue::Vector {
-            metric,
-            quantization,
-            connectivity,
-            expansion_add,
-            elements,
-            ..
-        } => {
-            use crate::types::vector::{DistanceMetric, QuantizationType, VectorSet};
-            let dim = elements.first().map(|(_, v)| v.len()).unwrap_or(0);
-            let dm = DistanceMetric::from_u8(metric);
-            let qt = QuantizationType::from_u8(quantization);
-            match VectorSet::new(dim, dm, qt, connectivity as usize, expansion_add as usize) {
-                Ok(mut vs) => {
-                    for (name, vec) in elements {
-                        let _ = vs.add(name, &vec);
-                    }
-                    Value::Vector(vs)
-                }
-                Err(_) => Value::String(Bytes::new()),
-            }
-        }
-        #[cfg(feature = "protobuf")]
-        SnapValue::Proto { type_name, data } => Value::Proto { type_name, data },
-    }
-}
-
-/// Iterates the keyspace and writes all live entries to a snapshot file.
-fn write_snapshot(
-    keyspace: &Keyspace,
-    path: &std::path::Path,
-    shard_id: u16,
-    #[cfg(feature = "encryption")] encryption_key: Option<
-        &ember_persistence::encryption::EncryptionKey,
-    >,
-) -> Result<u32, ember_persistence::format::FormatError> {
-    #[cfg(feature = "encryption")]
-    let mut writer = if let Some(key) = encryption_key {
-        SnapshotWriter::create_encrypted(path, shard_id, key.clone())?
-    } else {
-        SnapshotWriter::create(path, shard_id)?
-    };
-    #[cfg(not(feature = "encryption"))]
-    let mut writer = SnapshotWriter::create(path, shard_id)?;
-    let mut count = 0u32;
-
-    for (key, value, ttl_ms) in keyspace.iter_entries() {
-        writer.write_entry(&SnapEntry {
-            key: key.to_owned(),
-            value: value_to_snap(value),
-            expire_ms: ttl_ms,
-        })?;
-        count += 1;
-    }
-
-    writer.finish()?;
-    Ok(count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2139,291 +1567,6 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "gone".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NotFound)));
-    }
-
-    #[tokio::test]
-    async fn shard_round_trip() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        let resp = handle
-            .send(ShardRequest::Set {
-                key: "hello".into(),
-                value: Bytes::from("world"),
-                expire: None,
-                nx: false,
-                xx: false,
-            })
-            .await
-            .unwrap();
-        assert!(matches!(resp, ShardResponse::Ok));
-
-        let resp = handle
-            .send(ShardRequest::Get {
-                key: "hello".into(),
-            })
-            .await
-            .unwrap();
-        match resp {
-            ShardResponse::Value(Some(Value::String(data))) => {
-                assert_eq!(data, Bytes::from("world"));
-            }
-            other => panic!("expected Value(Some(String)), got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn expired_key_through_shard() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        handle
-            .send(ShardRequest::Set {
-                key: "temp".into(),
-                value: Bytes::from("gone"),
-                expire: Some(Duration::from_millis(10)),
-                nx: false,
-                xx: false,
-            })
-            .await
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(30)).await;
-
-        let resp = handle
-            .send(ShardRequest::Get { key: "temp".into() })
-            .await
-            .unwrap();
-        assert!(matches!(resp, ShardResponse::Value(None)));
-    }
-
-    #[tokio::test]
-    async fn active_expiration_cleans_up_without_access() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        // set a key with a short TTL
-        handle
-            .send(ShardRequest::Set {
-                key: "ephemeral".into(),
-                value: Bytes::from("temp"),
-                expire: Some(Duration::from_millis(10)),
-                nx: false,
-                xx: false,
-            })
-            .await
-            .unwrap();
-
-        // also set a persistent key
-        handle
-            .send(ShardRequest::Set {
-                key: "persistent".into(),
-                value: Bytes::from("stays"),
-                expire: None,
-                nx: false,
-                xx: false,
-            })
-            .await
-            .unwrap();
-
-        // wait long enough for the TTL to expire AND for the background
-        // tick to fire (100ms interval + some slack)
-        tokio::time::sleep(Duration::from_millis(250)).await;
-
-        // the ephemeral key should be gone even though we never accessed it
-        let resp = handle
-            .send(ShardRequest::Exists {
-                key: "ephemeral".into(),
-            })
-            .await
-            .unwrap();
-        assert!(matches!(resp, ShardResponse::Bool(false)));
-
-        // the persistent key should still be there
-        let resp = handle
-            .send(ShardRequest::Exists {
-                key: "persistent".into(),
-            })
-            .await
-            .unwrap();
-        assert!(matches!(resp, ShardResponse::Bool(true)));
-    }
-
-    #[tokio::test]
-    async fn shard_with_persistence_snapshot_and_recovery() {
-        let dir = tempfile::tempdir().unwrap();
-        let pcfg = ShardPersistenceConfig {
-            data_dir: dir.path().to_owned(),
-            append_only: true,
-            fsync_policy: FsyncPolicy::Always,
-            #[cfg(feature = "encryption")]
-            encryption_key: None,
-        };
-        let config = ShardConfig {
-            shard_id: 0,
-            ..ShardConfig::default()
-        };
-
-        // write some keys then trigger a snapshot
-        {
-            let handle = spawn_shard(
-                16,
-                config.clone(),
-                Some(pcfg.clone()),
-                None,
-                None,
-                #[cfg(feature = "protobuf")]
-                None,
-            );
-            handle
-                .send(ShardRequest::Set {
-                    key: "a".into(),
-                    value: Bytes::from("1"),
-                    expire: None,
-                    nx: false,
-                    xx: false,
-                })
-                .await
-                .unwrap();
-            handle
-                .send(ShardRequest::Set {
-                    key: "b".into(),
-                    value: Bytes::from("2"),
-                    expire: Some(Duration::from_secs(300)),
-                    nx: false,
-                    xx: false,
-                })
-                .await
-                .unwrap();
-            handle.send(ShardRequest::Snapshot).await.unwrap();
-            // write one more key that goes only to AOF
-            handle
-                .send(ShardRequest::Set {
-                    key: "c".into(),
-                    value: Bytes::from("3"),
-                    expire: None,
-                    nx: false,
-                    xx: false,
-                })
-                .await
-                .unwrap();
-            // drop handle to shut down shard
-        }
-
-        // give it a moment to flush
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // start a new shard with the same config — should recover
-        {
-            let handle = spawn_shard(
-                16,
-                config,
-                Some(pcfg),
-                None,
-                None,
-                #[cfg(feature = "protobuf")]
-                None,
-            );
-            // give it a moment to recover
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            let resp = handle
-                .send(ShardRequest::Get { key: "a".into() })
-                .await
-                .unwrap();
-            match resp {
-                ShardResponse::Value(Some(Value::String(data))) => {
-                    assert_eq!(data, Bytes::from("1"));
-                }
-                other => panic!("expected a=1, got {other:?}"),
-            }
-
-            let resp = handle
-                .send(ShardRequest::Get { key: "b".into() })
-                .await
-                .unwrap();
-            assert!(matches!(resp, ShardResponse::Value(Some(_))));
-
-            let resp = handle
-                .send(ShardRequest::Get { key: "c".into() })
-                .await
-                .unwrap();
-            match resp {
-                ShardResponse::Value(Some(Value::String(data))) => {
-                    assert_eq!(data, Bytes::from("3"));
-                }
-                other => panic!("expected c=3, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn to_aof_records_for_set() {
-        let req = ShardRequest::Set {
-            key: "k".into(),
-            value: Bytes::from("v"),
-            expire: Some(Duration::from_secs(60)),
-            nx: false,
-            xx: false,
-        };
-        let resp = ShardResponse::Ok;
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::Set { key, expire_ms, .. } => {
-                assert_eq!(key, "k");
-                assert_eq!(expire_ms, 60_000);
-            }
-            other => panic!("expected Set, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_skips_failed_set() {
-        let req = ShardRequest::Set {
-            key: "k".into(),
-            value: Bytes::from("v"),
-            expire: None,
-            nx: false,
-            xx: false,
-        };
-        let resp = ShardResponse::OutOfMemory;
-        assert!(to_aof_records(req, &resp).is_empty());
-    }
-
-    #[test]
-    fn to_aof_records_for_del() {
-        let req = ShardRequest::Del { key: "k".into() };
-        let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        assert!(matches!(record, AofRecord::Del { .. }));
-    }
-
-    #[test]
-    fn to_aof_records_skips_failed_del() {
-        let req = ShardRequest::Del { key: "k".into() };
-        let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2540,23 +1683,6 @@ mod tests {
     }
 
     #[test]
-    fn to_aof_records_for_append() {
-        let req = ShardRequest::Append {
-            key: "k".into(),
-            value: Bytes::from("data"),
-        };
-        let resp = ShardResponse::Len(10);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::Append { key, value } => {
-                assert_eq!(key, "k");
-                assert_eq!(value, Bytes::from("data"));
-            }
-            other => panic!("expected Append, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn dispatch_incrbyfloat_new_key() {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(
@@ -2572,56 +1698,6 @@ mod tests {
                 assert!((f - 2.72).abs() < 0.001);
             }
             other => panic!("expected BulkString, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_for_incr() {
-        let req = ShardRequest::Incr { key: "c".into() };
-        let resp = ShardResponse::Integer(1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        assert!(matches!(record, AofRecord::Incr { .. }));
-    }
-
-    #[test]
-    fn to_aof_records_for_decr() {
-        let req = ShardRequest::Decr { key: "c".into() };
-        let resp = ShardResponse::Integer(-1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        assert!(matches!(record, AofRecord::Decr { .. }));
-    }
-
-    #[test]
-    fn to_aof_records_for_incrby() {
-        let req = ShardRequest::IncrBy {
-            key: "c".into(),
-            delta: 5,
-        };
-        let resp = ShardResponse::Integer(15);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::IncrBy { key, delta } => {
-                assert_eq!(key, "c");
-                assert_eq!(delta, 5);
-            }
-            other => panic!("expected IncrBy, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_for_decrby() {
-        let req = ShardRequest::DecrBy {
-            key: "c".into(),
-            delta: 3,
-        };
-        let resp = ShardResponse::Integer(7);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::DecrBy { key, delta } => {
-                assert_eq!(key, "c");
-                assert_eq!(delta, 3);
-            }
-            other => panic!("expected DecrBy, got {other:?}"),
         }
     }
 
@@ -2698,48 +1774,6 @@ mod tests {
             }
             other => panic!("expected Ttl(Milliseconds), got {other:?}"),
         }
-    }
-
-    #[test]
-    fn to_aof_records_for_persist() {
-        let req = ShardRequest::Persist { key: "k".into() };
-        let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        assert!(matches!(record, AofRecord::Persist { .. }));
-    }
-
-    #[test]
-    fn to_aof_records_skips_failed_persist() {
-        let req = ShardRequest::Persist { key: "k".into() };
-        let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(req, &resp).is_empty());
-    }
-
-    #[test]
-    fn to_aof_records_for_pexpire() {
-        let req = ShardRequest::Pexpire {
-            key: "k".into(),
-            milliseconds: 5000,
-        };
-        let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::Pexpire { key, milliseconds } => {
-                assert_eq!(key, "k");
-                assert_eq!(milliseconds, 5000);
-            }
-            other => panic!("expected Pexpire, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_skips_failed_pexpire() {
-        let req = ShardRequest::Pexpire {
-            key: "k".into(),
-            milliseconds: 5000,
-        };
-        let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(req, &resp).is_empty());
     }
 
     #[test]
@@ -2824,20 +1858,6 @@ mod tests {
     }
 
     #[test]
-    fn to_aof_records_skips_nx_blocked_set() {
-        let req = ShardRequest::Set {
-            key: "k".into(),
-            value: Bytes::from("v"),
-            expire: None,
-            nx: true,
-            xx: false,
-        };
-        // when NX blocks, the shard returns Value(None), not Ok
-        let resp = ShardResponse::Value(None);
-        assert!(to_aof_records(req, &resp).is_empty());
-    }
-
-    #[test]
     fn dispatch_flushdb_clears_all_keys() {
         let mut ks = Keyspace::new();
         ks.set("a".into(), Bytes::from("1"), None, false, false);
@@ -2904,129 +1924,6 @@ mod tests {
     }
 
     #[test]
-    fn to_aof_records_for_hset() {
-        let req = ShardRequest::HSet {
-            key: "h".into(),
-            fields: vec![("f1".into(), Bytes::from("v1"))],
-        };
-        let resp = ShardResponse::Len(1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::HSet { key, fields } => {
-                assert_eq!(key, "h");
-                assert_eq!(fields.len(), 1);
-            }
-            _ => panic!("expected HSet record"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_for_hdel() {
-        let req = ShardRequest::HDel {
-            key: "h".into(),
-            fields: vec!["f1".into(), "f2".into()],
-        };
-        let resp = ShardResponse::HDelLen {
-            count: 2,
-            removed: vec!["f1".into(), "f2".into()],
-        };
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::HDel { key, fields } => {
-                assert_eq!(key, "h");
-                assert_eq!(fields.len(), 2);
-            }
-            _ => panic!("expected HDel record"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_skips_hdel_when_none_removed() {
-        let req = ShardRequest::HDel {
-            key: "h".into(),
-            fields: vec!["f1".into()],
-        };
-        let resp = ShardResponse::HDelLen {
-            count: 0,
-            removed: vec![],
-        };
-        assert!(to_aof_records(req, &resp).is_empty());
-    }
-
-    #[test]
-    fn to_aof_records_for_hincrby() {
-        let req = ShardRequest::HIncrBy {
-            key: "h".into(),
-            field: "counter".into(),
-            delta: 5,
-        };
-        let resp = ShardResponse::Integer(10);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::HIncrBy { key, field, delta } => {
-                assert_eq!(key, "h");
-                assert_eq!(field, "counter");
-                assert_eq!(delta, 5);
-            }
-            _ => panic!("expected HIncrBy record"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_for_sadd() {
-        let req = ShardRequest::SAdd {
-            key: "s".into(),
-            members: vec!["m1".into(), "m2".into()],
-        };
-        let resp = ShardResponse::Len(2);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::SAdd { key, members } => {
-                assert_eq!(key, "s");
-                assert_eq!(members.len(), 2);
-            }
-            _ => panic!("expected SAdd record"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_skips_sadd_when_none_added() {
-        let req = ShardRequest::SAdd {
-            key: "s".into(),
-            members: vec!["m1".into()],
-        };
-        let resp = ShardResponse::Len(0);
-        assert!(to_aof_records(req, &resp).is_empty());
-    }
-
-    #[test]
-    fn to_aof_records_for_srem() {
-        let req = ShardRequest::SRem {
-            key: "s".into(),
-            members: vec!["m1".into()],
-        };
-        let resp = ShardResponse::Len(1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::SRem { key, members } => {
-                assert_eq!(key, "s");
-                assert_eq!(members.len(), 1);
-            }
-            _ => panic!("expected SRem record"),
-        }
-    }
-
-    #[test]
-    fn to_aof_records_skips_srem_when_none_removed() {
-        let req = ShardRequest::SRem {
-            key: "s".into(),
-            members: vec!["m1".into()],
-        };
-        let resp = ShardResponse::Len(0);
-        assert!(to_aof_records(req, &resp).is_empty());
-    }
-
-    #[test]
     fn dispatch_keys() {
         let mut ks = Keyspace::new();
         ks.set("user:1".into(), Bytes::from("a"), None, false, false);
@@ -3074,77 +1971,6 @@ mod tests {
             },
         );
         assert!(matches!(resp, ShardResponse::Err(_)));
-    }
-
-    #[test]
-    fn to_aof_records_for_rename() {
-        let req = ShardRequest::Rename {
-            key: "old".into(),
-            newkey: "new".into(),
-        };
-        let resp = ShardResponse::Ok;
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
-        match record {
-            AofRecord::Rename { key, newkey } => {
-                assert_eq!(key, "old");
-                assert_eq!(newkey, "new");
-            }
-            other => panic!("expected Rename, got {other:?}"),
-        }
-    }
-
-    #[test]
-    #[cfg(feature = "vector")]
-    fn to_aof_records_for_vadd_batch() {
-        let req = ShardRequest::VAddBatch {
-            key: "vecs".into(),
-            entries: vec![
-                ("a".into(), vec![1.0, 2.0]),
-                ("b".into(), vec![3.0, 4.0]),
-                ("c".into(), vec![5.0, 6.0]),
-            ],
-            dim: 2,
-            metric: 0,
-            quantization: 0,
-            connectivity: 16,
-            expansion_add: 64,
-        };
-        let resp = ShardResponse::VAddBatchResult {
-            added_count: 3,
-            applied: vec![
-                ("a".into(), vec![1.0, 2.0]),
-                ("b".into(), vec![3.0, 4.0]),
-                ("c".into(), vec![5.0, 6.0]),
-            ],
-        };
-        let records = to_aof_records(req, &resp);
-        assert_eq!(records.len(), 3);
-        for (i, record) in records.iter().enumerate() {
-            match record {
-                AofRecord::VAdd {
-                    key,
-                    element,
-                    metric,
-                    quantization,
-                    connectivity,
-                    expansion_add,
-                    ..
-                } => {
-                    assert_eq!(key, "vecs");
-                    assert_eq!(*metric, 0);
-                    assert_eq!(*quantization, 0);
-                    assert_eq!(*connectivity, 16);
-                    assert_eq!(*expansion_add, 64);
-                    match i {
-                        0 => assert_eq!(element, "a"),
-                        1 => assert_eq!(element, "b"),
-                        2 => assert_eq!(element, "c"),
-                        _ => unreachable!(),
-                    }
-                }
-                other => panic!("expected VAdd, got {other:?}"),
-            }
-        }
     }
 
     #[test]
@@ -3315,164 +2141,5 @@ mod tests {
         // verify fields
         assert_eq!(ks.hget("myhash2", "f1").unwrap(), Some(Bytes::from("v1")));
         assert_eq!(ks.hget("myhash2", "f2").unwrap(), Some(Bytes::from("v2")));
-    }
-
-    // --- BLPOP / BRPOP ---
-
-    #[tokio::test]
-    async fn blpop_immediate_when_list_has_data() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        // push data first
-        let resp = handle
-            .send(ShardRequest::LPush {
-                key: "mylist".into(),
-                values: vec![Bytes::from("hello")],
-            })
-            .await
-            .unwrap();
-        assert!(matches!(resp, ShardResponse::Len(1)));
-
-        // BLPop should return immediately
-        let (tx, mut rx) = mpsc::channel(1);
-        let _ = handle
-            .dispatch(ShardRequest::BLPop {
-                key: "mylist".into(),
-                waiter: tx,
-            })
-            .await;
-
-        // give the shard a moment to process
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let result = rx.try_recv();
-        assert!(result.is_ok());
-        let (key, data) = result.unwrap();
-        assert_eq!(key, "mylist");
-        assert_eq!(data, Bytes::from("hello"));
-    }
-
-    #[tokio::test]
-    async fn blpop_blocks_then_wakes_on_push() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        // BLPop on empty list — registers waiter
-        let (tx, mut rx) = mpsc::channel(1);
-        let _ = handle
-            .dispatch(ShardRequest::BLPop {
-                key: "q".into(),
-                waiter: tx,
-            })
-            .await;
-
-        // give time for the shard to process
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // nothing yet
-        assert!(rx.try_recv().is_err());
-
-        // push an element — should wake the waiter
-        let resp = handle
-            .send(ShardRequest::LPush {
-                key: "q".into(),
-                values: vec![Bytes::from("task1")],
-            })
-            .await
-            .unwrap();
-        assert!(matches!(resp, ShardResponse::Len(1)));
-
-        // waiter should have received the element
-        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv()).await;
-        assert!(result.is_ok());
-        let (key, data) = result.unwrap().unwrap();
-        assert_eq!(key, "q");
-        assert_eq!(data, Bytes::from("task1"));
-    }
-
-    #[tokio::test]
-    async fn brpop_immediate_when_list_has_data() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        // push data: list is [a, b]
-        handle
-            .send(ShardRequest::RPush {
-                key: "mylist".into(),
-                values: vec![Bytes::from("a"), Bytes::from("b")],
-            })
-            .await
-            .unwrap();
-
-        // BRPop should pop from the tail (returns "b")
-        let (tx, mut rx) = mpsc::channel(1);
-        let _ = handle
-            .dispatch(ShardRequest::BRPop {
-                key: "mylist".into(),
-                waiter: tx,
-            })
-            .await;
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let (key, data) = rx.try_recv().unwrap();
-        assert_eq!(key, "mylist");
-        assert_eq!(data, Bytes::from("b"));
-    }
-
-    #[tokio::test]
-    async fn blpop_waiter_dropped_on_timeout() {
-        let handle = spawn_shard(
-            16,
-            ShardConfig::default(),
-            None,
-            None,
-            None,
-            #[cfg(feature = "protobuf")]
-            None,
-        );
-
-        // BLPop on empty list, then drop the receiver (simulating timeout)
-        let (tx, rx) = mpsc::channel(1);
-        let _ = handle
-            .dispatch(ShardRequest::BLPop {
-                key: "q".into(),
-                waiter: tx,
-            })
-            .await;
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        drop(rx);
-
-        // push should succeed without error (dead waiter is skipped)
-        let resp = handle
-            .send(ShardRequest::LPush {
-                key: "q".into(),
-                values: vec![Bytes::from("data")],
-            })
-            .await
-            .unwrap();
-        // the push adds 1 element. the waiter was dead so no pop happened.
-        assert!(matches!(resp, ShardResponse::Len(1)));
     }
 }
