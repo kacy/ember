@@ -14,10 +14,13 @@ use crate::shard::{
     ShardResponse,
 };
 
-/// Default channel buffer size per shard. At 500k+ ops/sec/core, 256 can
-/// fill in under 0.5ms under pipelined bursts. 1024 gives ~2ms of headroom
-/// at negligible memory cost (~100KB per shard on 64-bit).
-const DEFAULT_SHARD_BUFFER: usize = 1024;
+/// Default channel buffer size per shard.
+///
+/// With batch dispatch, a single pipeline of 16 commands targeting 8 shards
+/// consumes ~8 channel slots (one batch per shard) instead of 16. 4096 gives
+/// generous headroom even under pathological key distribution, at ~400KB per
+/// shard on 64-bit.
+const DEFAULT_SHARD_BUFFER: usize = 4096;
 
 /// Configuration for the engine, passed down to each shard.
 #[derive(Debug, Clone, Default)]
@@ -290,6 +293,23 @@ impl Engine {
             return Err(ShardError::Unavailable);
         }
         self.shards[shard_idx].dispatch(request).await
+    }
+
+    /// Sends a batch of requests to a single shard as one channel message.
+    ///
+    /// Returns one receiver per request, preserving order. This is the
+    /// pipeline batching optimization: N commands targeting the same shard
+    /// consume 1 channel slot instead of N, eliminating head-of-line
+    /// blocking under high pipeline depths.
+    pub async fn dispatch_batch_to_shard(
+        &self,
+        shard_idx: usize,
+        requests: Vec<ShardRequest>,
+    ) -> Result<Vec<tokio::sync::oneshot::Receiver<ShardResponse>>, ShardError> {
+        if shard_idx >= self.shards.len() {
+            return Err(ShardError::Unavailable);
+        }
+        self.shards[shard_idx].dispatch_batch(requests).await
     }
 }
 

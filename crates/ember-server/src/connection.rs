@@ -147,6 +147,36 @@ enum ResponseTag {
     ProtoDelFieldResult,
 }
 
+/// Result of preparing a pipelined command before the batch dispatch phase.
+///
+/// `Immediate` commands (errors, PING, multi-key, broadcast) are resolved
+/// during preparation. `Routed` commands carry the shard index and request
+/// so the caller can group them by shard for batch dispatch.
+enum PreparedDispatch {
+    /// Already resolved — no shard send needed.
+    Immediate(PendingResponse),
+    /// Needs to be dispatched to the given shard.
+    Routed {
+        shard_idx: usize,
+        request: ShardRequest,
+        tag: ResponseTag,
+        start: Option<Instant>,
+        cmd_name: &'static str,
+    },
+}
+
+/// A command routed to a shard during the batch-dispatch prepare phase.
+///
+/// Bundles the output index (position in the result vec), the shard request,
+/// the response conversion tag, and timing metadata.
+type ShardBucketEntry = (
+    usize,
+    ShardRequest,
+    ResponseTag,
+    Option<Instant>,
+    &'static str,
+);
+
 /// Drives a single client connection to completion.
 ///
 /// Reads data into a buffer, parses complete frames, dispatches commands
@@ -431,10 +461,23 @@ where
                     response.serialize(&mut out);
                 }
             } else {
-                // pipeline path: dispatch all commands to shards, then collect
-                let mut pending = Vec::with_capacity(frames.len());
+                // pipeline path: batch dispatch to reduce channel contention.
+                //
+                // phase 1: prepare all commands (parse, validate, determine shard)
+                // phase 2: group by shard and send one batch message per shard
+                // phase 3: collect responses in original order
+                let frame_count = frames.len();
+                let shard_count = engine.shard_count();
+                let mut result: Vec<PendingResponse> = Vec::with_capacity(frame_count);
+
+                // per-shard buckets for grouping commands by target shard
+                let mut shard_buckets: Vec<Vec<ShardBucketEntry>> =
+                    (0..shard_count).map(|_| Vec::new()).collect();
+
+                // phase 1: prepare
                 for frame in frames.drain(..) {
-                    let p = dispatch_command(
+                    let idx = result.len();
+                    let prepared = prepare_command(
                         frame,
                         &engine,
                         ctx,
@@ -444,9 +487,62 @@ where
                         &peer_addr_str,
                     )
                     .await;
-                    pending.push(p);
+                    match prepared {
+                        PreparedDispatch::Immediate(pr) => {
+                            result.push(pr);
+                        }
+                        PreparedDispatch::Routed {
+                            shard_idx,
+                            request,
+                            tag,
+                            start,
+                            cmd_name,
+                        } => {
+                            // placeholder — will be replaced in phase 2
+                            result.push(PendingResponse::Immediate(Frame::Null));
+                            shard_buckets[shard_idx].push((idx, request, tag, start, cmd_name));
+                        }
+                    }
                 }
-                for p in pending {
+
+                // phase 2: batch dispatch — one channel send per shard
+                for (shard_idx, bucket) in shard_buckets.into_iter().enumerate() {
+                    if bucket.is_empty() {
+                        continue;
+                    }
+                    let mut indices = Vec::with_capacity(bucket.len());
+                    let mut requests = Vec::with_capacity(bucket.len());
+                    let mut meta = Vec::with_capacity(bucket.len());
+                    for (i, req, tag, start, cmd_name) in bucket {
+                        indices.push(i);
+                        requests.push(req);
+                        meta.push((tag, start, cmd_name));
+                    }
+                    match engine.dispatch_batch_to_shard(shard_idx, requests).await {
+                        Ok(receivers) => {
+                            for ((rx, (tag, start, cmd_name)), i) in
+                                receivers.into_iter().zip(meta).zip(indices)
+                            {
+                                result[i] = PendingResponse::Pending {
+                                    rx,
+                                    tag,
+                                    start,
+                                    cmd_name,
+                                };
+                            }
+                        }
+                        Err(e) => {
+                            let err_msg = format!("ERR {e}");
+                            for i in indices {
+                                result[i] =
+                                    PendingResponse::Immediate(Frame::Error(err_msg.clone()));
+                            }
+                        }
+                    }
+                }
+
+                // phase 3: collect in original order
+                for p in result {
                     let response = resolve_response(p, ctx, slow_log).await;
                     ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                     response.serialize(&mut out);
@@ -1187,17 +1283,17 @@ async fn process(
     }
 }
 
-/// Dispatches a single frame as part of a pipeline batch.
+/// Prepares a single frame for batch dispatch without sending to a shard.
 ///
-/// For single-key commands, sends the request to the owning shard
-/// without waiting for the response. For commands that need special
-/// handling (broadcast, multi-key, cluster, pub/sub), falls back to
-/// the full `execute()` path and returns the result immediately.
+/// Does all the work of `dispatch_command` — parsing, validation, cluster
+/// checks, MONITOR broadcast — but instead of sending to the shard channel,
+/// returns a `PreparedDispatch::Routed` with the shard index and request.
+/// The caller groups routed commands by shard for batch dispatch.
 ///
-/// This is the "dispatch" half of the dispatch-collect pipeline.
-/// Each dispatch is fast (just an mpsc send) so the serial loop
-/// doesn't bottleneck.
-async fn dispatch_command(
+/// Commands that don't target a single shard (broadcast, multi-key, cluster,
+/// pub/sub, errors) are resolved immediately and returned as `Immediate`.
+#[allow(clippy::too_many_arguments)]
+async fn prepare_command(
     frame: Frame,
     engine: &Engine,
     ctx: &Arc<ServerContext>,
@@ -1205,7 +1301,7 @@ async fn dispatch_command(
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
     peer_addr: &str,
-) -> PendingResponse {
+) -> PreparedDispatch {
     // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
     if ctx.monitor_tx.receiver_count() > 0 {
         let args = frame_to_monitor_args(&frame);
@@ -1224,20 +1320,24 @@ async fn dispatch_command(
 
     let cmd = match Command::from_frame(frame) {
         Ok(cmd) => cmd,
-        Err(e) => return PendingResponse::Immediate(Frame::Error(format!("ERR {e}"))),
+        Err(e) => {
+            return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(format!(
+                "ERR {e}"
+            ))))
+        }
     };
 
     // reject oversized keys/values before any further processing
     if let Some(err) =
         validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
     {
-        return PendingResponse::Immediate(err);
+        return PreparedDispatch::Immediate(PendingResponse::Immediate(err));
     }
 
     // handle ASKING: set the flag and return OK immediately
     if matches!(cmd, Command::Asking) {
         *asking = true;
-        return PendingResponse::Immediate(Frame::Simple("OK".into()));
+        return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Simple("OK".into())));
     }
 
     // consume the asking flag for this command
@@ -1253,34 +1353,38 @@ async fn dispatch_command(
 
     // cluster slot validation (migration-aware when cluster is enabled)
     if let Some(redirect) = cluster_slot_check(ctx, &cmd, was_asking).await {
-        return PendingResponse::Immediate(redirect);
+        return PreparedDispatch::Immediate(PendingResponse::Immediate(redirect));
     }
 
-    // macro to reduce boilerplate for single-key dispatch
-    macro_rules! dispatch {
+    // macro that returns Routed instead of sending to the channel
+    macro_rules! route {
         ($key:expr, $req:expr, $tag:expr) => {{
             let idx = engine.shard_for_key(&$key);
-            match engine.dispatch_to_shard(idx, $req).await {
-                Ok(rx) => PendingResponse::Pending {
-                    rx,
-                    tag: $tag,
-                    start,
-                    cmd_name,
-                },
-                Err(e) => PendingResponse::Immediate(Frame::Error(format!("ERR {e}"))),
+            PreparedDispatch::Routed {
+                shard_idx: idx,
+                request: $req,
+                tag: $tag,
+                start,
+                cmd_name,
             }
         }};
     }
 
     match cmd {
         // -- no shard needed --
-        Command::Ping(None) => PendingResponse::Immediate(Frame::Simple("PONG".into())),
-        Command::Ping(Some(msg)) => PendingResponse::Immediate(Frame::Bulk(msg)),
-        Command::Echo(msg) => PendingResponse::Immediate(Frame::Bulk(msg)),
+        Command::Ping(None) => {
+            PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Simple("PONG".into())))
+        }
+        Command::Ping(Some(msg)) => {
+            PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Bulk(msg)))
+        }
+        Command::Echo(msg) => {
+            PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Bulk(msg)))
+        }
 
         // -- single-key string commands --
         Command::Get { key } => {
-            dispatch!(key, ShardRequest::Get { key }, ResponseTag::Get)
+            route!(key, ShardRequest::Get { key }, ResponseTag::Get)
         }
         Command::Set {
             key,
@@ -1293,7 +1397,7 @@ async fn dispatch_command(
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::Set {
                     key,
@@ -1306,106 +1410,108 @@ async fn dispatch_command(
             )
         }
         Command::Incr { key } => {
-            dispatch!(key, ShardRequest::Incr { key }, ResponseTag::IntResult)
+            route!(key, ShardRequest::Incr { key }, ResponseTag::IntResult)
         }
         Command::Decr { key } => {
-            dispatch!(key, ShardRequest::Decr { key }, ResponseTag::IntResult)
+            route!(key, ShardRequest::Decr { key }, ResponseTag::IntResult)
         }
         Command::IncrBy { key, delta } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::IncrBy { key, delta },
                 ResponseTag::IntResult
             )
         }
         Command::DecrBy { key, delta } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::DecrBy { key, delta },
                 ResponseTag::IntResult
             )
         }
         Command::IncrByFloat { key, delta } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::IncrByFloat { key, delta },
                 ResponseTag::FloatResult
             )
         }
         Command::Append { key, value } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::Append { key, value },
                 ResponseTag::LenResultOom
             )
         }
         Command::Strlen { key } => {
-            dispatch!(key, ShardRequest::Strlen { key }, ResponseTag::LenResult)
+            route!(key, ShardRequest::Strlen { key }, ResponseTag::LenResult)
         }
         Command::Expire { key, seconds } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::Expire { key, seconds },
                 ResponseTag::BoolToInt
             )
         }
         Command::Ttl { key } => {
-            dispatch!(key, ShardRequest::Ttl { key }, ResponseTag::Ttl)
+            route!(key, ShardRequest::Ttl { key }, ResponseTag::Ttl)
         }
         Command::Persist { key } => {
-            dispatch!(key, ShardRequest::Persist { key }, ResponseTag::BoolToInt)
+            route!(key, ShardRequest::Persist { key }, ResponseTag::BoolToInt)
         }
         Command::Pttl { key } => {
-            dispatch!(key, ShardRequest::Pttl { key }, ResponseTag::Pttl)
+            route!(key, ShardRequest::Pttl { key }, ResponseTag::Pttl)
         }
         Command::Pexpire { key, milliseconds } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::Pexpire { key, milliseconds },
                 ResponseTag::BoolToInt
             )
         }
         Command::Type { key } => {
-            dispatch!(key, ShardRequest::Type { key }, ResponseTag::TypeResult)
+            route!(key, ShardRequest::Type { key }, ResponseTag::TypeResult)
         }
 
         // -- list commands --
         Command::LPush { key, values } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::LPush { key, values },
                 ResponseTag::LenResultOom
             )
         }
         Command::RPush { key, values } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::RPush { key, values },
                 ResponseTag::LenResultOom
             )
         }
         Command::LPop { key } => {
-            dispatch!(key, ShardRequest::LPop { key }, ResponseTag::PopResult)
+            route!(key, ShardRequest::LPop { key }, ResponseTag::PopResult)
         }
         Command::RPop { key } => {
-            dispatch!(key, ShardRequest::RPop { key }, ResponseTag::PopResult)
+            route!(key, ShardRequest::RPop { key }, ResponseTag::PopResult)
         }
         Command::LRange { key, start, stop } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::LRange { key, start, stop },
                 ResponseTag::ArrayResult
             )
         }
         Command::LLen { key } => {
-            dispatch!(key, ShardRequest::LLen { key }, ResponseTag::LenResult)
+            route!(key, ShardRequest::LLen { key }, ResponseTag::LenResult)
         }
 
         // blocking list ops are handled in the main loop before dispatch;
         // if they reach here (e.g. inside MULTI), return an error.
-        Command::BLPop { .. } | Command::BRPop { .. } => PendingResponse::Immediate(Frame::Error(
-            "ERR blocking commands are not allowed inside transactions".into(),
-        )),
+        Command::BLPop { .. } | Command::BRPop { .. } => {
+            PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
+                "ERR blocking commands are not allowed inside transactions".into(),
+            )))
+        }
 
         // -- sorted set commands --
         Command::ZAdd {
@@ -1413,7 +1519,7 @@ async fn dispatch_command(
             flags,
             members,
         } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ZAdd {
                     key,
@@ -1428,21 +1534,21 @@ async fn dispatch_command(
             )
         }
         Command::ZRem { key, members } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ZRem { key, members },
                 ResponseTag::ZRemResult
             )
         }
         Command::ZScore { key, member } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ZScore { key, member },
                 ResponseTag::ZScoreResult
             )
         }
         Command::ZRank { key, member } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ZRank { key, member },
                 ResponseTag::ZRankResult
@@ -1454,7 +1560,7 @@ async fn dispatch_command(
             stop,
             with_scores,
         } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ZRange {
                     key,
@@ -1466,67 +1572,67 @@ async fn dispatch_command(
             )
         }
         Command::ZCard { key } => {
-            dispatch!(key, ShardRequest::ZCard { key }, ResponseTag::LenResult)
+            route!(key, ShardRequest::ZCard { key }, ResponseTag::LenResult)
         }
 
         // -- hash commands --
         Command::HSet { key, fields } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HSet { key, fields },
                 ResponseTag::HSetResult
             )
         }
         Command::HGet { key, field } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HGet { key, field },
                 ResponseTag::HGetResult
             )
         }
         Command::HGetAll { key } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HGetAll { key },
                 ResponseTag::HGetAllResult
             )
         }
         Command::HDel { key, fields } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HDel { key, fields },
                 ResponseTag::HDelResult
             )
         }
         Command::HExists { key, field } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HExists { key, field },
                 ResponseTag::HExistsResult
             )
         }
         Command::HLen { key } => {
-            dispatch!(key, ShardRequest::HLen { key }, ResponseTag::LenResult)
+            route!(key, ShardRequest::HLen { key }, ResponseTag::LenResult)
         }
         Command::HIncrBy { key, field, delta } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HIncrBy { key, field, delta },
                 ResponseTag::HIncrByResult
             )
         }
         Command::HKeys { key } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HKeys { key },
                 ResponseTag::StringArrayResult
             )
         }
         Command::HVals { key } => {
-            dispatch!(key, ShardRequest::HVals { key }, ResponseTag::HValsResult)
+            route!(key, ShardRequest::HVals { key }, ResponseTag::HValsResult)
         }
         Command::HMGet { key, fields } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::HMGet { key, fields },
                 ResponseTag::HMGetResult
@@ -1535,35 +1641,35 @@ async fn dispatch_command(
 
         // -- set commands --
         Command::SAdd { key, members } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::SAdd { key, members },
                 ResponseTag::LenResultOom
             )
         }
         Command::SRem { key, members } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::SRem { key, members },
                 ResponseTag::LenResult
             )
         }
         Command::SMembers { key } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::SMembers { key },
                 ResponseTag::StringArrayResult
             )
         }
         Command::SIsMember { key, member } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::SIsMember { key, member },
                 ResponseTag::SIsMemberResult
             )
         }
         Command::SCard { key } => {
-            dispatch!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
+            route!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
         }
 
         // -- vector commands --
@@ -1577,7 +1683,7 @@ async fn dispatch_command(
             connectivity,
             expansion_add,
         } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::VAdd {
                     key,
@@ -1601,7 +1707,7 @@ async fn dispatch_command(
             connectivity,
             expansion_add,
         } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::VAddBatch {
                     key,
@@ -1623,7 +1729,7 @@ async fn dispatch_command(
             ef_search,
             with_scores,
         } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::VSim {
                     key,
@@ -1636,7 +1742,7 @@ async fn dispatch_command(
         }
         #[cfg(feature = "vector")]
         Command::VRem { key, element } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::VRem { key, element },
                 ResponseTag::VRemResult
@@ -1644,7 +1750,7 @@ async fn dispatch_command(
         }
         #[cfg(feature = "vector")]
         Command::VGet { key, element } => {
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::VGet { key, element },
                 ResponseTag::VGetResult
@@ -1652,25 +1758,25 @@ async fn dispatch_command(
         }
         #[cfg(feature = "vector")]
         Command::VCard { key } => {
-            dispatch!(key, ShardRequest::VCard { key }, ResponseTag::VIntResult)
+            route!(key, ShardRequest::VCard { key }, ResponseTag::VIntResult)
         }
         #[cfg(feature = "vector")]
         Command::VDim { key } => {
-            dispatch!(key, ShardRequest::VDim { key }, ResponseTag::VIntResult)
+            route!(key, ShardRequest::VDim { key }, ResponseTag::VIntResult)
         }
         #[cfg(feature = "vector")]
         Command::VInfo { key } => {
-            dispatch!(key, ShardRequest::VInfo { key }, ResponseTag::VInfoResult)
+            route!(key, ShardRequest::VInfo { key }, ResponseTag::VInfoResult)
         }
 
         // -- rename (needs same-shard validation) --
         Command::Rename { key, newkey } => {
             if !engine.same_shard(&key, &newkey) {
-                PendingResponse::Immediate(Frame::Error(
+                PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
                     "ERR source and destination keys must hash to the same shard".into(),
-                ))
+                )))
             } else {
-                dispatch!(
+                route!(
                     key,
                     ShardRequest::Rename { key, newkey },
                     ResponseTag::RenameResult
@@ -1689,28 +1795,30 @@ async fn dispatch_command(
             xx,
         } => {
             let Some(registry) = engine.schema_registry() else {
-                return PendingResponse::Immediate(Frame::Error(
+                return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
                     "ERR protobuf support is not enabled".into(),
-                ));
+                )));
             };
             {
                 let reg = match registry.read() {
                     Ok(r) => r,
                     Err(_) => {
-                        return PendingResponse::Immediate(Frame::Error(
-                            "ERR schema registry lock poisoned".into(),
+                        return PreparedDispatch::Immediate(PendingResponse::Immediate(
+                            Frame::Error("ERR schema registry lock poisoned".into()),
                         ))
                     }
                 };
                 if let Err(e) = reg.validate(&type_name, &data) {
-                    return PendingResponse::Immediate(Frame::Error(format!("ERR {e}")));
+                    return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
+                        format!("ERR {e}"),
+                    )));
                 }
             }
             let duration = expire.map(|e| match e {
                 SetExpire::Ex(secs) => Duration::from_secs(secs),
                 SetExpire::Px(millis) => Duration::from_millis(millis),
             });
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ProtoSet {
                     key,
@@ -1726,11 +1834,11 @@ async fn dispatch_command(
         #[cfg(feature = "protobuf")]
         Command::ProtoGet { key } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(Frame::Error(
+                return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
                     "ERR protobuf support is not enabled".into(),
-                ));
+                )));
             }
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ProtoGet { key },
                 ResponseTag::ProtoGetResult
@@ -1739,11 +1847,11 @@ async fn dispatch_command(
         #[cfg(feature = "protobuf")]
         Command::ProtoType { key } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(Frame::Error(
+                return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
                     "ERR protobuf support is not enabled".into(),
-                ));
+                )));
             }
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ProtoType { key },
                 ResponseTag::ProtoTypeResult
@@ -1756,11 +1864,11 @@ async fn dispatch_command(
             value,
         } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(Frame::Error(
+                return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
                     "ERR protobuf support is not enabled".into(),
-                ));
+                )));
             }
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ProtoSetField {
                     key,
@@ -1773,11 +1881,11 @@ async fn dispatch_command(
         #[cfg(feature = "protobuf")]
         Command::ProtoDelField { key, field_path } => {
             if engine.schema_registry().is_none() {
-                return PendingResponse::Immediate(Frame::Error(
+                return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
                     "ERR protobuf support is not enabled".into(),
-                ));
+                )));
             }
-            dispatch!(
+            route!(
                 key,
                 ShardRequest::ProtoDelField { key, field_path },
                 ResponseTag::ProtoDelFieldResult
@@ -1787,7 +1895,7 @@ async fn dispatch_command(
         // -- everything else falls back to the full execute() path --
         cmd => {
             let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking).await;
-            PendingResponse::Immediate(response)
+            PreparedDispatch::Immediate(PendingResponse::Immediate(response))
         }
     }
 }
@@ -3902,7 +4010,7 @@ async fn execute(
 
         Command::Quit => Frame::Simple("OK".into()),
 
-        // ASKING is intercepted by process() and dispatch_command() before
+        // ASKING is intercepted by process() and prepare_command() before
         // reaching here, but the match must be exhaustive.
         Command::Asking => Frame::Simple("OK".into()),
 

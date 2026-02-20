@@ -10,7 +10,7 @@
 //!
 //! ## backpressure via bounded channel
 //!
-//! The mpsc buffer (1,024 items) is the system's flow-control valve. When a shard
+//! The mpsc buffer (4,096 items) is the system's flow-control valve. When a shard
 //! is fully loaded, `try_send` returns `Err(Full)` immediately, giving the caller a
 //! clear signal to shed load or return an error to the client rather than quietly
 //! growing an unbounded queue. This prevents memory blow-up under sustained overload.
@@ -546,11 +546,21 @@ pub enum ShardResponse {
     },
 }
 
-/// A request bundled with its reply channel.
+/// A request (or batch of requests) bundled with reply channels.
+///
+/// The `Batch` variant reduces channel traffic during pipelining: instead
+/// of N individual sends (one per pipelined command), the connection handler
+/// groups commands by target shard and sends one `Batch` message per shard.
+/// This cuts channel contention from O(pipeline_depth) to O(shard_count).
 #[derive(Debug)]
-pub struct ShardMessage {
-    pub request: ShardRequest,
-    pub reply: oneshot::Sender<ShardResponse>,
+pub enum ShardMessage {
+    /// A single request with its reply channel.
+    Single {
+        request: ShardRequest,
+        reply: oneshot::Sender<ShardResponse>,
+    },
+    /// Multiple requests batched for a single channel send.
+    Batch(Vec<(ShardRequest, oneshot::Sender<ShardResponse>)>),
 }
 
 /// A cloneable handle for sending commands to a shard task.
@@ -580,7 +590,7 @@ impl ShardHandle {
         request: ShardRequest,
     ) -> Result<oneshot::Receiver<ShardResponse>, ShardError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let msg = ShardMessage {
+        let msg = ShardMessage::Single {
             request,
             reply: reply_tx,
         };
@@ -589,6 +599,37 @@ impl ShardHandle {
             .await
             .map_err(|_| ShardError::Unavailable)?;
         Ok(reply_rx)
+    }
+
+    /// Sends a batch of requests as a single channel message.
+    ///
+    /// Returns one receiver per request, in the same order. For a single
+    /// request, falls through to `dispatch()` to avoid the batch overhead.
+    ///
+    /// This is the key optimization for pipelining: N commands targeting
+    /// the same shard consume 1 channel slot instead of N.
+    pub async fn dispatch_batch(
+        &self,
+        requests: Vec<ShardRequest>,
+    ) -> Result<Vec<oneshot::Receiver<ShardResponse>>, ShardError> {
+        if requests.len() == 1 {
+            let rx = self
+                .dispatch(requests.into_iter().next().expect("len == 1"))
+                .await?;
+            return Ok(vec![rx]);
+        }
+        let mut receivers = Vec::with_capacity(requests.len());
+        let mut entries = Vec::with_capacity(requests.len());
+        for request in requests {
+            let (tx, rx) = oneshot::channel();
+            entries.push((request, tx));
+            receivers.push(rx);
+        }
+        self.tx
+            .send(ShardMessage::Batch(entries))
+            .await
+            .map_err(|_| ShardError::Unavailable)?;
+        Ok(receivers)
     }
 }
 
@@ -899,12 +940,30 @@ struct ProcessCtx<'a> {
     schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
 }
 
-/// Dispatches a single queued message, writes AOF records, and broadcasts
-/// replication events.
+/// Dispatches a single or batched message to the shard's keyspace.
 ///
 /// Called both in the main `recv()` path and in the `try_recv()` drain loop
 /// to amortize tokio select overhead across pipelined commands.
 fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
+    match msg {
+        ShardMessage::Single { request, reply } => {
+            process_single(request, reply, ctx);
+        }
+        ShardMessage::Batch(entries) => {
+            for (request, reply) in entries {
+                process_single(request, reply, ctx);
+            }
+        }
+    }
+}
+
+/// Processes a single request: dispatch, write AOF, broadcast replication,
+/// and send the response on the oneshot channel.
+fn process_single(
+    request: ShardRequest,
+    reply: oneshot::Sender<ShardResponse>,
+    ctx: &mut ProcessCtx<'_>,
+) {
     // copy cheap fields upfront to avoid field-borrow conflicts below
     let fsync_policy = ctx.fsync_policy;
     let shard_id = ctx.shard_id;
@@ -912,36 +971,36 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     // handle blocking pop requests before dispatch — they carry a waiter
     // oneshot that must be consumed here rather than going through the
     // normal dispatch → response path.
-    match msg.request {
+    match request {
         ShardRequest::BLPop { key, waiter } => {
-            blocking::handle_blocking_pop(&key, waiter, true, msg.reply, ctx);
+            blocking::handle_blocking_pop(&key, waiter, true, reply, ctx);
             return;
         }
         ShardRequest::BRPop { key, waiter } => {
-            blocking::handle_blocking_pop(&key, waiter, false, msg.reply, ctx);
+            blocking::handle_blocking_pop(&key, waiter, false, reply, ctx);
             return;
         }
         _ => {}
     }
 
-    let request_kind = describe_request(&msg.request);
+    let request_kind = describe_request(&request);
     let response = dispatch(
         ctx.keyspace,
-        &msg.request,
+        &request,
         #[cfg(feature = "protobuf")]
         ctx.schema_registry,
     );
 
     // after LPush/RPush, check if any blocked clients are waiting.
     // done before consuming the request so we can borrow the key.
-    if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } = msg.request {
+    if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } = request {
         if matches!(response, ShardResponse::Len(_)) {
             blocking::wake_blocked_waiters(key, ctx);
         }
     }
 
     // consume the request to move owned data into AOF records (avoids cloning)
-    let records = aof::to_aof_records(msg.request, &response);
+    let records = aof::to_aof_records(request, &response);
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
@@ -974,12 +1033,12 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     match request_kind {
         RequestKind::Snapshot => {
             let resp = persistence::handle_snapshot(ctx.keyspace, ctx.persistence, shard_id);
-            let _ = msg.reply.send(resp);
+            let _ = reply.send(resp);
             return;
         }
         RequestKind::SerializeSnapshot => {
             let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id);
-            let _ = msg.reply.send(resp);
+            let _ = reply.send(resp);
             return;
         }
         RequestKind::RewriteAof => {
@@ -991,7 +1050,7 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
                 #[cfg(feature = "protobuf")]
                 ctx.schema_registry,
             );
-            let _ = msg.reply.send(resp);
+            let _ = reply.send(resp);
             return;
         }
         RequestKind::FlushDbAsync => {
@@ -999,13 +1058,13 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
             if let Some(ref handle) = *ctx.drop_handle {
                 handle.defer_entries(old_entries);
             }
-            let _ = msg.reply.send(ShardResponse::Ok);
+            let _ = reply.send(ShardResponse::Ok);
             return;
         }
         RequestKind::Other => {}
     }
 
-    let _ = msg.reply.send(response);
+    let _ = reply.send(response);
 }
 
 /// Lightweight tag so we can identify requests that need special
