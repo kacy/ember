@@ -119,6 +119,34 @@ impl BenchConnection {
         Ok(start.elapsed())
     }
 
+    /// Sends a batch of transactions, each wrapping a single command in
+    /// MULTI/EXEC. For each transaction: writes MULTI + cmd + EXEC, then
+    /// reads three responses (OK, QUEUED, [result]).
+    ///
+    /// Returns the wall-clock time for the entire batch.
+    pub async fn send_transactions(
+        &mut self,
+        cmds: &[Bytes],
+        multi_frame: &[u8],
+        exec_frame: &[u8],
+    ) -> Result<Duration, std::io::Error> {
+        let start = Instant::now();
+
+        for cmd in cmds {
+            self.stream.write_all(multi_frame).await?;
+            self.stream.write_all(cmd).await?;
+            self.stream.write_all(exec_frame).await?;
+        }
+        self.stream.flush().await?;
+
+        // each transaction produces 3 responses: MULTI→OK, SET→QUEUED, EXEC→[result]
+        for _ in 0..cmds.len() * 3 {
+            self.read_one_response().await?;
+        }
+
+        Ok(start.elapsed())
+    }
+
     /// Reads and discards a single RESP3 response.
     async fn read_one_response(&mut self) -> Result<(), std::io::Error> {
         loop {
