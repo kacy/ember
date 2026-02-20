@@ -592,11 +592,72 @@ impl ShardHandle {
     }
 }
 
+/// Everything needed to run a shard on a specific runtime.
+///
+/// Created by [`prepare_shard`] without spawning any tasks. The caller
+/// is responsible for passing this to [`run_prepared`] on the desired
+/// tokio runtime — this is the hook that enables thread-per-core
+/// deployment where each worker thread runs its own shard.
+pub struct PreparedShard {
+    rx: mpsc::Receiver<ShardMessage>,
+    config: ShardConfig,
+    persistence: Option<ShardPersistenceConfig>,
+    drop_handle: Option<DropHandle>,
+    replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    #[cfg(feature = "protobuf")]
+    schema_registry: Option<crate::schema::SharedSchemaRegistry>,
+}
+
+/// Creates the channel and prepared shard without spawning any tasks.
+///
+/// Returns the `ShardHandle` for sending commands and the `PreparedShard`
+/// that must be driven on the target runtime via [`run_prepared`].
+pub fn prepare_shard(
+    buffer: usize,
+    config: ShardConfig,
+    persistence: Option<ShardPersistenceConfig>,
+    drop_handle: Option<DropHandle>,
+    replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
+) -> (ShardHandle, PreparedShard) {
+    let (tx, rx) = mpsc::channel(buffer);
+    let prepared = PreparedShard {
+        rx,
+        config,
+        persistence,
+        drop_handle,
+        replication_tx,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    };
+    (ShardHandle { tx }, prepared)
+}
+
+/// Runs the shard's main loop. Call this on the target runtime.
+///
+/// Consumes the `PreparedShard` and enters the infinite recv/expiry/fsync
+/// select loop. Returns when the channel is closed (all senders dropped).
+pub async fn run_prepared(prepared: PreparedShard) {
+    run_shard(
+        prepared.rx,
+        prepared.config,
+        prepared.persistence,
+        prepared.drop_handle,
+        prepared.replication_tx,
+        #[cfg(feature = "protobuf")]
+        prepared.schema_registry,
+    )
+    .await
+}
+
 /// Spawns a shard task and returns the handle for communicating with it.
 ///
 /// `buffer` controls the mpsc channel capacity — higher values absorb
 /// burst traffic at the cost of memory. When `drop_handle` is provided,
 /// large value deallocations are deferred to the background drop thread.
+///
+/// This is a convenience wrapper around [`prepare_shard`] + [`run_prepared`]
+/// for the common case where you want to spawn on the current runtime.
 pub fn spawn_shard(
     buffer: usize,
     config: ShardConfig,
@@ -605,17 +666,17 @@ pub fn spawn_shard(
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardHandle {
-    let (tx, rx) = mpsc::channel(buffer);
-    tokio::spawn(run_shard(
-        rx,
+    let (handle, prepared) = prepare_shard(
+        buffer,
         config,
         persistence,
         drop_handle,
         replication_tx,
         #[cfg(feature = "protobuf")]
         schema_registry,
-    ));
-    ShardHandle { tx }
+    );
+    tokio::spawn(run_prepared(prepared));
+    handle
 }
 
 /// The shard's main loop. Processes messages and runs periodic
