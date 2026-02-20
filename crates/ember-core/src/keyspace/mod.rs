@@ -1,6 +1,6 @@
 //! The keyspace: Ember's core key-value store.
 //!
-//! A `Keyspace` owns a flat `AHashMap<Box<str>, Entry>` and handles
+//! A `Keyspace` owns a flat `AHashMap<CompactString, Entry>` and handles
 //! get, set, delete, existence checks, and TTL management. Expired
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use ahash::AHashMap;
 use bytes::Bytes;
+use compact_str::CompactString;
 use rand::seq::IteratorRandom;
 
 use tracing::warn;
@@ -321,7 +322,7 @@ const EVICTION_SAMPLE_SIZE: usize = 16;
 /// All operations are single-threaded per shard — no internal locking.
 /// Memory usage is tracked incrementally on every mutation.
 pub struct Keyspace {
-    entries: AHashMap<Box<str>, Entry>,
+    entries: AHashMap<CompactString, Entry>,
     memory: MemoryTracker,
     config: ShardConfig,
     /// Number of entries that currently have an expiration set.
@@ -436,7 +437,8 @@ impl Keyspace {
     /// collection-write methods after type-checking and memory reservation.
     fn insert_empty(&mut self, key: &str, value: Value) {
         self.memory.add(key, &value);
-        self.entries.insert(Box::from(key), Entry::new(value, None));
+        self.entries
+            .insert(CompactString::from(key), Entry::new(value, None));
     }
 
     /// Measures entry size before and after a mutation, adjusting the
@@ -593,7 +595,7 @@ impl Keyspace {
     /// Replaces the entries map with an empty one and resets memory
     /// tracking. Returns the old entries so the caller can send them
     /// to the background drop thread.
-    pub(crate) fn flush_async(&mut self) -> AHashMap<Box<str>, Entry> {
+    pub(crate) fn flush_async(&mut self) -> AHashMap<CompactString, Entry> {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
         self.expiry_count = 0;
@@ -773,7 +775,7 @@ impl Keyspace {
         if entry.expires_at_ms != 0 {
             self.expiry_count += 1;
         }
-        self.entries.insert(Box::from(newkey), entry);
+        self.entries.insert(CompactString::from(newkey), entry);
         Ok(())
     }
 
@@ -909,7 +911,7 @@ impl Keyspace {
         }
 
         self.entries
-            .insert(key.into_boxed_str(), Entry::new(value, ttl));
+            .insert(CompactString::from(key), Entry::new(value, ttl));
     }
 
     /// Randomly samples up to `count` keys and removes any that have expired.

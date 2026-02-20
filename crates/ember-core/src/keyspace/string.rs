@@ -129,7 +129,7 @@ impl Keyspace {
         }
 
         self.entries
-            .insert(key.into_boxed_str(), Entry::new(new_value, expire));
+            .insert(CompactString::from(key), Entry::new(new_value, expire));
         SetResult::Ok
     }
 

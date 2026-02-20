@@ -46,6 +46,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # cli
 clap = { version = "4", features = ["derive"] }
 
+# compact inline strings (SSO for keys ≤24 bytes)
+compact_str = "0.8"
+
 # checksums
 crc32fast = "1"
 

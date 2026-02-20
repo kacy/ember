@@ -45,7 +45,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 
 /// Estimated overhead per entry in the HashMap.
 ///
-/// Accounts for: the Box<str> key struct (16 bytes ptr+len on 64-bit),
+/// Accounts for: the CompactString key (24 bytes inline on 64-bit),
 /// Entry struct fields (Value enum tag + Bytes/collection inline storage
 /// + expires_at_ms + cached_value_size + last_access_secs), plus hashbrown per-entry bookkeeping
 /// (1 control byte + empty slot waste at ~87.5% load factor).
@@ -58,7 +58,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// The `entry_overhead_not_too_small` test validates this constant against
 /// the actual struct sizes on each platform.
-pub(crate) const ENTRY_OVERHEAD: usize = 120;
+pub(crate) const ENTRY_OVERHEAD: usize = 128;
 
 /// Tracks memory usage for a single keyspace.
 ///
@@ -334,9 +334,10 @@ mod tests {
     #[test]
     fn entry_overhead_not_too_small() {
         use crate::keyspace::Entry;
+        use compact_str::CompactString;
 
         let entry_size = std::mem::size_of::<Entry>();
-        let key_struct_size = std::mem::size_of::<Box<str>>();
+        let key_struct_size = std::mem::size_of::<CompactString>();
         // hashbrown uses 1 control byte per slot + ~14% empty slot waste.
         // 8 bytes is a conservative lower bound for per-entry hash overhead.
         let hashmap_per_entry = 8;
@@ -345,7 +346,7 @@ mod tests {
         assert!(
             ENTRY_OVERHEAD >= minimum,
             "ENTRY_OVERHEAD ({ENTRY_OVERHEAD}) is less than measured minimum \
-             ({minimum} = Entry({entry_size}) + Box<str>({key_struct_size}) + \
+             ({minimum} = Entry({entry_size}) + CompactString({key_struct_size}) + \
              hashmap({hashmap_per_entry}))"
         );
     }

@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
+use compact_str::CompactString;
 use dashmap::DashMap;
 
 use crate::keyspace::{format_float, EvictionPolicy, TtlResult};
@@ -82,8 +83,8 @@ impl Entry {
 /// All operations are lock-free for non-conflicting keys.
 #[derive(Debug)]
 pub struct ConcurrentKeyspace {
-    /// Using Box<str> instead of String saves 8 bytes per key (no capacity field).
-    data: DashMap<Box<str>, Entry>,
+    /// CompactString inlines keys ≤24 bytes, avoiding heap allocation for short keys.
+    data: DashMap<CompactString, Entry>,
     memory_used: AtomicUsize,
     max_memory: Option<usize>,
     eviction_policy: EvictionPolicy,
@@ -126,7 +127,7 @@ impl ConcurrentKeyspace {
     pub fn set(&self, key: String, value: Bytes, ttl: Option<Duration>) -> bool {
         self.ops_count.fetch_add(1, Ordering::Relaxed);
 
-        let key: Box<str> = key.into_boxed_str();
+        let key = CompactString::from(key);
         let entry_size = key.len() + value.len() + 48;
         let expires_at_ms = time::expiry_from_duration(ttl);
 
