@@ -182,7 +182,7 @@ impl Keyspace {
         if is_new {
             let value = Value::Hash(Box::new(HashMap::new()));
             self.memory.add(key, &value);
-            self.entries.insert(Box::from(key), Entry::new(value, None));
+            self.entries.insert(CompactString::from(key), Entry::new(value, None));
         }
 
         // safe: key was either just inserted above or verified to exist
