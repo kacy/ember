@@ -761,8 +761,8 @@ async fn main() {
 
     let config_path = args.config.clone();
 
-    let result = if cfg.concurrent {
-        server::run_concurrent(
+    if cfg.concurrent {
+        let result = server::run_concurrent(
             addr,
             shard_count,
             engine_config,
@@ -779,9 +779,14 @@ async fn main() {
             #[cfg(feature = "grpc")]
             grpc_addr,
         )
-        .await
+        .await;
+
+        if let Err(e) = result {
+            eprintln!("server error: {e}");
+            std::process::exit(1);
+        }
     } else {
-        server::run(
+        let result = server::run_threaded(
             addr,
             shard_count,
             engine_config,
@@ -797,11 +802,11 @@ async fn main() {
             #[cfg(feature = "grpc")]
             grpc_addr,
         )
-        .await
-    };
+        .await;
 
-    if let Err(e) = result {
-        eprintln!("server error: {e}");
-        std::process::exit(1);
+        if let Err(e) = result {
+            eprintln!("server error: {e}");
+            std::process::exit(1);
+        }
     }
 }
