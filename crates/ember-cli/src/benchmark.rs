@@ -268,7 +268,8 @@ async fn run_workload(
                 }
 
                 let result = if matches!(kind, WorkloadKind::Multi) {
-                    conn.send_transactions(&cmds, &multi_bytes, &exec_bytes).await
+                    conn.send_transactions(&cmds, &multi_bytes, &exec_bytes)
+                        .await
                 } else {
                     conn.send_many(&cmds).await
                 };
