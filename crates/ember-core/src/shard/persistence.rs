@@ -130,7 +130,7 @@ pub(super) fn value_to_snap(value: &Value) -> SnapValue {
                 .collect();
             SnapValue::SortedSet(members)
         }
-        Value::Hash(map) => SnapValue::Hash((**map).clone()),
+        Value::Hash(hash) => SnapValue::Hash(hash.to_hash_map()),
         Value::Set(set) => SnapValue::Set((**set).clone()),
         #[cfg(feature = "vector")]
         Value::Vector(ref vs) => {
@@ -169,7 +169,7 @@ pub(super) fn snap_to_value(snap: SnapValue) -> Value {
             }
             Value::SortedSet(Box::new(ss))
         }
-        SnapValue::Hash(map) => Value::Hash(Box::new(map)),
+        SnapValue::Hash(map) => Value::Hash(Box::new(crate::types::hash::HashValue::from(map))),
         SnapValue::Set(set) => Value::Set(Box::new(set)),
         #[cfg(feature = "vector")]
         SnapValue::Vector {

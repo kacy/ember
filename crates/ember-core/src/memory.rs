@@ -211,9 +211,18 @@ pub(crate) const VECDEQUE_ELEMENT_OVERHEAD: usize = 32;
 /// Base overhead for an empty VecDeque (internal buffer pointer + head/len).
 pub(crate) const VECDEQUE_BASE_OVERHEAD: usize = 24;
 
-/// Estimated overhead per entry in a HashMap (for hash type).
+/// Estimated overhead per entry in the compact hash Vec.
 ///
-/// Each entry has: key String (24 bytes ptr+len+cap), value Bytes (24 bytes),
+/// Each entry is a tuple of CompactString (24 bytes, SSO-inlined ≤24 chars)
+/// and Bytes (24 bytes). No hash bucket overhead.
+pub(crate) const COMPACT_HASH_ENTRY_OVERHEAD: usize = 48;
+
+/// Base overhead for the compact hash Vec (pointer + len + capacity).
+pub(crate) const COMPACT_VEC_BASE_OVERHEAD: usize = 24;
+
+/// Estimated overhead per entry in a HashMap (for large hashes).
+///
+/// Each entry has: key CompactString (24 bytes), value Bytes (24 bytes),
 /// plus HashMap bucket overhead (~16 bytes for hash + next pointer).
 pub(crate) const HASHMAP_ENTRY_OVERHEAD: usize = 64;
 
@@ -240,12 +249,24 @@ pub fn value_size(value: &Value) -> usize {
             VECDEQUE_BASE_OVERHEAD + element_bytes
         }
         Value::SortedSet(ss) => ss.memory_usage(),
-        Value::Hash(map) => {
-            let entry_bytes: usize = map
-                .iter()
-                .map(|(k, v)| k.len() + v.len() + HASHMAP_ENTRY_OVERHEAD)
-                .sum();
-            HASHMAP_BASE_OVERHEAD + entry_bytes
+        Value::Hash(hash) => {
+            use crate::types::hash::HashValue;
+            match hash.as_ref() {
+                HashValue::Compact(vec) => {
+                    let entry_bytes: usize = vec
+                        .iter()
+                        .map(|(k, v)| k.len() + v.len() + COMPACT_HASH_ENTRY_OVERHEAD)
+                        .sum();
+                    COMPACT_VEC_BASE_OVERHEAD + entry_bytes
+                }
+                HashValue::Full(map) => {
+                    let entry_bytes: usize = map
+                        .iter()
+                        .map(|(k, v)| k.len() + v.len() + HASHMAP_ENTRY_OVERHEAD)
+                        .sum();
+                    HASHMAP_BASE_OVERHEAD + entry_bytes
+                }
+            }
         }
         Value::Set(set) => {
             let member_bytes: usize = set.iter().map(|m| m.len() + HASHSET_MEMBER_OVERHEAD).sum();
@@ -434,11 +455,12 @@ mod tests {
 
     #[test]
     fn big_hash_is_large() {
-        let mut m = std::collections::HashMap::new();
+        use crate::types::hash::HashValue;
+        let mut h = HashValue::default();
         for i in 0..=LAZY_FREE_THRESHOLD {
-            m.insert(format!("f{i}"), Bytes::from("v"));
+            h.insert(format!("f{i}").into(), Bytes::from("v"));
         }
-        assert!(is_large_value(&Value::Hash(Box::new(m))));
+        assert!(is_large_value(&Value::Hash(Box::new(h))));
     }
 
     #[test]

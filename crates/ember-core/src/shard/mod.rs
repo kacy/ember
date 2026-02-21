@@ -788,7 +788,9 @@ async fn run_shard(
                     }
                     Value::SortedSet(Box::new(ss))
                 }
-                RecoveredValue::Hash(map) => Value::Hash(Box::new(map)),
+                RecoveredValue::Hash(map) => {
+                    Value::Hash(Box::new(crate::types::hash::HashValue::from(map)))
+                }
                 RecoveredValue::Set(set) => Value::Set(Box::new(set)),
                 #[cfg(feature = "vector")]
                 RecoveredValue::Vector {

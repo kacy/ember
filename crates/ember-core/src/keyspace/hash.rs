@@ -1,3 +1,5 @@
+use compact_str::CompactString;
+
 use super::*;
 
 impl Keyspace {
@@ -16,9 +18,14 @@ impl Keyspace {
 
         let field_increase: usize = fields
             .iter()
-            .map(|(f, v)| f.len() + v.len() + memory::HASHMAP_ENTRY_OVERHEAD)
+            .map(|(f, v)| f.len() + v.len() + memory::COMPACT_HASH_ENTRY_OVERHEAD)
             .sum();
-        self.reserve_memory(is_new, key, memory::HASHMAP_BASE_OVERHEAD, field_increase)?;
+        self.reserve_memory(
+            is_new,
+            key,
+            memory::COMPACT_VEC_BASE_OVERHEAD,
+            field_increase,
+        )?;
 
         if is_new {
             self.insert_empty(key, Value::Hash(Box::default()));
@@ -26,12 +33,15 @@ impl Keyspace {
 
         let added = self
             .track_size(key, |entry| {
-                let Value::Hash(ref mut map) = entry.value else {
+                let Value::Hash(ref mut hash) = entry.value else {
                     unreachable!("type verified by ensure_collection_type");
                 };
                 let mut added = 0;
                 for (field, value) in fields {
-                    if map.insert(field.clone(), value.clone()).is_none() {
+                    if hash
+                        .insert(CompactString::from(field.as_str()), value.clone())
+                        .is_none()
+                    {
                         added += 1;
                     }
                 }
@@ -53,8 +63,8 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             None => Ok(None),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => {
-                    let result = map.get(field).cloned();
+                Value::Hash(hash) => {
+                    let result = hash.get(field).cloned();
                     entry.touch();
                     Ok(result)
                 }
@@ -73,8 +83,11 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             None => Ok(vec![]),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => {
-                    let result: Vec<_> = map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                Value::Hash(hash) => {
+                    let result: Vec<_> = hash
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.clone()))
+                        .collect();
                     entry.touch();
                     Ok(result)
                 }
@@ -101,14 +114,14 @@ impl Keyspace {
         let old_entry_size = entry.entry_size(key);
         let mut removed = Vec::new();
         let mut removed_bytes: usize = 0;
-        let is_empty = if let Value::Hash(ref mut map) = entry.value {
+        let is_empty = if let Value::Hash(ref mut hash) = entry.value {
             for field in fields {
-                if let Some(val) = map.remove(field) {
-                    removed_bytes += field.len() + val.len() + memory::HASHMAP_ENTRY_OVERHEAD;
+                if let Some(val) = hash.remove(field) {
+                    removed_bytes += field.len() + val.len() + memory::COMPACT_HASH_ENTRY_OVERHEAD;
                     removed.push(field.clone());
                 }
             }
-            map.is_empty()
+            hash.is_empty()
         } else {
             false
         };
@@ -126,8 +139,8 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             None => Ok(false),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => {
-                    let result = map.contains_key(field);
+                Value::Hash(hash) => {
+                    let result = hash.contains_key(field);
                     entry.touch();
                     Ok(result)
                 }
@@ -144,7 +157,7 @@ impl Keyspace {
         match self.entries.get(key) {
             None => Ok(0),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => Ok(map.len()),
+                Value::Hash(hash) => Ok(hash.len()),
                 _ => Err(WrongType),
             },
         }
@@ -167,12 +180,12 @@ impl Keyspace {
         let estimated_increase = if is_new {
             memory::ENTRY_OVERHEAD
                 + key.len()
-                + memory::HASHMAP_BASE_OVERHEAD
+                + memory::COMPACT_VEC_BASE_OVERHEAD
                 + field.len()
                 + val_str_len
-                + memory::HASHMAP_ENTRY_OVERHEAD
+                + memory::COMPACT_HASH_ENTRY_OVERHEAD
         } else {
-            field.len() + val_str_len + memory::HASHMAP_ENTRY_OVERHEAD
+            field.len() + val_str_len + memory::COMPACT_HASH_ENTRY_OVERHEAD
         };
 
         if !self.enforce_memory_limit(estimated_increase) {
@@ -192,10 +205,10 @@ impl Keyspace {
         };
         let old_entry_size = entry.entry_size(key);
 
-        let Value::Hash(ref mut map) = entry.value else {
+        let Value::Hash(ref mut hash) = entry.value else {
             return Err(IncrError::WrongType);
         };
-        let current_val = match map.get(field) {
+        let current_val = match hash.get(field) {
             Some(data) => {
                 let s = std::str::from_utf8(data).map_err(|_| IncrError::NotAnInteger)?;
                 s.parse::<i64>().map_err(|_| IncrError::NotAnInteger)?
@@ -203,7 +216,7 @@ impl Keyspace {
             None => 0,
         };
         let new_val = current_val.checked_add(delta).ok_or(IncrError::Overflow)?;
-        map.insert(field.to_owned(), Bytes::from(new_val.to_string()));
+        hash.insert(field.into(), Bytes::from(new_val.to_string()));
         entry.touch();
 
         let new_value_size = memory::value_size(&entry.value);
@@ -222,8 +235,8 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             None => Ok(vec![]),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => {
-                    let result = map.keys().cloned().collect();
+                Value::Hash(hash) => {
+                    let result = hash.iter().map(|(k, _)| k.to_string()).collect();
                     entry.touch();
                     Ok(result)
                 }
@@ -240,8 +253,8 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             None => Ok(vec![]),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => {
-                    let result = map.values().cloned().collect();
+                Value::Hash(hash) => {
+                    let result = hash.iter().map(|(_, v)| v.clone()).collect();
                     entry.touch();
                     Ok(result)
                 }
@@ -260,8 +273,11 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             None => Ok(fields.iter().map(|_| None).collect()),
             Some(entry) => match &entry.value {
-                Value::Hash(map) => {
-                    let result = fields.iter().map(|f| map.get(f).cloned()).collect();
+                Value::Hash(hash) => {
+                    let result = fields
+                        .iter()
+                        .map(|f| hash.get(f.as_str()).cloned())
+                        .collect();
                     entry.touch();
                     Ok(result)
                 }

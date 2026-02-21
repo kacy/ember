@@ -213,10 +213,10 @@ pub(super) fn to_aof_records(
                 key: key.clone(),
                 element,
                 vector,
-                metric: *metric,
-                quantization: *quantization,
-                connectivity: *connectivity,
-                expansion_add: *expansion_add,
+                metric,
+                quantization,
+                connectivity,
+                expansion_add,
             })
             .collect(),
         #[cfg(feature = "vector")]
