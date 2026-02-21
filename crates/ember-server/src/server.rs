@@ -560,6 +560,39 @@ pub async fn run_concurrent(
     Ok(())
 }
 
+/// Pins the calling thread to the CPU core matching `worker_id`.
+///
+/// On Linux, uses `sched_setaffinity` to bind the thread to a single core,
+/// reducing L1/L2 cache misses from OS thread migration. On other platforms
+/// (macOS, Windows) this is a no-op — macOS doesn't support thread affinity
+/// and the performance impact is negligible on smaller core counts.
+fn pin_to_core(worker_id: usize) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: cpu_set_t is a plain C struct with no invariants beyond
+        // zeroing. CPU_SET and sched_setaffinity are standard POSIX APIs.
+        // We pass tid=0 (current thread) and a properly sized set.
+        unsafe {
+            let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
+            libc::CPU_SET(worker_id, &mut cpuset);
+            let result = libc::sched_setaffinity(0, std::mem::size_of_val(&cpuset), &cpuset);
+            if result != 0 {
+                tracing::warn!(
+                    worker_id,
+                    "failed to pin worker to core (errno: {})",
+                    *libc::__errno_location()
+                );
+            } else {
+                tracing::debug!(worker_id, "pinned to core");
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = worker_id;
+    }
+}
+
 /// Thread-per-core server: each OS thread gets its own single-threaded
 /// tokio runtime, SO_REUSEPORT listener, and runs one shard.
 ///
@@ -693,6 +726,8 @@ pub async fn run_threaded(
             std::thread::Builder::new()
                 .name(format!("ember-worker-{id}"))
                 .spawn(move || {
+                    pin_to_core(id);
+
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
