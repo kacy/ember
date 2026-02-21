@@ -398,15 +398,15 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 | mode | vs redis | vs dragonfly | best for |
 |------|----------|--------------|----------|
 | concurrent | **1.9x faster** | **2.2-2.5x faster**\* | simple GET/SET workloads |
-| sharded | **1.6x faster** | **1.9-2.1x faster**\* | all data types |
+| sharded | **1.8x faster** | **2.1-2.5x faster**\* | all data types |
 
 \*redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grain of salt — ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
 
 **highlights**:
-- sharded mode: 1.54M SET/sec, 1.79M GET/sec (redis-benchmark, P=16)
+- sharded mode: 1.76M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
 - concurrent mode: 1.79M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
-- p99 latency: 0.74ms SET, 0.66ms GET (P=1, concurrent mode)
-- vector queries: 1.4k queries/sec (gRPC), 3-5x less memory than chromadb/pgvector/qdrant
+- p99 latency: 0.74ms SET, 0.70ms GET (P=1, concurrent mode)
+- vector queries: 1.6k queries/sec (gRPC), 4-6x less memory than chromadb/pgvector/qdrant
 - memory: 128 bytes/key concurrent, 208 bytes/key sharded (redis: 173 bytes/key)
 
 ```bash
