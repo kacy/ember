@@ -3,14 +3,16 @@
 //! Each variant maps to a Redis-like data type. Strings, lists, sorted
 //! sets, hashes, and sets are supported.
 
+pub mod hash;
 pub mod sorted_set;
 #[cfg(feature = "vector")]
 pub mod vector;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use bytes::Bytes;
 
+use hash::HashValue;
 use sorted_set::SortedSet;
 
 /// A stored value in the keyspace.
@@ -33,10 +35,11 @@ pub enum Value {
     /// Value enum small — SortedSet is the largest variant by far.
     SortedSet(Box<SortedSet>),
 
-    /// Hash map of field names to values. Fields are unique strings,
-    /// values are binary-safe byte sequences. Boxed to reduce inline
-    /// Value enum size.
-    Hash(Box<HashMap<String, Bytes>>),
+    /// Hash map of field names to values. Uses a dual-representation
+    /// scheme: small hashes (≤32 fields) use a compact Vec for cache
+    /// locality, larger hashes auto-promote to HashMap. Boxed to reduce
+    /// inline Value enum size.
+    Hash(Box<HashValue>),
 
     /// Unordered set of unique string members. Boxed to reduce inline
     /// Value enum size.
