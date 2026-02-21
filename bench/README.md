@@ -12,41 +12,41 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (3B, P=16) | **1,894,037** | 1,542,261 | 1,042,833 | 910,981 |
-| GET (3B, P=16) | **2,010,920** | 1,932,423 | 1,151,264 | 1,022,204 |
-| SET (64B, P=16) | **1,794,571** | 1,541,569 | 953,447 | 811,871 |
-| GET (64B, P=16) | **2,135,829** | 1,792,803 | 1,112,355 | 849,355 |
-| SET (1KB, P=16) | **1,015,070** | 668,186 | 610,780 | 692,855 |
-| GET (1KB, P=16) | **1,761,649** | 1,670,383 | 720,661 | 329,390 |
-| SET (64B, P=1) | 132,802 | **200,000** | 99,900 | 200,000 |
-| GET (64B, P=1) | 133,333 | **199,600** | 99,900 | 200,000 |
+| SET (3B, P=16) | **1,855,703** | 1,854,518 | 1,032,577 | 866,206 |
+| GET (3B, P=16) | **2,006,720** | 1,929,846 | 1,164,465 | 1,012,202 |
+| SET (64B, P=16) | **1,790,642** | 1,759,438 | 962,769 | 828,562 |
+| GET (64B, P=16) | **2,135,489** | 2,135,489 | 1,100,131 | 860,307 |
+| SET (1KB, P=16) | 1,034,247 | **1,078,204** | 595,571 | 684,408 |
+| GET (1KB, P=16) | 1,698,644 | **1,701,915** | 695,638 | 331,877 |
+| SET (64B, P=1) | 132,978 | **199,600** | 99,900 | 200,000 |
+| GET (64B, P=1) | 133,155 | **199,203** | 99,900 | 200,000 |
 
 #### memtier_benchmark (4 threads, 12 clients/thread, 50k req/client)
 
 | test | ember concurrent | ember sharded | redis | dragonfly |
 |------|------------------|---------------|-------|-----------|
-| SET (64B, P=16) | **1,483,771** | 950,250 | 1,073,362 | 965,371 |
-| GET (64B, P=16) | **1,808,080** | 1,285,581 | 1,293,518 | 1,017,445 |
-| mixed 1:10 (64B, P=16) | **1,722,906** | 1,109,614 | 1,296,554 | 999,935 |
-| mixed 1:1 (64B, P=16) | 371,076 | — | **1,172,227** | 960,709 |
-| SET (1KB, P=16) | **906,045** | 481,431 | 605,295 | 673,908 |
-| GET (1KB, P=16) | 841,580 | 578,775 | 692,457 | **1,008,558** |
-| SET (64B, P=1) | **283,101** | 191,251 | 214,235 | 119,570 |
-| GET (64B, P=1) | 180,897 | **311,333** | 149,223 | 120,020 |
+| SET (64B, P=16) | **1,570,974** | 331,053 | 550,581 | 946,109 |
+| GET (64B, P=16) | **1,805,889** | 1,143,407 | 1,238,441 | 1,003,472 |
+| mixed 1:10 (64B, P=16) | 372,742 | 334,608 | **1,239,039** | 978,290 |
+| mixed 1:1 (64B, P=16) | **1,592,737** | 332,897 | 898,225 | 949,269 |
+| SET (1KB, P=16) | **961,538** | 624,623 | 641,713 | 641,346 |
+| GET (1KB, P=16) | **858,550** | 469,524 | 267,432 | 874,712 |
+| SET (64B, P=1) | **174,302** | 161,557 | 105,584 | 117,143 |
+| GET (64B, P=1) | **174,096** | 166,551 | 113,194 | 156,153 |
 
 ### vs redis (redis-benchmark, 64B P=16)
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
 | ember concurrent | **1.9x** | **1.9x** | best for simple GET/SET workloads |
-| ember sharded | **1.6x** | **1.6x** | supports all data types, beats redis at all test points |
+| ember sharded | **1.8x** | **1.9x** | supports all data types, beats redis at all test points |
 
 ### vs dragonfly (redis-benchmark, 64B P=16)
 
 | mode | SET | GET | notes |
 |------|-----|-----|-------|
 | ember concurrent | **2.2x** | **2.5x** | pipelined |
-| ember sharded | **1.9x** | **2.1x** | consistent wins across value sizes |
+| ember sharded | **2.1x** | **2.5x** | consistent wins across value sizes |
 
 **important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
@@ -64,19 +64,19 @@ ember's concurrent mode shows higher throughput on simple GET/SET because it's a
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember concurrent | 1.575ms | 1.423ms |
-| ember sharded | 1.871ms | 1.655ms |
-| redis | 1.215ms | 0.903ms |
-| dragonfly | 1.575ms | 1.487ms |
+| ember concurrent | 1.607ms | 1.455ms |
+| ember sharded | 1.335ms | 1.271ms |
+| redis | 1.335ms | 1.071ms |
+| dragonfly | 1.583ms | 1.487ms |
 
 ### latency (P=1, 48 clients, memtier_benchmark)
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember concurrent | 0.735ms | 0.655ms |
-| ember sharded | 1.007ms | 1.039ms |
-| redis | 0.599ms | 0.583ms |
-| dragonfly | 1.207ms | 1.215ms |
+| ember concurrent | 0.735ms | 0.695ms |
+| ember sharded | 1.287ms | 1.295ms |
+| redis | 0.639ms | 0.615ms |
+| dragonfly | 1.271ms | 1.271ms |
 
 ### memory usage (~1M keys, 64B values)
 
@@ -120,13 +120,13 @@ HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-
 
 | metric | ember (RESP) | ember (gRPC) | chromadb | pgvector | qdrant |
 |--------|-------------|-------------|----------|----------|--------|
-| insert (vectors/sec) | 1,488 | 2,443 | 3,753 | 1,590 | **7,500** |
-| query (queries/sec) | 1,212 | **1,407** | 385 | 849 | 597 |
-| query p50 (ms) | 0.82ms | **0.70ms** | 2.59ms | 1.16ms | 1.67ms |
-| query p99 (ms) | 0.97ms | **0.91ms** | 2.84ms | 1.54ms | 1.91ms |
-| memory (MB) | **34 MB** | — | 124 MB | 178 MB | 132 MB |
+| insert (vectors/sec) | 1,501 | 2,439 | 3,909 | 1,746 | **7,693** |
+| query (queries/sec) | 1,255 | **1,560** | 390 | 845 | 597 |
+| query p50 (ms) | 0.79ms | **0.64ms** | 2.56ms | 1.16ms | 1.66ms |
+| query p99 (ms) | 0.94ms | **0.78ms** | 2.80ms | 1.56ms | 1.90ms |
+| memory (MB) | **30 MB** | — | 122 MB | 178 MB | 106 MB |
 
-ember's query throughput is 3.2x chromadb, 1.4x pgvector, and 2.1x qdrant, with 3-5x lower memory usage. gRPC queries are 20% faster than RESP due to lower serialization overhead. insert throughput uses VADD_BATCH (batches of 500 vectors per command) — the gRPC path benefits most since packed floats avoid string parsing entirely.
+ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.1x qdrant, with 3-6x lower memory usage. gRPC queries are 24% faster than RESP due to lower serialization overhead. insert throughput uses VADD_BATCH (batches of 500 vectors per command) — the gRPC path benefits most since packed floats avoid string parsing entirely.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 
@@ -138,9 +138,9 @@ throughput vs pipeline depth on sharded mode, showing how the dispatch-collect p
 
 | pipeline depth | SET (ops/sec) | GET (ops/sec) |
 |----------------|---------------|---------------|
-| P=1 | 200,000 | 199,920 |
+| P=1 | 199,600 | 199,203 |
 | P=4 | 726,872 | 753,108 |
-| P=16 | 1,506,946 | 1,932,479 |
+| P=16 | 1,759,438 | 2,135,489 |
 | P=64 | 1,895,932 | 3,369,087 |
 | P=256 | 2,014,410 | 4,064,911 |
 
@@ -180,12 +180,12 @@ standard SET/GET operations comparing RESP3 (redis-py) against gRPC (ember-py). 
 
 | test | ops/sec | p50 (ms) | p99 (ms) |
 |------|---------|----------|----------|
-| RESP3 SET (sequential) | 11,677 | 0.084 | 0.117 |
-| RESP3 GET (sequential) | 12,668 | 0.078 | 0.100 |
-| RESP3 SET (pipelined) | 80,169 | 0.012 | 0.014 |
-| RESP3 GET (pipelined) | **108,934** | 0.009 | 0.010 |
-| gRPC SET (unary) | 5,229 | 0.184 | 0.258 |
-| gRPC GET (unary) | 5,144 | 0.185 | 0.257 |
+| RESP3 SET (sequential) | 11,641 | 0.085 | 0.110 |
+| RESP3 GET (sequential) | 12,331 | 0.081 | 0.105 |
+| RESP3 SET (pipelined) | 75,064 | 0.013 | 0.015 |
+| RESP3 GET (pipelined) | **104,337** | 0.010 | 0.011 |
+| gRPC SET (unary) | 5,175 | 0.184 | 0.267 |
+| gRPC GET (unary) | 5,163 | 0.185 | 0.267 |
 
 RESP3 pipelining is the fastest option for bulk operations (5-7x over sequential, 14-17x over gRPC unary). gRPC unary calls have higher per-request overhead from HTTP/2 framing but provide type-safe APIs. for vector queries where gRPC uses streaming RPCs, it's 16% faster than RESP (see vector table above).
 
@@ -195,14 +195,14 @@ publish throughput and fan-out delivery rate across subscriber counts and messag
 
 | test | pub msg/s | fanout msg/s | p99 (ms) |
 |------|-----------|--------------|----------|
-| 1 sub, 64B, SUBSCRIBE | 9,413 | 9,413 | 0.22 |
-| 10 sub, 64B, SUBSCRIBE | 1,788 | 17,880 | 3.35 |
-| 100 sub, 64B, SUBSCRIBE | 392 | 25,511 | 28.45 |
-| 1 sub, 1KB, SUBSCRIBE | 8,629 | 8,629 | 0.23 |
-| 10 sub, 1KB, SUBSCRIBE | 1,728 | 17,279 | 3.42 |
-| 100 sub, 1KB, SUBSCRIBE | 394 | 24,748 | 29.57 |
-| 10 sub, 64B, PSUBSCRIBE | 1,722 | 17,225 | 3.38 |
-| 100 sub, 64B, PSUBSCRIBE | 395 | 24,506 | 29.83 |
+| 1 sub, 64B, SUBSCRIBE | 8,955 | 8,955 | 0.23 |
+| 10 sub, 64B, SUBSCRIBE | 1,764 | 17,637 | 3.48 |
+| 100 sub, 64B, SUBSCRIBE | 394 | 25,519 | 29.51 |
+| 1 sub, 1KB, SUBSCRIBE | 9,781 | 9,781 | 0.22 |
+| 10 sub, 1KB, SUBSCRIBE | 1,720 | 17,196 | 3.61 |
+| 100 sub, 1KB, SUBSCRIBE | 393 | 24,726 | 30.97 |
+| 10 sub, 64B, PSUBSCRIBE | 1,711 | 17,105 | 3.45 |
+| 100 sub, 64B, PSUBSCRIBE | 396 | 24,391 | 30.27 |
 
 fan-out throughput scales well — total message delivery rate increases from 9.4k to 25.5k msg/s as subscribers grow from 1 to 100. per-publisher throughput drops proportionally since each message fans out to more receivers. PSUBSCRIBE performs nearly identically to SUBSCRIBE. message size (64B vs 1KB) has minimal impact.
 
@@ -228,7 +228,7 @@ per-key memory overhead across data types. string: 1M keys, 64B values. hash: 10
 | data type | ember concurrent | ember sharded | redis |
 |-----------|------------------|---------------|-------|
 | string (64B) | **128 B/key** | 208 B/key | 173 B/key |
-| hash (5 fields) | — | 555 B/key | **170 B/key** |
+| hash (5 fields) | — | 451 B/key | **170 B/key** |
 | sorted set | — | 115 B/member | **111 B/member** |
 | vector (128-dim) | — | 853 B/vector | — |
 
@@ -248,7 +248,7 @@ ember offers two modes with different tradeoffs:
 - each CPU core owns a keyspace partition
 - requests routed via tokio channels with dispatch-collect pipelining
 - supports all data types (lists, hashes, sets, sorted sets)
-- 1.6x redis throughput with pipelining, 2.0x without
+- 1.8x redis throughput with pipelining, 2.0x without
 
 ## running benchmarks
 
