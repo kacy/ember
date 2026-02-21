@@ -882,6 +882,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "metrics",
  "metrics-exporter-prometheus",
  "prost 0.13.5",

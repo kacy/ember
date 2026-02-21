@@ -57,7 +57,7 @@ use ember_persistence::recovery::{self, RecoveredValue};
 use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
 use smallvec::{smallvec, SmallVec};
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::dropper::DropHandle;
 use crate::error::ShardError;
@@ -1008,8 +1008,11 @@ impl ReplySender {
             }
             ReplySender::Reusable(tx) => {
                 // capacity is 1 and the receiver always drains before
-                // sending the next command, so try_send won't fail.
-                let _ = tx.try_send(response);
+                // sending the next command, so try_send won't fail
+                // under normal operation.
+                if let Err(e) = tx.try_send(response) {
+                    debug!("reusable reply channel full or closed: {e}");
+                }
             }
         }
     }
