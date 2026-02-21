@@ -227,6 +227,19 @@ impl VectorSet {
         })
     }
 
+    /// Ensures capacity for at least `additional` more elements without
+    /// reallocating. Useful before batch inserts to avoid incremental
+    /// index resizes.
+    pub fn reserve(&mut self, additional: usize) -> Result<(), VectorError> {
+        let needed = self.index.size() + additional;
+        if needed > self.index.capacity() {
+            self.index
+                .reserve(needed)
+                .map_err(|e| VectorError::Index(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Adds or replaces a vector for the given element name.
     ///
     /// Returns `true` if a new element was added, `false` if an existing
