@@ -552,12 +552,25 @@ pub enum ShardResponse {
 /// of N individual sends (one per pipelined command), the connection handler
 /// groups commands by target shard and sends one `Batch` message per shard.
 /// This cuts channel contention from O(pipeline_depth) to O(shard_count).
+///
+/// The `SingleReusable` variant avoids per-command `oneshot::channel()`
+/// allocation on the P=1 (no pipeline) path. The connection handler keeps
+/// a long-lived `mpsc::channel(1)` and reuses it across commands.
 #[derive(Debug)]
 pub enum ShardMessage {
     /// A single request with its reply channel.
     Single {
         request: ShardRequest,
         reply: oneshot::Sender<ShardResponse>,
+    },
+    /// A single request using a reusable mpsc reply channel.
+    ///
+    /// Avoids the heap allocation of `oneshot::channel()` on every command.
+    /// Used for the P=1 fast path where the connection handler sends one
+    /// command at a time and waits for the response before sending the next.
+    SingleReusable {
+        request: ShardRequest,
+        reply: mpsc::Sender<ShardResponse>,
     },
     /// Multiple requests batched for a single channel send.
     Batch(Vec<(ShardRequest, oneshot::Sender<ShardResponse>)>),
@@ -599,6 +612,22 @@ impl ShardHandle {
             .await
             .map_err(|_| ShardError::Unavailable)?;
         Ok(reply_rx)
+    }
+
+    /// Sends a request using a caller-owned reply channel.
+    ///
+    /// Unlike `dispatch()`, this doesn't allocate a oneshot per call.
+    /// The caller reuses the same `mpsc::Sender` across commands, saving
+    /// a heap allocation per P=1 round-trip.
+    pub async fn dispatch_reusable(
+        &self,
+        request: ShardRequest,
+        reply: mpsc::Sender<ShardResponse>,
+    ) -> Result<(), ShardError> {
+        self.tx
+            .send(ShardMessage::SingleReusable { request, reply })
+            .await
+            .map_err(|_| ShardError::Unavailable)
     }
 
     /// Sends a batch of requests as a single channel message.
@@ -947,23 +976,46 @@ struct ProcessCtx<'a> {
 fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
     match msg {
         ShardMessage::Single { request, reply } => {
-            process_single(request, reply, ctx);
+            process_single(request, ReplySender::Oneshot(reply), ctx);
+        }
+        ShardMessage::SingleReusable { request, reply } => {
+            process_single(request, ReplySender::Reusable(reply), ctx);
         }
         ShardMessage::Batch(entries) => {
             for (request, reply) in entries {
-                process_single(request, reply, ctx);
+                process_single(request, ReplySender::Oneshot(reply), ctx);
+            }
+        }
+    }
+}
+
+/// Wraps either a oneshot or reusable mpsc sender for reply delivery.
+///
+/// The oneshot path is used for pipelined and batch commands. The reusable
+/// path avoids per-command allocation for the P=1 fast path.
+enum ReplySender {
+    Oneshot(oneshot::Sender<ShardResponse>),
+    Reusable(mpsc::Sender<ShardResponse>),
+}
+
+impl ReplySender {
+    fn send(self, response: ShardResponse) {
+        match self {
+            ReplySender::Oneshot(tx) => {
+                let _ = tx.send(response);
+            }
+            ReplySender::Reusable(tx) => {
+                // capacity is 1 and the receiver always drains before
+                // sending the next command, so try_send won't fail.
+                let _ = tx.try_send(response);
             }
         }
     }
 }
 
 /// Processes a single request: dispatch, write AOF, broadcast replication,
-/// and send the response on the oneshot channel.
-fn process_single(
-    request: ShardRequest,
-    reply: oneshot::Sender<ShardResponse>,
-    ctx: &mut ProcessCtx<'_>,
-) {
+/// and send the response on the reply channel.
+fn process_single(request: ShardRequest, reply: ReplySender, ctx: &mut ProcessCtx<'_>) {
     // copy cheap fields upfront to avoid field-borrow conflicts below
     let fsync_policy = ctx.fsync_policy;
     let shard_id = ctx.shard_id;
@@ -1033,12 +1085,12 @@ fn process_single(
     match request_kind {
         RequestKind::Snapshot => {
             let resp = persistence::handle_snapshot(ctx.keyspace, ctx.persistence, shard_id);
-            let _ = reply.send(resp);
+            reply.send(resp);
             return;
         }
         RequestKind::SerializeSnapshot => {
             let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id);
-            let _ = reply.send(resp);
+            reply.send(resp);
             return;
         }
         RequestKind::RewriteAof => {
@@ -1050,7 +1102,7 @@ fn process_single(
                 #[cfg(feature = "protobuf")]
                 ctx.schema_registry,
             );
-            let _ = reply.send(resp);
+            reply.send(resp);
             return;
         }
         RequestKind::FlushDbAsync => {
@@ -1058,13 +1110,13 @@ fn process_single(
             if let Some(ref handle) = *ctx.drop_handle {
                 handle.defer_entries(old_entries);
             }
-            let _ = reply.send(ShardResponse::Ok);
+            reply.send(ShardResponse::Ok);
             return;
         }
         RequestKind::Other => {}
     }
 
-    let _ = reply.send(response);
+    reply.send(response);
 }
 
 /// Lightweight tag so we can identify requests that need special

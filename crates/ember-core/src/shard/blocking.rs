@@ -10,7 +10,7 @@ pub(super) fn handle_blocking_pop(
     key: &str,
     waiter: mpsc::Sender<(String, Bytes)>,
     is_left: bool,
-    reply: oneshot::Sender<ShardResponse>,
+    reply: ReplySender,
     ctx: &mut ProcessCtx<'_>,
 ) {
     let fsync_policy = ctx.fsync_policy;
@@ -27,7 +27,7 @@ pub(super) fn handle_blocking_pop(
         Ok(Some(data)) => {
             // got an element — send to waiter and record the mutation
             let _ = waiter.try_send((key.to_owned(), data));
-            let _ = reply.send(ShardResponse::Ok);
+            reply.send(ShardResponse::Ok);
 
             // AOF + replication for the pop
             let record = if is_left {
@@ -61,7 +61,7 @@ pub(super) fn handle_blocking_pop(
         Err(_) => {
             // WRONGTYPE — drop the waiter (connection sees the receiver close)
             // and send an error on the reply channel
-            let _ = reply.send(ShardResponse::WrongType);
+            reply.send(ShardResponse::WrongType);
         }
     }
 }

@@ -295,6 +295,23 @@ impl Engine {
         self.shards[shard_idx].dispatch(request).await
     }
 
+    /// Sends a request to a shard using a caller-owned mpsc reply channel.
+    ///
+    /// Avoids the per-command oneshot allocation on the P=1 path.
+    pub async fn dispatch_reusable_to_shard(
+        &self,
+        shard_idx: usize,
+        request: ShardRequest,
+        reply: tokio::sync::mpsc::Sender<ShardResponse>,
+    ) -> Result<(), ShardError> {
+        if shard_idx >= self.shards.len() {
+            return Err(ShardError::Unavailable);
+        }
+        self.shards[shard_idx]
+            .dispatch_reusable(request, reply)
+            .await
+    }
+
     /// Sends a batch of requests to a single shard as one channel message.
     ///
     /// Returns one receiver per request, preserving order. This is the
