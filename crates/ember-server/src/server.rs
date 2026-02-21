@@ -566,22 +566,34 @@ pub async fn run_concurrent(
 /// reducing L1/L2 cache misses from OS thread migration. On other platforms
 /// (macOS, Windows) this is a no-op — macOS doesn't support thread affinity
 /// and the performance impact is negligible on smaller core counts.
+///
+/// If `worker_id` exceeds the number of configurable CPUs (typically 1024),
+/// pinning is skipped with a warning.
 fn pin_to_core(worker_id: usize) {
     #[cfg(target_os = "linux")]
     {
+        // CPU_SET indexes into a fixed-size bitset (CPU_SETSIZE, typically
+        // 1024). Guard against buffer overflow if worker_id is too large.
+        const CPU_SETSIZE: usize = 1024;
+        if worker_id >= CPU_SETSIZE {
+            tracing::warn!(
+                worker_id,
+                "worker_id exceeds CPU_SETSIZE ({CPU_SETSIZE}), skipping affinity"
+            );
+            return;
+        }
+
         // SAFETY: cpu_set_t is a plain C struct with no invariants beyond
         // zeroing. CPU_SET and sched_setaffinity are standard POSIX APIs.
         // We pass tid=0 (current thread) and a properly sized set.
+        // worker_id is bounds-checked above against CPU_SETSIZE.
         unsafe {
             let mut cpuset: libc::cpu_set_t = std::mem::zeroed();
             libc::CPU_SET(worker_id, &mut cpuset);
             let result = libc::sched_setaffinity(0, std::mem::size_of_val(&cpuset), &cpuset);
             if result != 0 {
-                tracing::warn!(
-                    worker_id,
-                    "failed to pin worker to core (errno: {})",
-                    *libc::__errno_location()
-                );
+                let err = std::io::Error::last_os_error();
+                tracing::warn!(worker_id, %err, "failed to pin worker to core");
             } else {
                 tracing::debug!(worker_id, "pinned to core");
             }

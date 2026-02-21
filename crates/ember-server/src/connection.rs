@@ -478,7 +478,10 @@ where
                 // per-connection reusable mpsc channel instead of allocating
                 // a oneshot per command, and avoids the pipeline machinery
                 // (shard buckets, batch dispatch, pending result vec).
-                let frame = frames.pop().expect("len == 1");
+                // safe: branch entered only when frames.len() == 1
+                let Some(frame) = frames.pop() else {
+                    continue;
+                };
                 let prepared = prepare_command(
                     frame,
                     &engine,
@@ -632,7 +635,12 @@ where
                     let mut rb = tokio::io::ReadBuf::uninit(dst);
                     match std::pin::Pin::new(&mut stream).poll_read(cx, &mut rb) {
                         std::task::Poll::Ready(Ok(())) => rb.filled().len(),
-                        _ => 0,
+                        std::task::Poll::Pending => 0,
+                        std::task::Poll::Ready(Err(_)) => {
+                            // I/O error — the next blocking read will surface
+                            // it properly and tear down the connection.
+                            0
+                        }
                     }
                 };
                 if n > 0 {

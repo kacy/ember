@@ -231,7 +231,7 @@ impl VectorSet {
     /// reallocating. Useful before batch inserts to avoid incremental
     /// index resizes.
     pub fn reserve(&mut self, additional: usize) -> Result<(), VectorError> {
-        let needed = self.index.size() + additional;
+        let needed = self.index.size().saturating_add(additional);
         if needed > self.index.capacity() {
             self.index
                 .reserve(needed)
