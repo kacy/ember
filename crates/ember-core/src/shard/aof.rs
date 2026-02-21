@@ -19,7 +19,10 @@ pub(super) fn duration_to_expire_ms(d: Duration) -> i64 {
 /// Takes ownership of the request to move keys and values directly into
 /// the records, avoiding heap allocations from cloning. Returns SmallVec
 /// since 99%+ of commands produce 0 or 1 records.
-pub(super) fn to_aof_records(req: ShardRequest, resp: &ShardResponse) -> SmallVec<[AofRecord; 1]> {
+pub(super) fn to_aof_records(
+    req: ShardRequest,
+    resp: &mut ShardResponse,
+) -> SmallVec<[AofRecord; 1]> {
     match (req, resp) {
         (
             ShardRequest::Set {
@@ -190,7 +193,9 @@ pub(super) fn to_aof_records(req: ShardRequest, resp: &ShardResponse) -> SmallVe
             connectivity,
             expansion_add,
         }],
-        // VADD_BATCH: expand each applied entry into its own AofRecord::VAdd
+        // VADD_BATCH: expand each applied entry into its own AofRecord::VAdd.
+        // steals applied from the response to avoid cloning vectors.
+        // the connection handler only uses added_count, so the empty vec is fine.
         #[cfg(feature = "vector")]
         (
             ShardRequest::VAddBatch {
@@ -202,16 +207,16 @@ pub(super) fn to_aof_records(req: ShardRequest, resp: &ShardResponse) -> SmallVe
                 ..
             },
             ShardResponse::VAddBatchResult { applied, .. },
-        ) => applied
-            .iter()
+        ) => std::mem::take(applied)
+            .into_iter()
             .map(|(element, vector)| AofRecord::VAdd {
                 key: key.clone(),
-                element: element.clone(),
-                vector: vector.clone(),
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
+                element,
+                vector,
+                metric: *metric,
+                quantization: *quantization,
+                connectivity: *connectivity,
+                expansion_add: *expansion_add,
             })
             .collect(),
         #[cfg(feature = "vector")]
@@ -273,8 +278,8 @@ mod tests {
             nx: false,
             xx: false,
         };
-        let resp = ShardResponse::Ok;
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Ok;
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::Set { key, expire_ms, .. } => {
                 assert_eq!(key, "k");
@@ -293,23 +298,23 @@ mod tests {
             nx: false,
             xx: false,
         };
-        let resp = ShardResponse::OutOfMemory;
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::OutOfMemory;
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
     fn to_aof_records_for_del() {
         let req = ShardRequest::Del { key: "k".into() };
-        let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Bool(true);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Del { .. }));
     }
 
     #[test]
     fn to_aof_records_skips_failed_del() {
         let req = ShardRequest::Del { key: "k".into() };
-        let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::Bool(false);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
@@ -318,8 +323,8 @@ mod tests {
             key: "k".into(),
             value: Bytes::from("data"),
         };
-        let resp = ShardResponse::Len(10);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Len(10);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::Append { key, value } => {
                 assert_eq!(key, "k");
@@ -332,16 +337,16 @@ mod tests {
     #[test]
     fn to_aof_records_for_incr() {
         let req = ShardRequest::Incr { key: "c".into() };
-        let resp = ShardResponse::Integer(1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Integer(1);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Incr { .. }));
     }
 
     #[test]
     fn to_aof_records_for_decr() {
         let req = ShardRequest::Decr { key: "c".into() };
-        let resp = ShardResponse::Integer(-1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Integer(-1);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Decr { .. }));
     }
 
@@ -351,8 +356,8 @@ mod tests {
             key: "c".into(),
             delta: 5,
         };
-        let resp = ShardResponse::Integer(15);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Integer(15);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::IncrBy { key, delta } => {
                 assert_eq!(key, "c");
@@ -368,8 +373,8 @@ mod tests {
             key: "c".into(),
             delta: 3,
         };
-        let resp = ShardResponse::Integer(7);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Integer(7);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::DecrBy { key, delta } => {
                 assert_eq!(key, "c");
@@ -382,16 +387,16 @@ mod tests {
     #[test]
     fn to_aof_records_for_persist() {
         let req = ShardRequest::Persist { key: "k".into() };
-        let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Bool(true);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Persist { .. }));
     }
 
     #[test]
     fn to_aof_records_skips_failed_persist() {
         let req = ShardRequest::Persist { key: "k".into() };
-        let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::Bool(false);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
@@ -400,8 +405,8 @@ mod tests {
             key: "k".into(),
             milliseconds: 5000,
         };
-        let resp = ShardResponse::Bool(true);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Bool(true);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::Pexpire { key, milliseconds } => {
                 assert_eq!(key, "k");
@@ -417,8 +422,8 @@ mod tests {
             key: "k".into(),
             milliseconds: 5000,
         };
-        let resp = ShardResponse::Bool(false);
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::Bool(false);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
@@ -427,8 +432,8 @@ mod tests {
             key: "h".into(),
             fields: vec![("f1".into(), Bytes::from("v1"))],
         };
-        let resp = ShardResponse::Len(1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Len(1);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::HSet { key, fields } => {
                 assert_eq!(key, "h");
@@ -444,11 +449,11 @@ mod tests {
             key: "h".into(),
             fields: vec!["f1".into(), "f2".into()],
         };
-        let resp = ShardResponse::HDelLen {
+        let mut resp = ShardResponse::HDelLen {
             count: 2,
             removed: vec!["f1".into(), "f2".into()],
         };
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::HDel { key, fields } => {
                 assert_eq!(key, "h");
@@ -464,11 +469,11 @@ mod tests {
             key: "h".into(),
             fields: vec!["f1".into()],
         };
-        let resp = ShardResponse::HDelLen {
+        let mut resp = ShardResponse::HDelLen {
             count: 0,
             removed: vec![],
         };
-        assert!(to_aof_records(req, &resp).is_empty());
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
@@ -478,8 +483,8 @@ mod tests {
             field: "counter".into(),
             delta: 5,
         };
-        let resp = ShardResponse::Integer(10);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Integer(10);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::HIncrBy { key, field, delta } => {
                 assert_eq!(key, "h");
@@ -496,8 +501,8 @@ mod tests {
             key: "s".into(),
             members: vec!["m1".into(), "m2".into()],
         };
-        let resp = ShardResponse::Len(2);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Len(2);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::SAdd { key, members } => {
                 assert_eq!(key, "s");
@@ -513,8 +518,8 @@ mod tests {
             key: "s".into(),
             members: vec!["m1".into()],
         };
-        let resp = ShardResponse::Len(0);
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::Len(0);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
@@ -523,8 +528,8 @@ mod tests {
             key: "s".into(),
             members: vec!["m1".into()],
         };
-        let resp = ShardResponse::Len(1);
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Len(1);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::SRem { key, members } => {
                 assert_eq!(key, "s");
@@ -540,8 +545,8 @@ mod tests {
             key: "s".into(),
             members: vec!["m1".into()],
         };
-        let resp = ShardResponse::Len(0);
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::Len(0);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]
@@ -550,8 +555,8 @@ mod tests {
             key: "old".into(),
             newkey: "new".into(),
         };
-        let resp = ShardResponse::Ok;
-        let record = to_aof_records(req, &resp).into_iter().next().unwrap();
+        let mut resp = ShardResponse::Ok;
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
             AofRecord::Rename { key, newkey } => {
                 assert_eq!(key, "old");
@@ -577,7 +582,7 @@ mod tests {
             connectivity: 16,
             expansion_add: 64,
         };
-        let resp = ShardResponse::VAddBatchResult {
+        let mut resp = ShardResponse::VAddBatchResult {
             added_count: 3,
             applied: vec![
                 ("a".into(), vec![1.0, 2.0]),
@@ -585,7 +590,7 @@ mod tests {
                 ("c".into(), vec![5.0, 6.0]),
             ],
         };
-        let records = to_aof_records(req, &resp);
+        let records = to_aof_records(req, &mut resp);
         assert_eq!(records.len(), 3);
         for (i, record) in records.iter().enumerate() {
             match record {
@@ -625,7 +630,7 @@ mod tests {
             xx: false,
         };
         // when NX blocks, the shard returns Value(None), not Ok
-        let resp = ShardResponse::Value(None);
-        assert!(to_aof_records(req, &resp).is_empty());
+        let mut resp = ShardResponse::Value(None);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 }

@@ -93,7 +93,7 @@ impl Keyspace {
     pub fn vadd_batch(
         &mut self,
         key: &str,
-        entries: &[(String, Vec<f32>)],
+        entries: Vec<(String, Vec<f32>)>,
         metric: crate::types::vector::DistanceMetric,
         quantization: crate::types::vector::QuantizationType,
         connectivity: usize,
@@ -119,7 +119,7 @@ impl Keyspace {
 
         // validate all vectors upfront — reject entire batch on NaN/inf
         let dim = entries[0].1.len();
-        for (elem, vec) in entries {
+        for (elem, vec) in &entries {
             if vec.len() != dim {
                 return Err(VectorWriteError::IndexError(format!(
                     "dimension mismatch: expected {dim}, element '{elem}' has {}",
@@ -175,13 +175,21 @@ impl Keyspace {
 
         match entry.value {
             Value::Vector(ref mut vs) => {
+                // pre-allocate index capacity for the entire batch to avoid
+                // incremental resizes during insertion
+                if let Err(e) = vs.reserve(entries.len()) {
+                    return Err(VectorWriteError::IndexError(e.to_string()));
+                }
+
                 for (element, vector) in entries {
-                    match vs.add(element.clone(), vector) {
+                    // clone element for the index (which needs ownership),
+                    // then move both element and vector into applied
+                    match vs.add(element.clone(), &vector) {
                         Ok(added) => {
                             if added {
                                 added_count += 1;
                             }
-                            applied.push((element.clone(), vector.clone()));
+                            applied.push((element, vector));
                         }
                         Err(e) => {
                             // partial insert: return applied vectors so they can

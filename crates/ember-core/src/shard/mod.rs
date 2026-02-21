@@ -1015,7 +1015,7 @@ impl ReplySender {
 
 /// Processes a single request: dispatch, write AOF, broadcast replication,
 /// and send the response on the reply channel.
-fn process_single(request: ShardRequest, reply: ReplySender, ctx: &mut ProcessCtx<'_>) {
+fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut ProcessCtx<'_>) {
     // copy cheap fields upfront to avoid field-borrow conflicts below
     let fsync_policy = ctx.fsync_policy;
     let shard_id = ctx.shard_id;
@@ -1036,9 +1036,9 @@ fn process_single(request: ShardRequest, reply: ReplySender, ctx: &mut ProcessCt
     }
 
     let request_kind = describe_request(&request);
-    let response = dispatch(
+    let mut response = dispatch(
         ctx.keyspace,
-        &request,
+        &mut request,
         #[cfg(feature = "protobuf")]
         ctx.schema_registry,
     );
@@ -1051,8 +1051,10 @@ fn process_single(request: ShardRequest, reply: ReplySender, ctx: &mut ProcessCt
         }
     }
 
-    // consume the request to move owned data into AOF records (avoids cloning)
-    let records = aof::to_aof_records(request, &response);
+    // consume the request to move owned data into AOF records (avoids cloning).
+    // response is &mut so VAddBatch can steal applied entries instead of cloning
+    // vectors — the connection handler only uses added_count.
+    let records = aof::to_aof_records(request, &mut response);
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
@@ -1163,7 +1165,7 @@ fn write_result_len(result: Result<usize, WriteError>) -> ShardResponse {
 /// This is the hot path — every read and write goes through here.
 fn dispatch(
     ks: &mut Keyspace,
-    req: &ShardRequest,
+    req: &mut ShardRequest,
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardResponse {
     match req {
@@ -1385,7 +1387,7 @@ fn dispatch(
         } => match snapshot::deserialize_snap_value(data) {
             Ok(snap) => {
                 let exists = ks.exists(key);
-                if exists && !replace {
+                if exists && !*replace {
                     ShardResponse::Err("ERR Target key name already exists".into())
                 } else {
                     let value = persistence::snap_to_value(snap);
@@ -1444,9 +1446,14 @@ fn dispatch(
             ..
         } => {
             use crate::types::vector::{DistanceMetric, QuantizationType};
+            // take ownership of entries to avoid cloning vectors during
+            // batch insertion. the entries vec in the request becomes empty,
+            // which is fine because to_aof_records uses response.applied
+            // instead of request.entries.
+            let owned_entries = std::mem::take(entries);
             match ks.vadd_batch(
                 key,
-                entries,
+                owned_entries,
                 DistanceMetric::from_u8(*metric),
                 QuantizationType::from_u8(*quantization),
                 *connectivity as usize,
@@ -1648,10 +1655,10 @@ mod tests {
     use super::*;
 
     /// Test helper: dispatch without a schema registry.
-    fn test_dispatch(ks: &mut Keyspace, req: &ShardRequest) -> ShardResponse {
+    fn test_dispatch(ks: &mut Keyspace, mut req: ShardRequest) -> ShardResponse {
         dispatch(
             ks,
-            req,
+            &mut req,
             #[cfg(feature = "protobuf")]
             &None,
         )
@@ -1663,7 +1670,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Set {
+            ShardRequest::Set {
                 key: "k".into(),
                 value: Bytes::from("v"),
                 expire: None,
@@ -1673,7 +1680,7 @@ mod tests {
         );
         assert!(matches!(resp, ShardResponse::Ok));
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Get { key: "k".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Get { key: "k".into() });
         match resp {
             ShardResponse::Value(Some(Value::String(data))) => {
                 assert_eq!(data, Bytes::from("v"));
@@ -1685,7 +1692,7 @@ mod tests {
     #[test]
     fn dispatch_get_missing() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::Get { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Get { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Value(None)));
     }
 
@@ -1694,10 +1701,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("key".into(), Bytes::from("val"), None, false, false);
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Del { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Del { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Del { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
 
@@ -1706,10 +1713,10 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("yes".into(), Bytes::from("here"), None, false, false);
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Exists { key: "yes".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Exists { key: "yes".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Exists { key: "no".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Exists { key: "no".into() });
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
 
@@ -1720,14 +1727,14 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Expire {
+            ShardRequest::Expire {
                 key: "key".into(),
                 seconds: 60,
             },
         );
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Ttl { key: "key".into() });
         match resp {
             ShardResponse::Ttl(TtlResult::Seconds(s)) => assert!((58..=60).contains(&s)),
             other => panic!("expected Ttl(Seconds), got {other:?}"),
@@ -1737,14 +1744,14 @@ mod tests {
     #[test]
     fn dispatch_ttl_missing() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "gone".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Ttl { key: "gone".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NotFound)));
     }
 
     #[test]
     fn dispatch_incr_new_key() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::Incr { key: "c".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Incr { key: "c".into() });
         assert!(matches!(resp, ShardResponse::Integer(1)));
     }
 
@@ -1752,7 +1759,7 @@ mod tests {
     fn dispatch_decr_existing() {
         let mut ks = Keyspace::new();
         ks.set("n".into(), Bytes::from("10"), None, false, false);
-        let resp = test_dispatch(&mut ks, &ShardRequest::Decr { key: "n".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Decr { key: "n".into() });
         assert!(matches!(resp, ShardResponse::Integer(9)));
     }
 
@@ -1760,7 +1767,7 @@ mod tests {
     fn dispatch_incr_non_integer() {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("hello"), None, false, false);
-        let resp = test_dispatch(&mut ks, &ShardRequest::Incr { key: "s".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Incr { key: "s".into() });
         assert!(matches!(resp, ShardResponse::Err(_)));
     }
 
@@ -1770,7 +1777,7 @@ mod tests {
         ks.set("n".into(), Bytes::from("10"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::IncrBy {
+            ShardRequest::IncrBy {
                 key: "n".into(),
                 delta: 5,
             },
@@ -1784,7 +1791,7 @@ mod tests {
         ks.set("n".into(), Bytes::from("10"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::DecrBy {
+            ShardRequest::DecrBy {
                 key: "n".into(),
                 delta: 3,
             },
@@ -1797,7 +1804,7 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::IncrBy {
+            ShardRequest::IncrBy {
                 key: "new".into(),
                 delta: 42,
             },
@@ -1811,7 +1818,7 @@ mod tests {
         ks.set("n".into(), Bytes::from("10.5"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::IncrByFloat {
+            ShardRequest::IncrByFloat {
                 key: "n".into(),
                 delta: 2.3,
             },
@@ -1831,7 +1838,7 @@ mod tests {
         ks.set("k".into(), Bytes::from("hello"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Append {
+            ShardRequest::Append {
                 key: "k".into(),
                 value: Bytes::from(" world"),
             },
@@ -1843,14 +1850,14 @@ mod tests {
     fn dispatch_strlen() {
         let mut ks = Keyspace::new();
         ks.set("k".into(), Bytes::from("hello"), None, false, false);
-        let resp = test_dispatch(&mut ks, &ShardRequest::Strlen { key: "k".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Strlen { key: "k".into() });
         assert!(matches!(resp, ShardResponse::Len(5)));
     }
 
     #[test]
     fn dispatch_strlen_missing() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::Strlen { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Strlen { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Len(0)));
     }
 
@@ -1859,7 +1866,7 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::IncrByFloat {
+            ShardRequest::IncrByFloat {
                 key: "new".into(),
                 delta: 2.72,
             },
@@ -1884,17 +1891,17 @@ mod tests {
             false,
         );
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Persist { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Persist { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Ttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Ttl { key: "key".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NoExpiry)));
     }
 
     #[test]
     fn dispatch_persist_missing_key() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::Persist { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Persist { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
 
@@ -1909,7 +1916,7 @@ mod tests {
             false,
         );
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Pttl { key: "key".into() });
         match resp {
             ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
                 assert!(ms > 59_000 && ms <= 60_000);
@@ -1921,7 +1928,7 @@ mod tests {
     #[test]
     fn dispatch_pttl_missing() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Pttl { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Ttl(TtlResult::NotFound)));
     }
 
@@ -1932,14 +1939,14 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Pexpire {
+            ShardRequest::Pexpire {
                 key: "key".into(),
                 milliseconds: 5000,
             },
         );
         assert!(matches!(resp, ShardResponse::Bool(true)));
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::Pttl { key: "key".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::Pttl { key: "key".into() });
         match resp {
             ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
                 assert!(ms > 4000 && ms <= 5000);
@@ -1953,7 +1960,7 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Set {
+            ShardRequest::Set {
                 key: "k".into(),
                 value: Bytes::from("v"),
                 expire: None,
@@ -1972,7 +1979,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Set {
+            ShardRequest::Set {
                 key: "k".into(),
                 value: Bytes::from("new"),
                 expire: None,
@@ -1996,7 +2003,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Set {
+            ShardRequest::Set {
                 key: "k".into(),
                 value: Bytes::from("new"),
                 expire: None,
@@ -2016,7 +2023,7 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Set {
+            ShardRequest::Set {
                 key: "k".into(),
                 value: Bytes::from("v"),
                 expire: None,
@@ -2037,7 +2044,7 @@ mod tests {
 
         assert_eq!(ks.len(), 2);
 
-        let resp = test_dispatch(&mut ks, &ShardRequest::FlushDb);
+        let resp = test_dispatch(&mut ks, ShardRequest::FlushDb);
         assert!(matches!(resp, ShardResponse::Ok));
         assert_eq!(ks.len(), 0);
     }
@@ -2051,7 +2058,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Scan {
+            ShardRequest::Scan {
                 cursor: 0,
                 count: 10,
                 pattern: None,
@@ -2076,7 +2083,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Scan {
+            ShardRequest::Scan {
                 cursor: 0,
                 count: 10,
                 pattern: Some("user:*".into()),
@@ -2103,7 +2110,7 @@ mod tests {
         ks.set("item:1".into(), Bytes::from("c"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Keys {
+            ShardRequest::Keys {
                 pattern: "user:*".into(),
             },
         );
@@ -2122,7 +2129,7 @@ mod tests {
         ks.set("old".into(), Bytes::from("value"), None, false, false);
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Rename {
+            ShardRequest::Rename {
                 key: "old".into(),
                 newkey: "new".into(),
             },
@@ -2137,7 +2144,7 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::Rename {
+            ShardRequest::Rename {
                 key: "missing".into(),
                 newkey: "new".into(),
             },
@@ -2158,7 +2165,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::DumpKey {
+            ShardRequest::DumpKey {
                 key: "greeting".into(),
             },
         );
@@ -2177,7 +2184,7 @@ mod tests {
     #[test]
     fn dump_key_missing_returns_none() {
         let mut ks = Keyspace::new();
-        let resp = test_dispatch(&mut ks, &ShardRequest::DumpKey { key: "nope".into() });
+        let resp = test_dispatch(&mut ks, ShardRequest::DumpKey { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Value(None)));
     }
 
@@ -2189,7 +2196,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::RestoreKey {
+            ShardRequest::RestoreKey {
                 key: "mykey".into(),
                 ttl_ms: 0,
                 data: Bytes::from(data),
@@ -2211,7 +2218,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::RestoreKey {
+            ShardRequest::RestoreKey {
                 key: "ttlkey".into(),
                 ttl_ms: 30_000,
                 data: Bytes::from(data),
@@ -2235,7 +2242,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::RestoreKey {
+            ShardRequest::RestoreKey {
                 key: "existing".into(),
                 ttl_ms: 0,
                 data: Bytes::from(data),
@@ -2260,7 +2267,7 @@ mod tests {
 
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::RestoreKey {
+            ShardRequest::RestoreKey {
                 key: "existing".into(),
                 ttl_ms: 0,
                 data: Bytes::from(data),
@@ -2289,7 +2296,7 @@ mod tests {
         // dump
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::DumpKey {
+            ShardRequest::DumpKey {
                 key: "myhash".into(),
             },
         );
@@ -2301,7 +2308,7 @@ mod tests {
         // restore to a new key
         let resp = test_dispatch(
             &mut ks,
-            &ShardRequest::RestoreKey {
+            ShardRequest::RestoreKey {
                 key: "myhash2".into(),
                 ttl_ms: 0,
                 data: Bytes::from(data),
