@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
@@ -213,6 +213,15 @@ where
     let mut out = BytesMut::with_capacity(ctx.limits.buf_capacity);
     let mut frames = Vec::new();
 
+    // per-connection reusable reply channel for the P=1 fast path.
+    // avoids allocating a new oneshot::channel() on every single command
+    // when the client isn't pipelining.
+    let (reusable_tx, mut reusable_rx) = mpsc::channel::<ShardResponse>(1);
+
+    // set when try_read grabbed data after a write, so we can skip
+    // the blocking read at the top of the next iteration.
+    let mut skip_read = false;
+
     loop {
         // guard against unbounded buffer growth from incomplete frames
         if buf.len() > ctx.limits.max_buf_size {
@@ -223,13 +232,17 @@ where
             return Ok(());
         }
 
-        // read some data — returns 0 on clean disconnect, times out
-        // after idle_timeout to reclaim resources from abandoned connections
-        match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
-            Ok(Ok(0)) => return Ok(()),
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => return Ok(()), // idle timeout — close silently
+        if skip_read {
+            skip_read = false;
+        } else {
+            // read some data — returns 0 on clean disconnect, times out
+            // after idle_timeout to reclaim resources from abandoned connections
+            match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
+                Ok(Ok(0)) => return Ok(()),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => return Ok(()), // idle timeout — close silently
+            }
         }
 
         // parse all complete frames from the buffer first, then dispatch
@@ -460,6 +473,57 @@ where
                     .await;
                     response.serialize(&mut out);
                 }
+            } else if frames.len() == 1 {
+                // P=1 fast path: single non-transactional command. uses the
+                // per-connection reusable mpsc channel instead of allocating
+                // a oneshot per command, and avoids the pipeline machinery
+                // (shard buckets, batch dispatch, pending result vec).
+                let frame = frames.pop().expect("len == 1");
+                let prepared = prepare_command(
+                    frame,
+                    &engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    &mut asking,
+                    &peer_addr_str,
+                )
+                .await;
+                match prepared {
+                    PreparedDispatch::Immediate(pr) => {
+                        let response = resolve_response(pr, ctx, slow_log).await;
+                        ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+                        response.serialize(&mut out);
+                    }
+                    PreparedDispatch::Routed {
+                        shard_idx,
+                        request,
+                        tag,
+                        start,
+                        cmd_name,
+                    } => {
+                        let frame = match engine
+                            .dispatch_reusable_to_shard(shard_idx, request, reusable_tx.clone())
+                            .await
+                        {
+                            Ok(()) => match reusable_rx.recv().await {
+                                Some(resp) => resolve_shard_response(resp, tag),
+                                None => Frame::Error("ERR shard unavailable".into()),
+                            },
+                            Err(e) => Frame::Error(format!("ERR {e}")),
+                        };
+                        if let Some(start) = start {
+                            let elapsed = start.elapsed();
+                            slow_log.maybe_record(elapsed, cmd_name);
+                            if ctx.metrics_enabled {
+                                let is_error = matches!(&frame, Frame::Error(_));
+                                crate::metrics::record_command(cmd_name, elapsed, is_error);
+                            }
+                        }
+                        ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+                        frame.serialize(&mut out);
+                    }
+                }
             } else {
                 // pipeline path: batch dispatch to reduce channel contention.
                 //
@@ -552,6 +616,38 @@ where
 
         if !out.is_empty() {
             stream.write_all(&out).await?;
+
+            // try a non-blocking read before re-entering the event loop.
+            // at P=1, the client often has the next command queued in the
+            // kernel buffer already. grabbing it here saves a full
+            // epoll/kqueue round-trip through the tokio scheduler.
+            buf.reserve(4096);
+            skip_read = std::future::poll_fn(|cx| {
+                let n = {
+                    let dst = buf.chunk_mut();
+                    // SAFETY: UninitSlice is repr(transparent) over
+                    // [MaybeUninit<u8>]. this is the same cast tokio uses
+                    // internally in its read_buf implementation.
+                    let dst = unsafe { &mut *(dst as *mut _ as *mut [std::mem::MaybeUninit<u8>]) };
+                    let mut rb = tokio::io::ReadBuf::uninit(dst);
+                    match std::pin::Pin::new(&mut stream).poll_read(cx, &mut rb) {
+                        std::task::Poll::Ready(Ok(())) => rb.filled().len(),
+                        _ => 0,
+                    }
+                };
+                if n > 0 {
+                    // SAFETY: poll_read filled exactly n bytes into the
+                    // buffer's uninitialized tail. advance_mut marks them
+                    // as initialized.
+                    unsafe {
+                        buf.advance_mut(n);
+                    }
+                    std::task::Poll::Ready(true)
+                } else {
+                    std::task::Poll::Ready(false)
+                }
+            })
+            .await;
         }
     }
 }
