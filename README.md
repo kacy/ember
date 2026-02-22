@@ -56,6 +56,25 @@ brew install ember-db
 
 this installs both `ember-server` and `ember-cli`.
 
+**install script**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kacy/ember/main/scripts/install.sh | bash
+```
+
+installs the latest `ember-server` and `ember-cli` to `/usr/local/bin`. useful flags:
+
+```bash
+# server only (skip ember-cli)
+curl -fsSL https://raw.githubusercontent.com/kacy/ember/main/scripts/install.sh | bash -s -- --server-only
+
+# pin to a specific version
+... | bash -s -- --version v0.4.6
+
+# custom install directory
+... | bash -s -- --prefix ~/.local/bin
+```
+
 **from source**
 
 ```bash

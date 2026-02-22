@@ -33,7 +33,7 @@ done
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 die()  { echo "error: $*" >&2; exit 1; }
-info() { echo "  $*"; }
+info() { echo "  $*" >&2; }
 
 need_cmd() {
     if ! command -v "$1" &>/dev/null; then
