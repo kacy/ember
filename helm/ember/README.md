@@ -5,13 +5,14 @@ deploy [ember](https://github.com/kacy/ember) on kubernetes.
 ## install
 
 ```bash
-helm install my-ember ./helm/ember
+helm repo add ember https://charts.emberdb.com
+helm install ember ember/ember
 ```
 
 with custom values:
 
 ```bash
-helm install my-ember ./helm/ember \
+helm install ember ember/ember \
   --set ember.maxMemory=256mb \
   --set ember.requirepass=secret \
   --set resources.limits.memory=512Mi
@@ -70,12 +71,12 @@ resources:
 ```
 
 ```bash
-helm install ember-prod ./helm/ember -f values-prod.yaml
+helm install ember-prod ember/ember -f values-prod.yaml
 ```
 
 ### development (no persistence, no auth)
 
 ```bash
-helm install ember-dev ./helm/ember \
+helm install ember-dev ember/ember \
   --set resources.limits.memory=256Mi
 ```

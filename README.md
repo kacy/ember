@@ -363,11 +363,14 @@ see [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and code standar
 deploy to kubernetes with [Helm](https://helm.sh):
 
 ```bash
+# add the helm repo
+helm repo add ember https://charts.emberdb.com
+
 # install with defaults (single replica, ClusterIP service)
-helm install ember helm/ember
+helm install ember ember/ember
 
 # install with custom settings
-helm install ember helm/ember \
+helm install ember ember/ember \
   --set ember.maxMemory=512M \
   --set ember.evictionPolicy=allkeys-lru \
   --set ember.appendonly=true
