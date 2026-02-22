@@ -59,14 +59,14 @@ this installs both `ember-server` and `ember-cli`.
 **install script**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kacy/ember/main/scripts/install.sh | bash
+curl -fsSL https://emberdb.com/install | bash
 ```
 
 installs the latest `ember-server` and `ember-cli` to `/usr/local/bin`. useful flags:
 
 ```bash
 # server only (skip ember-cli)
-curl -fsSL https://raw.githubusercontent.com/kacy/ember/main/scripts/install.sh | bash -s -- --server-only
+curl -fsSL https://emberdb.com/install | bash -s -- --server-only
 
 # pin to a specific version
 ... | bash -s -- --version v0.4.6
