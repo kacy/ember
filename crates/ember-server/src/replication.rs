@@ -659,15 +659,47 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             newkey: newkey.clone(),
         }),
         #[cfg(feature = "vector")]
-        AofRecord::VAdd { .. } | AofRecord::VRem { .. } => {
-            // vector replication not yet supported
-            None
-        }
+        AofRecord::VAdd {
+            key,
+            element,
+            vector,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => Some(ShardRequest::VAdd {
+            key: key.clone(),
+            element: element.clone(),
+            vector: vector.clone(),
+            metric: *metric,
+            quantization: *quantization,
+            connectivity: *connectivity,
+            expansion_add: *expansion_add,
+        }),
+        #[cfg(feature = "vector")]
+        AofRecord::VRem { key, element } => Some(ShardRequest::VRem {
+            key: key.clone(),
+            element: element.clone(),
+        }),
         #[cfg(feature = "protobuf")]
-        AofRecord::ProtoSet { .. } | AofRecord::ProtoRegister { .. } => {
-            // protobuf replication not yet supported
-            None
-        }
+        AofRecord::ProtoSet {
+            key,
+            type_name,
+            data,
+            expire_ms,
+        } => Some(ShardRequest::ProtoSet {
+            key: key.clone(),
+            type_name: type_name.clone(),
+            data: data.clone(),
+            expire: expire_from_ms(*expire_ms),
+            nx: false,
+            xx: false,
+        }),
+        #[cfg(feature = "protobuf")]
+        AofRecord::ProtoRegister { name, descriptor } => Some(ShardRequest::ProtoRegisterAof {
+            name: name.clone(),
+            descriptor: descriptor.clone(),
+        }),
     }
 }
 
