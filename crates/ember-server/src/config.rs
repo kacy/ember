@@ -948,8 +948,10 @@ mod tests {
 
     #[test]
     fn resolved_shard_count_explicit() {
-        let mut cfg = EmberConfig::default();
-        cfg.shards = 4;
+        let cfg = EmberConfig {
+            shards: 4,
+            ..Default::default()
+        };
         assert_eq!(cfg.resolved_shard_count(), 4);
     }
 
@@ -998,9 +1000,11 @@ mod tests {
 
     #[test]
     fn connection_limits_rejects_buffer_mismatch() {
-        let mut cfg = EmberConfig::default();
-        cfg.read_buffer_capacity = 1024 * 1024; // 1 MB
-        cfg.max_buffer_size = "512KB".into(); // 512 KB < 1 MB
+        let cfg = EmberConfig {
+            read_buffer_capacity: 1024 * 1024, // 1 MB
+            max_buffer_size: "512KB".into(),   // 512 KB < 1 MB
+            ..Default::default()
+        };
         let result = cfg.connection_limits();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be >="));
@@ -1008,8 +1012,10 @@ mod tests {
 
     #[test]
     fn connection_limits_rejects_zero_key_len() {
-        let mut cfg = EmberConfig::default();
-        cfg.max_key_len = "0".into();
+        let cfg = EmberConfig {
+            max_key_len: "0".into(),
+            ..Default::default()
+        };
         let result = cfg.connection_limits();
         assert!(result.is_err());
     }
