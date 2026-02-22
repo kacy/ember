@@ -62,7 +62,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/ember-server dist/${{ matrix.artifact }}
-          cp target/${{ matrix.target }}/release/emberkv-cli dist/ember-cli-${{ matrix.artifact_suffix }}
+          cp target/${{ matrix.target }}/release/ember-cli dist/ember-cli-${{ matrix.artifact_suffix }}
 
       - name: upload artifact
         uses: actions/upload-artifact@v4
