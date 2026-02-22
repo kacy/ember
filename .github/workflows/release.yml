@@ -131,3 +131,16 @@ jobs:
         with:
           generate_release_notes: true
           files: release/*
+
+  homebrew:
+    name: update homebrew formula
+    runs-on: ubuntu-latest
+    needs: release
+    steps:
+      - uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: ember-db
+          homebrew-tap: kacy/homebrew-ember
+          tag-name: ${{ github.ref_name }}
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HELM_RELEASE_TOKEN }}
