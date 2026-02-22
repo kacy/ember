@@ -24,7 +24,7 @@ fn populated_keyspace(value_size: usize) -> Keyspace {
     let mut ks = Keyspace::new();
     let value = make_value(value_size);
     for i in 0..KEY_COUNT {
-        ks.set(format!("key:{i}"), value.clone(), None);
+        ks.set(format!("key:{i}"), value.clone(), None, false, false);
     }
     ks
 }
@@ -58,9 +58,9 @@ fn bench_set_overwrite(c: &mut Criterion) {
             |b, &size| {
                 let mut ks = Keyspace::new();
                 let value = make_value(size);
-                ks.set("key".into(), value.clone(), None);
+                ks.set("key".into(), value.clone(), None, false, false);
                 b.iter(|| {
-                    black_box(ks.set("key".into(), value.clone(), None));
+                    black_box(ks.set("key".into(), value.clone(), None, false, false));
                 });
             },
         );
@@ -76,9 +76,9 @@ fn bench_set_with_expiry(c: &mut Criterion) {
 
     group.bench_function("64B_with_ttl", |b| {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), value.clone(), ttl);
+        ks.set("key".into(), value.clone(), ttl, false, false);
         b.iter(|| {
-            black_box(ks.set("key".into(), value.clone(), ttl));
+            black_box(ks.set("key".into(), value.clone(), ttl, false, false));
         });
     });
 
@@ -96,7 +96,7 @@ fn bench_mixed(c: &mut Criterion) {
             if i.is_multiple_of(2) {
                 let _ = black_box(ks.get(&key));
             } else {
-                black_box(ks.set(key, value.clone(), None));
+                black_box(ks.set(key, value.clone(), None, false, false));
             }
             i += 1;
         });

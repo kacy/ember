@@ -478,28 +478,28 @@ impl ClusterCoordinator {
                 node_id: self.local_id,
                 slots: slot_ranges,
             };
-            match raft.propose(cmd).await {
-                Ok(_) => Frame::Simple("OK".into()),
-                Err(e) => Self::raft_error_frame(e),
+            if let Err(e) = raft.propose(cmd).await {
+                return Self::raft_error_frame(e);
             }
-        } else {
-            // direct write path (single-node / test mode)
-            let new_slots = {
-                let mut state = self.state.write().await;
-                for &slot in slots {
-                    state.slot_map.assign(slot, self.local_id);
-                }
-                let new_slots = state.slot_map.slots_for_node(self.local_id);
-                if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                    node.slots = new_slots.clone();
-                }
-                state.update_health();
-                new_slots
-            };
-            self.broadcast_local_slots(new_slots).await;
-            self.save_config().await;
-            Frame::Simple("OK".into())
         }
+
+        // apply to local state immediately so subsequent reads see
+        // the change without waiting for async raft reconciliation
+        let new_slots = {
+            let mut state = self.state.write().await;
+            for &slot in slots {
+                state.slot_map.assign(slot, self.local_id);
+            }
+            let new_slots = state.slot_map.slots_for_node(self.local_id);
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.slots = new_slots.clone();
+            }
+            state.update_health();
+            new_slots
+        };
+        self.broadcast_local_slots(new_slots).await;
+        self.save_config().await;
+        Frame::Simple("OK".into())
     }
 
     /// CLUSTER DELSLOTS slot [slot ...]
@@ -529,27 +529,27 @@ impl ClusterCoordinator {
                 node_id: self.local_id,
                 slots: slot_ranges,
             };
-            match raft.propose(cmd).await {
-                Ok(_) => Frame::Simple("OK".into()),
-                Err(e) => Self::raft_error_frame(e),
+            if let Err(e) = raft.propose(cmd).await {
+                return Self::raft_error_frame(e);
             }
-        } else {
-            let new_slots = {
-                let mut state = self.state.write().await;
-                for &slot in slots {
-                    state.slot_map.unassign(slot);
-                }
-                let new_slots = state.slot_map.slots_for_node(self.local_id);
-                if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                    node.slots = new_slots.clone();
-                }
-                state.update_health();
-                new_slots
-            };
-            self.broadcast_local_slots(new_slots).await;
-            self.save_config().await;
-            Frame::Simple("OK".into())
         }
+
+        // apply to local state immediately
+        let new_slots = {
+            let mut state = self.state.write().await;
+            for &slot in slots {
+                state.slot_map.unassign(slot);
+            }
+            let new_slots = state.slot_map.slots_for_node(self.local_id);
+            if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                node.slots = new_slots.clone();
+            }
+            state.update_health();
+            new_slots
+        };
+        self.broadcast_local_slots(new_slots).await;
+        self.save_config().await;
+        Frame::Simple("OK".into())
     }
 
     /// CLUSTER FORGET node-id
@@ -573,20 +573,21 @@ impl ClusterCoordinator {
 
         if let Some(raft) = self.raft_node.get() {
             let cmd = ClusterCommand::RemoveNode { node_id };
-            match raft.propose(cmd).await {
-                Ok(_) => Frame::Simple("OK".into()),
-                Err(e) => Self::raft_error_frame(e),
+            if let Err(e) = raft.propose(cmd).await {
+                return Self::raft_error_frame(e);
             }
-        } else {
-            let mut state = self.state.write().await;
-            match state.remove_node(node_id) {
-                Some(_) => {
-                    drop(state);
-                    self.save_config().await;
-                    Frame::Simple("OK".into())
-                }
-                None => Frame::Error("ERR Unknown node ID".into()),
+        }
+
+        // apply to local state immediately
+        let mut state = self.state.write().await;
+        match state.remove_node(node_id) {
+            Some(_) => {
+                drop(state);
+                self.save_config().await;
+                Frame::Simple("OK".into())
             }
+            // already removed by reconciliation — that's fine
+            None => Frame::Simple("OK".into()),
         }
     }
 

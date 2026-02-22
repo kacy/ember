@@ -281,14 +281,15 @@ async fn cluster_replicate_invalid_id() {
 }
 
 #[tokio::test]
-async fn cluster_failover_stub() {
+async fn cluster_failover_requires_replica() {
     let server = cluster_server();
     let mut c = server.connect().await;
 
+    // failover only makes sense on a replica; a primary should reject it
     let err = c.err(&["CLUSTER", "FAILOVER"]).await;
     assert!(
-        err.contains("not yet implemented"),
-        "expected stub error, got: {err}"
+        err.contains("FAILOVER to a replica"),
+        "expected replica-only error, got: {err}"
     );
 }
 

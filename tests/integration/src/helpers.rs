@@ -75,10 +75,11 @@ impl TestServer {
 
         if opts.cluster_enabled {
             cmd.arg("--cluster-enabled");
-            // use a small offset so the gossip port stays in valid u16 range.
-            // random test ports are often >55000, and the default +10000 would
-            // overflow past 65535.
+            // use small offsets so gossip and raft ports stay in valid u16 range.
+            // random test ports are often >55000, and the defaults (+10000/+10001)
+            // would overflow past 65535.
             cmd.arg("--cluster-port-offset").arg("1");
+            cmd.arg("--cluster-raft-port-offset").arg("2");
         }
         if opts.cluster_bootstrap {
             cmd.arg("--cluster-bootstrap");
@@ -112,7 +113,7 @@ impl TestServer {
                 panic!("failed to spawn ember-server at {}: {e}", binary.display())
             });
 
-        // wait for the server to be ready
+        // wait for the server to accept TCP connections
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             if std::time::Instant::now() > deadline {
@@ -124,10 +125,54 @@ impl TestServer {
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        Self {
+        let server = Self {
             child,
             port,
             _data_dir: data_dir,
+        };
+
+        // for bootstrapped cluster nodes, wait until raft reconciliation
+        // has applied and the cluster reports all 16384 slots assigned
+        if opts.cluster_bootstrap {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if std::time::Instant::now() > deadline {
+                    panic!("bootstrapped cluster failed to become ready on port {port}");
+                }
+                if Self::check_cluster_ready_sync(port) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        server
+    }
+
+    /// Checks if a bootstrapped cluster node is ready by sending CLUSTER INFO
+    /// over a blocking TCP connection and looking for `cluster_state:ok`.
+    fn check_cluster_ready_sync(port: u16) -> bool {
+        use std::io::{Read, Write};
+
+        let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}")) else {
+            return false;
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
+
+        let cmd = b"*2\r\n$7\r\nCLUSTER\r\n$4\r\nINFO\r\n";
+        if stream.write_all(cmd).is_err() {
+            return false;
+        }
+
+        let mut buf = vec![0u8; 4096];
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let response = String::from_utf8_lossy(&buf[..n]);
+                response.contains("cluster_state:ok")
+            }
+            _ => false,
         }
     }
 

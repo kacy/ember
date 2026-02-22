@@ -23,7 +23,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use ember_cluster::{raft_id_from_node_id, GossipConfig, NodeId, RaftNode, RaftStorage};
+use ember_cluster::{
+    raft_id_from_node_id, GossipConfig, NodeId, RaftNode, RaftStorage, SlotRange, SLOT_COUNT,
+};
 use ember_core::{ReplicationEvent, ShardPersistenceConfig};
 use tracing::info;
 #[cfg(feature = "protobuf")]
@@ -684,36 +686,46 @@ async fn main() {
 
         let coordinator = Arc::new(coordinator);
 
-        // start the Raft node and attach it to the coordinator
-        let raft_port = addr
-            .port()
-            .checked_add(raft_port_offset)
-            .unwrap_or_else(|| exit_err("error: raft port offset overflows u16"));
-        let raft_addr = std::net::SocketAddr::new(addr.ip(), raft_port);
-        let raft_id = raft_id_from_node_id(local_id);
-
-        let (storage, state_rx) = RaftStorage::new();
-        let raft_node = match RaftNode::start(
-            raft_id,
-            raft_addr,
-            storage.clone(),
-            coordinator.cluster_secret(),
-        )
-        .await
-        {
-            Ok(node) => Arc::new(node),
-            Err(e) => exit_err(format!("failed to start raft node: {e}")),
-        };
-
+        // only start and attach raft for bootstrapped nodes. non-bootstrap
+        // nodes use direct writes for ADDSLOTS/DELSLOTS and will join a raft
+        // group later when they meet an existing cluster.
         if is_bootstrap {
-            // first boot of a brand-new cluster: initialize single-member raft
-            // and add this node to the application state machine
+            let raft_port = addr
+                .port()
+                .checked_add(raft_port_offset)
+                .unwrap_or_else(|| exit_err("error: raft port offset overflows u16"));
+            let raft_addr = std::net::SocketAddr::new(addr.ip(), raft_port);
+            let raft_id = raft_id_from_node_id(local_id);
+
+            let (storage, state_rx) = RaftStorage::new();
+            let raft_node = match RaftNode::start(
+                raft_id,
+                raft_addr,
+                storage.clone(),
+                coordinator.cluster_secret(),
+            )
+            .await
+            {
+                Ok(node) => Arc::new(node),
+                Err(e) => exit_err(format!("failed to start raft node: {e}")),
+            };
+
+            // initialize single-member raft and elect ourselves leader
             if let Err(e) = raft_node.bootstrap_single().await {
                 exit_err(format!("failed to bootstrap raft: {e}"));
             }
-            // give raft a moment to elect itself leader before proposing
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
+            // wait for leader election (single member, usually < 50ms)
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !raft_node.is_leader() {
+                if tokio::time::Instant::now() > deadline {
+                    exit_err("raft leader election timed out");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+
+            // register this node and assign all slots through raft so
+            // reconciliation sees the canonical state
             if let Err(e) = raft_node
                 .propose(ember_cluster::ClusterCommand::AddNode {
                     node_id: local_id,
@@ -723,13 +735,19 @@ async fn main() {
                 })
                 .await
             {
-                // non-fatal: the node will be added via reconciliation later
-                tracing::warn!("bootstrap AddNode proposal failed: {e}");
+                tracing::warn!("AddNode proposal failed: {e}");
             }
-        }
+            let cmd = ember_cluster::ClusterCommand::AssignSlots {
+                node_id: local_id,
+                slots: vec![SlotRange::new(0, SLOT_COUNT - 1)],
+            };
+            if let Err(e) = raft_node.propose(cmd).await {
+                tracing::warn!("bootstrap AssignSlots proposal failed: {e}");
+            }
 
-        coordinator.attach_raft(Arc::clone(&raft_node));
-        coordinator.spawn_raft_reconciliation(state_rx);
+            coordinator.attach_raft(Arc::clone(&raft_node));
+            coordinator.spawn_raft_reconciliation(state_rx);
+        }
 
         // spawn gossip networking tasks
         coordinator.spawn_gossip(addr, event_rx).await;
