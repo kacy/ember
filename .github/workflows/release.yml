@@ -110,8 +110,8 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.tag }}
             ghcr.io/${{ github.repository }}:latest
-            emberdb/ember:${{ steps.version.outputs.tag }}
-            emberdb/ember:latest
+            kacy/ember:${{ steps.version.outputs.tag }}
+            kacy/ember:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
