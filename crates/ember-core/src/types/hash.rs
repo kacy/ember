@@ -77,13 +77,10 @@ impl HashValue {
     /// Removes a field, returning its value if it existed.
     pub fn remove(&mut self, field: &str) -> Option<Bytes> {
         match self {
-            HashValue::Compact(vec) => {
-                if let Some(pos) = vec.iter().position(|(k, _)| k.as_str() == field) {
-                    Some(vec.swap_remove(pos).1)
-                } else {
-                    None
-                }
-            }
+            HashValue::Compact(vec) => vec
+                .iter()
+                .position(|(k, _)| k.as_str() == field)
+                .map(|pos| vec.swap_remove(pos).1),
             HashValue::Full(map) => map.remove(field),
         }
     }

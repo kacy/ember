@@ -48,7 +48,9 @@ jobs:
       - name: build
         run: cargo build --workspace --features protobuf,grpc
       - name: test
-        run: cargo test --workspace --features protobuf,grpc -- --skip cluster
+        run: cargo test --workspace --features protobuf,grpc -- --skip cluster:: --skip cli::cli_cluster --skip cli::cli_benchmark --skip cli::cli_oneshot --skip cli::cli_connection
+      - name: test cluster crate
+        run: cargo test -p ember-cluster
 
   build:
     name: build
