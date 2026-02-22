@@ -8,6 +8,7 @@
   <img src="https://img.shields.io/badge/rust-1.93%2B-blue.svg" alt="rust version">
   <a href="https://github.com/kacy/ember/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="license"></a>
   <a href="https://charts.emberdb.com"><img src="https://img.shields.io/badge/helm-charts.emberdb.com-0f1689.svg" alt="helm chart"></a>
+  <a href="https://github.com/kacy/homebrew-ember"><img src="https://img.shields.io/badge/homebrew-kacy%2Fember-f9a825.svg" alt="homebrew"></a>
 </p>
 
 # ember
@@ -43,6 +44,25 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **pipelining** — multiple commands per read for high throughput
 - **interactive CLI** — `ember-cli` with REPL, syntax highlighting, tab-completion, inline hints, cluster subcommands, and built-in benchmark
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
+
+## install
+
+**homebrew (macOS/Linux)**
+
+```bash
+brew tap kacy/ember
+brew install ember-db
+```
+
+this installs both `ember-server` and `ember-cli`.
+
+**from source**
+
+```bash
+git clone https://github.com/kacy/ember
+cd ember
+cargo build --release
+```
 
 ## quickstart
 
