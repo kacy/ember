@@ -3,6 +3,7 @@
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -51,7 +52,13 @@ impl TestServer {
     pub fn start_with(opts: ServerOptions) -> Self {
         let binary = server_binary();
 
-        let port = find_free_port();
+        // cluster servers need 3 consecutive ports (data, gossip, raft).
+        // use deterministic allocation to avoid races and overlap.
+        let port = if opts.cluster_enabled {
+            allocate_ports(3)
+        } else {
+            find_free_port()
+        };
 
         let mut cmd = Command::new(&binary);
         cmd.arg("--port").arg(port.to_string());
@@ -320,6 +327,29 @@ impl TestClient {
             }
         }
     }
+}
+
+/// Monotonic counter for deterministic port allocation, initialized
+/// from the process ID to avoid collisions with stale servers from
+/// previous test runs.
+static PORT_COUNTER: AtomicU16 = AtomicU16::new(0);
+
+/// Allocates a block of `count` consecutive ports guaranteed not to
+/// overlap with any other test server in this process.
+fn allocate_ports(count: u16) -> u16 {
+    // lazy-initialize from PID on first call so each test binary
+    // invocation gets a different starting range. The range 10000–40000
+    // keeps us well below the OS ephemeral range (49152+).
+    PORT_COUNTER
+        .compare_exchange(
+            0,
+            10_000 + (std::process::id() as u16 % 20_000),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        )
+        .ok();
+
+    PORT_COUNTER.fetch_add(count, Ordering::Relaxed)
 }
 
 /// Finds a free TCP port by binding to port 0.
