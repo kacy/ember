@@ -72,9 +72,11 @@ resolve_version() {
 
     info "fetching latest release tag..."
     local tag
-    tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+    tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases" \
         | grep '"tag_name"' \
-        | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')
+        | grep -Eo '"v[0-9]+\.[0-9]+\.[0-9]+"' \
+        | tr -d '"' \
+        | head -1)
 
     if [[ -z "$tag" ]]; then
         die "could not determine the latest release — check your network or specify --version"
