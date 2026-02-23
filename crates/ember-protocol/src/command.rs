@@ -546,6 +546,28 @@ pub enum Command {
     /// UNWATCH. Clears all watched keys for the current connection.
     Unwatch,
 
+    /// TIME. Returns the current server time as \[unix_seconds, microseconds\].
+    Time,
+
+    /// LASTSAVE. Returns the unix timestamp of the last successful save.
+    LastSave,
+
+    /// ROLE. Returns the replication role of the server.
+    Role,
+
+    /// OBJECT ENCODING `key`. Returns the internal encoding of the value.
+    ObjectEncoding { key: String },
+
+    /// OBJECT REFCOUNT `key`. Returns the reference count of the value (always 1).
+    ObjectRefcount { key: String },
+
+    /// COPY `source` `destination` \[DB db\] \[REPLACE\]. Copies the value at source to destination.
+    Copy {
+        source: String,
+        destination: String,
+        replace: bool,
+    },
+
     /// QUIT. Requests the server to close the connection.
     Quit,
 
@@ -613,6 +635,9 @@ impl Command {
             Command::Unlink { .. } => "unlink",
             Command::Exists { .. } => "exists",
             Command::Rename { .. } => "rename",
+            Command::Copy { .. } => "copy",
+            Command::ObjectEncoding { .. } => "object",
+            Command::ObjectRefcount { .. } => "object",
             Command::Keys { .. } => "keys",
             Command::Scan { .. } => "scan",
             Command::SScan { .. } => "sscan",
@@ -628,6 +653,9 @@ impl Command {
             // server
             Command::DbSize => "dbsize",
             Command::Info { .. } => "info",
+            Command::Time => "time",
+            Command::LastSave => "lastsave",
+            Command::Role => "role",
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
             Command::FlushDb { .. } => "flushdb",
@@ -761,6 +789,7 @@ impl Command {
                 | Command::Del { .. }
                 | Command::Unlink { .. }
                 | Command::Rename { .. }
+                | Command::Copy { .. }
                 | Command::Expire { .. }
                 | Command::Pexpire { .. }
                 | Command::Persist { .. }
@@ -822,6 +851,8 @@ impl Command {
             | Command::Pttl { key }
             | Command::Type { key }
             | Command::Rename { key, .. }
+            | Command::ObjectEncoding { key }
+            | Command::ObjectRefcount { key }
             | Command::LPush { key, .. }
             | Command::RPush { key, .. }
             | Command::LPop { key }
@@ -867,6 +898,7 @@ impl Command {
             | Command::ProtoSetField { key, .. }
             | Command::ProtoDelField { key, .. }
             | Command::Restore { key, .. } => Some(key),
+            Command::Copy { source, .. } => Some(source),
             Command::Del { keys }
             | Command::Unlink { keys }
             | Command::Exists { keys }
@@ -1010,6 +1042,11 @@ impl Command {
             "PROTO.GETFIELD" => parse_proto_getfield(&frames[1..]),
             "PROTO.SETFIELD" => parse_proto_setfield(&frames[1..]),
             "PROTO.DELFIELD" => parse_proto_delfield(&frames[1..]),
+            "TIME" => parse_no_args("TIME", &frames[1..], Command::Time),
+            "LASTSAVE" => parse_no_args("LASTSAVE", &frames[1..], Command::LastSave),
+            "ROLE" => parse_no_args("ROLE", &frames[1..], Command::Role),
+            "OBJECT" => parse_object(&frames[1..]),
+            "COPY" => parse_copy(&frames[1..]),
             "CLIENT" => parse_client(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
@@ -2296,6 +2333,71 @@ fn parse_client(args: &[Frame]) -> Result<Command, ProtocolError> {
             "unknown CLIENT subcommand '{other}'"
         ))),
     }
+}
+
+fn parse_object(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("OBJECT"));
+    }
+
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcmd = uppercase_arg(&args[0], &mut kw)?;
+    match subcmd {
+        "ENCODING" => {
+            if args.len() != 2 {
+                return Err(wrong_arity("OBJECT|ENCODING"));
+            }
+            let key = extract_string(&args[1])?;
+            Ok(Command::ObjectEncoding { key })
+        }
+        "REFCOUNT" => {
+            if args.len() != 2 {
+                return Err(wrong_arity("OBJECT|REFCOUNT"));
+            }
+            let key = extract_string(&args[1])?;
+            Ok(Command::ObjectRefcount { key })
+        }
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown OBJECT subcommand '{other}'"
+        ))),
+    }
+}
+
+fn parse_copy(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("COPY"));
+    }
+    let source = extract_string(&args[0])?;
+    let destination = extract_string(&args[1])?;
+
+    let mut replace = false;
+    let mut i = 2;
+    while i < args.len() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let arg = uppercase_arg(&args[i], &mut kw)?;
+        match arg {
+            "REPLACE" => replace = true,
+            "DB" => {
+                // consume and ignore the DB argument (single-db server)
+                i += 1;
+                if i >= args.len() {
+                    return Err(wrong_arity("COPY"));
+                }
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported COPY option '{arg}'"
+                )));
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Command::Copy {
+        source,
+        destination,
+        replace,
+    })
 }
 
 fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
@@ -6270,5 +6372,103 @@ mod tests {
             Command::from_frame(cmd(&["UNWATCH"])).unwrap(),
             Command::Unwatch,
         );
+    }
+
+    // --- time / lastsave / role ---
+
+    #[test]
+    fn parse_time() {
+        assert_eq!(Command::from_frame(cmd(&["TIME"])).unwrap(), Command::Time);
+    }
+
+    #[test]
+    fn parse_lastsave() {
+        assert_eq!(
+            Command::from_frame(cmd(&["LASTSAVE"])).unwrap(),
+            Command::LastSave,
+        );
+    }
+
+    #[test]
+    fn parse_role() {
+        assert_eq!(Command::from_frame(cmd(&["ROLE"])).unwrap(), Command::Role);
+    }
+
+    // --- object ---
+
+    #[test]
+    fn parse_object_encoding() {
+        assert_eq!(
+            Command::from_frame(cmd(&["OBJECT", "ENCODING", "mykey"])).unwrap(),
+            Command::ObjectEncoding {
+                key: "mykey".into()
+            },
+        );
+    }
+
+    #[test]
+    fn parse_object_refcount() {
+        assert_eq!(
+            Command::from_frame(cmd(&["OBJECT", "REFCOUNT", "mykey"])).unwrap(),
+            Command::ObjectRefcount {
+                key: "mykey".into()
+            },
+        );
+    }
+
+    #[test]
+    fn parse_object_unknown_subcommand() {
+        let err = Command::from_frame(cmd(&["OBJECT", "FREQ", "mykey"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn parse_object_no_subcommand() {
+        let err = Command::from_frame(cmd(&["OBJECT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- copy ---
+
+    #[test]
+    fn parse_copy_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["COPY", "src", "dst"])).unwrap(),
+            Command::Copy {
+                source: "src".into(),
+                destination: "dst".into(),
+                replace: false,
+            },
+        );
+    }
+
+    #[test]
+    fn parse_copy_replace() {
+        assert_eq!(
+            Command::from_frame(cmd(&["COPY", "src", "dst", "REPLACE"])).unwrap(),
+            Command::Copy {
+                source: "src".into(),
+                destination: "dst".into(),
+                replace: true,
+            },
+        );
+    }
+
+    #[test]
+    fn parse_copy_db_ignored() {
+        assert_eq!(
+            Command::from_frame(cmd(&["COPY", "src", "dst", "DB", "0", "REPLACE"])).unwrap(),
+            Command::Copy {
+                source: "src".into(),
+                destination: "dst".into(),
+                replace: true,
+            },
+        );
+    }
+
+    #[test]
+    fn parse_copy_wrong_arity() {
+        let err = Command::from_frame(cmd(&["COPY", "src"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }

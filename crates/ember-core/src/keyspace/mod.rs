@@ -123,6 +123,15 @@ pub enum RenameError {
     NoSuchKey,
 }
 
+/// Error returned by COPY.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyError {
+    /// The source key does not exist.
+    NoSuchKey,
+    /// Memory limit reached and eviction couldn't free enough space.
+    OutOfMemory,
+}
+
 impl std::fmt::Display for RenameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -816,6 +825,69 @@ impl Keyspace {
         entry.version = ver;
         self.entries.insert(CompactString::from(newkey), entry);
         Ok(())
+    }
+
+    /// Copies the value at `source` to `destination`. If `replace` is false and
+    /// the destination already exists, returns `Ok(false)`. Returns `Ok(true)` on
+    /// success.
+    pub fn copy(&mut self, source: &str, dest: &str, replace: bool) -> Result<bool, CopyError> {
+        self.remove_if_expired(source);
+        self.remove_if_expired(dest);
+
+        let src_entry = match self.entries.get(source) {
+            Some(e) => e,
+            None => return Err(CopyError::NoSuchKey),
+        };
+
+        // if destination exists and replace not set, return 0
+        if !replace && self.entries.contains_key(dest) {
+            return Ok(false);
+        }
+
+        // clone value and expiry from source
+        let cloned_value = src_entry.value.clone();
+        let cloned_expire = if src_entry.expires_at_ms != 0 {
+            Some(src_entry.expires_at_ms)
+        } else {
+            None
+        };
+
+        // estimate memory for the new entry
+        let new_size = memory::entry_size(dest, &cloned_value);
+
+        // if replacing, account for the old destination's size
+        let old_dest_size = self
+            .entries
+            .get(dest)
+            .map(|e| e.entry_size(dest))
+            .unwrap_or(0);
+        let net_increase = new_size.saturating_sub(old_dest_size);
+        if !self.enforce_memory_limit(net_increase) {
+            return Err(CopyError::OutOfMemory);
+        }
+
+        // remove old destination if replacing
+        if let Some(old_dest) = self.entries.remove(dest) {
+            self.memory.remove(dest, &old_dest.value);
+            self.decrement_expiry_if_set(&old_dest);
+            self.defer_drop(old_dest.value);
+        }
+
+        // insert the clone
+        self.memory.add(dest, &cloned_value);
+        let has_expiry = cloned_expire.is_some();
+        if has_expiry {
+            self.expiry_count += 1;
+        }
+        let ver = self.next_ver();
+        let mut entry = Entry::new(cloned_value, None);
+        // preserve the source's absolute expiry timestamp
+        if let Some(ts) = cloned_expire {
+            entry.expires_at_ms = ts;
+        }
+        entry.version = ver;
+        self.entries.insert(CompactString::from(dest), entry);
+        Ok(true)
     }
 
     /// Returns aggregated stats for this keyspace.
@@ -2106,5 +2178,80 @@ mod tests {
         let va = ks.key_version("a").unwrap();
         let vb = ks.key_version("b").unwrap();
         assert_ne!(va, vb, "different keys should have different versions");
+    }
+
+    // --- copy tests ---
+
+    #[test]
+    fn copy_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("hello"), None, false, false);
+        assert_eq!(ks.copy("src", "dst", false), Ok(true));
+        assert_eq!(
+            ks.get("dst").unwrap(),
+            Some(Value::String(Bytes::from("hello")))
+        );
+        // source should still exist
+        assert!(ks.exists("src"));
+    }
+
+    #[test]
+    fn copy_preserves_expiry() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "src".into(),
+            Bytes::from("val"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
+        assert_eq!(ks.copy("src", "dst", false), Ok(true));
+        match ks.ttl("dst") {
+            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
+            other => panic!("expected TTL preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn copy_no_replace_returns_false() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("a"), None, false, false);
+        ks.set("dst".into(), Bytes::from("b"), None, false, false);
+        assert_eq!(ks.copy("src", "dst", false), Ok(false));
+        // destination should be unchanged
+        assert_eq!(
+            ks.get("dst").unwrap(),
+            Some(Value::String(Bytes::from("b")))
+        );
+    }
+
+    #[test]
+    fn copy_replace_overwrites() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("new"), None, false, false);
+        ks.set("dst".into(), Bytes::from("old"), None, false, false);
+        assert_eq!(ks.copy("src", "dst", true), Ok(true));
+        assert_eq!(
+            ks.get("dst").unwrap(),
+            Some(Value::String(Bytes::from("new")))
+        );
+    }
+
+    #[test]
+    fn copy_missing_source() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.copy("missing", "dst", false), Err(CopyError::NoSuchKey));
+    }
+
+    #[test]
+    fn copy_tracks_memory() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("value"), None, false, false);
+        let before = ks.stats().used_bytes;
+        ks.copy("src", "dst", false).unwrap();
+        let after = ks.stats().used_bytes;
+        // memory should roughly double (two entries with same value)
+        assert!(after > before);
+        assert_eq!(ks.stats().key_count, 2);
     }
 }

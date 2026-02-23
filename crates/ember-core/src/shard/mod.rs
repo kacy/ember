@@ -155,6 +155,16 @@ pub enum ShardRequest {
         key: String,
         newkey: String,
     },
+    /// Copies the value at source to destination within this shard.
+    Copy {
+        source: String,
+        destination: String,
+        replace: bool,
+    },
+    /// Returns the internal encoding name for the value at key.
+    ObjectEncoding {
+        key: String,
+    },
     Del {
         key: String,
     },
@@ -501,6 +511,8 @@ pub enum ShardResponse {
     Array(Vec<Bytes>),
     /// The type name of a stored value.
     TypeName(&'static str),
+    /// The encoding name of a stored value, or None if the key doesn't exist.
+    EncodingName(Option<&'static str>),
     /// ZADD result: count for the client + actually applied members for AOF.
     ZAddLen {
         count: usize,
@@ -1267,6 +1279,19 @@ fn dispatch(
                 Err(RenameError::NoSuchKey) => ShardResponse::Err("ERR no such key".into()),
             }
         }
+        ShardRequest::Copy {
+            source,
+            destination,
+            replace,
+        } => {
+            use crate::keyspace::CopyError;
+            match ks.copy(source, destination, *replace) {
+                Ok(copied) => ShardResponse::Bool(copied),
+                Err(CopyError::NoSuchKey) => ShardResponse::Err("ERR no such key".into()),
+                Err(CopyError::OutOfMemory) => ShardResponse::OutOfMemory,
+            }
+        }
+        ShardRequest::ObjectEncoding { key } => ShardResponse::EncodingName(ks.encoding(key)),
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Unlink { key } => ShardResponse::Bool(ks.unlink(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),

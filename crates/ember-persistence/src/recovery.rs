@@ -433,6 +433,18 @@ fn replay_aof(
                     map.insert(newkey, entry);
                 }
             }
+            AofRecord::Copy {
+                source,
+                destination,
+                replace,
+            } => {
+                if let Some(entry) = map.get(&source) {
+                    let cloned = entry.clone();
+                    if replace || !map.contains_key(&destination) {
+                        map.insert(destination, cloned);
+                    }
+                }
+            }
             AofRecord::HSet { key, fields } => {
                 let entry = map
                     .entry(key)

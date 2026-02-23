@@ -110,6 +110,10 @@ enum ResponseTag {
     CollectionScanResult,
     /// RENAME: Ok → Simple("OK"), Err → Error
     RenameResult,
+    /// COPY: Bool(true) → Integer(1), Bool(false) → Integer(0), Err → Error
+    CopyResult,
+    /// OBJECT ENCODING: EncodingName(Some) → Bulk, EncodingName(None) → Null
+    EncodingResult,
     /// Len result with OOM possible (LPUSH/RPUSH/SADD)
     LenResultOom,
     /// Vector VADD result
@@ -1701,6 +1705,16 @@ async fn prepare_command(
         Command::Type { key } => {
             route!(key, ShardRequest::Type { key }, ResponseTag::TypeResult)
         }
+        Command::ObjectEncoding { key } => {
+            route!(
+                key,
+                ShardRequest::ObjectEncoding { key },
+                ResponseTag::EncodingResult
+            )
+        }
+        Command::ObjectRefcount { key } => {
+            route!(key, ShardRequest::Exists { key }, ResponseTag::BoolToInt)
+        }
 
         // -- list commands --
         Command::LPush { key, values } => {
@@ -2066,6 +2080,27 @@ async fn prepare_command(
                 )
             }
         }
+        Command::Copy {
+            source,
+            destination,
+            replace,
+        } => {
+            if !engine.same_shard(&source, &destination) {
+                PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Error(
+                    "ERR source and destination keys must hash to the same shard".into(),
+                )))
+            } else {
+                route!(
+                    source,
+                    ShardRequest::Copy {
+                        source,
+                        destination,
+                        replace,
+                    },
+                    ResponseTag::CopyResult
+                )
+            }
+        }
 
         // -- proto commands that are single-key dispatches --
         #[cfg(feature = "protobuf")]
@@ -2413,6 +2448,17 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         ResponseTag::RenameResult => match resp {
             ShardResponse::Ok => Frame::Simple("OK".into()),
             ShardResponse::Err(msg) => Frame::Error(msg),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::CopyResult => match resp {
+            ShardResponse::Bool(b) => Frame::Integer(i64::from(b)),
+            ShardResponse::Err(msg) => Frame::Error(msg),
+            ShardResponse::OutOfMemory => oom_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::EncodingResult => match resp {
+            ShardResponse::EncodingName(Some(name)) => Frame::Bulk(Bytes::from(name)),
+            ShardResponse::EncodingName(None) => Frame::Null,
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
 
@@ -3050,7 +3096,16 @@ async fn execute(
         },
 
         Command::BgSave => match engine.broadcast(|| ShardRequest::Snapshot).await {
-            Ok(_) => Frame::Simple("Background saving started".into()),
+            Ok(_) => {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                ctx.last_save_timestamp
+                    .store(ts, std::sync::atomic::Ordering::Relaxed);
+                Frame::Simple("Background saving started".into())
+            }
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
 
@@ -3058,6 +3113,57 @@ async fn execute(
             Ok(_) => Frame::Simple("Background append only file rewriting started".into()),
             Err(e) => Frame::Error(format!("ERR {e}")),
         },
+
+        Command::Time => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let dur = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from(dur.as_secs().to_string())),
+                Frame::Bulk(Bytes::from(dur.subsec_micros().to_string())),
+            ])
+        }
+
+        Command::LastSave => {
+            let ts = ctx
+                .last_save_timestamp
+                .load(std::sync::atomic::Ordering::Relaxed);
+            Frame::Integer(ts as i64)
+        }
+
+        Command::Role => {
+            if let Some(ref cluster) = ctx.cluster {
+                use ember_cluster::NodeRole;
+                let info = cluster.replication_info().await;
+                match info.role {
+                    NodeRole::Primary => Frame::Array(vec![
+                        Frame::Bulk(Bytes::from("master")),
+                        Frame::Integer(0),
+                        Frame::Array(vec![]),
+                    ]),
+                    NodeRole::Replica => {
+                        let (host, port) = match info.primary_addr {
+                            Some(addr) => (addr.ip().to_string(), addr.port() as i64),
+                            None => (String::new(), 0),
+                        };
+                        Frame::Array(vec![
+                            Frame::Bulk(Bytes::from("slave")),
+                            Frame::Bulk(Bytes::from(host)),
+                            Frame::Integer(port),
+                            Frame::Bulk(Bytes::from("connected")),
+                            Frame::Integer(0),
+                        ])
+                    }
+                }
+            } else {
+                Frame::Array(vec![
+                    Frame::Bulk(Bytes::from("master")),
+                    Frame::Integer(0),
+                    Frame::Array(vec![]),
+                ])
+            }
+        }
 
         Command::FlushDb { async_mode } => {
             let req = if async_mode {
@@ -3108,6 +3214,52 @@ async fn execute(
                     Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                     Err(e) => Frame::Error(format!("ERR {e}")),
                 }
+            }
+        }
+
+        Command::Copy {
+            source,
+            destination,
+            replace,
+        } => {
+            if !engine.same_shard(&source, &destination) {
+                Frame::Error("ERR source and destination keys must hash to the same shard".into())
+            } else {
+                let idx = engine.shard_for_key(&source);
+                let req = ShardRequest::Copy {
+                    source,
+                    destination,
+                    replace,
+                };
+                match engine.send_to_shard(idx, req).await {
+                    Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
+                    Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                    Ok(ShardResponse::OutOfMemory) => oom_error(),
+                    Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                }
+            }
+        }
+
+        Command::ObjectEncoding { key } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ObjectEncoding { key };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::EncodingName(Some(name))) => Frame::Bulk(Bytes::from(name)),
+                Ok(ShardResponse::EncodingName(None)) => Frame::Null,
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ObjectRefcount { key } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Exists { key };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Bool(true)) => Frame::Integer(1),
+                Ok(ShardResponse::Bool(false)) => Frame::Null,
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
 

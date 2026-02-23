@@ -98,6 +98,7 @@ const TAG_EXPIRE: u8 = 3;
 const TAG_PERSIST: u8 = 10;
 const TAG_PEXPIRE: u8 = 11;
 const TAG_RENAME: u8 = 22;
+const TAG_COPY: u8 = 27;
 
 // vector
 #[cfg(feature = "vector")]
@@ -172,6 +173,12 @@ pub enum AofRecord {
     Append { key: String, value: Bytes },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
+    /// COPY source destination [REPLACE].
+    Copy {
+        source: String,
+        destination: String,
+        replace: bool,
+    },
     /// VADD key element vector [metric quant connectivity expansion_add].
     /// Stores the full index config so recovery can recreate the set.
     #[cfg(feature = "vector")]
@@ -236,6 +243,7 @@ impl AofRecord {
             AofRecord::DecrBy { .. } => TAG_DECRBY,
             AofRecord::Append { .. } => TAG_APPEND,
             AofRecord::Rename { .. } => TAG_RENAME,
+            AofRecord::Copy { .. } => TAG_COPY,
             #[cfg(feature = "vector")]
             AofRecord::VAdd { .. } => TAG_VADD,
             #[cfg(feature = "vector")]
@@ -313,6 +321,11 @@ impl AofRecord {
             AofRecord::Rename { key, newkey } => {
                 1 + LEN_PREFIX + key.len() + LEN_PREFIX + newkey.len()
             }
+            AofRecord::Copy {
+                source,
+                destination,
+                ..
+            } => 1 + LEN_PREFIX + source.len() + LEN_PREFIX + destination.len() + 1,
             #[cfg(feature = "vector")]
             AofRecord::VAdd {
                 key,
@@ -454,6 +467,17 @@ impl AofRecord {
             AofRecord::Rename { key, newkey } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_bytes(&mut buf, newkey.as_bytes())?;
+            }
+
+            // source + destination + replace flag
+            AofRecord::Copy {
+                source,
+                destination,
+                replace,
+            } => {
+                format::write_bytes(&mut buf, source.as_bytes())?;
+                format::write_bytes(&mut buf, destination.as_bytes())?;
+                buf.push(u8::from(*replace));
             }
 
             #[cfg(feature = "vector")]
@@ -644,6 +668,16 @@ impl AofRecord {
                 let key = read_string(&mut cursor, "key")?;
                 let newkey = read_string(&mut cursor, "newkey")?;
                 Ok(AofRecord::Rename { key, newkey })
+            }
+            TAG_COPY => {
+                let source = read_string(&mut cursor, "source")?;
+                let destination = read_string(&mut cursor, "destination")?;
+                let replace = format::read_u8(&mut cursor)? != 0;
+                Ok(AofRecord::Copy {
+                    source,
+                    destination,
+                    replace,
+                })
             }
             #[cfg(feature = "vector")]
             TAG_VADD => {
@@ -1136,6 +1170,14 @@ impl AofReader {
                 format::write_bytes(&mut payload, &key)?;
                 let newkey = format::read_bytes(&mut self.reader)?;
                 format::write_bytes(&mut payload, &newkey)?;
+            }
+            TAG_COPY => {
+                let source = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &source)?;
+                let dest = format::read_bytes(&mut self.reader)?;
+                format::write_bytes(&mut payload, &dest)?;
+                let replace = format::read_u8(&mut self.reader)?;
+                payload.push(replace);
             }
             #[cfg(feature = "vector")]
             TAG_VADD => {

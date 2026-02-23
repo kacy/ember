@@ -600,6 +600,72 @@ async fn execute_concurrent(
             Err(msg) => Frame::Error(msg.into()),
         },
 
+        Command::Copy {
+            source,
+            destination,
+            replace,
+        } => {
+            if let Some(data) = keyspace.get(&source) {
+                if !replace && keyspace.exists(&destination) {
+                    Frame::Integer(0)
+                } else {
+                    keyspace.set(destination, data, None);
+                    Frame::Integer(1)
+                }
+            } else {
+                Frame::Error("ERR no such key".into())
+            }
+        }
+
+        Command::ObjectEncoding { key } => {
+            if keyspace.exists(&key) {
+                // concurrent mode only stores strings
+                if let Some(data) = keyspace.get(&key) {
+                    if let Ok(s) = std::str::from_utf8(&data) {
+                        if s.parse::<i64>().is_ok() {
+                            return Frame::Bulk(Bytes::from("int"));
+                        }
+                    }
+                    if data.len() <= 24 {
+                        Frame::Bulk(Bytes::from("embstr"))
+                    } else {
+                        Frame::Bulk(Bytes::from("raw"))
+                    }
+                } else {
+                    Frame::Null
+                }
+            } else {
+                Frame::Null
+            }
+        }
+
+        Command::ObjectRefcount { key } => {
+            if keyspace.exists(&key) {
+                Frame::Integer(1)
+            } else {
+                Frame::Null
+            }
+        }
+
+        Command::Time => {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let dur = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default();
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from(dur.as_secs().to_string())),
+                Frame::Bulk(Bytes::from(dur.subsec_micros().to_string())),
+            ])
+        }
+
+        Command::LastSave => Frame::Integer(0),
+
+        Command::Role => Frame::Array(vec![
+            Frame::Bulk(Bytes::from("master")),
+            Frame::Integer(0),
+            Frame::Array(vec![]),
+        ]),
+
         Command::Info { section } => render_concurrent_info(keyspace, ctx, section.as_deref()),
 
         Command::ConfigGet { pattern } => {
