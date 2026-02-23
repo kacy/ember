@@ -164,6 +164,30 @@ pub enum Command {
         count: Option<usize>,
     },
 
+    /// SSCAN `key` `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates set members.
+    SScan {
+        key: String,
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
+
+    /// HSCAN `key` `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates hash fields.
+    HScan {
+        key: String,
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
+
+    /// ZSCAN `key` `cursor` \[MATCH pattern\] \[COUNT count\]. Iterates sorted set members.
+    ZScan {
+        key: String,
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+    },
+
     /// LPUSH `key` `value` \[value ...\]. Pushes values to the head of a list.
     LPush { key: String, values: Vec<Bytes> },
 
@@ -567,6 +591,9 @@ impl Command {
             Command::Rename { .. } => "rename",
             Command::Keys { .. } => "keys",
             Command::Scan { .. } => "scan",
+            Command::SScan { .. } => "sscan",
+            Command::HScan { .. } => "hscan",
+            Command::ZScan { .. } => "zscan",
             Command::Type { .. } => "type",
             Command::Expire { .. } => "expire",
             Command::Ttl { .. } => "ttl",
@@ -796,6 +823,9 @@ impl Command {
             | Command::SMembers { key }
             | Command::SIsMember { key, .. }
             | Command::SCard { key }
+            | Command::SScan { key, .. }
+            | Command::HScan { key, .. }
+            | Command::ZScan { key, .. }
             | Command::VAdd { key, .. }
             | Command::VAddBatch { key, .. }
             | Command::VSim { key, .. }
@@ -887,6 +917,9 @@ impl Command {
             "BGREWRITEAOF" => parse_bgrewriteaof(&frames[1..]),
             "FLUSHDB" => parse_flushdb(&frames[1..]),
             "SCAN" => parse_scan(&frames[1..]),
+            "SSCAN" => parse_key_scan(&frames[1..], "SSCAN"),
+            "HSCAN" => parse_key_scan(&frames[1..], "HSCAN"),
+            "ZSCAN" => parse_key_scan(&frames[1..], "ZSCAN"),
             "LPUSH" => parse_lpush(&frames[1..]),
             "RPUSH" => parse_rpush(&frames[1..]),
             "LPOP" => parse_lpop(&frames[1..]),
@@ -1462,6 +1495,79 @@ fn parse_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
         pattern,
         count,
     })
+}
+
+/// Shared parser for SSCAN, HSCAN, ZSCAN.
+///
+/// All three share the same shape: `key cursor [MATCH pattern] [COUNT count]`.
+fn parse_key_scan(args: &[Frame], cmd: &'static str) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity(cmd));
+    }
+
+    let key = extract_string(&args[0])?;
+    let cursor = parse_u64(&args[1], cmd)?;
+    let mut pattern = None;
+    let mut count = None;
+    let mut idx = 2;
+
+    while idx < args.len() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
+            "MATCH" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity(cmd));
+                }
+                pattern = Some(extract_string(&args[idx])?);
+                idx += 1;
+            }
+            "COUNT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity(cmd));
+                }
+                let n = parse_u64(&args[idx], cmd)?;
+                if n > MAX_SCAN_COUNT {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "{cmd} COUNT {n} exceeds max {MAX_SCAN_COUNT}"
+                    )));
+                }
+                count = Some(n as usize);
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported {cmd} option '{flag}'"
+                )));
+            }
+        }
+    }
+
+    match cmd {
+        "SSCAN" => Ok(Command::SScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        }),
+        "HSCAN" => Ok(Command::HScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        }),
+        "ZSCAN" => Ok(Command::ZScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        }),
+        _ => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown scan command '{cmd}'"
+        ))),
+    }
 }
 
 /// Parses a frame's bytes directly as an i64 without allocating a String.
@@ -4168,6 +4274,73 @@ mod tests {
     #[test]
     fn scan_count_missing_value() {
         let err = Command::from_frame(cmd(&["SCAN", "0", "COUNT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- collection scan commands ---
+
+    #[test]
+    fn sscan_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SSCAN", "myset", "0"])).unwrap(),
+            Command::SScan {
+                key: "myset".into(),
+                cursor: 0,
+                pattern: None,
+                count: None,
+            },
+        );
+    }
+
+    #[test]
+    fn sscan_with_options() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SSCAN", "myset", "0", "MATCH", "user:*", "COUNT", "100"]))
+                .unwrap(),
+            Command::SScan {
+                key: "myset".into(),
+                cursor: 0,
+                pattern: Some("user:*".into()),
+                count: Some(100),
+            },
+        );
+    }
+
+    #[test]
+    fn sscan_missing_cursor() {
+        let err = Command::from_frame(cmd(&["SSCAN", "key"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn hscan_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["HSCAN", "myhash", "5"])).unwrap(),
+            Command::HScan {
+                key: "myhash".into(),
+                cursor: 5,
+                pattern: None,
+                count: None,
+            },
+        );
+    }
+
+    #[test]
+    fn zscan_with_match() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ZSCAN", "myzset", "0", "MATCH", "player:*"])).unwrap(),
+            Command::ZScan {
+                key: "myzset".into(),
+                cursor: 0,
+                pattern: Some("player:*".into()),
+                count: None,
+            },
+        );
+    }
+
+    #[test]
+    fn sscan_no_args() {
+        let err = Command::from_frame(cmd(&["SSCAN"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 
