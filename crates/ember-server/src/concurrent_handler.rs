@@ -25,8 +25,9 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    frame_to_monitor_args, get_rss_bytes, human_bytes, is_allowed_before_auth, is_auth_frame,
-    is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent, TransactionState,
+    frame_to_monitor_args, get_rss_bytes, human_bytes, initial_acl_user, is_allowed_before_auth,
+    is_auth_frame, is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent,
+    TransactionState,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::{format_client_list, ServerContext};
@@ -50,7 +51,8 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut authenticated = ctx.requirepass.is_none();
+    let (mut acl_user, mut current_username) = initial_acl_user(ctx);
+    let mut authenticated = acl_user.is_some();
     let mut auth_failures: u32 = 0;
     let mut tx_state = TransactionState::None;
 
@@ -92,10 +94,12 @@ where
 
                     if !authenticated {
                         if is_auth_frame(&frame) {
-                            let (response, success) = try_auth(frame, ctx);
-                            response.serialize(&mut out);
-                            if success {
+                            let result = try_auth(frame, ctx);
+                            result.response.serialize(&mut out);
+                            if result.success() {
                                 authenticated = true;
+                                acl_user = result.user;
+                                current_username = result.username;
                             } else {
                                 auth_failures = auth_failures.saturating_add(1);
                                 if auth_failures >= ctx.limits.max_auth_failures {
@@ -109,7 +113,15 @@ where
                             }
                         } else if is_allowed_before_auth(&frame) {
                             let response = process(
-                                frame, &keyspace, &engine, ctx, slow_log, pubsub, client_id,
+                                frame,
+                                &keyspace,
+                                &engine,
+                                ctx,
+                                slow_log,
+                                pubsub,
+                                client_id,
+                                &acl_user,
+                                &current_username,
                             )
                             .await;
                             response.serialize(&mut out);
@@ -150,6 +162,8 @@ where
                             slow_log,
                             pubsub,
                             client_id,
+                            &acl_user,
+                            &current_username,
                         )
                         .await;
                         response.serialize(&mut out);
@@ -230,6 +244,8 @@ async fn process(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     client_id: u64,
+    acl_user: &Option<Arc<crate::acl::AclUser>>,
+    current_username: &str,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
@@ -238,6 +254,25 @@ async fn process(
                 validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
             {
                 return err;
+            }
+
+            // ACL permission check
+            if let Some(ref user) = acl_user {
+                if !user.allcommands || !user.allkeys {
+                    if let Some(err) = crate::acl::check_permission(
+                        user,
+                        &cmd,
+                        cmd.command_name(),
+                        cmd.acl_categories(),
+                    ) {
+                        return err;
+                    }
+                }
+            }
+
+            // intercept AclWhoAmI — needs per-connection username
+            if matches!(cmd, Command::AclWhoAmI) {
+                return Frame::Bulk(Bytes::from(current_username.to_owned()));
             }
 
             let cmd_name = cmd.command_name();
@@ -278,6 +313,8 @@ async fn handle_frame_with_tx(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     client_id: u64,
+    acl_user: &Option<Arc<crate::acl::AclUser>>,
+    current_username: &str,
 ) -> Frame {
     let cmd_name = peek_command_name(&frame);
 
@@ -304,7 +341,18 @@ async fn handle_frame_with_tx(
             } else if cmd_name.as_deref() == Some("UNWATCH") {
                 Frame::Simple("OK".into())
             } else {
-                process(frame, keyspace, engine, ctx, slow_log, pubsub, client_id).await
+                process(
+                    frame,
+                    keyspace,
+                    engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    client_id,
+                    acl_user,
+                    current_username,
+                )
+                .await
             }
         }
         TransactionState::Queuing { queue, error } => match cmd_name.as_deref() {
@@ -331,6 +379,8 @@ async fn handle_frame_with_tx(
                             slow_log,
                             pubsub,
                             client_id,
+                            acl_user,
+                            current_username,
                         )
                         .await;
                         results.push(response);
@@ -347,7 +397,18 @@ async fn handle_frame_with_tx(
             _ => match Command::from_frame(frame.clone()) {
                 Ok(cmd) => {
                     if matches!(cmd, Command::Auth { .. } | Command::Quit) {
-                        process(frame, keyspace, engine, ctx, slow_log, pubsub, client_id).await
+                        process(
+                            frame,
+                            keyspace,
+                            engine,
+                            ctx,
+                            slow_log,
+                            pubsub,
+                            client_id,
+                            acl_user,
+                            current_username,
+                        )
+                        .await
                     } else {
                         queue.push(frame);
                         Frame::Simple("QUEUED".into())
@@ -1012,6 +1073,101 @@ async fn execute_concurrent(
 
         // MONITOR is handled at the frame level
         Command::Monitor => Frame::Simple("OK".into()),
+
+        // -- ACL commands --
+        Command::AclWhoAmI => Frame::Bulk(Bytes::from_static(b"default")),
+
+        Command::AclList => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.read() {
+                    Ok(state) => {
+                        let lines = state.list();
+                        Frame::Array(
+                            lines
+                                .into_iter()
+                                .map(|l| Frame::Bulk(Bytes::from(l)))
+                                .collect(),
+                        )
+                    }
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Array(vec![Frame::Bulk(Bytes::from(
+                    "user default on nopass +@all ~*",
+                ))])
+            }
+        }
+
+        Command::AclUsers => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.read() {
+                    Ok(state) => {
+                        let names = state.usernames();
+                        Frame::Array(
+                            names
+                                .into_iter()
+                                .map(|n| Frame::Bulk(Bytes::from(n)))
+                                .collect(),
+                        )
+                    }
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"default"))])
+            }
+        }
+
+        Command::AclGetUser { username } => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.read() {
+                    Ok(state) => match state.get_user_detail(&username) {
+                        Some(detail) => detail,
+                        None => Frame::Error(format!("ERR no such user '{username}'")),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else if username == "default" {
+                crate::acl::AclState::new()
+                    .get_user_detail("default")
+                    .unwrap_or(Frame::Null)
+            } else {
+                Frame::Error(format!("ERR no such user '{username}'"))
+            }
+        }
+
+        Command::AclDelUser { usernames } => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.write() {
+                    Ok(mut state) => match state.del_users(&usernames) {
+                        Ok(count) => Frame::Integer(count as i64),
+                        Err(msg) => Frame::Error(msg),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Error(
+                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
+                )
+            }
+        }
+
+        Command::AclSetUser { username, rules } => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.write() {
+                    Ok(mut state) => match state.set_user(&username, &rules) {
+                        Ok(()) => Frame::Simple("OK".into()),
+                        Err(msg) => Frame::Error(msg),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Error(
+                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
+                )
+            }
+        }
+
+        Command::AclCat { category } => crate::acl::handle_acl_cat(category.as_deref()),
 
         // For unsupported commands, return an error
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),

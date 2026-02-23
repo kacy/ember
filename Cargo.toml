@@ -55,6 +55,9 @@ crc32fast = "1"
 # constant-time comparison (auth)
 subtle = "2"
 
+# SHA-256 hashing (ACL password storage)
+sha2 = "0.10"
+
 # float ordering (used for sorted set scores)
 ordered-float = "5"
 
