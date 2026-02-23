@@ -39,7 +39,13 @@ pub(super) fn handle_blocking_pop(
                     key: key.to_owned(),
                 }
             };
-            aof::write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
+            aof::write_aof_record(
+                &record,
+                ctx.aof_writer,
+                fsync_policy,
+                shard_id,
+                ctx.aof_errors,
+            );
             aof::broadcast_replication(
                 record,
                 ctx.replication_tx,
@@ -108,7 +114,13 @@ pub(super) fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
                                 key: key.to_owned(),
                             }
                         };
-                        aof::write_aof_record(&record, ctx.aof_writer, fsync_policy, shard_id);
+                        aof::write_aof_record(
+                            &record,
+                            ctx.aof_writer,
+                            fsync_policy,
+                            shard_id,
+                            ctx.aof_errors,
+                        );
                         aof::broadcast_replication(
                             record,
                             ctx.replication_tx,
