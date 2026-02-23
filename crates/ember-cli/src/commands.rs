@@ -31,6 +31,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "authenticate to the server",
     },
     CommandInfo {
+        name: "CLIENT",
+        args: "ID | GETNAME | LIST | SETNAME name",
+        group: "connection",
+        summary: "manage client connections",
+    },
+    CommandInfo {
         name: "ECHO",
         args: "message",
         group: "connection",
@@ -507,6 +513,7 @@ pub fn command_names() -> Vec<&'static str> {
 /// Used by the completer and hinter to provide second-token completion.
 pub fn subcommands(parent: &str) -> &'static [&'static str] {
     match parent.to_uppercase().as_str() {
+        "CLIENT" => &["GETNAME", "ID", "LIST", "SETNAME"],
         "CONFIG" => &["GET", "REWRITE", "SET"],
         "CLUSTER" => &[
             "ADDSLOTS",
@@ -534,7 +541,7 @@ pub fn subcommands(parent: &str) -> &'static [&'static str] {
 pub fn has_subcommands(name: &str) -> bool {
     matches!(
         name.to_uppercase().as_str(),
-        "CLUSTER" | "CONFIG" | "SLOWLOG" | "PUBSUB"
+        "CLIENT" | "CLUSTER" | "CONFIG" | "SLOWLOG" | "PUBSUB"
     )
 }
 

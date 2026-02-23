@@ -25,7 +25,7 @@ use crate::connection_common::{
     is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent, TransactionState,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
-use crate::server::ServerContext;
+use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
 
 /// A command that has been dispatched to a shard but not yet resolved.
@@ -194,6 +194,7 @@ pub async fn handle<S>(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -306,6 +307,7 @@ where
                         pubsub,
                         &mut asking,
                         &peer_addr_str,
+                        client_id,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -341,6 +343,7 @@ where
                     pubsub,
                     &mut asking,
                     &peer_addr_str,
+                    client_id,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -368,6 +371,7 @@ where
                         pubsub,
                         &mut asking,
                         &peer_addr_str,
+                        client_id,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -407,6 +411,7 @@ where
                         pubsub,
                         &mut asking,
                         &peer_addr_str,
+                        client_id,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -438,6 +443,7 @@ where
                     pubsub,
                     &mut asking,
                     &peer_addr_str,
+                    client_id,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -471,6 +477,7 @@ where
                         pubsub,
                         &mut asking,
                         &peer_addr_str,
+                        client_id,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -492,6 +499,7 @@ where
                     pubsub,
                     &mut asking,
                     &peer_addr_str,
+                    client_id,
                 )
                 .await;
                 match prepared {
@@ -554,6 +562,7 @@ where
                         pubsub,
                         &mut asking,
                         &peer_addr_str,
+                        client_id,
                     )
                     .await;
                     match prepared {
@@ -678,6 +687,7 @@ async fn handle_frame_with_tx(
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
     peer_addr: &str,
+    client_id: u64,
 ) -> Frame {
     // peek at the command name without consuming the frame
     let cmd_name = peek_command_name(&frame);
@@ -703,7 +713,10 @@ async fn handle_frame_with_tx(
                 Frame::Error("ERR DISCARD without MULTI".into())
             } else {
                 // normal dispatch path (process() increments commands_processed)
-                process(frame, engine, ctx, slow_log, pubsub, asking, peer_addr).await
+                process(
+                    frame, engine, ctx, slow_log, pubsub, asking, peer_addr, client_id,
+                )
+                .await
             }
         }
         TransactionState::Queuing { queue, error } => {
@@ -731,6 +744,7 @@ async fn handle_frame_with_tx(
                                 pubsub,
                                 asking,
                                 peer_addr,
+                                client_id,
                             )
                             .await;
                             results.push(response);
@@ -750,8 +764,11 @@ async fn handle_frame_with_tx(
                         Ok(cmd) => {
                             // AUTH and QUIT execute immediately, not queued
                             if matches!(cmd, Command::Auth { .. } | Command::Quit) {
-                                process(frame, engine, ctx, slow_log, pubsub, asking, peer_addr)
-                                    .await
+                                process(
+                                    frame, engine, ctx, slow_log, pubsub, asking, peer_addr,
+                                    client_id,
+                                )
+                                .await
                             } else {
                                 queue.push(frame);
                                 Frame::Simple("QUEUED".into())
@@ -1327,6 +1344,7 @@ fn cleanup_subscriptions(
 /// When metrics or slowlog are enabled, brackets the command with
 /// `Instant::now()` to measure latency. Skips timing entirely when
 /// neither feature needs it.
+#[allow(clippy::too_many_arguments)]
 async fn process(
     frame: Frame,
     engine: &Engine,
@@ -1335,6 +1353,7 @@ async fn process(
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
     peer_addr: &str,
+    client_id: u64,
 ) -> Frame {
     // broadcast to MONITOR subscribers
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -1371,7 +1390,7 @@ async fn process(
                 None
             };
 
-            let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking).await;
+            let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking, client_id).await;
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
@@ -1407,6 +1426,7 @@ async fn prepare_command(
     pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
     peer_addr: &str,
+    client_id: u64,
 ) -> PreparedDispatch {
     // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -1486,6 +1506,37 @@ async fn prepare_command(
         }
         Command::Echo(msg) => {
             PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Bulk(msg)))
+        }
+
+        // -- client commands (connection-scoped, no shard needed) --
+        Command::ClientId => PreparedDispatch::Immediate(PendingResponse::Immediate(
+            Frame::Integer(client_id as i64),
+        )),
+        Command::ClientGetName => {
+            let name = ctx
+                .clients
+                .lock()
+                .ok()
+                .and_then(|map| map.get(&client_id).and_then(|c| c.name.clone()));
+            let frame = match name {
+                Some(n) => Frame::Bulk(Bytes::from(n)),
+                None => Frame::Null,
+            };
+            PreparedDispatch::Immediate(PendingResponse::Immediate(frame))
+        }
+        Command::ClientSetName { name } => {
+            if let Ok(mut map) = ctx.clients.lock() {
+                if let Some(info) = map.get_mut(&client_id) {
+                    info.name = if name.is_empty() { None } else { Some(name) };
+                }
+            }
+            PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Simple("OK".into())))
+        }
+        Command::ClientList => {
+            let output = format_client_list(ctx);
+            PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Bulk(Bytes::from(
+                output,
+            ))))
         }
 
         // -- single-key string commands --
@@ -2054,7 +2105,7 @@ async fn prepare_command(
 
         // -- everything else falls back to the full execute() path --
         cmd => {
-            let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking).await;
+            let response = execute(cmd, engine, ctx, slow_log, pubsub, was_asking, client_id).await;
             PreparedDispatch::Immediate(PendingResponse::Immediate(response))
         }
     }
@@ -2551,6 +2602,7 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
 /// Ping and Echo are handled inline (no shard routing needed).
 /// Single-key commands route to the owning shard. Multi-key commands
 /// (DEL, EXISTS) fan out across shards and aggregate results.
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     cmd: Command,
     engine: &Engine,
@@ -2558,6 +2610,7 @@ async fn execute(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     asking: bool,
+    client_id: u64,
 ) -> Frame {
     // Write gating: reject mutations when the node is a replica or when
     // writes are temporarily paused (e.g. during failover coordination).
@@ -2590,6 +2643,32 @@ async fn execute(
         Command::Ping(None) => Frame::Simple("PONG".into()),
         Command::Ping(Some(msg)) => Frame::Bulk(msg),
         Command::Echo(msg) => Frame::Bulk(msg),
+
+        // -- client commands (connection-scoped, no shard needed) --
+        Command::ClientId => Frame::Integer(client_id as i64),
+        Command::ClientGetName => {
+            let name = ctx
+                .clients
+                .lock()
+                .ok()
+                .and_then(|map| map.get(&client_id).and_then(|c| c.name.clone()));
+            match name {
+                Some(n) => Frame::Bulk(Bytes::from(n)),
+                None => Frame::Null,
+            }
+        }
+        Command::ClientSetName { name } => {
+            if let Ok(mut map) = ctx.clients.lock() {
+                if let Some(info) = map.get_mut(&client_id) {
+                    info.name = if name.is_empty() { None } else { Some(name) };
+                }
+            }
+            Frame::Simple("OK".into())
+        }
+        Command::ClientList => {
+            let output = format_client_list(ctx);
+            Frame::Bulk(Bytes::from(output))
+        }
 
         // -- single-key commands --
         Command::Get { key } => {

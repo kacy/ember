@@ -518,6 +518,19 @@ pub enum Command {
     /// PROTO.DELFIELD `key` `field_path`. Clears a field to its default value.
     ProtoDelField { key: String, field_path: String },
 
+    // --- client commands ---
+    /// CLIENT ID. Returns the unique ID of the current connection.
+    ClientId,
+
+    /// CLIENT SETNAME `name`. Sets a human-readable name for the connection.
+    ClientSetName { name: String },
+
+    /// CLIENT GETNAME. Returns the name set by CLIENT SETNAME, or nil.
+    ClientGetName,
+
+    /// CLIENT LIST. Returns info about all connected clients.
+    ClientList,
+
     /// AUTH \[username\] password. Authenticate the connection.
     Auth {
         /// Username for ACL-style auth. None for legacy AUTH.
@@ -570,6 +583,10 @@ impl Command {
             Command::Auth { .. } => "auth",
             Command::Quit => "quit",
             Command::Monitor => "monitor",
+            Command::ClientId => "client",
+            Command::ClientSetName { .. } => "client",
+            Command::ClientGetName => "client",
+            Command::ClientList => "client",
 
             // strings
             Command::Get { .. } => "get",
@@ -982,6 +999,7 @@ impl Command {
             "PROTO.GETFIELD" => parse_proto_getfield(&frames[1..]),
             "PROTO.SETFIELD" => parse_proto_setfield(&frames[1..]),
             "PROTO.DELFIELD" => parse_proto_delfield(&frames[1..]),
+            "CLIENT" => parse_client(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             "MONITOR" => parse_monitor(&frames[1..]),
@@ -2233,6 +2251,30 @@ fn parse_slowlog(args: &[Frame]) -> Result<Command, ProtocolError> {
         "RESET" => Ok(Command::SlowLogReset),
         other => Err(ProtocolError::InvalidCommandFrame(format!(
             "unknown SLOWLOG subcommand '{other}'"
+        ))),
+    }
+}
+
+fn parse_client(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("CLIENT"));
+    }
+
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcmd = uppercase_arg(&args[0], &mut kw)?;
+    match subcmd {
+        "ID" => Ok(Command::ClientId),
+        "GETNAME" => Ok(Command::ClientGetName),
+        "LIST" => Ok(Command::ClientList),
+        "SETNAME" => {
+            if args.len() < 2 {
+                return Err(wrong_arity("CLIENT SETNAME"));
+            }
+            let name = extract_string(&args[1])?;
+            Ok(Command::ClientSetName { name })
+        }
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown CLIENT subcommand '{other}'"
         ))),
     }
 }
@@ -6111,5 +6153,67 @@ mod tests {
         );
         assert_eq!(Command::Ping(None).primary_key(), None);
         assert_eq!(Command::DbSize.primary_key(), None);
+    }
+
+    // --- client ---
+
+    #[test]
+    fn parse_client_id() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLIENT", "ID"])).unwrap(),
+            Command::ClientId,
+        );
+    }
+
+    #[test]
+    fn parse_client_id_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["client", "id"])).unwrap(),
+            Command::ClientId,
+        );
+    }
+
+    #[test]
+    fn parse_client_getname() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLIENT", "GETNAME"])).unwrap(),
+            Command::ClientGetName,
+        );
+    }
+
+    #[test]
+    fn parse_client_setname() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLIENT", "SETNAME", "myapp"])).unwrap(),
+            Command::ClientSetName {
+                name: "myapp".into()
+            },
+        );
+    }
+
+    #[test]
+    fn parse_client_setname_missing_name() {
+        let err = Command::from_frame(cmd(&["CLIENT", "SETNAME"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn parse_client_list() {
+        assert_eq!(
+            Command::from_frame(cmd(&["CLIENT", "LIST"])).unwrap(),
+            Command::ClientList,
+        );
+    }
+
+    #[test]
+    fn parse_client_unknown_subcommand() {
+        let err = Command::from_frame(cmd(&["CLIENT", "KILL"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn parse_client_no_subcommand() {
+        let err = Command::from_frame(cmd(&["CLIENT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
     }
 }
