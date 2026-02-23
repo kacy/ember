@@ -105,6 +105,8 @@ enum ResponseTag {
     HMGetResult,
     /// SISMEMBER: Bool → Integer(0/1) (with WrongType)
     SIsMemberResult,
+    /// SSCAN/HSCAN/ZSCAN: CollectionScan → cursor + array
+    CollectionScanResult,
     /// RENAME: Ok → Simple("OK"), Err → Error
     RenameResult,
     /// Len result with OOM possible (LPUSH/RPUSH/SADD)
@@ -1775,6 +1777,30 @@ async fn prepare_command(
         Command::SCard { key } => {
             route!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
         }
+        Command::SScan { key, cursor, pattern, count } => {
+            let count = count.unwrap_or(10);
+            route!(
+                key,
+                ShardRequest::SScan { key, cursor, count, pattern },
+                ResponseTag::CollectionScanResult
+            )
+        }
+        Command::HScan { key, cursor, pattern, count } => {
+            let count = count.unwrap_or(10);
+            route!(
+                key,
+                ShardRequest::HScan { key, cursor, count, pattern },
+                ResponseTag::CollectionScanResult
+            )
+        }
+        Command::ZScan { key, cursor, pattern, count } => {
+            let count = count.unwrap_or(10);
+            route!(
+                key,
+                ShardRequest::ZScan { key, cursor, count, pattern },
+                ResponseTag::CollectionScanResult
+            )
+        }
 
         // -- vector commands --
         #[cfg(feature = "vector")]
@@ -2221,6 +2247,16 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
 
+        ResponseTag::CollectionScanResult => match resp {
+            ShardResponse::CollectionScan { cursor, items } => {
+                let cursor_frame = Frame::Bulk(Bytes::from(cursor.to_string()));
+                let item_frames = items.into_iter().map(Frame::Bulk).collect();
+                Frame::Array(vec![cursor_frame, Frame::Array(item_frames)])
+            }
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
         ResponseTag::RenameResult => match resp {
             ShardResponse::Ok => Frame::Simple("OK".into()),
             ShardResponse::Err(msg) => Frame::Error(msg),
@@ -2406,6 +2442,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::SMembers { ref key }
         | Command::SIsMember { ref key, .. }
         | Command::SCard { ref key }
+        | Command::SScan { ref key, .. }
+        | Command::HScan { ref key, .. }
+        | Command::ZScan { ref key, .. }
         | Command::ProtoSet { ref key, .. }
         | Command::ProtoGet { ref key }
         | Command::ProtoType { ref key }
@@ -3361,6 +3400,27 @@ async fn execute(
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
+        }
+
+        Command::SScan { key, cursor, pattern, count } => {
+            let count = count.unwrap_or(10);
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SScan { key, cursor, count, pattern };
+            resolve_collection_scan(engine.send_to_shard(idx, req).await)
+        }
+
+        Command::HScan { key, cursor, pattern, count } => {
+            let count = count.unwrap_or(10);
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HScan { key, cursor, count, pattern };
+            resolve_collection_scan(engine.send_to_shard(idx, req).await)
+        }
+
+        Command::ZScan { key, cursor, pattern, count } => {
+            let count = count.unwrap_or(10);
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZScan { key, cursor, count, pattern };
+            resolve_collection_scan(engine.send_to_shard(idx, req).await)
         }
 
         // --- cluster commands ---
@@ -4329,6 +4389,20 @@ fn human_bytes(bytes: usize) -> String {
 /// Returns the standard WRONGTYPE error frame.
 fn wrongtype_error() -> Frame {
     Frame::Error("WRONGTYPE Operation against a key holding the wrong kind of value".into())
+}
+
+/// Resolves a collection scan (SSCAN/HSCAN/ZSCAN) shard response into a RESP frame.
+fn resolve_collection_scan(result: Result<ShardResponse, ember_core::ShardError>) -> Frame {
+    match result {
+        Ok(ShardResponse::CollectionScan { cursor, items }) => {
+            let cursor_frame = Frame::Bulk(Bytes::from(cursor.to_string()));
+            let item_frames = items.into_iter().map(Frame::Bulk).collect();
+            Frame::Array(vec![cursor_frame, Frame::Array(item_frames)])
+        }
+        Ok(ShardResponse::WrongType) => wrongtype_error(),
+        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        Err(e) => Frame::Error(format!("ERR {e}")),
+    }
 }
 
 /// Returns the standard OOM error frame.
