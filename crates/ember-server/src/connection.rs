@@ -21,8 +21,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::connection_common::{
-    format_monitor_event, frame_to_monitor_args, is_allowed_before_auth, is_auth_frame,
-    is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent, TransactionState,
+    format_monitor_event, frame_to_monitor_args, get_rss_bytes, human_bytes,
+    is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth, validate_command_sizes,
+    MonitorEvent, TransactionState,
 };
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::{format_client_list, ServerContext};
@@ -4499,6 +4500,13 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                 "used_memory_human:{}\r\n",
                 human_bytes(stats.used_bytes)
             ));
+            if let Some(rss) = get_rss_bytes() {
+                out.push_str(&format!("used_memory_rss:{rss}\r\n"));
+                out.push_str(&format!(
+                    "used_memory_rss_human:{}\r\n",
+                    human_bytes(rss)
+                ));
+            }
             if let Some(max) = ctx.max_memory {
                 let effective = ember_core::memory::effective_limit(max);
                 out.push_str(&format!("max_memory:{max}\r\n"));
@@ -4587,23 +4595,6 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
     Frame::Bulk(Bytes::from(out))
 }
 
-/// Formats a byte count as a human-readable string (e.g. "1.23M").
-fn human_bytes(bytes: usize) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.2}G", b / GB)
-    } else if b >= MB {
-        format!("{:.2}M", b / MB)
-    } else if b >= KB {
-        format!("{:.2}K", b / KB)
-    } else {
-        format!("{bytes}B")
-    }
-}
 
 /// Returns the standard WRONGTYPE error frame.
 fn wrongtype_error() -> Frame {

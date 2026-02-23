@@ -285,6 +285,80 @@ pub enum TransactionState {
     },
 }
 
+/// Formats a byte count as a human-readable string (e.g. "1.23M").
+pub fn human_bytes(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2}G", b / GB)
+    } else if b >= MB {
+        format!("{:.2}M", b / MB)
+    } else if b >= KB {
+        format!("{:.2}K", b / KB)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+/// Returns the resident set size (RSS) of the current process in bytes.
+///
+/// Platform-specific:
+/// - **macOS**: uses `proc_pidinfo` with `PROC_PIDTASKINFO`
+/// - **Linux**: reads `/proc/self/statm` (field 1 × page size)
+/// - **other**: returns `None`
+pub fn get_rss_bytes() -> Option<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        get_rss_macos()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        get_rss_linux()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_rss_macos() -> Option<usize> {
+    use std::mem;
+    // SAFETY: proc_pidinfo reads kernel info for our own PID.
+    // We pass a correctly-sized buffer and check the return value.
+    unsafe {
+        let pid = libc::getpid();
+        let mut info: libc::proc_taskinfo = mem::zeroed();
+        let size = mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        let ret = libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTASKINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        );
+        if ret <= 0 {
+            return None;
+        }
+        Some(info.pti_resident_size as usize)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn get_rss_linux() -> Option<usize> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let rss_pages: usize = statm.split_whitespace().nth(1)?.parse().ok()?;
+    // SAFETY: sysconf reads a kernel constant — no side effects.
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page_size <= 0 {
+        return None;
+    }
+    Some(rss_pages * page_size as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
