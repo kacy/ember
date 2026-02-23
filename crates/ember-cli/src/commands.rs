@@ -287,6 +287,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the values of multiple hash fields",
     },
     CommandInfo {
+        name: "HSCAN",
+        args: "key cursor [MATCH pattern] [COUNT count]",
+        group: "hash",
+        summary: "incrementally iterate hash fields",
+    },
+    CommandInfo {
         name: "HSET",
         args: "key field value [field value ...]",
         group: "hash",
@@ -329,6 +335,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         group: "set",
         summary: "remove one or more members from a set",
     },
+    CommandInfo {
+        name: "SSCAN",
+        args: "key cursor [MATCH pattern] [COUNT count]",
+        group: "set",
+        summary: "incrementally iterate set members",
+    },
     // --- sorted set ---
     CommandInfo {
         name: "ZADD",
@@ -359,6 +371,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key member [member ...]",
         group: "sorted_set",
         summary: "remove one or more members from a sorted set",
+    },
+    CommandInfo {
+        name: "ZSCAN",
+        args: "key cursor [MATCH pattern] [COUNT count]",
+        group: "sorted_set",
+        summary: "incrementally iterate sorted set members",
     },
     CommandInfo {
         name: "ZSCORE",
