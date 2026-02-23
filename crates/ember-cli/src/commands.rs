@@ -495,6 +495,37 @@ pub static COMMANDS: &[CommandInfo] = &[
         group: "cluster",
         summary: "atomically transfer a key to another server",
     },
+    // transactions
+    CommandInfo {
+        name: "MULTI",
+        args: "",
+        group: "transactions",
+        summary: "mark the start of a transaction block",
+    },
+    CommandInfo {
+        name: "EXEC",
+        args: "",
+        group: "transactions",
+        summary: "execute all commands issued after MULTI",
+    },
+    CommandInfo {
+        name: "DISCARD",
+        args: "",
+        group: "transactions",
+        summary: "discard all commands issued after MULTI",
+    },
+    CommandInfo {
+        name: "WATCH",
+        args: "key [key ...]",
+        group: "transactions",
+        summary: "watch keys for optimistic locking before MULTI/EXEC",
+    },
+    CommandInfo {
+        name: "UNWATCH",
+        args: "",
+        group: "transactions",
+        summary: "forget about all watched keys",
+    },
 ];
 
 /// Look up a command by name (case-insensitive).
