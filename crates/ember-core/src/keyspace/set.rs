@@ -115,6 +115,59 @@ impl Keyspace {
         }
     }
 
+    /// Incrementally iterates members of a set.
+    ///
+    /// Returns the next cursor and a batch of members. A returned cursor
+    /// of `0` means the iteration is complete. Pattern matching (MATCH)
+    /// filters on member names.
+    pub fn scan_set(
+        &mut self,
+        key: &str,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+    ) -> Result<(u64, Vec<String>), WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok((0, vec![]));
+        }
+        match self.entries.get_mut(key) {
+            None => Ok((0, vec![])),
+            Some(entry) => {
+                let Value::Set(ref set) = entry.value else {
+                    return Err(WrongType);
+                };
+
+                let target = if count == 0 { 10 } else { count };
+                let compiled = pattern.map(GlobPattern::new);
+                let mut result = Vec::with_capacity(target);
+                let mut pos = 0u64;
+                let mut done = true;
+
+                for member in set.iter() {
+                    if pos < cursor {
+                        pos += 1;
+                        continue;
+                    }
+                    if let Some(ref pat) = compiled {
+                        if !pat.matches(member) {
+                            pos += 1;
+                            continue;
+                        }
+                    }
+                    result.push(member.clone());
+                    pos += 1;
+                    if result.len() >= target {
+                        done = false;
+                        break;
+                    }
+                }
+
+                entry.touch();
+                Ok(if done { (0, result) } else { (pos, result) })
+            }
+        }
+    }
+
     /// Returns the cardinality (number of elements) of a set.
     pub fn scard(&mut self, key: &str) -> Result<usize, WrongType> {
         if self.remove_if_expired(key) {
@@ -237,6 +290,62 @@ mod tests {
         ks.sadd("s", &["a".into()]).unwrap();
         let removed = ks.srem("s", &["nonexistent".into()]).unwrap();
         assert_eq!(removed, 0);
+    }
+
+    // --- scan_set ---
+
+    #[test]
+    fn scan_set_returns_all() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "b".into(), "c".into()]).unwrap();
+        let (cursor, members) = ks.scan_set("s", 0, 100, None).unwrap();
+        assert_eq!(cursor, 0);
+        assert_eq!(members.len(), 3);
+    }
+
+    #[test]
+    fn scan_set_missing_key() {
+        let mut ks = Keyspace::new();
+        let (cursor, members) = ks.scan_set("missing", 0, 10, None).unwrap();
+        assert_eq!(cursor, 0);
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn scan_set_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("string"), None, false, false);
+        assert!(ks.scan_set("s", 0, 10, None).is_err());
+    }
+
+    #[test]
+    fn scan_set_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["user:1".into(), "user:2".into(), "item:1".into()])
+            .unwrap();
+        let (_, members) = ks.scan_set("s", 0, 100, Some("user:*")).unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().all(|m| m.starts_with("user:")));
+    }
+
+    #[test]
+    fn scan_set_pagination() {
+        let mut ks = Keyspace::new();
+        let items: Vec<String> = (0..20).map(|i| format!("m{i}")).collect();
+        ks.sadd("s", &items).unwrap();
+
+        let mut collected = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let (next, batch) = ks.scan_set("s", cursor, 5, None).unwrap();
+            collected.extend(batch);
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        // all 20 members collected
+        assert_eq!(collected.len(), 20);
     }
 
     #[test]
