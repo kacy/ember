@@ -234,16 +234,64 @@ pub(super) fn write_aof_record(
     aof_writer: &mut Option<AofWriter>,
     fsync_policy: FsyncPolicy,
     shard_id: u16,
+    aof_errors: &mut u32,
 ) {
     if let Some(ref mut writer) = *aof_writer {
+        let mut ok = true;
         if let Err(e) = writer.write_record(record) {
-            warn!(shard_id, "aof write failed: {e}");
+            log_aof_error(shard_id, aof_errors, "write", &e);
+            ok = false;
         }
         if fsync_policy == FsyncPolicy::Always {
             if let Err(e) = writer.sync() {
-                warn!(shard_id, "aof sync failed: {e}");
+                log_aof_error(shard_id, aof_errors, "sync", &e);
+                ok = false;
             }
         }
+        if ok && *aof_errors > 0 {
+            let missed = *aof_errors;
+            *aof_errors = 0;
+            info!(shard_id, missed_errors = missed, "aof writes recovered");
+        }
+    }
+}
+
+/// Logs an AOF error with rate-limiting and severity awareness.
+///
+/// Disk-full (ENOSPC) errors are logged at `error!` level since they indicate
+/// a condition that needs operator attention. Other I/O errors use `warn!`.
+/// After the first failure, subsequent consecutive errors are suppressed —
+/// only every 1000th error is logged to avoid flooding under sustained
+/// disk-full conditions.
+pub(super) fn log_aof_error(
+    shard_id: u16,
+    consecutive: &mut u32,
+    op: &str,
+    err: &ember_persistence::format::FormatError,
+) {
+    *consecutive = consecutive.saturating_add(1);
+
+    // rate-limit: log first failure, then every 1000th
+    if *consecutive != 1 && !(*consecutive).is_multiple_of(1000) {
+        return;
+    }
+
+    // ENOSPC = 28 (Linux + macOS), EDQUOT = 122 (Linux) / 69 (macOS)
+    let is_disk_full = matches!(err, ember_persistence::format::FormatError::Io(ref io_err)
+        if matches!(io_err.raw_os_error(), Some(28) | Some(69) | Some(122)));
+
+    if is_disk_full {
+        error!(
+            shard_id,
+            consecutive_errors = *consecutive,
+            "aof {op} failed: disk full — writes continue without durability"
+        );
+    } else {
+        warn!(
+            shard_id,
+            consecutive_errors = *consecutive,
+            "aof {op} failed: {err}"
+        );
     }
 }
 

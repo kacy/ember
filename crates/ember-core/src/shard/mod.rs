@@ -57,7 +57,7 @@ use ember_persistence::recovery::{self, RecoveredValue};
 use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
 use smallvec::{smallvec, SmallVec};
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::dropper::DropHandle;
 use crate::error::ShardError;
@@ -915,6 +915,9 @@ async fn run_shard(
     let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
     let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
 
+    // consecutive AOF write/sync failure counter for rate-limited logging
+    let mut aof_errors: u32 = 0;
+
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(EXPIRY_TICK);
     expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -938,6 +941,7 @@ async fn run_shard(
                             replication_offset: &mut replication_offset,
                             lpop_waiters: &mut lpop_waiters,
                             rpop_waiters: &mut rpop_waiters,
+                            aof_errors: &mut aof_errors,
                             #[cfg(feature = "protobuf")]
                             schema_registry: &schema_registry,
                         };
@@ -960,7 +964,11 @@ async fn run_shard(
             _ = fsync_tick.tick(), if fsync_policy == FsyncPolicy::EverySec => {
                 if let Some(ref mut writer) = aof_writer {
                     if let Err(e) = writer.sync() {
-                        warn!(shard_id, "periodic aof sync failed: {e}");
+                        aof::log_aof_error(shard_id, &mut aof_errors, "sync", &e);
+                    } else if aof_errors > 0 {
+                        let missed = aof_errors;
+                        aof_errors = 0;
+                        info!(shard_id, missed_errors = missed, "aof sync recovered");
                     }
                 }
             }
@@ -990,6 +998,9 @@ struct ProcessCtx<'a> {
     lpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
     /// Waiters for BRPOP — keyed by list name, FIFO order.
     rpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
+    /// Consecutive AOF write/sync failures. Used to rate-limit error logging
+    /// so a sustained disk-full condition doesn't flood logs.
+    aof_errors: &'a mut u32,
     #[cfg(feature = "protobuf")]
     schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -1086,15 +1097,23 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
+        let mut batch_ok = true;
         for record in &records {
             if let Err(e) = writer.write_record(record) {
-                warn!(shard_id, "aof write failed: {e}");
+                aof::log_aof_error(shard_id, ctx.aof_errors, "write", &e);
+                batch_ok = false;
             }
         }
         if !records.is_empty() && fsync_policy == FsyncPolicy::Always {
             if let Err(e) = writer.sync() {
-                warn!(shard_id, "aof sync failed: {e}");
+                aof::log_aof_error(shard_id, ctx.aof_errors, "sync", &e);
+                batch_ok = false;
             }
+        }
+        if batch_ok && *ctx.aof_errors > 0 {
+            let missed = *ctx.aof_errors;
+            *ctx.aof_errors = 0;
+            info!(shard_id, missed_errors = missed, "aof writes recovered");
         }
     }
 
