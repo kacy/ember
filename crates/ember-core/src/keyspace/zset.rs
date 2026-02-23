@@ -178,6 +178,59 @@ impl Keyspace {
         }
     }
 
+    /// Incrementally iterates members of a sorted set.
+    ///
+    /// Returns the next cursor and a batch of member-score pairs. A returned
+    /// cursor of `0` means the iteration is complete. Pattern matching
+    /// (MATCH) filters on member names.
+    pub fn scan_sorted_set(
+        &mut self,
+        key: &str,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+    ) -> Result<(u64, Vec<(String, f64)>), WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok((0, vec![]));
+        }
+        match self.entries.get_mut(key) {
+            None => Ok((0, vec![])),
+            Some(entry) => {
+                let Value::SortedSet(ref ss) = entry.value else {
+                    return Err(WrongType);
+                };
+
+                let target = if count == 0 { 10 } else { count };
+                let compiled = pattern.map(GlobPattern::new);
+                let mut result = Vec::with_capacity(target);
+                let mut pos = 0u64;
+                let mut done = true;
+
+                for (member, score) in ss.iter() {
+                    if pos < cursor {
+                        pos += 1;
+                        continue;
+                    }
+                    if let Some(ref pat) = compiled {
+                        if !pat.matches(member) {
+                            pos += 1;
+                            continue;
+                        }
+                    }
+                    result.push((member.to_owned(), score));
+                    pos += 1;
+                    if result.len() >= target {
+                        done = false;
+                        break;
+                    }
+                }
+
+                entry.touch();
+                Ok(if done { (0, result) } else { (pos, result) })
+            }
+        }
+    }
+
     /// Returns the number of members in a sorted set, or 0 if the key doesn't exist.
     ///
     /// Returns `Err(WrongType)` on type mismatch.
@@ -504,6 +557,77 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.zcard("s").is_err());
+    }
+
+    // --- scan_sorted_set ---
+
+    #[test]
+    fn scan_zset_returns_all() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let (cursor, members) = ks.scan_sorted_set("z", 0, 100, None).unwrap();
+        assert_eq!(cursor, 0);
+        assert_eq!(members.len(), 3);
+        // sorted set iteration is score-ordered
+        assert_eq!(members[0].0, "a");
+        assert_eq!(members[2].0, "c");
+    }
+
+    #[test]
+    fn scan_zset_missing_key() {
+        let mut ks = Keyspace::new();
+        let (cursor, members) = ks.scan_sorted_set("missing", 0, 10, None).unwrap();
+        assert_eq!(cursor, 0);
+        assert!(members.is_empty());
+    }
+
+    #[test]
+    fn scan_zset_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("z".into(), Bytes::from("string"), None, false, false);
+        assert!(ks.scan_sorted_set("z", 0, 10, None).is_err());
+    }
+
+    #[test]
+    fn scan_zset_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[
+                (1.0, "player:1".into()),
+                (2.0, "player:2".into()),
+                (3.0, "enemy:1".into()),
+            ],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let (_, members) = ks.scan_sorted_set("z", 0, 100, Some("player:*")).unwrap();
+        assert_eq!(members.len(), 2);
+        assert!(members.iter().all(|(m, _)| m.starts_with("player:")));
+    }
+
+    #[test]
+    fn scan_zset_pagination() {
+        let mut ks = Keyspace::new();
+        let items: Vec<(f64, String)> = (0..20).map(|i| (i as f64, format!("m{i}"))).collect();
+        ks.zadd("z", &items, &ZAddFlags::default()).unwrap();
+
+        let mut collected = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let (next, batch) = ks.scan_sorted_set("z", cursor, 5, None).unwrap();
+            collected.extend(batch);
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        assert_eq!(collected.len(), 20);
     }
 
     #[test]

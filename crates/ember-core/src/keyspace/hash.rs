@@ -263,6 +263,59 @@ impl Keyspace {
         }
     }
 
+    /// Incrementally iterates fields of a hash.
+    ///
+    /// Returns the next cursor and a batch of field-value pairs. A returned
+    /// cursor of `0` means the iteration is complete. Pattern matching
+    /// (MATCH) filters on field names.
+    pub fn scan_hash(
+        &mut self,
+        key: &str,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+    ) -> Result<(u64, Vec<(String, Bytes)>), WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok((0, vec![]));
+        }
+        match self.entries.get_mut(key) {
+            None => Ok((0, vec![])),
+            Some(entry) => {
+                let Value::Hash(ref hash) = entry.value else {
+                    return Err(WrongType);
+                };
+
+                let target = if count == 0 { 10 } else { count };
+                let compiled = pattern.map(GlobPattern::new);
+                let mut result = Vec::with_capacity(target);
+                let mut pos = 0u64;
+                let mut done = true;
+
+                for (field, value) in hash.iter() {
+                    if pos < cursor {
+                        pos += 1;
+                        continue;
+                    }
+                    if let Some(ref pat) = compiled {
+                        if !pat.matches(field) {
+                            pos += 1;
+                            continue;
+                        }
+                    }
+                    result.push((field.to_string(), value.clone()));
+                    pos += 1;
+                    if result.len() >= target {
+                        done = false;
+                        break;
+                    }
+                }
+
+                entry.touch();
+                Ok(if done { (0, result) } else { (pos, result) })
+            }
+        }
+    }
+
     /// Gets multiple field values from a hash.
     ///
     /// Returns `None` for fields that don't exist.
@@ -556,6 +609,78 @@ mod tests {
 
         let result = ks.hincrby("h", "field", 1);
         assert!(result.is_err());
+    }
+
+    // --- scan_hash ---
+
+    #[test]
+    fn scan_hash_returns_all() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("a".into(), Bytes::from("1")),
+                ("b".into(), Bytes::from("2")),
+                ("c".into(), Bytes::from("3")),
+            ],
+        )
+        .unwrap();
+        let (cursor, fields) = ks.scan_hash("h", 0, 100, None).unwrap();
+        assert_eq!(cursor, 0);
+        assert_eq!(fields.len(), 3);
+    }
+
+    #[test]
+    fn scan_hash_missing_key() {
+        let mut ks = Keyspace::new();
+        let (cursor, fields) = ks.scan_hash("missing", 0, 10, None).unwrap();
+        assert_eq!(cursor, 0);
+        assert!(fields.is_empty());
+    }
+
+    #[test]
+    fn scan_hash_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("h".into(), Bytes::from("string"), None, false, false);
+        assert!(ks.scan_hash("h", 0, 10, None).is_err());
+    }
+
+    #[test]
+    fn scan_hash_with_pattern() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("name".into(), Bytes::from("alice")),
+                ("age".into(), Bytes::from("30")),
+                ("nickname".into(), Bytes::from("ali")),
+            ],
+        )
+        .unwrap();
+        let (_, fields) = ks.scan_hash("h", 0, 100, Some("n*")).unwrap();
+        assert_eq!(fields.len(), 2);
+        assert!(fields.iter().all(|(f, _)| f.starts_with('n')));
+    }
+
+    #[test]
+    fn scan_hash_pagination() {
+        let mut ks = Keyspace::new();
+        let fields: Vec<(String, Bytes)> = (0..20)
+            .map(|i| (format!("f{i}"), Bytes::from(format!("v{i}"))))
+            .collect();
+        ks.hset("h", &fields).unwrap();
+
+        let mut collected = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let (next, batch) = ks.scan_hash("h", cursor, 5, None).unwrap();
+            collected.extend(batch);
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        assert_eq!(collected.len(), 20);
     }
 
     #[test]
