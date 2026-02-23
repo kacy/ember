@@ -51,6 +51,7 @@ impl Keyspace {
             return Ok(0);
         }
 
+        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(0);
         };
@@ -73,6 +74,9 @@ impl Keyspace {
         } else {
             false
         };
+        if removed > 0 {
+            entry.version = ver;
+        }
 
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
 

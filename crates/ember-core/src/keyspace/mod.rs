@@ -234,7 +234,8 @@ pub enum SetResult {
 /// `expires_at_ms` (the hot-path read fields) sit at the front so
 /// they share the first L1 cache line with the HashMap key pointer.
 /// `cached_value_size` is warm (used on writes). `last_access_secs`
-/// is cold (only used during eviction sampling).
+/// is cold (only used during eviction sampling). `version` is cold
+/// (only read on WATCH/EXEC).
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub(crate) value: Value,
@@ -247,6 +248,9 @@ pub(crate) struct Entry {
     /// Monotonic last access time in seconds since process start (for LRU).
     /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
     pub(crate) last_access_secs: u32,
+    /// Monotonic version counter for optimistic locking (WATCH/EXEC).
+    /// Bumped on every mutation so that EXEC can detect concurrent writes.
+    pub(crate) version: u64,
 }
 
 impl Entry {
@@ -257,6 +261,7 @@ impl Entry {
             expires_at_ms: time::expiry_from_duration(ttl),
             cached_value_size,
             last_access_secs: time::now_secs(),
+            version: 0,
         }
     }
 
@@ -334,6 +339,9 @@ pub struct Keyspace {
     /// When set, large values are dropped on a background thread instead
     /// of inline on the shard thread. See [`crate::dropper`].
     drop_handle: Option<DropHandle>,
+    /// Monotonic counter for entry versions. Each mutation gets the next
+    /// value, giving WATCH a cheap way to detect concurrent writes.
+    next_version: u64,
 }
 
 impl Keyspace {
@@ -352,6 +360,7 @@ impl Keyspace {
             expired_total: 0,
             evicted_total: 0,
             drop_handle: None,
+            next_version: 0,
         }
     }
 
@@ -360,6 +369,23 @@ impl Keyspace {
     /// background thread instead of blocking the shard.
     pub fn set_drop_handle(&mut self, handle: DropHandle) {
         self.drop_handle = Some(handle);
+    }
+
+    /// Advances the version counter and returns the new value.
+    /// Called on every write so that WATCH can detect modifications.
+    fn next_ver(&mut self) -> u64 {
+        self.next_version += 1;
+        self.next_version
+    }
+
+    /// Returns the current version of a key, or `None` if the key is
+    /// missing or expired. Used by WATCH/EXEC — cold path only.
+    pub fn key_version(&self, key: &str) -> Option<u64> {
+        let entry = self.entries.get(key)?;
+        if entry.is_expired() {
+            return None;
+        }
+        Some(entry.version)
     }
 
     /// Decrements the expiry count if the entry had a TTL set.
@@ -437,8 +463,9 @@ impl Keyspace {
     /// collection-write methods after type-checking and memory reservation.
     fn insert_empty(&mut self, key: &str, value: Value) {
         self.memory.add(key, &value);
-        self.entries
-            .insert(CompactString::from(key), Entry::new(value, None));
+        let mut entry = Entry::new(value, None);
+        entry.version = self.next_ver();
+        self.entries.insert(CompactString::from(key), entry);
     }
 
     /// Measures entry size before and after a mutation, adjusting the
@@ -457,6 +484,9 @@ impl Keyspace {
         entry.cached_value_size = new_value_size;
         let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_size, new_size);
+        // bump version for WATCH optimistic locking
+        self.next_version += 1;
+        entry.version = self.next_version;
         Some(result)
     }
 
@@ -622,6 +652,8 @@ impl Keyspace {
                     self.expiry_count += 1;
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(seconds.saturating_mul(1000));
+                self.next_version += 1;
+                entry.version = self.next_version;
                 true
             }
             None => false,
@@ -658,6 +690,8 @@ impl Keyspace {
                 if entry.expires_at_ms != 0 {
                     entry.expires_at_ms = 0;
                     self.expiry_count = self.expiry_count.saturating_sub(1);
+                    self.next_version += 1;
+                    entry.version = self.next_version;
                     true
                 } else {
                     false
@@ -698,6 +732,8 @@ impl Keyspace {
                     self.expiry_count += 1;
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(millis);
+                self.next_version += 1;
+                entry.version = self.next_version;
                 true
             }
             None => false,
@@ -775,6 +811,9 @@ impl Keyspace {
         if entry.expires_at_ms != 0 {
             self.expiry_count += 1;
         }
+        let ver = self.next_ver();
+        let mut entry = entry;
+        entry.version = ver;
         self.entries.insert(CompactString::from(newkey), entry);
         Ok(())
     }
@@ -910,8 +949,9 @@ impl Keyspace {
             }
         }
 
-        self.entries
-            .insert(CompactString::from(key), Entry::new(value, ttl));
+        let mut entry = Entry::new(value, ttl);
+        entry.version = self.next_ver();
+        self.entries.insert(CompactString::from(key), entry);
     }
 
     /// Randomly samples up to `count` keys and removes any that have expired.
@@ -1999,5 +2039,72 @@ mod tests {
         // ask for at most 3 keys from slot 0
         let keys = ks.get_keys_in_slot(0, 3);
         assert!(keys.len() <= 3);
+    }
+
+    // --- key_version (WATCH support) ---
+
+    #[test]
+    fn key_version_returns_none_for_missing() {
+        let ks = Keyspace::new();
+        assert_eq!(ks.key_version("nope"), None);
+    }
+
+    #[test]
+    fn key_version_changes_on_set() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v1"), None, false, false);
+        let v1 = ks.key_version("k").expect("key should exist");
+        ks.set("k".into(), Bytes::from("v2"), None, false, false);
+        let v2 = ks.key_version("k").expect("key should exist");
+        assert!(v2 > v1, "version should increase on overwrite");
+    }
+
+    #[test]
+    fn key_version_none_after_del() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        assert!(ks.key_version("k").is_some());
+        ks.del("k");
+        assert_eq!(ks.key_version("k"), None);
+    }
+
+    #[test]
+    fn key_version_changes_on_list_push() {
+        let mut ks = Keyspace::new();
+        ks.lpush("list", &[Bytes::from("a")]).unwrap();
+        let v1 = ks.key_version("list").expect("list should exist");
+        ks.rpush("list", &[Bytes::from("b")]).unwrap();
+        let v2 = ks.key_version("list").expect("list should exist");
+        assert!(v2 > v1, "version should increase on rpush");
+    }
+
+    #[test]
+    fn key_version_changes_on_hash_set() {
+        let mut ks = Keyspace::new();
+        ks.hset("h", &[("f1".into(), Bytes::from("v1"))]).unwrap();
+        let v1 = ks.key_version("h").expect("hash should exist");
+        ks.hset("h", &[("f2".into(), Bytes::from("v2"))]).unwrap();
+        let v2 = ks.key_version("h").expect("hash should exist");
+        assert!(v2 > v1, "version should increase on hset");
+    }
+
+    #[test]
+    fn key_version_changes_on_expire() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        let v1 = ks.key_version("k").expect("key should exist");
+        ks.expire("k", 100);
+        let v2 = ks.key_version("k").expect("key should exist");
+        assert!(v2 > v1, "version should increase on expire");
+    }
+
+    #[test]
+    fn key_version_unique_across_keys() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("1"), None, false, false);
+        ks.set("b".into(), Bytes::from("2"), None, false, false);
+        let va = ks.key_version("a").unwrap();
+        let vb = ks.key_version("b").unwrap();
+        assert_ne!(va, vb, "different keys should have different versions");
     }
 }

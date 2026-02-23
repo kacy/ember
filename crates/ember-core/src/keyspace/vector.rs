@@ -53,8 +53,9 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            self.entries
-                .insert(CompactString::from(key), Entry::new(value, None));
+            let mut entry = Entry::new(value, None);
+            entry.version = self.next_ver();
+            self.entries.insert(CompactString::from(key), entry);
         }
 
         let entry = match self.entries.get_mut(key) {
@@ -70,6 +71,8 @@ impl Keyspace {
             _ => return Err(VectorWriteError::WrongType),
         };
         entry.touch();
+        self.next_version += 1;
+        entry.version = self.next_version;
 
         let new_value_size = memory::value_size(&entry.value);
         entry.cached_value_size = new_value_size;
@@ -160,8 +163,9 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            self.entries
-                .insert(CompactString::from(key), Entry::new(value, None));
+            let mut new_entry = Entry::new(value, None);
+            new_entry.version = self.next_ver();
+            self.entries.insert(CompactString::from(key), new_entry);
         }
 
         let entry = match self.entries.get_mut(key) {
@@ -195,6 +199,8 @@ impl Keyspace {
                             // partial insert: return applied vectors so they can
                             // be persisted to AOF despite the error
                             entry.touch();
+                            self.next_version += 1;
+                            entry.version = self.next_version;
                             let new_vs = memory::value_size(&entry.value);
                             entry.cached_value_size = new_vs;
                             let new_entry_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
@@ -215,6 +221,8 @@ impl Keyspace {
         }
 
         entry.touch();
+        self.next_version += 1;
+        entry.version = self.next_version;
         let new_vs = memory::value_size(&entry.value);
         entry.cached_value_size = new_vs;
         let new_entry_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
@@ -276,6 +284,8 @@ impl Keyspace {
 
         if removed {
             entry.touch();
+            self.next_version += 1;
+            entry.version = self.next_version;
             let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
             let new_vs = memory::value_size(&entry.value);
             entry.cached_value_size = new_vs;

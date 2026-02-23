@@ -309,6 +309,11 @@ pub enum ShardRequest {
     DbSize,
     /// Returns keyspace stats for this shard.
     Stats,
+    /// Returns the current version of a key for WATCH optimistic locking.
+    /// Read-only, no AOF, no replication — cold path only.
+    KeyVersion {
+        key: String,
+    },
     /// Triggers a snapshot write.
     Snapshot,
     /// Serializes the current shard state to bytes (in-memory snapshot).
@@ -567,6 +572,8 @@ pub enum ShardResponse {
         data: Bytes,
         expire: Option<Duration>,
     },
+    /// Key version for WATCH optimistic locking. `None` means missing/expired.
+    Version(Option<u64>),
 }
 
 /// A request (or batch of requests) bundled with reply channels.
@@ -1341,6 +1348,7 @@ fn dispatch(
         },
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
+        ShardRequest::KeyVersion { ref key } => ShardResponse::Version(ks.key_version(key)),
         ShardRequest::FlushDb => {
             ks.clear();
             ShardResponse::Ok

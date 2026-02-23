@@ -117,6 +117,7 @@ impl Keyspace {
         }
 
         // safe: key was just inserted or confirmed to exist
+        let ver = self.next_ver();
         let entry = self.entries.get_mut(key).unwrap();
         let Value::List(ref mut deque) = entry.value else {
             unreachable!("type verified by ensure_collection_type");
@@ -130,6 +131,7 @@ impl Keyspace {
         }
         let len = deque.len();
         entry.touch();
+        entry.version = ver;
         entry.cached_value_size += element_increase;
 
         // apply the known delta — no need to rescan the entire list
@@ -144,6 +146,7 @@ impl Keyspace {
             return Ok(None);
         }
 
+        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(None);
         };
@@ -161,6 +164,7 @@ impl Keyspace {
             deque.pop_back()
         };
         entry.touch();
+        entry.version = ver;
 
         let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
         if let Some(ref elem) = popped {

@@ -104,6 +104,7 @@ impl Keyspace {
             return Ok(vec![]);
         }
 
+        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
@@ -125,6 +126,9 @@ impl Keyspace {
         } else {
             false
         };
+        if !removed.is_empty() {
+            entry.version = ver;
+        }
 
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
 
@@ -195,8 +199,9 @@ impl Keyspace {
         if is_new {
             let value = Value::Hash(Box::default());
             self.memory.add(key, &value);
-            self.entries
-                .insert(CompactString::from(key), Entry::new(value, None));
+            let mut entry = Entry::new(value, None);
+            entry.version = self.next_ver();
+            self.entries.insert(CompactString::from(key), entry);
         }
 
         // safe: key was either just inserted above or verified to exist
@@ -218,6 +223,8 @@ impl Keyspace {
         let new_val = current_val.checked_add(delta).ok_or(IncrError::Overflow)?;
         hash.insert(field.into(), Bytes::from(new_val.to_string()));
         entry.touch();
+        self.next_version += 1;
+        entry.version = self.next_version;
 
         let new_value_size = memory::value_size(&entry.value);
         entry.cached_value_size = new_value_size;

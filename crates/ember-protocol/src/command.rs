@@ -539,6 +539,13 @@ pub enum Command {
         password: String,
     },
 
+    /// WATCH `key` \[key ...\]. Marks keys for optimistic locking.
+    /// If any watched key is modified before EXEC, the transaction aborts.
+    Watch { keys: Vec<String> },
+
+    /// UNWATCH. Clears all watched keys for the current connection.
+    Unwatch,
+
     /// QUIT. Requests the server to close the connection.
     Quit,
 
@@ -630,6 +637,8 @@ impl Command {
             Command::Multi => "multi",
             Command::Exec => "exec",
             Command::Discard => "discard",
+            Command::Watch { .. } => "watch",
+            Command::Unwatch => "unwatch",
 
             // list
             Command::LPush { .. } => "lpush",
@@ -975,6 +984,8 @@ impl Command {
             "MULTI" => parse_no_args("MULTI", &frames[1..], Command::Multi),
             "EXEC" => parse_no_args("EXEC", &frames[1..], Command::Exec),
             "DISCARD" => parse_no_args("DISCARD", &frames[1..], Command::Discard),
+            "WATCH" => parse_watch(&frames[1..]),
+            "UNWATCH" => parse_no_args("UNWATCH", &frames[1..], Command::Unwatch),
             "SLOWLOG" => parse_slowlog(&frames[1..]),
             "SUBSCRIBE" => parse_subscribe(&frames[1..]),
             "UNSUBSCRIBE" => parse_unsubscribe(&frames[1..]),
@@ -2183,6 +2194,14 @@ fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("ASKING"));
     }
     Ok(Command::Asking)
+}
+
+fn parse_watch(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("WATCH"));
+    }
+    let keys = extract_strings(args)?;
+    Ok(Command::Watch { keys })
 }
 
 fn parse_no_args(
@@ -6215,5 +6234,41 @@ mod tests {
     fn parse_client_no_subcommand() {
         let err = Command::from_frame(cmd(&["CLIENT"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- watch / unwatch ---
+
+    #[test]
+    fn parse_watch_single_key() {
+        assert_eq!(
+            Command::from_frame(cmd(&["WATCH", "mykey"])).unwrap(),
+            Command::Watch {
+                keys: vec!["mykey".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn parse_watch_multiple_keys() {
+        assert_eq!(
+            Command::from_frame(cmd(&["WATCH", "a", "b", "c"])).unwrap(),
+            Command::Watch {
+                keys: vec!["a".into(), "b".into(), "c".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn parse_watch_no_keys_error() {
+        let err = Command::from_frame(cmd(&["WATCH"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn parse_unwatch() {
+        assert_eq!(
+            Command::from_frame(cmd(&["UNWATCH"])).unwrap(),
+            Command::Unwatch,
+        );
     }
 }

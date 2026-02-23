@@ -25,8 +25,8 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    frame_to_monitor_args, is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth,
-    validate_command_sizes, MonitorEvent, TransactionState,
+    frame_to_monitor_args, get_rss_bytes, human_bytes, is_allowed_before_auth, is_auth_frame,
+    is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent, TransactionState,
 };
 use crate::pubsub::PubSubManager;
 use crate::server::{format_client_list, ServerContext};
@@ -299,12 +299,17 @@ async fn handle_frame_with_tx(
                 Frame::Error("ERR EXEC without MULTI".into())
             } else if cmd_name.as_deref() == Some("DISCARD") {
                 Frame::Error("ERR DISCARD without MULTI".into())
+            } else if cmd_name.as_deref() == Some("WATCH") {
+                Frame::Error("ERR WATCH is not supported in concurrent mode".into())
+            } else if cmd_name.as_deref() == Some("UNWATCH") {
+                Frame::Simple("OK".into())
             } else {
                 process(frame, keyspace, engine, ctx, slow_log, pubsub, client_id).await
             }
         }
         TransactionState::Queuing { queue, error } => match cmd_name.as_deref() {
             Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
+            Some("WATCH") => Frame::Error("ERR WATCH inside MULTI is not allowed".into()),
             Some("EXEC") => {
                 if *error {
                     let q = std::mem::take(queue);
@@ -983,11 +988,24 @@ fn render_concurrent_info(
         let used = keyspace.memory_used();
         out.push_str("# Memory\r\n");
         out.push_str(&format!("used_memory:{used}\r\n"));
+        out.push_str(&format!("used_memory_human:{}\r\n", human_bytes(used)));
+        if let Some(rss) = get_rss_bytes() {
+            out.push_str(&format!("used_memory_rss:{rss}\r\n"));
+            out.push_str(&format!("used_memory_rss_human:{}\r\n", human_bytes(rss)));
+        }
         if let Some(max) = ctx.max_memory {
             out.push_str(&format!("max_memory:{max}\r\n"));
+            out.push_str(&format!("max_memory_human:{}\r\n", human_bytes(max)));
         } else {
             out.push_str("max_memory:0\r\n");
+            out.push_str("max_memory_human:unlimited\r\n");
         }
+        out.push_str("\r\n");
+    }
+
+    if want("PERSISTENCE") {
+        out.push_str("# Persistence\r\n");
+        out.push_str("aof_enabled:0\r\n");
         out.push_str("\r\n");
     }
 
@@ -997,6 +1015,15 @@ fn render_concurrent_info(
         out.push_str("# Stats\r\n");
         out.push_str(&format!("total_connections_received:{total_conns}\r\n"));
         out.push_str(&format!("total_commands_processed:{total_cmds}\r\n"));
+        out.push_str("expired_keys:0\r\n");
+        out.push_str("evicted_keys:0\r\n");
+        out.push_str("\r\n");
+    }
+
+    if want("REPLICATION") {
+        out.push_str("# Replication\r\n");
+        out.push_str("role:primary\r\n");
+        out.push_str("connected_replicas:0\r\n");
         out.push_str("\r\n");
     }
 
