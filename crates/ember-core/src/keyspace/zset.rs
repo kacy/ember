@@ -82,6 +82,7 @@ impl Keyspace {
             return Err(WrongType);
         }
 
+        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
@@ -97,6 +98,9 @@ impl Keyspace {
             }
         }
         entry.touch();
+        if !removed.is_empty() {
+            entry.version = ver;
+        }
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
