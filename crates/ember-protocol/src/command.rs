@@ -4295,8 +4295,10 @@ mod tests {
     #[test]
     fn sscan_with_options() {
         assert_eq!(
-            Command::from_frame(cmd(&["SSCAN", "myset", "0", "MATCH", "user:*", "COUNT", "100"]))
-                .unwrap(),
+            Command::from_frame(cmd(&[
+                "SSCAN", "myset", "0", "MATCH", "user:*", "COUNT", "100"
+            ]))
+            .unwrap(),
             Command::SScan {
                 key: "myset".into(),
                 cursor: 0,

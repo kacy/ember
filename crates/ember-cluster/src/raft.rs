@@ -200,12 +200,16 @@ impl Storage {
     /// On a fresh start the directory is created and empty files are written.
     /// On recovery, the vote, log entries, and snapshot are loaded from disk
     /// into memory so the Raft node can resume where it left off.
-    pub fn open(raft_dir: PathBuf) -> Result<(Arc<Self>, watch::Receiver<ClusterStateData>), RaftDiskError> {
+    pub fn open(
+        raft_dir: PathBuf,
+    ) -> Result<(Arc<Self>, watch::Receiver<ClusterStateData>), RaftDiskError> {
         let (raft_disk, recovered) = RaftDisk::open(&raft_dir)?;
 
         let (state_tx, state_rx) = watch::channel(ClusterStateData::default());
 
-        let snapshot = recovered.snapshot.map(|(meta, data)| StoredSnapshot { meta, data });
+        let snapshot = recovered
+            .snapshot
+            .map(|(meta, data)| StoredSnapshot { meta, data });
 
         let storage = Arc::new(Self {
             vote: RwLock::new(recovered.vote),
@@ -229,7 +233,10 @@ impl Storage {
     pub fn has_log_entries(&self) -> bool {
         // safe to call from sync context — the RwLock is only contended
         // by the Raft runtime which hasn't started yet during bootstrap
-        self.log.try_read().map(|log| !log.is_empty()).unwrap_or(false)
+        self.log
+            .try_read()
+            .map(|log| !log.is_empty())
+            .unwrap_or(false)
     }
 
     pub fn state(&self) -> Arc<RwLock<ClusterStateData>> {

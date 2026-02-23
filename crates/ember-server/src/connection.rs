@@ -1777,27 +1777,57 @@ async fn prepare_command(
         Command::SCard { key } => {
             route!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
         }
-        Command::SScan { key, cursor, pattern, count } => {
+        Command::SScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        } => {
             let count = count.unwrap_or(10);
             route!(
                 key,
-                ShardRequest::SScan { key, cursor, count, pattern },
+                ShardRequest::SScan {
+                    key,
+                    cursor,
+                    count,
+                    pattern
+                },
                 ResponseTag::CollectionScanResult
             )
         }
-        Command::HScan { key, cursor, pattern, count } => {
+        Command::HScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        } => {
             let count = count.unwrap_or(10);
             route!(
                 key,
-                ShardRequest::HScan { key, cursor, count, pattern },
+                ShardRequest::HScan {
+                    key,
+                    cursor,
+                    count,
+                    pattern
+                },
                 ResponseTag::CollectionScanResult
             )
         }
-        Command::ZScan { key, cursor, pattern, count } => {
+        Command::ZScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        } => {
             let count = count.unwrap_or(10);
             route!(
                 key,
-                ShardRequest::ZScan { key, cursor, count, pattern },
+                ShardRequest::ZScan {
+                    key,
+                    cursor,
+                    count,
+                    pattern
+                },
                 ResponseTag::CollectionScanResult
             )
         }
@@ -3402,24 +3432,54 @@ async fn execute(
             }
         }
 
-        Command::SScan { key, cursor, pattern, count } => {
+        Command::SScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        } => {
             let count = count.unwrap_or(10);
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::SScan { key, cursor, count, pattern };
+            let req = ShardRequest::SScan {
+                key,
+                cursor,
+                count,
+                pattern,
+            };
             resolve_collection_scan(engine.send_to_shard(idx, req).await)
         }
 
-        Command::HScan { key, cursor, pattern, count } => {
+        Command::HScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        } => {
             let count = count.unwrap_or(10);
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::HScan { key, cursor, count, pattern };
+            let req = ShardRequest::HScan {
+                key,
+                cursor,
+                count,
+                pattern,
+            };
             resolve_collection_scan(engine.send_to_shard(idx, req).await)
         }
 
-        Command::ZScan { key, cursor, pattern, count } => {
+        Command::ZScan {
+            key,
+            cursor,
+            pattern,
+            count,
+        } => {
             let count = count.unwrap_or(10);
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::ZScan { key, cursor, count, pattern };
+            let req = ShardRequest::ZScan {
+                key,
+                cursor,
+                count,
+                pattern,
+            };
             resolve_collection_scan(engine.send_to_shard(idx, req).await)
         }
 

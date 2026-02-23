@@ -1391,41 +1391,59 @@ fn dispatch(
             Ok(count) => ShardResponse::Len(count),
             Err(_) => ShardResponse::WrongType,
         },
-        ShardRequest::SScan { key, cursor, count, pattern } => {
-            match ks.scan_set(key, *cursor, *count, pattern.as_deref()) {
-                Ok((next, members)) => {
-                    let items = members.into_iter().map(Bytes::from).collect();
-                    ShardResponse::CollectionScan { cursor: next, items }
+        ShardRequest::SScan {
+            key,
+            cursor,
+            count,
+            pattern,
+        } => match ks.scan_set(key, *cursor, *count, pattern.as_deref()) {
+            Ok((next, members)) => {
+                let items = members.into_iter().map(Bytes::from).collect();
+                ShardResponse::CollectionScan {
+                    cursor: next,
+                    items,
                 }
-                Err(_) => ShardResponse::WrongType,
             }
-        }
-        ShardRequest::HScan { key, cursor, count, pattern } => {
-            match ks.scan_hash(key, *cursor, *count, pattern.as_deref()) {
-                Ok((next, fields)) => {
-                    let mut items = Vec::with_capacity(fields.len() * 2);
-                    for (field, value) in fields {
-                        items.push(Bytes::from(field));
-                        items.push(value);
-                    }
-                    ShardResponse::CollectionScan { cursor: next, items }
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::HScan {
+            key,
+            cursor,
+            count,
+            pattern,
+        } => match ks.scan_hash(key, *cursor, *count, pattern.as_deref()) {
+            Ok((next, fields)) => {
+                let mut items = Vec::with_capacity(fields.len() * 2);
+                for (field, value) in fields {
+                    items.push(Bytes::from(field));
+                    items.push(value);
                 }
-                Err(_) => ShardResponse::WrongType,
-            }
-        }
-        ShardRequest::ZScan { key, cursor, count, pattern } => {
-            match ks.scan_sorted_set(key, *cursor, *count, pattern.as_deref()) {
-                Ok((next, members)) => {
-                    let mut items = Vec::with_capacity(members.len() * 2);
-                    for (member, score) in members {
-                        items.push(Bytes::from(member));
-                        items.push(Bytes::from(score.to_string()));
-                    }
-                    ShardResponse::CollectionScan { cursor: next, items }
+                ShardResponse::CollectionScan {
+                    cursor: next,
+                    items,
                 }
-                Err(_) => ShardResponse::WrongType,
             }
-        }
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZScan {
+            key,
+            cursor,
+            count,
+            pattern,
+        } => match ks.scan_sorted_set(key, *cursor, *count, pattern.as_deref()) {
+            Ok((next, members)) => {
+                let mut items = Vec::with_capacity(members.len() * 2);
+                for (member, score) in members {
+                    items.push(Bytes::from(member));
+                    items.push(Bytes::from(score.to_string()));
+                }
+                ShardResponse::CollectionScan {
+                    cursor: next,
+                    items,
+                }
+            }
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::CountKeysInSlot { slot } => {
             ShardResponse::KeyCount(ks.count_keys_in_slot(*slot))
         }
