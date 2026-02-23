@@ -121,9 +121,7 @@ pub(crate) struct RaftDisk {
 
 impl std::fmt::Debug for RaftDisk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RaftDisk")
-            .field("dir", &self.dir)
-            .finish()
+        f.debug_struct("RaftDisk").field("dir", &self.dir).finish()
     }
 }
 
@@ -197,7 +195,13 @@ impl RaftDisk {
             recovered.snapshot.is_some(),
         );
 
-        Ok((Self { dir: dir.to_path_buf(), log_file }, recovered))
+        Ok((
+            Self {
+                dir: dir.to_path_buf(),
+                log_file,
+            },
+            recovered,
+        ))
     }
 
     /// Persists the current vote and last_purged log ID.
@@ -222,7 +226,10 @@ impl RaftDisk {
     /// Rewrites the log file with only the given entries.
     ///
     /// Used after purge or truncation to compact the on-disk log.
-    pub fn rewrite_log(&mut self, entries: &BTreeMap<u64, Entry<TypeConfig>>) -> Result<(), RaftDiskError> {
+    pub fn rewrite_log(
+        &mut self,
+        entries: &BTreeMap<u64, Entry<TypeConfig>>,
+    ) -> Result<(), RaftDiskError> {
         let log_path = self.dir.join("raft-log");
         let tmp_path = self.dir.join("raft-log.tmp");
 
@@ -282,7 +289,11 @@ fn write_header(w: &mut impl Write, magic: &[u8; 4]) -> Result<(), RaftDiskError
     Ok(())
 }
 
-fn read_header(r: &mut impl Read, expected_magic: &[u8; 4], file_name: &'static str) -> Result<(), RaftDiskError> {
+fn read_header(
+    r: &mut impl Read,
+    expected_magic: &[u8; 4],
+    file_name: &'static str,
+) -> Result<(), RaftDiskError> {
     let mut magic = [0u8; 4];
     r.read_exact(&mut magic).map_err(|e| {
         if e.kind() == io::ErrorKind::UnexpectedEof {
@@ -318,7 +329,9 @@ fn write_record<T: Serialize>(w: &mut impl Write, value: &T) -> Result<(), RaftD
 
 /// Reads a single record, returning the deserialized value.
 /// Returns `None` on clean EOF (no bytes available).
-fn read_record<T: for<'de> Deserialize<'de>>(r: &mut impl Read) -> Result<Option<T>, RaftDiskError> {
+fn read_record<T: for<'de> Deserialize<'de>>(
+    r: &mut impl Read,
+) -> Result<Option<T>, RaftDiskError> {
     // try to read the length prefix — EOF here is clean
     let mut len_buf = [0u8; 4];
     match r.read_exact(&mut len_buf) {
@@ -346,7 +359,8 @@ fn read_record<T: for<'de> Deserialize<'de>>(r: &mut impl Read) -> Result<Option
         });
     }
 
-    let value = bincode::deserialize(&payload).map_err(|e| RaftDiskError::Bincode(e.to_string()))?;
+    let value =
+        bincode::deserialize(&payload).map_err(|e| RaftDiskError::Bincode(e.to_string()))?;
     Ok(Some(value))
 }
 
@@ -390,9 +404,7 @@ fn read_snapshot_file(path: &Path) -> Result<SnapshotRecord, RaftDiskError> {
 
 /// Recovers log entries from the log file. Returns the entries and the byte
 /// offset of the last valid record (used to truncate trailing corruption).
-fn recover_log_file(
-    path: &Path,
-) -> Result<(BTreeMap<u64, Entry<TypeConfig>>, u64), RaftDiskError> {
+fn recover_log_file(path: &Path) -> Result<(BTreeMap<u64, Entry<TypeConfig>>, u64), RaftDiskError> {
     let file = File::open(path)?;
     let file_len = file.metadata()?.len();
     let mut reader = BufReader::new(file);
@@ -441,9 +453,9 @@ fn recover_log_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use openraft::{CommittedLeaderId, EntryPayload, StoredMembership};
     use crate::raft::ClusterCommand;
     use crate::topology::NodeId;
+    use openraft::{CommittedLeaderId, EntryPayload, StoredMembership};
 
     fn log_id(term: u64, index: u64) -> LogId<u64> {
         LogId::new(CommittedLeaderId::new(term, 0), index)
@@ -501,7 +513,11 @@ mod tests {
         let (mut disk, recovered) = RaftDisk::open(dir.path()).unwrap();
         assert!(recovered.log.is_empty());
 
-        let entries = vec![test_entry(1, 1), test_entry(1, 2), test_entry_with_data(1, 3)];
+        let entries = vec![
+            test_entry(1, 1),
+            test_entry(1, 2),
+            test_entry_with_data(1, 3),
+        ];
         disk.append_entries(&entries).unwrap();
 
         // reopen and recover
@@ -520,7 +536,8 @@ mod tests {
         // write two valid entries
         {
             let (mut disk, _) = RaftDisk::open(dir.path()).unwrap();
-            disk.append_entries(&[test_entry(1, 1), test_entry(1, 2)]).unwrap();
+            disk.append_entries(&[test_entry(1, 1), test_entry(1, 2)])
+                .unwrap();
         }
 
         // append garbage to the log file
@@ -539,7 +556,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut disk, _) = RaftDisk::open(dir.path()).unwrap();
 
-        disk.append_entries(&[test_entry(1, 1), test_entry(1, 2), test_entry(1, 3)]).unwrap();
+        disk.append_entries(&[test_entry(1, 1), test_entry(1, 2), test_entry(1, 3)])
+            .unwrap();
 
         // rewrite with only entry 3
         let mut remaining = BTreeMap::new();
