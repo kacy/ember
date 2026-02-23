@@ -207,6 +207,8 @@ where
     let mut asking = false;
     // per-connection transaction state for MULTI/EXEC/DISCARD
     let mut tx_state = TransactionState::None;
+    // per-connection WATCH state: (key, version_at_watch_time)
+    let mut watched_keys: Vec<(String, Option<u64>)> = Vec::new();
 
     // cache the peer address string once; avoids an allocation per command
     // on the MONITOR hot path where every command needs a string representation.
@@ -471,6 +473,7 @@ where
                     let response = handle_frame_with_tx(
                         frame,
                         &mut tx_state,
+                        &mut watched_keys,
                         &engine,
                         ctx,
                         slow_log,
@@ -681,6 +684,7 @@ where
 async fn handle_frame_with_tx(
     frame: Frame,
     tx_state: &mut TransactionState,
+    watched_keys: &mut Vec<(String, Option<u64>)>,
     engine: &Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
@@ -711,6 +715,28 @@ async fn handle_frame_with_tx(
                 Frame::Error("ERR EXEC without MULTI".into())
             } else if cmd_name == Some("DISCARD") {
                 Frame::Error("ERR DISCARD without MULTI".into())
+            } else if cmd_name == Some("WATCH") {
+                match Command::from_frame(frame) {
+                    Ok(Command::Watch { keys }) => {
+                        // query current version for each key
+                        for key in keys {
+                            let ver = match engine
+                                .route(&key, ShardRequest::KeyVersion { key: key.clone() })
+                                .await
+                            {
+                                Ok(ShardResponse::Version(v)) => v,
+                                _ => None,
+                            };
+                            watched_keys.push((key, ver));
+                        }
+                        Frame::Simple("OK".into())
+                    }
+                    Err(e) => Frame::Error(format!("ERR {e}")),
+                    _ => Frame::Error("ERR unexpected parse result".into()),
+                }
+            } else if cmd_name == Some("UNWATCH") {
+                watched_keys.clear();
+                Frame::Simple("OK".into())
             } else {
                 // normal dispatch path (process() increments commands_processed)
                 process(
@@ -722,15 +748,30 @@ async fn handle_frame_with_tx(
         TransactionState::Queuing { queue, error } => {
             match cmd_name {
                 Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
+                Some("WATCH") => {
+                    Frame::Error("ERR WATCH inside MULTI is not allowed".into())
+                }
                 Some("EXEC") => {
                     if *error {
                         let q = std::mem::take(queue);
                         *tx_state = TransactionState::None;
+                        watched_keys.clear();
                         drop(q);
                         Frame::Error(
                             "EXECABORT Transaction discarded because of previous errors.".into(),
                         )
                     } else {
+                        // check watched keys before executing
+                        let watches_ok = check_watched_keys(watched_keys, engine).await;
+                        watched_keys.clear();
+
+                        if !watches_ok {
+                            let q = std::mem::take(queue);
+                            *tx_state = TransactionState::None;
+                            drop(q);
+                            return Frame::Null;
+                        }
+
                         let q = std::mem::take(queue);
                         *tx_state = TransactionState::None;
                         // replay queued commands serially (process() handles metrics)
@@ -755,8 +796,14 @@ async fn handle_frame_with_tx(
                 Some("DISCARD") => {
                     let q = std::mem::take(queue);
                     *tx_state = TransactionState::None;
+                    watched_keys.clear();
                     drop(q);
                     Frame::Simple("OK".into())
+                }
+                Some("UNWATCH") => {
+                    // inside MULTI, UNWATCH is a no-op (Redis compat)
+                    queue.push(frame);
+                    Frame::Simple("QUEUED".into())
                 }
                 _ => {
                     // validate the command parses correctly before queuing
@@ -785,6 +832,26 @@ async fn handle_frame_with_tx(
     }
 }
 
+/// Re-queries all watched key versions and returns true if none have changed.
+async fn check_watched_keys(
+    watched: &[(String, Option<u64>)],
+    engine: &Engine,
+) -> bool {
+    for (key, original_ver) in watched {
+        let current = match engine
+            .route(key, ShardRequest::KeyVersion { key: key.clone() })
+            .await
+        {
+            Ok(ShardResponse::Version(v)) => v,
+            _ => None,
+        };
+        if current != *original_ver {
+            return false;
+        }
+    }
+    true
+}
+
 /// Peeks at the command name from a raw frame without consuming it.
 ///
 /// Returns a `&'static str` for known transaction commands, avoiding
@@ -801,18 +868,27 @@ fn peek_command_name(frame: &Frame) -> Option<&'static str> {
             if name.eq_ignore_ascii_case(b"DISCARD") {
                 return Some("DISCARD");
             }
+            if name.eq_ignore_ascii_case(b"WATCH") {
+                return Some("WATCH");
+            }
+            if name.eq_ignore_ascii_case(b"UNWATCH") {
+                return Some("UNWATCH");
+            }
         }
     }
     None
 }
 
-/// Checks if a raw frame is a MULTI, EXEC, or DISCARD command.
+/// Checks if a raw frame is a transaction-related command that requires
+/// serial execution (MULTI, EXEC, DISCARD, WATCH, UNWATCH).
 fn is_transaction_frame(frame: &Frame) -> bool {
     if let Frame::Array(parts) = frame {
         if let Some(Frame::Bulk(name)) = parts.first() {
             return name.eq_ignore_ascii_case(b"MULTI")
                 || name.eq_ignore_ascii_case(b"EXEC")
-                || name.eq_ignore_ascii_case(b"DISCARD");
+                || name.eq_ignore_ascii_case(b"DISCARD")
+                || name.eq_ignore_ascii_case(b"WATCH")
+                || name.eq_ignore_ascii_case(b"UNWATCH");
         }
     }
     false
@@ -4327,6 +4403,10 @@ async fn execute(
         // MONITOR is handled at the frame level before process() is called.
         // If it arrives here (e.g. during a transaction), just return OK.
         Command::Monitor => Frame::Simple("OK".into()),
+
+        // WATCH/UNWATCH are intercepted by handle_frame_with_tx() before
+        // process(). If they reach here, return sensible defaults.
+        Command::Watch { .. } | Command::Unwatch => Frame::Simple("OK".into()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }

@@ -299,12 +299,19 @@ async fn handle_frame_with_tx(
                 Frame::Error("ERR EXEC without MULTI".into())
             } else if cmd_name.as_deref() == Some("DISCARD") {
                 Frame::Error("ERR DISCARD without MULTI".into())
+            } else if cmd_name.as_deref() == Some("WATCH") {
+                Frame::Error("ERR WATCH is not supported in concurrent mode".into())
+            } else if cmd_name.as_deref() == Some("UNWATCH") {
+                Frame::Simple("OK".into())
             } else {
                 process(frame, keyspace, engine, ctx, slow_log, pubsub, client_id).await
             }
         }
         TransactionState::Queuing { queue, error } => match cmd_name.as_deref() {
             Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
+            Some("WATCH") => {
+                Frame::Error("ERR WATCH inside MULTI is not allowed".into())
+            }
             Some("EXEC") => {
                 if *error {
                     let q = std::mem::take(queue);
