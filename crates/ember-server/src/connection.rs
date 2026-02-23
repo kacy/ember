@@ -749,9 +749,7 @@ async fn handle_frame_with_tx(
         TransactionState::Queuing { queue, error } => {
             match cmd_name {
                 Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
-                Some("WATCH") => {
-                    Frame::Error("ERR WATCH inside MULTI is not allowed".into())
-                }
+                Some("WATCH") => Frame::Error("ERR WATCH inside MULTI is not allowed".into()),
                 Some("EXEC") => {
                     if *error {
                         let q = std::mem::take(queue);
@@ -834,10 +832,7 @@ async fn handle_frame_with_tx(
 }
 
 /// Re-queries all watched key versions and returns true if none have changed.
-async fn check_watched_keys(
-    watched: &[(String, Option<u64>)],
-    engine: &Engine,
-) -> bool {
+async fn check_watched_keys(watched: &[(String, Option<u64>)], engine: &Engine) -> bool {
     for (key, original_ver) in watched {
         let current = match engine
             .route(key, ShardRequest::KeyVersion { key: key.clone() })
@@ -4502,10 +4497,7 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
             ));
             if let Some(rss) = get_rss_bytes() {
                 out.push_str(&format!("used_memory_rss:{rss}\r\n"));
-                out.push_str(&format!(
-                    "used_memory_rss_human:{}\r\n",
-                    human_bytes(rss)
-                ));
+                out.push_str(&format!("used_memory_rss_human:{}\r\n", human_bytes(rss)));
             }
             if let Some(max) = ctx.max_memory {
                 let effective = ember_core::memory::effective_limit(max);
@@ -4594,7 +4586,6 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
 
     Frame::Bulk(Bytes::from(out))
 }
-
 
 /// Returns the standard WRONGTYPE error frame.
 fn wrongtype_error() -> Frame {

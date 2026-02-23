@@ -309,9 +309,7 @@ async fn handle_frame_with_tx(
         }
         TransactionState::Queuing { queue, error } => match cmd_name.as_deref() {
             Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
-            Some("WATCH") => {
-                Frame::Error("ERR WATCH inside MULTI is not allowed".into())
-            }
+            Some("WATCH") => Frame::Error("ERR WATCH inside MULTI is not allowed".into()),
             Some("EXEC") => {
                 if *error {
                     let q = std::mem::take(queue);
@@ -990,16 +988,10 @@ fn render_concurrent_info(
         let used = keyspace.memory_used();
         out.push_str("# Memory\r\n");
         out.push_str(&format!("used_memory:{used}\r\n"));
-        out.push_str(&format!(
-            "used_memory_human:{}\r\n",
-            human_bytes(used)
-        ));
+        out.push_str(&format!("used_memory_human:{}\r\n", human_bytes(used)));
         if let Some(rss) = get_rss_bytes() {
             out.push_str(&format!("used_memory_rss:{rss}\r\n"));
-            out.push_str(&format!(
-                "used_memory_rss_human:{}\r\n",
-                human_bytes(rss)
-            ));
+            out.push_str(&format!("used_memory_rss_human:{}\r\n", human_bytes(rss)));
         }
         if let Some(max) = ctx.max_memory {
             out.push_str(&format!("max_memory:{max}\r\n"));

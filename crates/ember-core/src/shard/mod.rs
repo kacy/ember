@@ -311,7 +311,9 @@ pub enum ShardRequest {
     Stats,
     /// Returns the current version of a key for WATCH optimistic locking.
     /// Read-only, no AOF, no replication — cold path only.
-    KeyVersion { key: String },
+    KeyVersion {
+        key: String,
+    },
     /// Triggers a snapshot write.
     Snapshot,
     /// Serializes the current shard state to bytes (in-memory snapshot).
