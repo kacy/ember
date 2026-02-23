@@ -334,7 +334,7 @@ up to `max_piggyback = 10` state updates are piggybacked on every message to con
 
 a single openraft group manages cluster configuration changes: adding or removing nodes, assigning slots, promoting replicas, and tracking migrations. the data path is not routed through raft.
 
-the raft log is in-memory (`BTreeMap<u64, Entry>` behind `RwLock`). this is intentional: cluster configuration changes are rare and the cluster state can be re-learned from gossip on restart. persisting the raft log is deferred.
+the raft log uses in-memory structures (`BTreeMap<u64, Entry>` behind `RwLock`) with optional disk persistence via `RaftDisk`. when a data directory is configured, vote, log entries, and snapshots are persisted to a `raft/` subdirectory using CRC32-checksummed binary records. on restart the node recovers from disk instead of re-bootstrapping. atomic rewrites (write `.tmp`, fsync, rename) protect metadata and snapshot files from corruption during crashes.
 
 commands through raft: `AddNode`, `RemoveNode`, `AssignSlots`, `PromoteReplica`, `BeginMigration`, `CompleteMigration`.
 

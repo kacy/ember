@@ -67,7 +67,7 @@ the following CLUSTER commands are supported at the protocol layer:
 
 ## design notes
 
-- **in-memory raft log** — persistence is deferred; cluster state survives via gossip
+- **persistent raft log** — vote, log entries, and snapshots are persisted to disk when a data directory is configured; nodes recover cluster state on restart
 - **single raft group** — all cluster config changes go through one raft group (simpler than multi-raft)
 - **server integration pending** — modules are complete but not yet wired into ember-server
 
