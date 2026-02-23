@@ -16,7 +16,7 @@ each shard gets its own persistence files (`shard-{id}.aof` and `shard-{id}.snap
 
 **AOF** — `[EAOF magic][version][record...]` where each record is `[tag][payload][crc32]`
 
-supported record types: SET, DEL, EXPIRE, LPUSH, RPUSH, LPOP, RPOP, ZADD, ZREM, HSET, HDEL, HINCRBY, SADD, SREM
+supported record types: SET, DEL, EXPIRE, PERSIST, PEXPIRE, INCR, DECR, INCRBY, DECRBY, APPEND, RENAME, COPY, LPUSH, RPUSH, LPOP, RPOP, ZADD, ZREM, HSET, HDEL, HINCRBY, SADD, SREM (plus VADD, VREM, PROTO.SET, PROTO.REGISTER when compiled with those features)
 
 **snapshot (v2)** — `[ESNP magic][version][shard_id][entry_count][entries...][footer_crc32]` where entries are type-tagged (string=0, list=1, sorted set=2, hash=3, set=4). v1 snapshots (no type tags) are still readable.
 

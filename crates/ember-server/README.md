@@ -4,12 +4,18 @@ the main server binary for [ember](https://github.com/kacy/ember). accepts TCP c
 
 ## what's in here
 
-- **main** — CLI arg parsing (host, port, max-memory, eviction policy, persistence, metrics, slowlog config)
+- **main** — CLI arg parsing (host, port, max-memory, eviction policy, persistence, metrics, slowlog config, TLS, cluster, ACL)
 - **server** — TCP accept loop with configurable connection limits, graceful shutdown on SIGINT/SIGTERM, spawns a handler task per client
-- **connection** — per-connection event loop: read → parse frames → dispatch commands → write responses. handles idle timeouts, buffer limits, and protocol errors. renders multi-section INFO and handles SLOWLOG commands
-- **config** — configuration helpers for byte sizes, eviction policies, fsync policies
+- **connection** — per-connection event loop: read → parse frames → dispatch commands → write responses. handles idle timeouts, buffer limits, protocol errors, pipelining, transactions (MULTI/EXEC/WATCH), and ACL permission checks
+- **concurrent_handler** — alternative handler using DashMap-backed keyspace for lock-free GET/SET (experimental, 2x faster)
+- **config** — TOML-based configuration with runtime CONFIG GET/SET/REWRITE, byte size parsing, eviction/fsync policies
+- **acl** — per-user access control: command permissions, key pattern restrictions, SHA-256 password hashing with constant-time comparison
+- **pubsub** — channel and pattern subscriptions with SUBSCRIBE, PSUBSCRIBE, PUBLISH
 - **metrics** — prometheus exporter, per-command histogram/counter recording, background stats poller
 - **slowlog** — ring buffer for slow command logging with configurable threshold and capacity
+- **tls** — optional TLS support on a separate port, with mTLS for client certificate verification
+- **cluster** — cluster mode integration: gossip event loop, raft consensus, slot routing, replication, failover
+- **replication** — primary→replica data streaming with AOF-based sync
 
 ## running
 

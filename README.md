@@ -18,18 +18,19 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 ## features
 
 - **resp3 protocol** — full compatibility with `redis-cli` and existing Redis clients
-- **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN
+- **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, COPY
 - **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, BLPOP, BRPOP
-- **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZRANGE, ZCARD
-- **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET
-- **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD
-- **key commands** — DEL, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME
-- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET
-- **transactions** — MULTI, EXEC, DISCARD for atomic command batching
+- **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZRANGE, ZCARD, ZSCAN
+- **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET, HSCAN
+- **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SSCAN
+- **key commands** — DEL, UNLINK, EXISTS, EXPIRE, TTL, PEXPIRE, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME, OBJECT ENCODING/REFCOUNT
+- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET/REWRITE, SLOWLOG, CLIENT ID/SETNAME/GETNAME/LIST, TIME, LASTSAVE, ROLE, MONITOR
+- **transactions** — MULTI, EXEC, DISCARD, WATCH/UNWATCH for optimistic locking
+- **acl** — per-user command permissions and key pattern restrictions: ACL SETUSER, GETUSER, DELUSER, LIST, WHOAMI, CAT, USERS
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **vector similarity search** — HNSW-backed approximate nearest neighbor search with cosine, L2, and inner product metrics (compile with `--features vector`)
 - **protobuf storage** — schema-validated protobuf values with field-level access (compile with `--features protobuf`)
-- **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms)
+- **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms), optional ACL for per-user access control
 - **tls support** — redis-compatible TLS on a separate port, with optional mTLS for client certificates
 - **protected mode** — rejects non-loopback connections when no password is set on public binds
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
@@ -486,9 +487,9 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | 7 | security hardening | ✅ complete |
 | 8 | production gaps (transactions, blocking ops, config) | ✅ complete |
 
-phase 6 added leader/replica data streaming, `CLUSTER REPLICATE`, automatic failover via epoch-based elections, and `CLUSTER FAILOVER` for manual promotion. phase 7 added RESP key/value size limits and cluster transport HMAC-SHA256 auth. phase 8 filled critical production gaps: MULTI/EXEC/DISCARD transactions, BLPOP/BRPOP blocking list ops, and CONFIG GET/SET for monitoring tool compatibility.
+phase 6 added leader/replica data streaming, `CLUSTER REPLICATE`, automatic failover via epoch-based elections, and `CLUSTER FAILOVER` for manual promotion. phase 7 added RESP key/value size limits and cluster transport HMAC-SHA256 auth. phase 8 filled critical production gaps: MULTI/EXEC/DISCARD transactions, BLPOP/BRPOP blocking list ops, CONFIG GET/SET, WATCH optimistic locking, CLIENT introspection, SSCAN/HSCAN/ZSCAN collection scanning, and ACL per-user access control.
 
-**current**: 114 commands, 1,100+ tests, ~23k lines of code (~43k including tests and comments)
+**current**: 135+ commands, 1,200+ tests, ~25k lines of code (~47k including tests and comments)
 
 ## security
 
