@@ -20,8 +20,9 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+use crate::acl;
 use crate::connection_common::{
-    format_monitor_event, frame_to_monitor_args, get_rss_bytes, human_bytes,
+    format_monitor_event, frame_to_monitor_args, get_rss_bytes, human_bytes, initial_acl_user,
     is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth, validate_command_sizes,
     MonitorEvent, TransactionState,
 };
@@ -204,8 +205,9 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    // per-connection auth state. auto-authenticated when no password is set.
-    let mut authenticated = ctx.requirepass.is_none();
+    // per-connection auth + ACL state.
+    let (mut acl_user, mut current_username) = initial_acl_user(ctx);
+    let mut authenticated = acl_user.is_some();
     let mut auth_failures: u32 = 0;
     // ASKING flag: set by the ASKING command, consumed by the next command.
     // allows the target node to serve importing slots during migration.
@@ -292,10 +294,12 @@ where
         if !authenticated {
             for frame in frames.drain(..) {
                 if is_auth_frame(&frame) {
-                    let (response, success) = try_auth(frame, ctx);
-                    response.serialize(&mut out);
-                    if success {
+                    let result = try_auth(frame, ctx);
+                    result.response.serialize(&mut out);
+                    if result.success() {
                         authenticated = true;
+                        acl_user = result.user;
+                        current_username = result.username;
                     } else {
                         auth_failures = auth_failures.saturating_add(1);
                         if auth_failures >= ctx.limits.max_auth_failures {
@@ -315,6 +319,8 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
+                        &acl_user,
+                        &current_username,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -351,6 +357,8 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
+                    &acl_user,
+                    &current_username,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -379,6 +387,8 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
+                        &acl_user,
+                        &current_username,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -419,6 +429,8 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
+                        &acl_user,
+                        &current_username,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -451,6 +463,8 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
+                    &acl_user,
+                    &current_username,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -486,6 +500,8 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
+                        &acl_user,
+                        &current_username,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -508,6 +524,8 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
+                    &acl_user,
+                    &current_username,
                 )
                 .await;
                 match prepared {
@@ -571,6 +589,8 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
+                        &acl_user,
+                        &current_username,
                     )
                     .await;
                     match prepared {
@@ -697,6 +717,8 @@ async fn handle_frame_with_tx(
     asking: &mut bool,
     peer_addr: &str,
     client_id: u64,
+    acl_user: &Option<Arc<acl::AclUser>>,
+    current_username: &str,
 ) -> Frame {
     // peek at the command name without consuming the frame
     let cmd_name = peek_command_name(&frame);
@@ -745,7 +767,16 @@ async fn handle_frame_with_tx(
             } else {
                 // normal dispatch path (process() increments commands_processed)
                 process(
-                    frame, engine, ctx, slow_log, pubsub, asking, peer_addr, client_id,
+                    frame,
+                    engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    asking,
+                    peer_addr,
+                    client_id,
+                    acl_user,
+                    current_username,
                 )
                 .await
             }
@@ -789,6 +820,8 @@ async fn handle_frame_with_tx(
                                 asking,
                                 peer_addr,
                                 client_id,
+                                acl_user,
+                                current_username,
                             )
                             .await;
                             results.push(response);
@@ -815,8 +848,16 @@ async fn handle_frame_with_tx(
                             // AUTH and QUIT execute immediately, not queued
                             if matches!(cmd, Command::Auth { .. } | Command::Quit) {
                                 process(
-                                    frame, engine, ctx, slow_log, pubsub, asking, peer_addr,
+                                    frame,
+                                    engine,
+                                    ctx,
+                                    slow_log,
+                                    pubsub,
+                                    asking,
+                                    peer_addr,
                                     client_id,
+                                    acl_user,
+                                    current_username,
                                 )
                                 .await
                             } else {
@@ -1430,6 +1471,8 @@ async fn process(
     asking: &mut bool,
     peer_addr: &str,
     client_id: u64,
+    acl_user: &Option<Arc<acl::AclUser>>,
+    current_username: &str,
 ) -> Frame {
     // broadcast to MONITOR subscribers
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -1449,6 +1492,22 @@ async fn process(
 
     match Command::from_frame(frame) {
         Ok(cmd) => {
+            // ACL WHOAMI needs per-connection state
+            if matches!(cmd, Command::AclWhoAmI) {
+                return Frame::Bulk(Bytes::from(current_username.to_string()));
+            }
+
+            // permission check — fast path: skip when unrestricted
+            if let Some(ref user) = acl_user {
+                if !user.allcommands || !user.allkeys {
+                    if let Some(err) =
+                        acl::check_permission(user, &cmd, cmd.command_name(), cmd.acl_categories())
+                    {
+                        return err;
+                    }
+                }
+            }
+
             // handle ASKING: set the flag and return OK immediately
             if matches!(cmd, Command::Asking) {
                 *asking = true;
@@ -1503,6 +1562,8 @@ async fn prepare_command(
     asking: &mut bool,
     peer_addr: &str,
     client_id: u64,
+    acl_user: &Option<Arc<acl::AclUser>>,
+    current_username: &str,
 ) -> PreparedDispatch {
     // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -1534,6 +1595,24 @@ async fn prepare_command(
         validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
     {
         return PreparedDispatch::Immediate(PendingResponse::Immediate(err));
+    }
+
+    // ACL WHOAMI needs per-connection state
+    if matches!(cmd, Command::AclWhoAmI) {
+        return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Bulk(Bytes::from(
+            current_username.to_string(),
+        ))));
+    }
+
+    // permission check — fast path: skip when unrestricted
+    if let Some(ref user) = acl_user {
+        if !user.allcommands || !user.allkeys {
+            if let Some(err) =
+                acl::check_permission(user, &cmd, cmd.command_name(), cmd.acl_categories())
+            {
+                return PreparedDispatch::Immediate(PendingResponse::Immediate(err));
+            }
+        }
     }
 
     // handle ASKING: set the flag and return OK immediately
@@ -4506,34 +4585,48 @@ async fn execute(
             Frame::Error("ERR unknown command (protobuf support not compiled)".into())
         }
 
-        // AUTH on an already-authenticated connection (re-auth)
-        Command::Auth { username, password } => match &ctx.requirepass {
-            None => Frame::Error(
-                "ERR Client sent AUTH, but no password is set. \
-                 Did you mean ACL SETUSER with >password?"
-                    .into(),
-            ),
-            Some(expected) => {
-                if let Some(ref user) = username {
-                    if user != "default" {
-                        return Frame::Error(
-                            "WRONGPASS invalid username-password pair \
-                             or user is disabled."
-                                .into(),
-                        );
+        // AUTH on an already-authenticated connection (re-auth).
+        // note: this verifies the password but doesn't update per-connection
+        // ACL state — re-auth with a different user requires reconnecting.
+        Command::Auth { username, password } => {
+            let uname = username.unwrap_or_else(|| "default".into());
+            if let Some(ref acl_state) = ctx.acl {
+                match acl_state.read() {
+                    Ok(state) => match state.get_user(&uname) {
+                        Some(user) if user.enabled && user.verify_password(&password) => {
+                            Frame::Simple("OK".into())
+                        }
+                        _ => Frame::Error(
+                            "WRONGPASS invalid username-password pair or user is disabled.".into(),
+                        ),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                match &ctx.requirepass {
+                    None => Frame::Error(
+                        "ERR Client sent AUTH, but no password is set. \
+                         Did you mean ACL SETUSER with >password?"
+                            .into(),
+                    ),
+                    Some(expected) => {
+                        if uname != "default" {
+                            Frame::Error(
+                                "WRONGPASS invalid username-password pair or user is disabled."
+                                    .into(),
+                            )
+                        } else if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
+                            Frame::Simple("OK".into())
+                        } else {
+                            Frame::Error(
+                                "WRONGPASS invalid username-password pair or user is disabled."
+                                    .into(),
+                            )
+                        }
                     }
                 }
-                if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
-                    Frame::Simple("OK".into())
-                } else {
-                    Frame::Error(
-                        "WRONGPASS invalid username-password pair \
-                         or user is disabled."
-                            .into(),
-                    )
-                }
             }
-        },
+        }
 
         Command::Quit => Frame::Simple("OK".into()),
 
@@ -4555,6 +4648,105 @@ async fn execute(
         // WATCH/UNWATCH are intercepted by handle_frame_with_tx() before
         // process(). If they reach here, return sensible defaults.
         Command::Watch { .. } | Command::Unwatch => Frame::Simple("OK".into()),
+
+        // -- ACL commands --
+        // WHOAMI is handled at the connection level (needs current_username).
+        // If it reaches here, return a generic response.
+        Command::AclWhoAmI => Frame::Bulk(Bytes::from_static(b"default")),
+
+        Command::AclList => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.read() {
+                    Ok(state) => {
+                        let lines = state.list();
+                        Frame::Array(
+                            lines
+                                .into_iter()
+                                .map(|l| Frame::Bulk(Bytes::from(l)))
+                                .collect(),
+                        )
+                    }
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                // legacy mode — synthesize a default user entry
+                Frame::Array(vec![Frame::Bulk(Bytes::from(
+                    "user default on nopass +@all ~*",
+                ))])
+            }
+        }
+
+        Command::AclUsers => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.read() {
+                    Ok(state) => {
+                        let names = state.usernames();
+                        Frame::Array(
+                            names
+                                .into_iter()
+                                .map(|n| Frame::Bulk(Bytes::from(n)))
+                                .collect(),
+                        )
+                    }
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"default"))])
+            }
+        }
+
+        Command::AclGetUser { username } => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.read() {
+                    Ok(state) => match state.get_user_detail(&username) {
+                        Some(detail) => detail,
+                        None => Frame::Error(format!("ERR no such user '{username}'")),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else if username == "default" {
+                // legacy mode: synthesize default user detail
+                crate::acl::AclState::new()
+                    .get_user_detail("default")
+                    .unwrap_or(Frame::Null)
+            } else {
+                Frame::Error(format!("ERR no such user '{username}'"))
+            }
+        }
+
+        Command::AclDelUser { usernames } => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.write() {
+                    Ok(mut state) => match state.del_users(&usernames) {
+                        Ok(count) => Frame::Integer(count as i64),
+                        Err(msg) => Frame::Error(msg),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Error(
+                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
+                )
+            }
+        }
+
+        Command::AclSetUser { username, rules } => {
+            if let Some(ref acl) = ctx.acl {
+                match acl.write() {
+                    Ok(mut state) => match state.set_user(&username, &rules) {
+                        Ok(()) => Frame::Simple("OK".into()),
+                        Err(msg) => Frame::Error(msg),
+                    },
+                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
+                }
+            } else {
+                Frame::Error(
+                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
+                )
+            }
+        }
+
+        Command::AclCat { category } => crate::acl::handle_acl_cat(category.as_deref()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }

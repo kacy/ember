@@ -539,6 +539,31 @@ pub enum Command {
         password: String,
     },
 
+    // --- ACL commands ---
+    /// ACL WHOAMI. Returns the username of the current connection.
+    AclWhoAmI,
+
+    /// ACL LIST. Returns all users and their ACL rules.
+    AclList,
+
+    /// ACL USERS. Returns all usernames.
+    AclUsers,
+
+    /// ACL GETUSER `username`. Returns detailed info about a user.
+    AclGetUser { username: String },
+
+    /// ACL DELUSER `username` \[username ...\]. Deletes users.
+    AclDelUser { usernames: Vec<String> },
+
+    /// ACL SETUSER `username` \[rule ...\]. Creates or modifies a user.
+    AclSetUser {
+        username: String,
+        rules: Vec<String>,
+    },
+
+    /// ACL CAT \[category\]. Lists categories, or commands in a category.
+    AclCat { category: Option<String> },
+
     /// WATCH `key` \[key ...\]. Marks keys for optimistic locking.
     /// If any watched key is modified before EXEC, the transaction aborts.
     Watch { keys: Vec<String> },
@@ -764,6 +789,15 @@ impl Command {
             Command::ProtoSetField { .. } => "proto.setfield",
             Command::ProtoDelField { .. } => "proto.delfield",
 
+            // acl
+            Command::AclWhoAmI => "acl",
+            Command::AclList => "acl",
+            Command::AclUsers => "acl",
+            Command::AclGetUser { .. } => "acl",
+            Command::AclDelUser { .. } => "acl",
+            Command::AclSetUser { .. } => "acl",
+            Command::AclCat { .. } => "acl",
+
             Command::Unknown(_) => "unknown",
         }
     }
@@ -826,7 +860,204 @@ impl Command {
                 | Command::ProtoSet { .. }
                 | Command::ProtoSetField { .. }
                 | Command::ProtoDelField { .. }
+            // acl mutations
+                | Command::AclSetUser { .. }
+                | Command::AclDelUser { .. }
         )
+    }
+
+    /// Returns the ACL category bitmask for this command.
+    ///
+    /// Each bit corresponds to a category (read, write, string, list, etc.)
+    /// as defined in `ember-server/src/acl.rs`. Used by the permission check
+    /// to determine whether a user has access to a command.
+    ///
+    /// The bit values match the constants in the acl module:
+    /// READ=1<<0, WRITE=1<<1, STRING=1<<2, LIST=1<<3, SET=1<<4,
+    /// SORTEDSET=1<<5, HASH=1<<6, KEYSPACE=1<<7, SERVER=1<<8,
+    /// CONNECTION=1<<9, TRANSACTION=1<<10, PUBSUB=1<<11, FAST=1<<12,
+    /// SLOW=1<<13, ADMIN=1<<14, DANGEROUS=1<<15, CLUSTER=1<<16
+    pub fn acl_categories(&self) -> u64 {
+        // bitmask constants (duplicated from acl.rs to avoid cross-crate dep)
+        const READ: u64 = 1 << 0;
+        const WRITE: u64 = 1 << 1;
+        const STRING: u64 = 1 << 2;
+        const LIST: u64 = 1 << 3;
+        const SET: u64 = 1 << 4;
+        const SORTEDSET: u64 = 1 << 5;
+        const HASH: u64 = 1 << 6;
+        const KEYSPACE: u64 = 1 << 7;
+        const SERVER: u64 = 1 << 8;
+        const CONNECTION: u64 = 1 << 9;
+        const TRANSACTION: u64 = 1 << 10;
+        const PUBSUB: u64 = 1 << 11;
+        const FAST: u64 = 1 << 12;
+        const SLOW: u64 = 1 << 13;
+        const ADMIN: u64 = 1 << 14;
+        const DANGEROUS: u64 = 1 << 15;
+        const CLUSTER: u64 = 1 << 16;
+
+        match self {
+            // connection
+            Command::Ping(_) | Command::Echo(_) => CONNECTION | FAST,
+            Command::Auth { .. } | Command::Quit => CONNECTION | FAST,
+            Command::ClientId | Command::ClientGetName | Command::ClientSetName { .. } => {
+                CONNECTION | SLOW
+            }
+            Command::ClientList => CONNECTION | ADMIN | SLOW,
+            Command::Monitor => CONNECTION | ADMIN | SLOW,
+
+            // string — reads
+            Command::Get { .. } | Command::MGet { .. } | Command::Strlen { .. } => {
+                READ | STRING | FAST
+            }
+
+            // string — writes
+            Command::Set { .. } | Command::MSet { .. } | Command::Append { .. } => {
+                WRITE | STRING | SLOW
+            }
+            Command::Incr { .. }
+            | Command::Decr { .. }
+            | Command::IncrBy { .. }
+            | Command::DecrBy { .. }
+            | Command::IncrByFloat { .. } => WRITE | STRING | FAST,
+
+            // keyspace — reads
+            Command::Exists { .. } | Command::Type { .. } => READ | KEYSPACE | FAST,
+            Command::Keys { .. } => READ | KEYSPACE | DANGEROUS | SLOW,
+            Command::Scan { .. }
+            | Command::SScan { .. }
+            | Command::HScan { .. }
+            | Command::ZScan { .. } => READ | KEYSPACE | SLOW,
+            Command::Ttl { .. }
+            | Command::Pttl { .. }
+            | Command::ObjectEncoding { .. }
+            | Command::ObjectRefcount { .. } => READ | KEYSPACE | FAST,
+
+            // keyspace — writes
+            Command::Del { .. } | Command::Unlink { .. } => WRITE | KEYSPACE | FAST,
+            Command::Rename { .. } | Command::Copy { .. } => WRITE | KEYSPACE | SLOW,
+            Command::Expire { .. } | Command::Pexpire { .. } | Command::Persist { .. } => {
+                WRITE | KEYSPACE | FAST
+            }
+
+            // list — reads
+            Command::LRange { .. } | Command::LLen { .. } => READ | LIST | SLOW,
+
+            // list — writes
+            Command::LPush { .. }
+            | Command::RPush { .. }
+            | Command::LPop { .. }
+            | Command::RPop { .. } => WRITE | LIST | FAST,
+            Command::BLPop { .. } | Command::BRPop { .. } => WRITE | LIST | SLOW,
+
+            // sorted set — reads
+            Command::ZScore { .. } | Command::ZRank { .. } | Command::ZCard { .. } => {
+                READ | SORTEDSET | FAST
+            }
+            Command::ZRange { .. } => READ | SORTEDSET | SLOW,
+
+            // sorted set — writes
+            Command::ZAdd { .. } | Command::ZRem { .. } => WRITE | SORTEDSET | SLOW,
+
+            // hash — reads
+            Command::HGet { .. } | Command::HExists { .. } | Command::HLen { .. } => {
+                READ | HASH | FAST
+            }
+            Command::HGetAll { .. }
+            | Command::HKeys { .. }
+            | Command::HVals { .. }
+            | Command::HMGet { .. } => READ | HASH | SLOW,
+
+            // hash — writes
+            Command::HSet { .. } | Command::HDel { .. } | Command::HIncrBy { .. } => {
+                WRITE | HASH | FAST
+            }
+
+            // set — reads
+            Command::SIsMember { .. } | Command::SCard { .. } => READ | SET | FAST,
+            Command::SMembers { .. } => READ | SET | SLOW,
+
+            // set — writes
+            Command::SAdd { .. } | Command::SRem { .. } => WRITE | SET | FAST,
+
+            // server
+            Command::DbSize => SERVER | KEYSPACE | READ | FAST,
+            Command::Info { .. } => SERVER | SLOW,
+            Command::Time | Command::LastSave | Command::Role => SERVER | FAST,
+            Command::BgSave | Command::BgRewriteAof => SERVER | ADMIN | SLOW,
+            Command::FlushDb { .. } => KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW,
+            Command::ConfigGet { .. } => SERVER | ADMIN | SLOW,
+            Command::ConfigSet { .. } | Command::ConfigRewrite => SERVER | ADMIN | SLOW,
+            Command::SlowLogGet { .. } | Command::SlowLogLen | Command::SlowLogReset => {
+                SERVER | ADMIN | SLOW
+            }
+
+            // transactions
+            Command::Multi | Command::Exec | Command::Discard => TRANSACTION | FAST,
+            Command::Watch { .. } | Command::Unwatch => TRANSACTION | FAST,
+
+            // cluster
+            Command::ClusterInfo
+            | Command::ClusterNodes
+            | Command::ClusterSlots
+            | Command::ClusterKeySlot { .. }
+            | Command::ClusterMyId => CLUSTER | SLOW,
+            Command::ClusterSetSlotImporting { .. }
+            | Command::ClusterSetSlotMigrating { .. }
+            | Command::ClusterSetSlotNode { .. }
+            | Command::ClusterSetSlotStable { .. }
+            | Command::ClusterMeet { .. }
+            | Command::ClusterAddSlots { .. }
+            | Command::ClusterAddSlotsRange { .. }
+            | Command::ClusterDelSlots { .. }
+            | Command::ClusterForget { .. }
+            | Command::ClusterReplicate { .. }
+            | Command::ClusterFailover { .. }
+            | Command::ClusterCountKeysInSlot { .. }
+            | Command::ClusterGetKeysInSlot { .. } => CLUSTER | ADMIN | SLOW,
+            Command::Migrate { .. } | Command::Restore { .. } => CLUSTER | KEYSPACE | WRITE | SLOW,
+            Command::Asking => CLUSTER | FAST,
+
+            // pub/sub
+            Command::Subscribe { .. }
+            | Command::Unsubscribe { .. }
+            | Command::PSubscribe { .. }
+            | Command::PUnsubscribe { .. } => PUBSUB | SLOW,
+            Command::Publish { .. } => PUBSUB | FAST,
+            Command::PubSubChannels { .. }
+            | Command::PubSubNumSub { .. }
+            | Command::PubSubNumPat => PUBSUB | SLOW,
+
+            // vector
+            Command::VAdd { .. } | Command::VAddBatch { .. } | Command::VRem { .. } => WRITE | SLOW,
+            Command::VSim { .. }
+            | Command::VGet { .. }
+            | Command::VCard { .. }
+            | Command::VDim { .. }
+            | Command::VInfo { .. } => READ | SLOW,
+
+            // protobuf
+            Command::ProtoRegister { .. } => WRITE | SERVER | SLOW,
+            Command::ProtoSet { .. }
+            | Command::ProtoSetField { .. }
+            | Command::ProtoDelField { .. } => WRITE | STRING | SLOW,
+            Command::ProtoGet { .. }
+            | Command::ProtoType { .. }
+            | Command::ProtoSchemas
+            | Command::ProtoDescribe { .. }
+            | Command::ProtoGetField { .. } => READ | STRING | SLOW,
+
+            // ACL commands
+            Command::AclWhoAmI => CONNECTION | FAST,
+            Command::AclList | Command::AclUsers | Command::AclGetUser { .. } => {
+                SERVER | ADMIN | SLOW
+            }
+            Command::AclSetUser { .. } | Command::AclDelUser { .. } => SERVER | ADMIN | SLOW,
+            Command::AclCat { .. } => SERVER | SLOW,
+
+            Command::Unknown(_) => 0,
+        }
     }
 
     /// Returns the primary key for this command, if there is one.
@@ -1048,6 +1279,7 @@ impl Command {
             "OBJECT" => parse_object(&frames[1..]),
             "COPY" => parse_copy(&frames[1..]),
             "CLIENT" => parse_client(&frames[1..]),
+            "ACL" => parse_acl(&frames[1..]),
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             "MONITOR" => parse_monitor(&frames[1..]),
@@ -2250,6 +2482,75 @@ fn parse_no_args(
         return Err(wrong_arity(name));
     }
     Ok(cmd)
+}
+
+fn parse_acl(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("ACL"));
+    }
+
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let subcmd = uppercase_arg(&args[0], &mut kw)?;
+    match subcmd {
+        "WHOAMI" => {
+            if args.len() != 1 {
+                return Err(wrong_arity("ACL|WHOAMI"));
+            }
+            Ok(Command::AclWhoAmI)
+        }
+        "LIST" => {
+            if args.len() != 1 {
+                return Err(wrong_arity("ACL|LIST"));
+            }
+            Ok(Command::AclList)
+        }
+        "USERS" => {
+            if args.len() != 1 {
+                return Err(wrong_arity("ACL|USERS"));
+            }
+            Ok(Command::AclUsers)
+        }
+        "GETUSER" => {
+            if args.len() != 2 {
+                return Err(wrong_arity("ACL|GETUSER"));
+            }
+            let username = extract_string(&args[1])?;
+            Ok(Command::AclGetUser { username })
+        }
+        "DELUSER" => {
+            if args.len() < 2 {
+                return Err(wrong_arity("ACL|DELUSER"));
+            }
+            let usernames = extract_strings(&args[1..])?;
+            Ok(Command::AclDelUser { usernames })
+        }
+        "SETUSER" => {
+            if args.len() < 2 {
+                return Err(wrong_arity("ACL|SETUSER"));
+            }
+            let username = extract_string(&args[1])?;
+            let rules = if args.len() > 2 {
+                extract_strings(&args[2..])?
+            } else {
+                Vec::new()
+            };
+            Ok(Command::AclSetUser { username, rules })
+        }
+        "CAT" => {
+            if args.len() > 2 {
+                return Err(wrong_arity("ACL|CAT"));
+            }
+            let category = if args.len() == 2 {
+                Some(extract_string(&args[1])?)
+            } else {
+                None
+            };
+            Ok(Command::AclCat { category })
+        }
+        other => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown ACL subcommand '{other}'"
+        ))),
+    }
 }
 
 fn parse_config(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -6470,5 +6771,133 @@ mod tests {
     fn parse_copy_wrong_arity() {
         let err = Command::from_frame(cmd(&["COPY", "src"])).unwrap_err();
         assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- ACL ---
+
+    #[test]
+    fn parse_acl_whoami() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "WHOAMI"])).unwrap(),
+            Command::AclWhoAmI,
+        );
+    }
+
+    #[test]
+    fn parse_acl_list() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "LIST"])).unwrap(),
+            Command::AclList,
+        );
+    }
+
+    #[test]
+    fn parse_acl_users() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "USERS"])).unwrap(),
+            Command::AclUsers,
+        );
+    }
+
+    #[test]
+    fn parse_acl_getuser() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "GETUSER", "alice"])).unwrap(),
+            Command::AclGetUser {
+                username: "alice".into(),
+            },
+        );
+    }
+
+    #[test]
+    fn parse_acl_deluser() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "DELUSER", "alice", "bob"])).unwrap(),
+            Command::AclDelUser {
+                usernames: vec!["alice".into(), "bob".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn parse_acl_setuser_no_rules() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "SETUSER", "alice"])).unwrap(),
+            Command::AclSetUser {
+                username: "alice".into(),
+                rules: vec![],
+            },
+        );
+    }
+
+    #[test]
+    fn parse_acl_setuser_with_rules() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "SETUSER", "alice", "on", ">pass", "+@read"]))
+                .unwrap(),
+            Command::AclSetUser {
+                username: "alice".into(),
+                rules: vec!["on".into(), ">pass".into(), "+@read".into()],
+            },
+        );
+    }
+
+    #[test]
+    fn parse_acl_cat_no_args() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "CAT"])).unwrap(),
+            Command::AclCat { category: None },
+        );
+    }
+
+    #[test]
+    fn parse_acl_cat_with_category() {
+        assert_eq!(
+            Command::from_frame(cmd(&["ACL", "CAT", "read"])).unwrap(),
+            Command::AclCat {
+                category: Some("read".into()),
+            },
+        );
+    }
+
+    #[test]
+    fn parse_acl_unknown_subcommand() {
+        let err = Command::from_frame(cmd(&["ACL", "BOGUS"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+
+    #[test]
+    fn parse_acl_no_subcommand() {
+        let err = Command::from_frame(cmd(&["ACL"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn parse_acl_case_insensitive() {
+        assert_eq!(
+            Command::from_frame(cmd(&["acl", "whoami"])).unwrap(),
+            Command::AclWhoAmI,
+        );
+    }
+
+    #[test]
+    fn acl_categories_returns_nonzero_for_known_commands() {
+        let cmd = Command::Get { key: "k".into() };
+        assert_ne!(cmd.acl_categories(), 0);
+
+        let cmd = Command::Set {
+            key: "k".into(),
+            value: Bytes::from_static(b"v"),
+            expire: None,
+            nx: false,
+            xx: false,
+        };
+        assert_ne!(cmd.acl_categories(), 0);
+    }
+
+    #[test]
+    fn acl_categories_unknown_returns_zero() {
+        let cmd = Command::Unknown("bogus".into());
+        assert_eq!(cmd.acl_categories(), 0);
     }
 }

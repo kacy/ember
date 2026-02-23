@@ -78,6 +78,8 @@ pub struct ServerContext {
     /// When `sender.receiver_count() == 0`, the per-command check is a
     /// single atomic load — true zero overhead when nobody is monitoring.
     pub monitor_tx: tokio::sync::broadcast::Sender<MonitorEvent>,
+    /// ACL state. `None` = legacy mode (no ACL, zero overhead).
+    pub acl: crate::acl::SharedAclState,
     /// Unix timestamp of the last successful save (BGSAVE/snapshot).
     pub last_save_timestamp: AtomicU64,
     /// Monotonically increasing client ID generator.
@@ -294,6 +296,7 @@ pub async fn run_concurrent(
         cluster: None,
         limits,
         memory_used_bytes: MemoryUsedBytes::new(),
+        acl: None,
         monitor_tx: tokio::sync::broadcast::channel(256).0,
         last_save_timestamp: AtomicU64::new(0),
         next_client_id: AtomicU64::new(1),
@@ -537,6 +540,7 @@ pub async fn run_threaded(
         cluster,
         limits,
         memory_used_bytes: MemoryUsedBytes::new(),
+        acl: None,
         monitor_tx: tokio::sync::broadcast::channel(256).0,
         last_save_timestamp: AtomicU64::new(0),
         next_client_id: AtomicU64::new(1),

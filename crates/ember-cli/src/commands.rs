@@ -404,6 +404,12 @@ pub static COMMANDS: &[CommandInfo] = &[
     },
     // --- server ---
     CommandInfo {
+        name: "ACL",
+        args: "CAT [category] | DELUSER username [...] | GETUSER username | LIST | SETUSER username [rule ...] | USERS | WHOAMI",
+        group: "server",
+        summary: "manage access control lists",
+    },
+    CommandInfo {
         name: "BGREWRITEAOF",
         args: "",
         group: "server",
@@ -574,6 +580,9 @@ pub fn command_names() -> Vec<&'static str> {
 /// Used by the completer and hinter to provide second-token completion.
 pub fn subcommands(parent: &str) -> &'static [&'static str] {
     match parent.to_uppercase().as_str() {
+        "ACL" => &[
+            "CAT", "DELUSER", "GETUSER", "LIST", "SETUSER", "USERS", "WHOAMI",
+        ],
         "CLIENT" => &["GETNAME", "ID", "LIST", "SETNAME"],
         "CONFIG" => &["GET", "REWRITE", "SET"],
         "CLUSTER" => &[
@@ -602,7 +611,7 @@ pub fn subcommands(parent: &str) -> &'static [&'static str] {
 pub fn has_subcommands(name: &str) -> bool {
     matches!(
         name.to_uppercase().as_str(),
-        "CLIENT" | "CLUSTER" | "CONFIG" | "SLOWLOG" | "PUBSUB"
+        "ACL" | "CLIENT" | "CLUSTER" | "CONFIG" | "SLOWLOG" | "PUBSUB"
     )
 }
 
