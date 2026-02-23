@@ -697,7 +697,11 @@ async fn main() {
             let raft_addr = std::net::SocketAddr::new(addr.ip(), raft_port);
             let raft_id = raft_id_from_node_id(local_id);
 
-            let (storage, state_rx) = RaftStorage::new();
+            let raft_dir = cluster_data_dir.join("raft");
+            let (storage, state_rx) = RaftStorage::open(raft_dir)
+                .unwrap_or_else(|e| exit_err(format!("failed to open raft storage: {e}")));
+            let has_existing_log = storage.has_log_entries();
+
             let raft_node = match RaftNode::start(
                 raft_id,
                 raft_addr,
@@ -710,9 +714,12 @@ async fn main() {
                 Err(e) => exit_err(format!("failed to start raft node: {e}")),
             };
 
-            // initialize single-member raft and elect ourselves leader
-            if let Err(e) = raft_node.bootstrap_single().await {
-                exit_err(format!("failed to bootstrap raft: {e}"));
+            // only bootstrap on first start — if we have persisted log entries
+            // the node will recover from disk state instead
+            if !has_existing_log {
+                if let Err(e) = raft_node.bootstrap_single().await {
+                    exit_err(format!("failed to bootstrap raft: {e}"));
+                }
             }
 
             // wait for leader election (single member, usually < 50ms)
@@ -724,25 +731,28 @@ async fn main() {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
 
-            // register this node and assign all slots through raft so
-            // reconciliation sees the canonical state
-            if let Err(e) = raft_node
-                .propose(ember_cluster::ClusterCommand::AddNode {
+            // on fresh bootstrap, register this node and assign all slots
+            // through raft so reconciliation sees the canonical state.
+            // on recovery these are already in the persisted log.
+            if !has_existing_log {
+                if let Err(e) = raft_node
+                    .propose(ember_cluster::ClusterCommand::AddNode {
+                        node_id: local_id,
+                        raft_id,
+                        addr: addr.to_string(),
+                        is_primary: true,
+                    })
+                    .await
+                {
+                    tracing::warn!("AddNode proposal failed: {e}");
+                }
+                let cmd = ember_cluster::ClusterCommand::AssignSlots {
                     node_id: local_id,
-                    raft_id,
-                    addr: addr.to_string(),
-                    is_primary: true,
-                })
-                .await
-            {
-                tracing::warn!("AddNode proposal failed: {e}");
-            }
-            let cmd = ember_cluster::ClusterCommand::AssignSlots {
-                node_id: local_id,
-                slots: vec![SlotRange::new(0, SLOT_COUNT - 1)],
-            };
-            if let Err(e) = raft_node.propose(cmd).await {
-                tracing::warn!("bootstrap AssignSlots proposal failed: {e}");
+                    slots: vec![SlotRange::new(0, SLOT_COUNT - 1)],
+                };
+                if let Err(e) = raft_node.propose(cmd).await {
+                    tracing::warn!("bootstrap AssignSlots proposal failed: {e}");
+                }
             }
 
             coordinator.attach_raft(Arc::clone(&raft_node));

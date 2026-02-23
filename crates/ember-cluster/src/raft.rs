@@ -9,6 +9,7 @@ use std::fmt::Debug;
 use std::io::Cursor;
 use std::net::SocketAddr;
 use std::ops::RangeBounds;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use openraft::error::{
@@ -28,6 +29,8 @@ use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, RwLock};
 use tracing::{debug, warn};
+
+use crate::raft_log::{RaftDisk, RaftDiskError};
 
 use crate::auth::ClusterSecret;
 use crate::raft_transport::{
@@ -130,6 +133,10 @@ pub struct MigrationState {
 }
 
 /// Combined log and state machine storage for Raft.
+///
+/// When `disk` is `Some`, all mutations are persisted to the raft directory
+/// so that state survives restarts. When `None`, storage is purely in-memory
+/// (used when cluster mode is disabled or no data directory is configured).
 #[derive(Debug)]
 pub struct Storage {
     vote: RwLock<Option<Vote<u64>>>,
@@ -141,6 +148,8 @@ pub struct Storage {
     state: Arc<RwLock<ClusterStateData>>,
     /// Notifies watchers whenever `apply_to_state_machine` commits entries.
     state_tx: watch::Sender<ClusterStateData>,
+    /// Disk persistence layer. `None` for in-memory-only mode.
+    disk: Option<std::sync::Mutex<RaftDisk>>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,13 +171,14 @@ impl Default for Storage {
             snapshot: RwLock::new(None),
             state: Arc::new(RwLock::new(ClusterStateData::default())),
             state_tx,
+            disk: None,
         }
     }
 }
 
 impl Storage {
-    /// Creates a new storage instance and returns a receiver that fires
-    /// whenever the Raft state machine commits entries.
+    /// Creates a new in-memory storage instance and returns a receiver that
+    /// fires whenever the Raft state machine commits entries.
     pub fn new() -> (Arc<Self>, watch::Receiver<ClusterStateData>) {
         let (state_tx, state_rx) = watch::channel(ClusterStateData::default());
         let storage = Arc::new(Self {
@@ -180,8 +190,46 @@ impl Storage {
             snapshot: RwLock::new(None),
             state: Arc::new(RwLock::new(ClusterStateData::default())),
             state_tx,
+            disk: None,
         });
         (storage, state_rx)
+    }
+
+    /// Opens persistent storage at `raft_dir`, recovering any existing state.
+    ///
+    /// On a fresh start the directory is created and empty files are written.
+    /// On recovery, the vote, log entries, and snapshot are loaded from disk
+    /// into memory so the Raft node can resume where it left off.
+    pub fn open(raft_dir: PathBuf) -> Result<(Arc<Self>, watch::Receiver<ClusterStateData>), RaftDiskError> {
+        let (raft_disk, recovered) = RaftDisk::open(&raft_dir)?;
+
+        let (state_tx, state_rx) = watch::channel(ClusterStateData::default());
+
+        let snapshot = recovered.snapshot.map(|(meta, data)| StoredSnapshot { meta, data });
+
+        let storage = Arc::new(Self {
+            vote: RwLock::new(recovered.vote),
+            log: RwLock::new(recovered.log),
+            last_purged: RwLock::new(recovered.last_purged),
+            last_applied: RwLock::new(None),
+            last_membership: RwLock::new(StoredMembership::default()),
+            snapshot: RwLock::new(snapshot),
+            state: Arc::new(RwLock::new(ClusterStateData::default())),
+            state_tx,
+            disk: Some(std::sync::Mutex::new(raft_disk)),
+        });
+
+        Ok((storage, state_rx))
+    }
+
+    /// Returns `true` if the log has any entries (indicating a prior run).
+    ///
+    /// Used by the bootstrap path to decide whether to call `bootstrap_single()`
+    /// (fresh start) or skip it (recovery from persisted state).
+    pub fn has_log_entries(&self) -> bool {
+        // safe to call from sync context — the RwLock is only contended
+        // by the Raft runtime which hasn't started yet during bootstrap
+        self.log.try_read().map(|log| !log.is_empty()).unwrap_or(false)
     }
 
     pub fn state(&self) -> Arc<RwLock<ClusterStateData>> {
@@ -383,6 +431,13 @@ impl RaftSnapshotBuilder<TypeConfig> for Arc<Storage> {
             data: data.clone(),
         });
 
+        if let Some(disk) = &self.disk {
+            let d = disk
+                .lock()
+                .map_err(|e| StorageIOError::write(&io_error(&format!("lock poisoned: {e}"))))?;
+            d.write_snapshot(&meta, &data).map_err(StorageError::from)?;
+        }
+
         Ok(Snapshot {
             meta,
             snapshot: Box::new(Cursor::new(data)),
@@ -407,6 +462,12 @@ impl RaftStorage<TypeConfig> for Arc<Storage> {
 
     async fn save_vote(&mut self, vote: &Vote<u64>) -> Result<(), StorageError<u64>> {
         *self.vote.write().await = Some(*vote);
+        if let Some(disk) = &self.disk {
+            let last_purged = *self.last_purged.read().await;
+            disk.lock()
+                .map_err(|e| StorageIOError::write(&io_error(&format!("lock poisoned: {e}"))))?
+                .write_meta(Some(*vote), last_purged)?;
+        }
         Ok(())
     }
 
@@ -423,8 +484,14 @@ impl RaftStorage<TypeConfig> for Arc<Storage> {
         I: IntoIterator<Item = Entry<TypeConfig>> + Send,
     {
         let mut log = self.log.write().await;
-        for entry in entries {
-            log.insert(entry.log_id.index, entry);
+        let new_entries: Vec<Entry<TypeConfig>> = entries.into_iter().collect();
+        for entry in &new_entries {
+            log.insert(entry.log_id.index, entry.clone());
+        }
+        if let Some(disk) = &self.disk {
+            disk.lock()
+                .map_err(|e| StorageIOError::write(&io_error(&format!("lock poisoned: {e}"))))?
+                .append_entries(&new_entries)?;
         }
         Ok(())
     }
@@ -438,6 +505,11 @@ impl RaftStorage<TypeConfig> for Arc<Storage> {
         for key in to_remove {
             log.remove(&key);
         }
+        if let Some(disk) = &self.disk {
+            disk.lock()
+                .map_err(|e| StorageIOError::write(&io_error(&format!("lock poisoned: {e}"))))?
+                .rewrite_log(&log)?;
+        }
         Ok(())
     }
 
@@ -448,6 +520,14 @@ impl RaftStorage<TypeConfig> for Arc<Storage> {
             log.remove(&key);
         }
         *self.last_purged.write().await = Some(log_id);
+        if let Some(disk) = &self.disk {
+            let vote = *self.vote.read().await;
+            let mut d = disk
+                .lock()
+                .map_err(|e| StorageIOError::write(&io_error(&format!("lock poisoned: {e}"))))?;
+            d.write_meta(vote, Some(log_id))?;
+            d.rewrite_log(&log)?;
+        }
         Ok(())
     }
 
@@ -521,8 +601,14 @@ impl RaftStorage<TypeConfig> for Arc<Storage> {
 
         *self.snapshot.write().await = Some(StoredSnapshot {
             meta: meta.clone(),
-            data,
+            data: data.clone(),
         });
+
+        if let Some(disk) = &self.disk {
+            disk.lock()
+                .map_err(|e| StorageIOError::write(&io_error(&format!("lock poisoned: {e}"))))?
+                .write_snapshot(meta, &data)?;
+        }
 
         // notify after snapshot install, same as after apply
         let _ = self.state_tx.send_replace(state_data);

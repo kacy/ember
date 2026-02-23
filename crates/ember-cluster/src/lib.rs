@@ -36,6 +36,7 @@ mod gossip;
 mod message;
 mod migration;
 mod raft;
+mod raft_log;
 mod raft_transport;
 mod slots;
 mod topology;
@@ -54,6 +55,7 @@ pub use raft::{
     raft_id_from_node_id, ClusterCommand, ClusterResponse, ClusterSnapshot, ClusterStateData,
     NodeInfo, RaftNetworkFactory, RaftNode, RaftProposalError, Storage as RaftStorage, TypeConfig,
 };
+pub use raft_log::RaftDiskError;
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
 pub use topology::{
     ClusterHealth, ClusterNode, ClusterState, ConfigParseError, NodeFlags, NodeId, NodeRole,
