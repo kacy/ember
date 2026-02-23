@@ -3,10 +3,11 @@
 //! Handles graceful shutdown on SIGINT/SIGTERM: stops accepting new
 //! connections and waits for in-flight requests to drain before exiting.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
@@ -27,6 +28,18 @@ use crate::tls::TlsConfig;
 
 /// Default maximum number of concurrent client connections.
 const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
+
+/// Metadata for a connected client. Stored in the client registry.
+#[derive(Debug)]
+pub struct ClientInfo {
+    pub addr: SocketAddr,
+    pub name: Option<String>,
+    pub connected_at: Instant,
+}
+
+/// Registry of all connected clients. Only touched on accept, disconnect,
+/// and CLIENT commands — never on the GET/SET hot path.
+pub type ClientRegistry = Arc<Mutex<HashMap<u64, ClientInfo>>>;
 
 /// Shared server state for INFO and observability.
 ///
@@ -65,17 +78,22 @@ pub struct ServerContext {
     /// When `sender.receiver_count() == 0`, the per-command check is a
     /// single atomic load — true zero overhead when nobody is monitoring.
     pub monitor_tx: tokio::sync::broadcast::Sender<MonitorEvent>,
+    /// Monotonically increasing client ID generator.
+    pub next_client_id: AtomicU64,
+    /// Connected client metadata. Only locked on accept, disconnect, and
+    /// CLIENT commands — never on the command hot path.
+    pub clients: ClientRegistry,
 }
 
-/// Sets nodelay, acquires a semaphore permit, and updates connection metrics.
-/// Returns `None` if the connection limit was reached — the caller should
-/// `continue`. Protected mode must be checked by the caller before this.
+/// Sets nodelay, acquires a semaphore permit, registers the client, and
+/// updates connection metrics. Returns `None` if the connection limit was
+/// reached — the caller should `continue`.
 fn accept_connection(
     stream: &TcpStream,
     peer: SocketAddr,
     ctx: &Arc<ServerContext>,
     semaphore: &Arc<Semaphore>,
-) -> Option<OwnedSemaphorePermit> {
+) -> Option<(OwnedSemaphorePermit, u64)> {
     if let Err(e) = stream.set_nodelay(true) {
         warn!("failed to set TCP_NODELAY: {e}");
     }
@@ -91,13 +109,25 @@ fn accept_connection(
         }
     };
 
+    let client_id = ctx.next_client_id.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut clients) = ctx.clients.lock() {
+        clients.insert(
+            client_id,
+            ClientInfo {
+                addr: peer,
+                name: None,
+                connected_at: Instant::now(),
+            },
+        );
+    }
+
     if ctx.metrics_enabled {
         crate::metrics::on_connection_accepted();
     }
     ctx.connections_accepted.fetch_add(1, Ordering::Relaxed);
     ctx.connections_active.fetch_add(1, Ordering::Relaxed);
 
-    Some(permit)
+    Some((permit, client_id))
 }
 
 /// Performs TLS handshake with a 10-second timeout to prevent slowloris attacks.
@@ -121,8 +151,30 @@ async fn tls_handshake(
     }
 }
 
-/// Decrements active connection count and records the close metric.
-fn on_connection_done(ctx: &ServerContext) {
+/// Formats the CLIENT LIST output from the client registry.
+///
+/// Each connected client gets one line with `id`, `addr`, `name`, and `age`
+/// (seconds since connection). The output matches redis's key=value format.
+pub(crate) fn format_client_list(ctx: &ServerContext) -> String {
+    let mut output = String::new();
+    if let Ok(clients) = ctx.clients.lock() {
+        let now = Instant::now();
+        for (id, info) in clients.iter() {
+            let age = now.duration_since(info.connected_at).as_secs();
+            let name = info.name.as_deref().unwrap_or("");
+            use std::fmt::Write;
+            let _ = writeln!(output, "id={id} addr={} name={name} age={age}", info.addr);
+        }
+    }
+    output
+}
+
+/// Decrements active connection count, removes the client from the
+/// registry, and records the close metric.
+fn on_connection_done(ctx: &ServerContext, client_id: u64) {
+    if let Ok(mut clients) = ctx.clients.lock() {
+        clients.remove(&client_id);
+    }
     ctx.connections_active.fetch_sub(1, Ordering::Relaxed);
     if ctx.metrics_enabled {
         crate::metrics::on_connection_closed();
@@ -221,6 +273,7 @@ pub async fn run_concurrent(
 
     let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
+    let clients: ClientRegistry = Arc::new(Mutex::new(HashMap::new()));
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
         version: env!("CARGO_PKG_VERSION"),
@@ -240,6 +293,8 @@ pub async fn run_concurrent(
         limits,
         memory_used_bytes: MemoryUsedBytes::new(),
         monitor_tx: tokio::sync::broadcast::channel(256).0,
+        next_client_id: AtomicU64::new(1),
+        clients,
     });
 
     if let Some((metrics_addr, handle)) = metrics {
@@ -307,7 +362,7 @@ pub async fn run_concurrent(
                     continue;
                 }
 
-                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                let (permit, client_id) = match accept_connection(&stream, peer, &ctx, &semaphore) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -317,11 +372,11 @@ pub async fn run_concurrent(
 
                 tokio::spawn(async move {
                     if let Err(e) = crate::concurrent_handler::handle(
-                        stream, peer, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                        stream, peer, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub, client_id
                     ).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    on_connection_done(&h.ctx);
+                    on_connection_done(&h.ctx, client_id);
                     drop(permit);
                 });
             }
@@ -335,7 +390,7 @@ pub async fn run_concurrent(
                     continue;
                 }
 
-                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                let (permit, client_id) = match accept_connection(&stream, peer, &ctx, &semaphore) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -346,12 +401,12 @@ pub async fn run_concurrent(
                 tokio::spawn(async move {
                     if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
                         if let Err(e) = crate::concurrent_handler::handle(
-                            tls_stream, peer, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                            tls_stream, peer, keyspace, h.engine, &h.ctx, &h.slow_log, &h.pubsub, client_id
                         ).await {
                             error!("TLS connection error from {peer}: {e}");
                         }
                     }
-                    on_connection_done(&h.ctx);
+                    on_connection_done(&h.ctx, client_id);
                     drop(permit);
                 });
             }
@@ -460,6 +515,7 @@ pub async fn run_threaded(
 
     let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
+    let clients: ClientRegistry = Arc::new(Mutex::new(HashMap::new()));
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
         version: env!("CARGO_PKG_VERSION"),
@@ -479,6 +535,8 @@ pub async fn run_threaded(
         limits,
         memory_used_bytes: MemoryUsedBytes::new(),
         monitor_tx: tokio::sync::broadcast::channel(256).0,
+        next_client_id: AtomicU64::new(1),
+        clients,
     });
 
     // management tasks run on the caller's runtime (not the hot path)
@@ -655,7 +713,7 @@ async fn worker_main(
                     continue;
                 }
 
-                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                let (permit, client_id) = match accept_connection(&stream, peer, &ctx, &semaphore) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -664,11 +722,11 @@ async fn worker_main(
 
                 tokio::spawn(async move {
                     if let Err(e) = connection::handle(
-                        stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                        stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub, client_id
                     ).await {
                         error!("connection error from {peer}: {e}");
                     }
-                    on_connection_done(&h.ctx);
+                    on_connection_done(&h.ctx, client_id);
                     drop(permit);
                 });
             }
@@ -687,7 +745,7 @@ async fn worker_main(
                     continue;
                 }
 
-                let permit = match accept_connection(&stream, peer, &ctx, &semaphore) {
+                let (permit, client_id) = match accept_connection(&stream, peer, &ctx, &semaphore) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -697,12 +755,12 @@ async fn worker_main(
                 tokio::spawn(async move {
                     if let Some(tls_stream) = tls_handshake(acceptor, stream, peer).await {
                         if let Err(e) = connection::handle(
-                            tls_stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub
+                            tls_stream, peer, h.engine, &h.ctx, &h.slow_log, &h.pubsub, client_id
                         ).await {
                             error!("TLS connection error from {peer}: {e}");
                         }
                     }
-                    on_connection_done(&h.ctx);
+                    on_connection_done(&h.ctx, client_id);
                     drop(permit);
                 });
             }

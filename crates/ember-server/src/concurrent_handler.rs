@@ -29,13 +29,14 @@ use crate::connection_common::{
     validate_command_sizes, MonitorEvent, TransactionState,
 };
 use crate::pubsub::PubSubManager;
-use crate::server::ServerContext;
+use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
 
 /// Handles a connection using the concurrent keyspace for GET/SET.
 ///
 /// Generic over the stream type to support both plain TCP and TLS connections.
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
+#[allow(clippy::too_many_arguments)]
 pub async fn handle<S>(
     mut stream: S,
     peer_addr: SocketAddr,
@@ -44,6 +45,7 @@ pub async fn handle<S>(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    client_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -106,8 +108,10 @@ where
                                 }
                             }
                         } else if is_allowed_before_auth(&frame) {
-                            let response =
-                                process(frame, &keyspace, &engine, ctx, slow_log, pubsub).await;
+                            let response = process(
+                                frame, &keyspace, &engine, ctx, slow_log, pubsub, client_id,
+                            )
+                            .await;
                             response.serialize(&mut out);
                         } else {
                             Frame::Error("NOAUTH Authentication required.".into())
@@ -145,6 +149,7 @@ where
                             ctx,
                             slow_log,
                             pubsub,
+                            client_id,
                         )
                         .await;
                         response.serialize(&mut out);
@@ -216,6 +221,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process(
     frame: Frame,
     keyspace: &Arc<ConcurrentKeyspace>,
@@ -223,6 +229,7 @@ async fn process(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    client_id: u64,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
@@ -241,7 +248,8 @@ async fn process(
                 None
             };
 
-            let response = execute_concurrent(cmd, keyspace, engine, ctx, slow_log, pubsub).await;
+            let response =
+                execute_concurrent(cmd, keyspace, engine, ctx, slow_log, pubsub, client_id).await;
             ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
 
             if let Some(start) = start {
@@ -260,6 +268,7 @@ async fn process(
 }
 
 /// Handles a single frame with transaction awareness (concurrent mode).
+#[allow(clippy::too_many_arguments)]
 async fn handle_frame_with_tx(
     frame: Frame,
     tx_state: &mut TransactionState,
@@ -268,6 +277,7 @@ async fn handle_frame_with_tx(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    client_id: u64,
 ) -> Frame {
     let cmd_name = peek_command_name(&frame);
 
@@ -290,7 +300,7 @@ async fn handle_frame_with_tx(
             } else if cmd_name.as_deref() == Some("DISCARD") {
                 Frame::Error("ERR DISCARD without MULTI".into())
             } else {
-                process(frame, keyspace, engine, ctx, slow_log, pubsub).await
+                process(frame, keyspace, engine, ctx, slow_log, pubsub, client_id).await
             }
         }
         TransactionState::Queuing { queue, error } => match cmd_name.as_deref() {
@@ -308,8 +318,16 @@ async fn handle_frame_with_tx(
                     *tx_state = TransactionState::None;
                     let mut results = Vec::with_capacity(q.len());
                     for queued_frame in q {
-                        let response =
-                            process(queued_frame, keyspace, engine, ctx, slow_log, pubsub).await;
+                        let response = process(
+                            queued_frame,
+                            keyspace,
+                            engine,
+                            ctx,
+                            slow_log,
+                            pubsub,
+                            client_id,
+                        )
+                        .await;
                         results.push(response);
                     }
                     Frame::Array(results)
@@ -324,7 +342,7 @@ async fn handle_frame_with_tx(
             _ => match Command::from_frame(frame.clone()) {
                 Ok(cmd) => {
                     if matches!(cmd, Command::Auth { .. } | Command::Quit) {
-                        process(frame, keyspace, engine, ctx, slow_log, pubsub).await
+                        process(frame, keyspace, engine, ctx, slow_log, pubsub, client_id).await
                     } else {
                         queue.push(frame);
                         Frame::Simple("QUEUED".into())
@@ -359,6 +377,7 @@ async fn execute_concurrent(
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
+    client_id: u64,
 ) -> Frame {
     match cmd {
         // Hot path: direct access without channels
@@ -484,6 +503,32 @@ async fn execute_concurrent(
         Command::Ping(None) => Frame::Simple("PONG".into()),
         Command::Ping(Some(msg)) => Frame::Bulk(msg),
         Command::Echo(msg) => Frame::Bulk(msg),
+
+        // -- client commands (connection-scoped, no keyspace access) --
+        Command::ClientId => Frame::Integer(client_id as i64),
+        Command::ClientGetName => {
+            let name = ctx
+                .clients
+                .lock()
+                .ok()
+                .and_then(|map| map.get(&client_id).and_then(|c| c.name.clone()));
+            match name {
+                Some(n) => Frame::Bulk(Bytes::from(n)),
+                None => Frame::Null,
+            }
+        }
+        Command::ClientSetName { name } => {
+            if let Ok(mut map) = ctx.clients.lock() {
+                if let Some(info) = map.get_mut(&client_id) {
+                    info.name = if name.is_empty() { None } else { Some(name) };
+                }
+            }
+            Frame::Simple("OK".into())
+        }
+        Command::ClientList => {
+            let output = format_client_list(ctx);
+            Frame::Bulk(Bytes::from(output))
+        }
 
         Command::DbSize => Frame::Integer(keyspace.len() as i64),
 
