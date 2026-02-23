@@ -69,7 +69,7 @@ the following CLUSTER commands are supported at the protocol layer:
 
 - **persistent raft log** — vote, log entries, and snapshots are persisted to disk when a data directory is configured; nodes recover cluster state on restart
 - **single raft group** — all cluster config changes go through one raft group (simpler than multi-raft)
-- **server integration pending** — modules are complete but not yet wired into ember-server
+- **fully integrated** — cluster mode is wired into ember-server with gossip, raft, slot routing, MOVED/ASK redirects, live migration, replication, and automatic failover
 
 ## related crates
 
