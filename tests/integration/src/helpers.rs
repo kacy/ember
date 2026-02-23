@@ -16,6 +16,8 @@ pub struct TestServer {
     child: Child,
     pub port: u16,
     _data_dir: Option<tempfile::TempDir>,
+    /// Temp file holding server stderr for diagnostics on failure.
+    stderr_path: Option<PathBuf>,
 }
 
 /// Options for starting a test server.
@@ -65,7 +67,6 @@ impl TestServer {
         cmd.arg("--host").arg("127.0.0.1");
         cmd.arg("--shards")
             .arg(opts.shards.unwrap_or(2).to_string());
-        // use info for cluster tests so we can see gossip startup
         cmd.env("RUST_LOG", "error");
 
         if let Some(ref pass) = opts.requirepass {
@@ -80,14 +81,26 @@ impl TestServer {
             cmd.arg("--concurrent");
         }
 
-        if opts.cluster_enabled {
+        let stderr_path = if opts.cluster_enabled {
             cmd.arg("--cluster-enabled");
             // use small offsets so gossip and raft ports stay in valid u16 range.
             // random test ports are often >55000, and the defaults (+10000/+10001)
             // would overflow past 65535.
             cmd.arg("--cluster-port-offset").arg("1");
             cmd.arg("--cluster-raft-port-offset").arg("2");
-        }
+            // capture stderr so we can diagnose crashes on CI
+            cmd.env("RUST_LOG", "info");
+            let path = std::env::temp_dir().join(format!("ember-test-{port}.log"));
+            let file = std::fs::File::create(&path).ok();
+            if let Some(f) = file {
+                cmd.stderr(std::process::Stdio::from(f));
+                Some(path)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         if opts.cluster_bootstrap {
             cmd.arg("--cluster-bootstrap");
         }
@@ -112,9 +125,12 @@ impl TestServer {
             None
         };
 
+        // stderr is already redirected to a file for cluster servers
+        if stderr_path.is_none() {
+            cmd.stderr(std::process::Stdio::null());
+        }
         let child = cmd
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap_or_else(|e| {
                 panic!("failed to spawn ember-server at {}: {e}", binary.display())
@@ -136,6 +152,7 @@ impl TestServer {
             child,
             port,
             _data_dir: data_dir,
+            stderr_path,
         };
 
         // for bootstrapped cluster nodes, wait until raft reconciliation
@@ -191,8 +208,28 @@ impl TestServer {
 
 impl Drop for TestServer {
     fn drop(&mut self) {
+        // check if the server exited before we kill it
+        let premature_exit = self.child.try_wait().ok().flatten();
         let _ = self.child.kill();
         let _ = self.child.wait();
+
+        // dump stderr on premature exit to help diagnose CI failures
+        if let Some(status) = premature_exit {
+            if let Some(ref path) = self.stderr_path {
+                let log = std::fs::read_to_string(path).unwrap_or_default();
+                if !log.is_empty() {
+                    eprintln!(
+                        "--- ember-server port {} exited with {status} ---\n{log}\n---",
+                        self.port
+                    );
+                }
+            }
+        }
+
+        // clean up log file
+        if let Some(ref path) = self.stderr_path {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -329,17 +366,16 @@ impl TestClient {
     }
 }
 
-/// Monotonic counter for deterministic port allocation, initialized
-/// from the process ID to avoid collisions with stale servers from
-/// previous test runs.
+/// Monotonic counter for port allocation, seeded from the process ID so
+/// that back-to-back test runs don't collide with stale server processes.
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(0);
 
-/// Allocates a block of `count` consecutive ports guaranteed not to
-/// overlap with any other test server in this process.
+/// Allocates a block of `count` consecutive, verified-free ports.
+///
+/// Uses a monotonic counter to avoid overlap between tests, and binds
+/// each port to confirm availability before returning. Falls back to
+/// scanning forward if a port is occupied (e.g. by a CI runner service).
 fn allocate_ports(count: u16) -> u16 {
-    // lazy-initialize from PID on first call so each test binary
-    // invocation gets a different starting range. The range 10000–40000
-    // keeps us well below the OS ephemeral range (49152+).
     PORT_COUNTER
         .compare_exchange(
             0,
@@ -349,7 +385,15 @@ fn allocate_ports(count: u16) -> u16 {
         )
         .ok();
 
-    PORT_COUNTER.fetch_add(count, Ordering::Relaxed)
+    loop {
+        let base = PORT_COUNTER.fetch_add(count, Ordering::Relaxed);
+        let all_free = (0..count)
+            .all(|offset| TcpListener::bind(format!("127.0.0.1:{}", base + offset)).is_ok());
+        if all_free {
+            return base;
+        }
+        // port occupied — counter already advanced, try the next block
+    }
 }
 
 /// Finds a free TCP port by binding to port 0.
