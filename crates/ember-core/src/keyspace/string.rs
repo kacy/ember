@@ -56,6 +56,16 @@ impl Keyspace {
         Ok(None)
     }
 
+    /// Returns the internal encoding of the value at `key`, or `None` if missing.
+    pub fn encoding(&mut self, key: &str) -> Option<&'static str> {
+        if self.remove_if_expired(key) {
+            return None;
+        }
+        self.entries
+            .get(key)
+            .map(|e| types::encoding_name(&e.value))
+    }
+
     /// Returns the type name of the value at `key`, or "none" if missing.
     pub fn value_type(&mut self, key: &str) -> &'static str {
         if self.remove_if_expired(key) {
@@ -601,6 +611,66 @@ mod tests {
         let binary = Bytes::from(vec![0u8, 1, 2, 255, 0, 128]);
         ks.set("binary".into(), binary.clone(), None, false, false);
         assert_eq!(ks.get("binary").unwrap(), Some(Value::String(binary)));
+    }
+
+    // --- encoding ---
+
+    #[test]
+    fn encoding_int() {
+        let mut ks = Keyspace::new();
+        ks.set("n".into(), Bytes::from("42"), None, false, false);
+        assert_eq!(ks.encoding("n"), Some("int"));
+    }
+
+    #[test]
+    fn encoding_embstr() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("short"), None, false, false);
+        assert_eq!(ks.encoding("s"), Some("embstr"));
+    }
+
+    #[test]
+    fn encoding_raw() {
+        let mut ks = Keyspace::new();
+        let long = "a".repeat(30);
+        ks.set("s".into(), Bytes::from(long), None, false, false);
+        assert_eq!(ks.encoding("s"), Some("raw"));
+    }
+
+    #[test]
+    fn encoding_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.encoding("nope"), None);
+    }
+
+    #[test]
+    fn encoding_list() {
+        let mut ks = Keyspace::new();
+        ks.lpush("l", &[Bytes::from("a")]).unwrap();
+        assert_eq!(ks.encoding("l"), Some("listpack"));
+    }
+
+    #[test]
+    fn encoding_set() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["member".into()]).unwrap();
+        assert_eq!(ks.encoding("s"), Some("hashtable"));
+    }
+
+    #[test]
+    fn encoding_sorted_set() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "a".into())], &ZAddFlags::default())
+            .unwrap();
+        assert_eq!(ks.encoding("z"), Some("skiplist"));
+    }
+
+    #[test]
+    fn encoding_hash_compact() {
+        let mut ks = Keyspace::new();
+        ks.hset("h", &[("field".into(), Bytes::from("val"))])
+            .unwrap();
+        assert_eq!(ks.encoding("h"), Some("listpack"));
     }
 
     #[test]

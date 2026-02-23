@@ -100,6 +100,20 @@ pub(super) fn to_aof_records(
         (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => {
             smallvec![AofRecord::Rename { key, newkey }]
         }
+        (
+            ShardRequest::Copy {
+                source,
+                destination,
+                replace,
+            },
+            ShardResponse::Bool(true),
+        ) => {
+            smallvec![AofRecord::Copy {
+                source,
+                destination,
+                replace,
+            }]
+        }
         (ShardRequest::Persist { key }, ShardResponse::Bool(true)) => {
             smallvec![AofRecord::Persist { key }]
         }
@@ -666,6 +680,40 @@ mod tests {
                 other => panic!("expected VAdd, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn to_aof_records_for_copy() {
+        let req = ShardRequest::Copy {
+            source: "src".into(),
+            destination: "dst".into(),
+            replace: true,
+        };
+        let mut resp = ShardResponse::Bool(true);
+        let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
+        match record {
+            AofRecord::Copy {
+                source,
+                destination,
+                replace,
+            } => {
+                assert_eq!(source, "src");
+                assert_eq!(destination, "dst");
+                assert!(replace);
+            }
+            other => panic!("expected Copy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_aof_records_skips_copy_no_op() {
+        let req = ShardRequest::Copy {
+            source: "src".into(),
+            destination: "dst".into(),
+            replace: false,
+        };
+        let mut resp = ShardResponse::Bool(false);
+        assert!(to_aof_records(req, &mut resp).is_empty());
     }
 
     #[test]

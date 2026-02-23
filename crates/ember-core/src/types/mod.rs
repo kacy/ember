@@ -103,6 +103,36 @@ pub fn type_name(value: &Value) -> &'static str {
     }
 }
 
+/// Returns the internal encoding name for a value, matching Redis OBJECT ENCODING output.
+pub fn encoding_name(value: &Value) -> &'static str {
+    match value {
+        Value::String(b) => {
+            // check if it parses as an integer
+            if let Ok(s) = std::str::from_utf8(b) {
+                if s.parse::<i64>().is_ok() {
+                    return "int";
+                }
+            }
+            if b.len() <= 24 {
+                "embstr"
+            } else {
+                "raw"
+            }
+        }
+        Value::List(_) => "listpack",
+        Value::Hash(h) => match h.as_ref() {
+            hash::HashValue::Compact(_) => "listpack",
+            hash::HashValue::Full(_) => "hashtable",
+        },
+        Value::Set(_) => "hashtable",
+        Value::SortedSet(_) => "skiplist",
+        #[cfg(feature = "vector")]
+        Value::Vector(_) => "hnsw",
+        #[cfg(feature = "protobuf")]
+        Value::Proto { .. } => "raw",
+    }
+}
+
 /// Converts Redis-style indices (supporting negative values) to a
 /// clamped `(start, stop)` pair.
 ///

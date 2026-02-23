@@ -123,6 +123,12 @@ pub static COMMANDS: &[CommandInfo] = &[
     },
     // --- generic ---
     CommandInfo {
+        name: "COPY",
+        args: "source destination [REPLACE]",
+        group: "generic",
+        summary: "copy the value of a key to a new key",
+    },
+    CommandInfo {
         name: "DEL",
         args: "key [key ...]",
         group: "generic",
@@ -145,6 +151,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "pattern",
         group: "generic",
         summary: "find all keys matching the given pattern",
+    },
+    CommandInfo {
+        name: "OBJECT",
+        args: "ENCODING key | REFCOUNT key",
+        group: "generic",
+        summary: "inspect the internal encoding of a value",
     },
     CommandInfo {
         name: "PERSIST",
@@ -428,16 +440,34 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get information and statistics about the server",
     },
     CommandInfo {
+        name: "LASTSAVE",
+        args: "",
+        group: "server",
+        summary: "return the unix timestamp of the last successful save",
+    },
+    CommandInfo {
         name: "MONITOR",
         args: "",
         group: "server",
         summary: "stream all commands processed by the server",
     },
     CommandInfo {
+        name: "ROLE",
+        args: "",
+        group: "server",
+        summary: "return the role of the server in replication",
+    },
+    CommandInfo {
         name: "SLOWLOG",
         args: "GET [count] | LEN | RESET",
         group: "server",
         summary: "manage the slow log",
+    },
+    CommandInfo {
+        name: "TIME",
+        args: "",
+        group: "server",
+        summary: "return the current server time",
     },
     // --- pubsub ---
     CommandInfo {

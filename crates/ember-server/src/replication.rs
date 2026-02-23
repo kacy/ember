@@ -658,6 +658,15 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             key: key.clone(),
             newkey: newkey.clone(),
         }),
+        AofRecord::Copy {
+            source,
+            destination,
+            replace,
+        } => Some(ShardRequest::Copy {
+            source: source.clone(),
+            destination: destination.clone(),
+            replace: *replace,
+        }),
         #[cfg(feature = "vector")]
         AofRecord::VAdd {
             key,
