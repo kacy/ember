@@ -178,6 +178,20 @@ impl ConcurrentKeyspace {
         self.get(key).is_some()
     }
 
+    /// Returns a random non-expired key, or `None` if the keyspace is empty.
+    pub fn random_key(&self) -> Option<String> {
+        use rand::seq::IteratorRandom;
+        let mut rng = rand::rng();
+        // sample up to 5 times to skip expired entries
+        for _ in 0..5 {
+            let entry = self.data.iter().choose(&mut rng)?;
+            if !entry.value().is_expired() {
+                return Some(entry.key().to_string());
+            }
+        }
+        None
+    }
+
     /// Returns the TTL of a key.
     pub fn ttl(&self, key: &str) -> TtlResult {
         match self.data.get(key) {

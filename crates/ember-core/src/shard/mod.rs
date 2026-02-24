@@ -175,6 +175,19 @@ pub enum ShardRequest {
     Exists {
         key: String,
     },
+    /// Returns a random key from the shard's keyspace.
+    RandomKey,
+    /// Updates last access time for a key. Returns bool (existed).
+    Touch {
+        key: String,
+    },
+    /// Sorts elements from a list, set, or sorted set in this shard.
+    Sort {
+        key: String,
+        desc: bool,
+        alpha: bool,
+        limit: Option<(i64, i64)>,
+    },
     Expire {
         key: String,
         seconds: u64,
@@ -1295,6 +1308,20 @@ fn dispatch(
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
         ShardRequest::Unlink { key } => ShardResponse::Bool(ks.unlink(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
+        ShardRequest::RandomKey => match ks.random_key() {
+            Some(k) => ShardResponse::StringArray(vec![k]),
+            None => ShardResponse::StringArray(vec![]),
+        },
+        ShardRequest::Touch { key } => ShardResponse::Bool(ks.touch(key)),
+        ShardRequest::Sort {
+            key,
+            desc,
+            alpha,
+            limit,
+        } => match ks.sort(key, *desc, *alpha, *limit) {
+            Ok(items) => ShardResponse::Array(items),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
         ShardRequest::Persist { key } => ShardResponse::Bool(ks.persist(key)),

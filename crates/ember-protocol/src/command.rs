@@ -599,6 +599,22 @@ pub enum Command {
     /// MONITOR. Streams all commands processed by the server.
     Monitor,
 
+    /// RANDOMKEY. Returns a random key from the database, or nil if empty.
+    RandomKey,
+
+    /// TOUCH `key` \[key ...\]. Updates last access time, returns count of existing keys.
+    Touch { keys: Vec<String> },
+
+    /// SORT `key` \[ASC|DESC\] \[ALPHA\] \[LIMIT offset count\] \[STORE dest\].
+    /// Sorts a list, set, or sorted set and returns the sorted elements.
+    Sort {
+        key: String,
+        desc: bool,
+        alpha: bool,
+        limit: Option<(i64, i64)>,
+        store: Option<String>,
+    },
+
     /// A command we don't recognize (yet).
     Unknown(String),
 }
@@ -798,6 +814,10 @@ impl Command {
             Command::AclSetUser { .. } => "acl",
             Command::AclCat { .. } => "acl",
 
+            Command::RandomKey => "randomkey",
+            Command::Touch { .. } => "touch",
+            Command::Sort { .. } => "sort",
+
             Command::Unknown(_) => "unknown",
         }
     }
@@ -863,7 +883,7 @@ impl Command {
             // acl mutations
                 | Command::AclSetUser { .. }
                 | Command::AclDelUser { .. }
-        )
+        ) || matches!(self, Command::Sort { store: Some(_), .. })
     }
 
     /// Returns the ACL category bitmask for this command.
@@ -923,8 +943,12 @@ impl Command {
             | Command::IncrByFloat { .. } => WRITE | STRING | FAST,
 
             // keyspace — reads
-            Command::Exists { .. } | Command::Type { .. } => READ | KEYSPACE | FAST,
+            Command::Exists { .. } | Command::Type { .. } | Command::Touch { .. } => {
+                READ | KEYSPACE | FAST
+            }
+            Command::RandomKey => READ | KEYSPACE | FAST,
             Command::Keys { .. } => READ | KEYSPACE | DANGEROUS | SLOW,
+            Command::Sort { .. } => WRITE | SET | SORTEDSET | LIST | SLOW,
             Command::Scan { .. }
             | Command::SScan { .. }
             | Command::HScan { .. }
@@ -1128,11 +1152,13 @@ impl Command {
             | Command::ProtoGetField { key, .. }
             | Command::ProtoSetField { key, .. }
             | Command::ProtoDelField { key, .. }
-            | Command::Restore { key, .. } => Some(key),
+            | Command::Restore { key, .. }
+            | Command::Sort { key, .. } => Some(key),
             Command::Copy { source, .. } => Some(source),
             Command::Del { keys }
             | Command::Unlink { keys }
             | Command::Exists { keys }
+            | Command::Touch { keys }
             | Command::MGet { keys }
             | Command::BLPop { keys, .. }
             | Command::BRPop { keys, .. } => keys.first().map(String::as_str),
@@ -1283,6 +1309,9 @@ impl Command {
             "AUTH" => parse_auth(&frames[1..]),
             "QUIT" => parse_quit(&frames[1..]),
             "MONITOR" => parse_monitor(&frames[1..]),
+            "RANDOMKEY" => parse_no_args("RANDOMKEY", &frames[1..], Command::RandomKey),
+            "TOUCH" => parse_touch(&frames[1..]),
+            "SORT" => parse_sort(&frames[1..]),
             _ => {
                 // only allocate for truly unknown commands
                 let name = extract_string(&frames[0])?;
@@ -3447,6 +3476,81 @@ fn parse_monitor(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("MONITOR"));
     }
     Ok(Command::Monitor)
+}
+
+fn parse_touch(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("TOUCH"));
+    }
+    let keys = extract_strings(args)?;
+    Ok(Command::Touch { keys })
+}
+
+fn parse_sort(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("SORT"));
+    }
+    let key = extract_string(&args[0])?;
+    let mut desc = false;
+    let mut alpha = false;
+    let mut limit = None;
+    let mut store = None;
+    let mut i = 1;
+    while i < args.len() {
+        let flag = extract_string(&args[i])?.to_uppercase();
+        match flag.as_str() {
+            "ASC" => {
+                desc = false;
+                i += 1;
+            }
+            "DESC" => {
+                desc = true;
+                i += 1;
+            }
+            "ALPHA" => {
+                alpha = true;
+                i += 1;
+            }
+            "LIMIT" => {
+                if i + 2 >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "SORT LIMIT requires offset and count".into(),
+                    ));
+                }
+                let offset = extract_string(&args[i + 1])?.parse::<i64>().map_err(|_| {
+                    ProtocolError::InvalidCommandFrame(
+                        "SORT LIMIT offset is not a valid integer".into(),
+                    )
+                })?;
+                let count = extract_string(&args[i + 2])?.parse::<i64>().map_err(|_| {
+                    ProtocolError::InvalidCommandFrame(
+                        "SORT LIMIT count is not a valid integer".into(),
+                    )
+                })?;
+                limit = Some((offset, count));
+                i += 3;
+            }
+            "STORE" => {
+                if i + 1 >= args.len() {
+                    return Err(wrong_arity("SORT"));
+                }
+                store = Some(extract_string(&args[i + 1])?);
+                i += 2;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "SORT: unsupported flag '{flag}'"
+                )));
+            }
+        }
+    }
+    Ok(Command::Sort {
+        key,
+        desc,
+        alpha,
+        limit,
+        store,
+    })
 }
 
 #[cfg(test)]
@@ -6899,5 +7003,137 @@ mod tests {
     fn acl_categories_unknown_returns_zero() {
         let cmd = Command::Unknown("bogus".into());
         assert_eq!(cmd.acl_categories(), 0);
+    }
+
+    // --- randomkey ---
+
+    #[test]
+    fn randomkey_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["RANDOMKEY"])).unwrap(),
+            Command::RandomKey,
+        );
+    }
+
+    #[test]
+    fn randomkey_extra_args() {
+        let err = Command::from_frame(cmd(&["RANDOMKEY", "extra"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- touch ---
+
+    #[test]
+    fn touch_single() {
+        assert_eq!(
+            Command::from_frame(cmd(&["TOUCH", "key"])).unwrap(),
+            Command::Touch {
+                keys: vec!["key".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn touch_multiple() {
+        assert_eq!(
+            Command::from_frame(cmd(&["TOUCH", "a", "b", "c"])).unwrap(),
+            Command::Touch {
+                keys: vec!["a".into(), "b".into(), "c".into()]
+            },
+        );
+    }
+
+    #[test]
+    fn touch_no_args() {
+        let err = Command::from_frame(cmd(&["TOUCH"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    // --- sort ---
+
+    #[test]
+    fn sort_basic() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SORT", "mylist"])).unwrap(),
+            Command::Sort {
+                key: "mylist".into(),
+                desc: false,
+                alpha: false,
+                limit: None,
+                store: None,
+            },
+        );
+    }
+
+    #[test]
+    fn sort_desc_alpha() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SORT", "mylist", "DESC", "ALPHA"])).unwrap(),
+            Command::Sort {
+                key: "mylist".into(),
+                desc: true,
+                alpha: true,
+                limit: None,
+                store: None,
+            },
+        );
+    }
+
+    #[test]
+    fn sort_limit() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SORT", "mylist", "LIMIT", "0", "10"])).unwrap(),
+            Command::Sort {
+                key: "mylist".into(),
+                desc: false,
+                alpha: false,
+                limit: Some((0, 10)),
+                store: None,
+            },
+        );
+    }
+
+    #[test]
+    fn sort_store() {
+        assert_eq!(
+            Command::from_frame(cmd(&["SORT", "mylist", "ALPHA", "STORE", "dest"])).unwrap(),
+            Command::Sort {
+                key: "mylist".into(),
+                desc: false,
+                alpha: true,
+                limit: None,
+                store: Some("dest".into()),
+            },
+        );
+    }
+
+    #[test]
+    fn sort_no_args() {
+        let err = Command::from_frame(cmd(&["SORT"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::WrongArity(_)));
+    }
+
+    #[test]
+    fn sort_is_write_with_store() {
+        let cmd = Command::Sort {
+            key: "k".into(),
+            desc: false,
+            alpha: false,
+            limit: None,
+            store: Some("dest".into()),
+        };
+        assert!(cmd.is_write());
+    }
+
+    #[test]
+    fn sort_is_not_write_without_store() {
+        let cmd = Command::Sort {
+            key: "k".into(),
+            desc: false,
+            alpha: false,
+            limit: None,
+            store: None,
+        };
+        assert!(!cmd.is_write());
     }
 }
