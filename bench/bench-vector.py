@@ -63,20 +63,31 @@ class VectorClient(ABC):
 
 
 class EmberClient(VectorClient):
-    """ember vector client using redis-py for RESP command execution."""
+    """ember vector client using redis-py for RESP command execution.
 
-    def __init__(self, host: str = "127.0.0.1", port: int = 6379):
+    uses binary mode (no decode_responses) to avoid unnecessary UTF-8
+    decoding overhead on responses we don't inspect during inserts.
+    """
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 6379,
+                 shards: int = 1, pipeline_depth: int = 1):
         import redis
-        self.conn = redis.Redis(host=host, port=port, decode_responses=True)
-        self.key = "bench_vectors"
+        self.conn = redis.Redis(host=host, port=port)
+        self.shards = shards
+        self.pipeline_depth = pipeline_depth
+        self.keys = [f"bench_vectors_{i}" for i in range(shards)] if shards > 1 else ["bench_vectors"]
+
+    def _key_for_batch(self, batch_idx: int) -> str:
+        return self.keys[batch_idx % len(self.keys)]
 
     def setup(self, dim: int, metric: str = "cosine"):
-        # clear any previous data
-        self.conn.delete(self.key)
+        for key in self.keys:
+            self.conn.delete(key)
 
-    def insert_batch(self, ids: list, vectors: np.ndarray):
+    def insert_batch(self, ids: list, vectors: np.ndarray, key: str = None):
+        target = key or self.keys[0]
         dim = vectors.shape[1]
-        args = [self.key, "DIM", str(dim)]
+        args = [target, "DIM", str(dim)]
         for i, vid in enumerate(ids):
             args.append(vid)
             args.extend(str(float(v)) for v in vectors[i])
@@ -84,7 +95,7 @@ class EmberClient(VectorClient):
         self.conn.execute_command("VADD_BATCH", *args)
 
     def query(self, vector: np.ndarray, k: int) -> list:
-        args = [self.key] + [str(float(v)) for v in vector]
+        args = [self.keys[0]] + [str(float(v)) for v in vector]
         args += ["COUNT", str(k)]
         result = self.conn.execute_command("VSIM", *args)
         if result is None:
@@ -92,11 +103,17 @@ class EmberClient(VectorClient):
         return [r.decode() if isinstance(r, bytes) else str(r) for r in result]
 
     def teardown(self):
-        self.conn.delete(self.key)
+        for key in self.keys:
+            self.conn.delete(key)
         self.conn.close()
 
     def name(self) -> str:
-        return "ember"
+        suffix = ""
+        if self.shards > 1:
+            suffix += f"-{self.shards}shards"
+        if self.pipeline_depth > 1:
+            suffix += f"-p{self.pipeline_depth}"
+        return "ember" + suffix
 
 
 class EmberGrpcClient(VectorClient):
@@ -316,15 +333,56 @@ class QdrantClient_(VectorClient):
 # ---------------------------------------------------------------------------
 
 def benchmark_insert(client: VectorClient, vectors: np.ndarray,
-                     batch_size: int = 500) -> dict:
-    """measure insert throughput. returns vectors/sec."""
+                     batch_size: int = 2000, pipeline_depth: int = 1) -> dict:
+    """measure insert throughput.
+
+    pipeline_depth > 1 uses redis-py's pipeline to send multiple batches
+    concurrently (ember-only). other systems ignore this parameter.
+    """
     n = len(vectors)
     ids = [f"vec_{i}" for i in range(n)]
 
+    use_pipeline = (
+        pipeline_depth > 1
+        and isinstance(client, EmberClient)
+        and hasattr(client.conn, "pipeline")
+    )
+    use_sharding = isinstance(client, EmberClient) and client.shards > 1
+
     start = time.perf_counter()
-    for i in range(0, n, batch_size):
-        end_idx = min(i + batch_size, n)
-        client.insert_batch(ids[i:end_idx], vectors[i:end_idx])
+
+    if use_pipeline:
+        # send pipeline_depth batches before waiting for responses
+        batches = []
+        for i in range(0, n, batch_size):
+            end_idx = min(i + batch_size, n)
+            key = client._key_for_batch(len(batches)) if use_sharding else None
+            batches.append((ids[i:end_idx], vectors[i:end_idx], key))
+
+        for chunk_start in range(0, len(batches), pipeline_depth):
+            chunk = batches[chunk_start:chunk_start + pipeline_depth]
+            pipe = client.conn.pipeline(transaction=False)
+            for batch_ids, batch_vecs, key in chunk:
+                target = key or client.keys[0]
+                dim = batch_vecs.shape[1]
+                args = [target, "DIM", str(dim)]
+                for j, vid in enumerate(batch_ids):
+                    args.append(vid)
+                    args.extend(str(float(v)) for v in batch_vecs[j])
+                args += ["METRIC", "COSINE", "M", "16", "EF", "64"]
+                pipe.execute_command("VADD_BATCH", *args)
+            pipe.execute()
+    else:
+        batch_idx = 0
+        for i in range(0, n, batch_size):
+            end_idx = min(i + batch_size, n)
+            key = client._key_for_batch(batch_idx) if use_sharding else None
+            if key is not None:
+                client.insert_batch(ids[i:end_idx], vectors[i:end_idx], key=key)
+            else:
+                client.insert_batch(ids[i:end_idx], vectors[i:end_idx])
+            batch_idx += 1
+
     elapsed = time.perf_counter() - start
 
     # for pgvector, create the HNSW index after all inserts
@@ -338,6 +396,8 @@ def benchmark_insert(client: VectorClient, vectors: np.ndarray,
 
     return {
         "vectors": n,
+        "batch_size": batch_size,
+        "pipeline_depth": pipeline_depth,
         "elapsed_sec": round(elapsed, 3),
         "index_time_sec": round(index_time, 3),
         "throughput": round(throughput, 1),
@@ -412,7 +472,11 @@ def main():
     parser.add_argument("--count", type=int, default=100000)
     parser.add_argument("--queries", type=int, default=1000)
     parser.add_argument("--k", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=500)
+    parser.add_argument("--batch-size", type=int, default=2000)
+    parser.add_argument("--pipeline-depth", type=int, default=1,
+                        help="redis pipeline depth for ember (send N batches concurrently)")
+    parser.add_argument("--shards", type=int, default=1,
+                        help="distribute vectors across N keys (ember only, leverages thread-per-core)")
     parser.add_argument("--ember-port", type=int, default=6379)
     parser.add_argument("--ember-grpc-port", type=int, default=6380)
     parser.add_argument("--chroma-port", type=int, default=8000)
@@ -424,7 +488,8 @@ def main():
 
     # create client
     if args.system == "ember":
-        client = EmberClient(port=args.ember_port)
+        client = EmberClient(port=args.ember_port, shards=args.shards,
+                             pipeline_depth=args.pipeline_depth)
     elif args.system == "ember-grpc":
         client = EmberGrpcClient(port=args.ember_grpc_port)
     elif args.system == "chromadb":
@@ -453,8 +518,9 @@ def main():
     client.setup(dim)
 
     # run benchmarks
-    print(f"benchmarking {client.name()} insert...", file=sys.stderr)
-    insert_result = benchmark_insert(client, base_vectors, batch_size=args.batch_size)
+    print(f"benchmarking {client.name()} insert (batch={args.batch_size}, pipeline={args.pipeline_depth})...", file=sys.stderr)
+    insert_result = benchmark_insert(client, base_vectors, batch_size=args.batch_size,
+                                     pipeline_depth=args.pipeline_depth)
     print(f"  {insert_result['throughput']:.0f} vectors/sec", file=sys.stderr)
 
     print(f"benchmarking {client.name()} query (k={args.k})...", file=sys.stderr)

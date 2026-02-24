@@ -23,6 +23,8 @@
 #   VECTOR_COUNT     base vector count      (default: 100000)
 #   VECTOR_DIM       vector dimensions      (default: 128)
 #   QUERY_COUNT      query vector count     (default: 1000)
+#   BATCH_SIZE       vectors per batch      (default: 2000)
+#   PIPELINE_DEPTH   redis pipeline depth   (default: 1, ember only)
 #   EMBER_BIN        ember-server binary    (default: ./target/release/ember-server)
 
 set -euo pipefail
@@ -38,7 +40,8 @@ VECTOR_COUNT="${VECTOR_COUNT:-100000}"
 VECTOR_DIM="${VECTOR_DIM:-128}"
 QUERY_COUNT="${QUERY_COUNT:-1000}"
 K=10
-BATCH_SIZE=500
+BATCH_SIZE="${BATCH_SIZE:-2000}"
+PIPELINE_DEPTH="${PIPELINE_DEPTH:-1}"
 EMBER_BIN="${EMBER_BIN:-./target/release/ember-server}"
 RESULTS_DIR="bench/results"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
@@ -284,6 +287,7 @@ else
     echo "vectors:    $VECTOR_COUNT base, $QUERY_COUNT queries"
     echo "dimensions: $VECTOR_DIM"
 fi
+echo "batch:      $BATCH_SIZE vectors/batch, pipeline depth=$PIPELINE_DEPTH"
 echo "k:          $K"
 echo "hnsw:       M=16, ef_construction=64"
 echo "metric:     cosine"
@@ -297,6 +301,7 @@ BENCH_ARGS=(
     --queries "$QUERY_COUNT"
     --k "$K"
     --batch-size "$BATCH_SIZE"
+    --pipeline-depth "$PIPELINE_DEPTH"
     --ember-port "$EMBER_PORT"
     --ember-grpc-port "$EMBER_GRPC_PORT"
     --chroma-port "$CHROMA_PORT"
