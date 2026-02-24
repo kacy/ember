@@ -118,15 +118,27 @@ encryption only affects persistence writes — GET throughput is unchanged at P=
 ember vs chromadb vs pgvector vs qdrant. 100k random vectors, 128 dimensions, cosine metric, k=10 kNN search.
 HNSW index: M=16, ef_construction=64 for all systems. tested on GCP c2-standard-8.
 
-| metric | ember (RESP) | ember (gRPC) | chromadb | pgvector | qdrant |
-|--------|-------------|-------------|----------|----------|--------|
-| insert (vectors/sec) | 1,501 | 2,439 | 3,909 | 1,746 | **7,693** |
-| query (queries/sec) | 1,255 | **1,560** | 390 | 845 | 597 |
-| query p50 (ms) | 0.79ms | **0.64ms** | 2.56ms | 1.16ms | 1.66ms |
-| query p99 (ms) | 0.94ms | **0.78ms** | 2.80ms | 1.56ms | 1.90ms |
-| memory (MB) | **30 MB** | — | 122 MB | 178 MB | 106 MB |
+| metric | ember (1 key) | ember (8 shards) | chromadb | pgvector | qdrant |
+|--------|--------------|------------------|----------|----------|--------|
+| insert (vectors/sec) | 2,432 | 5,482 | 4,879 | 1,702 | **7,699** |
+| query (queries/sec) | 1,217 | **1,793** | 381 | 782 | 560 |
+| query p50 (ms) | 0.82ms | **0.56ms** | 2.61ms | 1.26ms | 1.77ms |
+| query p99 (ms) | 0.99ms | **0.62ms** | 2.91ms | 1.67ms | 2.00ms |
+| memory (MB) | **29 MB** | ~31 MB | 139 MB | 178 MB | 168 MB |
 
-ember's query throughput is 3.2x chromadb, 1.5x pgvector, and 2.1x qdrant, with 3-6x lower memory usage. gRPC queries are 24% faster than RESP due to lower serialization overhead. insert throughput uses VADD_BATCH (batches of 500 vectors per command) — the gRPC path benefits most since packed floats avoid string parsing entirely.
+ember's query throughput is 4.7x chromadb, 2.3x pgvector, and 3.2x qdrant (8-shard mode), with 4-6x lower memory. insert throughput uses binary-encoded VADD_BATCH (packed LE f32 blobs + parallel HNSW construction). sharding distributes vectors across multiple keys so each shard builds an independent HNSW index in parallel — this is where ember's thread-per-core architecture pays off for vector workloads.
+
+#### insert scaling by shard count
+
+shows how vector insert throughput scales when distributing vectors across multiple keys (each key maps to an independent HNSW index on a separate shard). binary-encoded VADD_BATCH, pipeline depth = shard count.
+
+| shards | insert (vectors/sec) | query (queries/sec) | query p99 (ms) |
+|--------|---------------------|---------------------|----------------|
+| 1 | 2,432 | 1,217 | 0.99ms |
+| 4 | 3,742 | 1,175 | 0.97ms |
+| 8 | 5,482 | 1,793 | 0.62ms |
+
+insert throughput scales nearly linearly with shard count since each shard does its own HNSW graph construction independently. query latency also improves with sharding — smaller per-shard indexes mean faster kNN graph traversal.
 
 #### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
 

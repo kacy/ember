@@ -450,7 +450,8 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 - sharded mode: 1.76M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
 - concurrent mode: 1.79M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
 - p99 latency: 0.74ms SET, 0.70ms GET (P=1, concurrent mode)
-- vector queries: 1.6k queries/sec (gRPC), 4-6x less memory than chromadb/pgvector/qdrant
+- vector insert: 5.5k vectors/sec (8-shard), 2.4k vectors/sec (single key); query: 1.8k queries/sec, p99=0.62ms
+- vector memory: 4-6x less than chromadb/pgvector/qdrant (29 MB vs 139-178 MB for 100k vectors)
 - memory: 128 bytes/key concurrent, 208 bytes/key sharded (redis: 173 bytes/key)
 
 ```bash
