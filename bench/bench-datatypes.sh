@@ -61,7 +61,7 @@ echo ""
 
 # start ember
 echo "starting ember on port $EMBER_PORT..."
-$EMBER_BIN --port $EMBER_PORT --no-grpc > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_PORT > /dev/null 2>&1 &
 sleep 1
 redis-cli -p $EMBER_PORT PING > /dev/null || { echo "ember failed to start"; exit 1; }
 
