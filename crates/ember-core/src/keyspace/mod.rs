@@ -649,6 +649,121 @@ impl Keyspace {
         self.entries.contains_key(key)
     }
 
+    /// Returns a random key from the keyspace, or `None` if empty.
+    ///
+    /// Uses reservoir sampling from the hash map iterator. Expired keys
+    /// are skipped (and lazily cleaned up with bounded retries).
+    pub fn random_key(&mut self) -> Option<String> {
+        // bounded retries in case we keep hitting expired keys
+        for _ in 0..5 {
+            let mut rng = rand::rng();
+            let key = self.entries.keys().choose(&mut rng)?.clone();
+
+            if self.remove_if_expired(&key) {
+                continue;
+            }
+            return Some(key.to_string());
+        }
+        None
+    }
+
+    /// Updates the last access time for a key. Returns `true` if the key exists.
+    pub fn touch(&mut self, key: &str) -> bool {
+        if self.remove_if_expired(key) {
+            return false;
+        }
+        match self.entries.get_mut(key) {
+            Some(entry) => {
+                entry.touch();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sorts elements from a list, set, or sorted set.
+    ///
+    /// Returns the sorted elements as byte strings, or an error if the
+    /// key holds the wrong type or numeric parsing fails.
+    pub fn sort(
+        &mut self,
+        key: &str,
+        desc: bool,
+        alpha: bool,
+        limit: Option<(i64, i64)>,
+    ) -> Result<Vec<Bytes>, &'static str> {
+        if self.remove_if_expired(key) {
+            return Ok(Vec::new());
+        }
+        let entry = match self.entries.get_mut(key) {
+            Some(e) => {
+                e.touch();
+                e
+            }
+            None => return Ok(Vec::new()),
+        };
+
+        // collect elements from the appropriate type
+        let mut items: Vec<Bytes> = match &entry.value {
+            Value::List(deq) => deq.iter().cloned().collect(),
+            Value::Set(set) => set.iter().map(|s| Bytes::from(s.clone())).collect(),
+            Value::SortedSet(zset) => zset
+                .iter()
+                .map(|(m, _)| Bytes::from(m.to_owned()))
+                .collect(),
+            _ => return Err(WRONGTYPE_MSG),
+        };
+
+        // sort
+        if alpha {
+            items.sort();
+            if desc {
+                items.reverse();
+            }
+        } else {
+            // numeric sort — parse all elements as f64
+            let mut parse_err = false;
+            items.sort_by(|a, b| {
+                let a_str = std::str::from_utf8(a).unwrap_or("");
+                let b_str = std::str::from_utf8(b).unwrap_or("");
+                let a_val = a_str.parse::<f64>().unwrap_or_else(|_| {
+                    parse_err = true;
+                    0.0
+                });
+                let b_val = b_str.parse::<f64>().unwrap_or_else(|_| {
+                    parse_err = true;
+                    0.0
+                });
+                if desc {
+                    b_val
+                        .partial_cmp(&a_val)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a_val
+                        .partial_cmp(&b_val)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }
+            });
+            if parse_err {
+                return Err("ERR One or more scores can't be converted into double");
+            }
+        }
+
+        // apply limit
+        if let Some((offset, count)) = limit {
+            let offset = offset.max(0) as usize;
+            let count = count.max(0) as usize;
+            let end = offset.saturating_add(count).min(items.len());
+            if offset < items.len() {
+                items = items[offset..end].to_vec();
+            } else {
+                items.clear();
+            }
+        }
+
+        Ok(items)
+    }
+
     /// Sets an expiration on an existing key. Returns `true` if the key
     /// exists (and the TTL was set), `false` if the key doesn't exist.
     pub fn expire(&mut self, key: &str, seconds: u64) -> bool {
@@ -2253,5 +2368,116 @@ mod tests {
         // memory should roughly double (two entries with same value)
         assert!(after > before);
         assert_eq!(ks.stats().key_count, 2);
+    }
+
+    // --- random_key ---
+
+    #[test]
+    fn random_key_empty() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.random_key(), None);
+    }
+
+    #[test]
+    fn random_key_returns_existing() {
+        let mut ks = Keyspace::new();
+        ks.set("only".into(), Bytes::from("val"), None, false, false);
+        assert_eq!(ks.random_key(), Some("only".into()));
+    }
+
+    // --- touch ---
+
+    #[test]
+    fn touch_existing_key() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        assert!(ks.touch("k"));
+    }
+
+    #[test]
+    fn touch_missing_key() {
+        let mut ks = Keyspace::new();
+        assert!(!ks.touch("missing"));
+    }
+
+    // --- sort ---
+
+    #[test]
+    fn sort_list_numeric() {
+        let mut ks = Keyspace::new();
+        let _ = ks.lpush(
+            "nums",
+            &[Bytes::from("3"), Bytes::from("1"), Bytes::from("2")],
+        );
+        let result = ks.sort("nums", false, false, None).unwrap();
+        assert_eq!(
+            result,
+            vec![Bytes::from("1"), Bytes::from("2"), Bytes::from("3")]
+        );
+    }
+
+    #[test]
+    fn sort_list_alpha_desc() {
+        let mut ks = Keyspace::new();
+        let _ = ks.lpush(
+            "words",
+            &[
+                Bytes::from("banana"),
+                Bytes::from("apple"),
+                Bytes::from("cherry"),
+            ],
+        );
+        let result = ks.sort("words", true, true, None).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                Bytes::from("cherry"),
+                Bytes::from("banana"),
+                Bytes::from("apple")
+            ]
+        );
+    }
+
+    #[test]
+    fn sort_with_limit() {
+        let mut ks = Keyspace::new();
+        let _ = ks.lpush(
+            "nums",
+            &[
+                Bytes::from("4"),
+                Bytes::from("3"),
+                Bytes::from("2"),
+                Bytes::from("1"),
+            ],
+        );
+        let result = ks.sort("nums", false, false, Some((1, 2))).unwrap();
+        assert_eq!(result, vec![Bytes::from("2"), Bytes::from("3")]);
+    }
+
+    #[test]
+    fn sort_set_alpha() {
+        let mut ks = Keyspace::new();
+        let members: Vec<String> = vec!["c".into(), "a".into(), "b".into()];
+        let _ = ks.sadd("myset", &members);
+        let result = ks.sort("myset", false, true, None).unwrap();
+        assert_eq!(
+            result,
+            vec![Bytes::from("a"), Bytes::from("b"), Bytes::from("c")]
+        );
+    }
+
+    #[test]
+    fn sort_missing_key() {
+        let mut ks = Keyspace::new();
+        let result = ks.sort("nope", false, false, None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sort_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("str".into(), Bytes::from("hello"), None, false, false);
+        let result = ks.sort("str", false, false, None);
+        assert!(result.is_err());
     }
 }

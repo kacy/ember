@@ -177,16 +177,34 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the time to live for a key in milliseconds",
     },
     CommandInfo {
+        name: "RANDOMKEY",
+        args: "",
+        group: "generic",
+        summary: "return a random key from the keyspace",
+    },
+    CommandInfo {
         name: "RENAME",
         args: "key newkey",
         group: "generic",
         summary: "rename a key",
     },
     CommandInfo {
+        name: "SORT",
+        args: "key [ASC|DESC] [ALPHA] [LIMIT offset count] [STORE destination]",
+        group: "generic",
+        summary: "sort the elements in a list, set, or sorted set",
+    },
+    CommandInfo {
         name: "SCAN",
         args: "cursor [MATCH pattern] [COUNT count]",
         group: "generic",
         summary: "incrementally iterate the keys space",
+    },
+    CommandInfo {
+        name: "TOUCH",
+        args: "key [key ...]",
+        group: "generic",
+        summary: "alters the last access time of a key, returns count of existing keys",
     },
     CommandInfo {
         name: "TTL",

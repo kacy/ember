@@ -500,6 +500,30 @@ async fn execute_concurrent(
             Frame::Integer(count)
         }
 
+        Command::RandomKey => {
+            // concurrent mode only has strings — pick a random non-expired key
+            match keyspace.random_key() {
+                Some(k) => Frame::Bulk(Bytes::from(k)),
+                None => Frame::Null,
+            }
+        }
+
+        Command::Touch { keys } => {
+            // concurrent mode doesn't track last_access; just count existing keys
+            let mut count = 0i64;
+            for key in keys {
+                if keyspace.exists(&key) {
+                    count += 1;
+                }
+            }
+            Frame::Integer(count)
+        }
+
+        Command::Sort { .. } => {
+            // concurrent mode only supports strings — SORT requires list/set/zset
+            Frame::Error("ERR SORT is not supported in concurrent mode".into())
+        }
+
         Command::Expire { key, seconds } => {
             let result = keyspace.expire(&key, seconds);
             Frame::Integer(if result { 1 } else { 0 })

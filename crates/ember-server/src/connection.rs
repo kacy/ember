@@ -138,6 +138,8 @@ enum ResponseTag {
     /// Vector VINFO result
     #[cfg(feature = "vector")]
     VInfoResult,
+    /// SORT: Array → Array of Bulk, WrongType → error
+    SortResult,
     /// PROTO.SET: Ok → Simple("OK"), Value(None) → Null
     #[cfg(feature = "protobuf")]
     ProtoSetResult,
@@ -1794,6 +1796,24 @@ async fn prepare_command(
         Command::ObjectRefcount { key } => {
             route!(key, ShardRequest::Exists { key }, ResponseTag::BoolToInt)
         }
+        Command::Sort {
+            key,
+            desc,
+            alpha,
+            limit,
+            store: None,
+        } => {
+            route!(
+                key,
+                ShardRequest::Sort {
+                    key,
+                    desc,
+                    alpha,
+                    limit,
+                },
+                ResponseTag::SortResult
+            )
+        }
 
         // -- list commands --
         Command::LPush { key, values } => {
@@ -2406,7 +2426,8 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         },
 
         // Array of Bytes → Array of Bulk
-        ResponseTag::ArrayResult | ResponseTag::HValsResult => match resp {
+        ResponseTag::ArrayResult | ResponseTag::HValsResult | ResponseTag::SortResult => match resp
+        {
             ShardResponse::Array(items) => {
                 Frame::Array(items.into_iter().map(Frame::Bulk).collect())
             }
@@ -2736,7 +2757,26 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::VGet { ref key, .. }
         | Command::VCard { ref key }
         | Command::VDim { ref key }
-        | Command::VInfo { ref key } => {
+        | Command::VInfo { ref key }
+        | Command::Sort {
+            ref key,
+            store: None,
+            ..
+        } => {
+            cluster
+                .check_slot_with_migration(key.as_bytes(), asking)
+                .await
+        }
+        // SORT with STORE: crossslot check on source + destination
+        Command::Sort {
+            ref key,
+            store: Some(ref dest),
+            ..
+        } => {
+            let pair = [key.clone(), dest.clone()];
+            if let Err(err) = cluster.check_crossslot(&pair) {
+                return Some(err);
+            }
             cluster
                 .check_slot_with_migration(key.as_bytes(), asking)
                 .await
@@ -2746,6 +2786,7 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         Command::Del { ref keys }
         | Command::Unlink { ref keys }
         | Command::Exists { ref keys }
+        | Command::Touch { ref keys }
         | Command::MGet { ref keys }
         | Command::BLPop { ref keys, .. }
         | Command::BRPop { ref keys, .. } => {
@@ -3063,6 +3104,10 @@ async fn execute(
             multi_key_bool(engine, &keys, |k| ShardRequest::Exists { key: k }).await
         }
 
+        Command::Touch { keys } => {
+            multi_key_bool(engine, &keys, |k| ShardRequest::Touch { key: k }).await
+        }
+
         Command::MGet { keys } => {
             match engine
                 .route_multi(&keys, |k| ShardRequest::Get { key: k })
@@ -3116,6 +3161,66 @@ async fn execute(
                     }
                     Frame::Simple("OK".into())
                 }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::RandomKey => match engine.broadcast(|| ShardRequest::RandomKey).await {
+            Ok(responses) => {
+                let keys: Vec<String> = responses
+                    .into_iter()
+                    .flat_map(|r| match r {
+                        ShardResponse::StringArray(v) => v,
+                        _ => vec![],
+                    })
+                    .collect();
+                if keys.is_empty() {
+                    Frame::Null
+                } else {
+                    use rand::seq::IndexedRandom;
+                    let mut rng = rand::rng();
+                    match keys.choose(&mut rng) {
+                        Some(k) => Frame::Bulk(Bytes::from(k.to_owned())),
+                        None => Frame::Null,
+                    }
+                }
+            }
+            Err(e) => Frame::Error(format!("ERR {e}")),
+        },
+
+        Command::Sort {
+            key,
+            desc,
+            alpha,
+            limit,
+            store: Some(dest),
+        } => {
+            // phase 1: sort on the source shard
+            let src_idx = engine.shard_for_key(&key);
+            let sort_req = ShardRequest::Sort {
+                key,
+                desc,
+                alpha,
+                limit,
+            };
+            match engine.send_to_shard(src_idx, sort_req).await {
+                Ok(ShardResponse::Array(items)) => {
+                    let count = items.len() as i64;
+                    // phase 2: delete dest + rpush sorted items
+                    let dst_idx = engine.shard_for_key(&dest);
+                    let del_req = ShardRequest::Del { key: dest.clone() };
+                    let _ = engine.send_to_shard(dst_idx, del_req).await;
+                    if !items.is_empty() {
+                        let rpush_req = ShardRequest::RPush {
+                            key: dest,
+                            values: items,
+                        };
+                        let _ = engine.send_to_shard(dst_idx, rpush_req).await;
+                    }
+                    Frame::Integer(count)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
@@ -4747,6 +4852,32 @@ async fn execute(
         }
 
         Command::AclCat { category } => crate::acl::handle_acl_cat(category.as_deref()),
+
+        // SORT without STORE is normally dispatched via route! in prepare_command,
+        // but execute() must be exhaustive.
+        Command::Sort {
+            key,
+            desc,
+            alpha,
+            limit,
+            store: None,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Sort {
+                key,
+                desc,
+                alpha,
+                limit,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Array(items)) => {
+                    Frame::Array(items.into_iter().map(Frame::Bulk).collect())
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
     }
