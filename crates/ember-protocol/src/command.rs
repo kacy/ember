@@ -1401,6 +1401,9 @@ impl Command {
             "INCRBYFLOAT" => parse_incrbyfloat(&frames[1..]),
             "APPEND" => parse_append(&frames[1..]),
             "STRLEN" => parse_strlen(&frames[1..]),
+            "SETNX" => parse_setnx(&frames[1..]),
+            "SETEX" => parse_setex(&frames[1..]),
+            "PSETEX" => parse_psetex(&frames[1..]),
             "KEYS" => parse_keys(&frames[1..]),
             "RENAME" => parse_rename(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
@@ -1822,6 +1825,69 @@ fn parse_strlen(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::Strlen { key })
+}
+
+/// SETNX key value — set key only if it does not exist.
+/// Equivalent to `SET key value NX`.
+fn parse_setnx(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("SETNX"));
+    }
+    let key = extract_string(&args[0])?;
+    let value = extract_bytes(&args[1])?;
+    Ok(Command::Set {
+        key,
+        value,
+        expire: None,
+        nx: true,
+        xx: false,
+    })
+}
+
+/// SETEX key seconds value — set key with an expiration in seconds.
+/// Equivalent to `SET key value EX seconds`.
+fn parse_setex(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("SETEX"));
+    }
+    let key = extract_string(&args[0])?;
+    let seconds = parse_u64(&args[1], "SETEX")?;
+    if seconds == 0 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "invalid expire time in 'SETEX' command".into(),
+        ));
+    }
+    let value = extract_bytes(&args[2])?;
+    Ok(Command::Set {
+        key,
+        value,
+        expire: Some(SetExpire::Ex(seconds)),
+        nx: false,
+        xx: false,
+    })
+}
+
+/// PSETEX key milliseconds value — set key with an expiration in milliseconds.
+/// Equivalent to `SET key value PX milliseconds`.
+fn parse_psetex(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("PSETEX"));
+    }
+    let key = extract_string(&args[0])?;
+    let ms = parse_u64(&args[1], "PSETEX")?;
+    if ms == 0 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "invalid expire time in 'PSETEX' command".into(),
+        ));
+    }
+    let value = extract_bytes(&args[2])?;
+    Ok(Command::Set {
+        key,
+        value,
+        expire: Some(SetExpire::Px(ms)),
+        nx: false,
+        xx: false,
+    })
 }
 
 fn parse_keys(args: &[Frame]) -> Result<Command, ProtocolError> {
