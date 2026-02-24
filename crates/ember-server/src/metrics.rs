@@ -237,6 +237,7 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
                         keys_with_expiry: 0,
                         keys_expired: 0,
                         keys_evicted: 0,
+                        oom_rejections: 0,
                     };
                     for r in &responses {
                         if let ShardResponse::Stats(stats) = r {
@@ -245,6 +246,7 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
                             total.keys_with_expiry += stats.keys_with_expiry;
                             total.keys_expired += stats.keys_expired;
                             total.keys_evicted += stats.keys_evicted;
+                            total.oom_rejections += stats.oom_rejections;
                         }
                     }
 
@@ -252,6 +254,7 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
                     gauge!("ember_memory_used_bytes").set(total.used_bytes as f64);
                     gauge!("ember_keys_expired_total").set(total.keys_expired as f64);
                     gauge!("ember_keys_evicted_total").set(total.keys_evicted as f64);
+                    gauge!("ember_oom_rejections_total").set(total.oom_rejections as f64);
 
                     // update atomic for /health endpoint
                     ctx.memory_used_bytes.store(total.used_bytes as u64);

@@ -5755,6 +5755,7 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                     keys_with_expiry: 0,
                     keys_expired: 0,
                     keys_evicted: 0,
+                    oom_rejections: 0,
                 };
                 for r in &responses {
                     if let ShardResponse::Stats(s) = r {
@@ -5763,6 +5764,7 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                         total.keys_with_expiry += s.keys_with_expiry;
                         total.keys_expired += s.keys_expired;
                         total.keys_evicted += s.keys_evicted;
+                        total.oom_rejections += s.oom_rejections;
                     }
                 }
                 Some(total)
@@ -5840,6 +5842,7 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
         if let Some(ref stats) = stats {
             out.push_str(&format!("expired_keys:{}\r\n", stats.keys_expired));
             out.push_str(&format!("evicted_keys:{}\r\n", stats.keys_evicted));
+            out.push_str(&format!("oom_rejections:{}\r\n", stats.oom_rejections));
         }
         out.push_str("\r\n");
     }
