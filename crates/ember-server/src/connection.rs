@@ -111,6 +111,10 @@ enum ResponseTag {
     HMGetResult,
     /// SISMEMBER: Bool → Integer(0/1) (with WrongType)
     SIsMemberResult,
+    /// SMISMEMBER: BoolArray → Array of Integer(0/1)
+    SMisMemberResult,
+    /// SUNIONSTORE/SINTERSTORE/SDIFFSTORE: SetStoreResult → Integer (count)
+    SetStoreResult,
     /// SSCAN/HSCAN/ZSCAN: CollectionScan → cursor + array
     CollectionScanResult,
     /// RENAME: Ok → Simple("OK"), Err → Error
@@ -2117,6 +2121,73 @@ async fn prepare_command(
         Command::SCard { key } => {
             route!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
         }
+        Command::SUnion { keys } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            route!(
+                key,
+                ShardRequest::SUnion { keys },
+                ResponseTag::StringArrayResult
+            )
+        }
+        Command::SInter { keys } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            route!(
+                key,
+                ShardRequest::SInter { keys },
+                ResponseTag::StringArrayResult
+            )
+        }
+        Command::SDiff { keys } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            route!(
+                key,
+                ShardRequest::SDiff { keys },
+                ResponseTag::StringArrayResult
+            )
+        }
+        Command::SUnionStore { dest, keys } => {
+            route!(
+                dest,
+                ShardRequest::SUnionStore { dest, keys },
+                ResponseTag::SetStoreResult
+            )
+        }
+        Command::SInterStore { dest, keys } => {
+            route!(
+                dest,
+                ShardRequest::SInterStore { dest, keys },
+                ResponseTag::SetStoreResult
+            )
+        }
+        Command::SDiffStore { dest, keys } => {
+            route!(
+                dest,
+                ShardRequest::SDiffStore { dest, keys },
+                ResponseTag::SetStoreResult
+            )
+        }
+        Command::SRandMember { key, count } => {
+            let count = count.unwrap_or(1);
+            route!(
+                key,
+                ShardRequest::SRandMember { key, count },
+                ResponseTag::StringArrayResult
+            )
+        }
+        Command::SPop { key, count } => {
+            route!(
+                key,
+                ShardRequest::SPop { key, count },
+                ResponseTag::StringArrayResult
+            )
+        }
+        Command::SMisMember { key, members } => {
+            route!(
+                key,
+                ShardRequest::SMisMember { key, members },
+                ResponseTag::SMisMemberResult
+            )
+        }
         Command::SScan {
             key,
             cursor,
@@ -2481,6 +2552,25 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
         ResponseTag::HExistsResult | ResponseTag::SIsMemberResult => match resp {
             ShardResponse::Bool(b) => Frame::Integer(i64::from(b)),
             ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
+        // BoolArray → Array of Integer(0/1)
+        ResponseTag::SMisMemberResult => match resp {
+            ShardResponse::BoolArray(arr) => Frame::Array(
+                arr.into_iter()
+                    .map(|b| Frame::Integer(i64::from(b)))
+                    .collect(),
+            ),
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
+        // SetStoreResult → Integer (count), with WrongType/OOM
+        ResponseTag::SetStoreResult => match resp {
+            ShardResponse::SetStoreResult { count, .. } => Frame::Integer(count as i64),
+            ShardResponse::WrongType => wrongtype_error(),
+            ShardResponse::OutOfMemory => oom_error(),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
 
@@ -2876,6 +2966,9 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::SIsMember { ref key, .. }
         | Command::SCard { ref key }
         | Command::SScan { ref key, .. }
+        | Command::SRandMember { ref key, .. }
+        | Command::SPop { ref key, .. }
+        | Command::SMisMember { ref key, .. }
         | Command::HScan { ref key, .. }
         | Command::ZScan { ref key, .. }
         | Command::ProtoSet { ref key, .. }
@@ -2923,7 +3016,10 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::Touch { ref keys }
         | Command::MGet { ref keys }
         | Command::BLPop { ref keys, .. }
-        | Command::BRPop { ref keys, .. } => {
+        | Command::BRPop { ref keys, .. }
+        | Command::SUnion { ref keys }
+        | Command::SInter { ref keys }
+        | Command::SDiff { ref keys } => {
             if let Err(err) = cluster.check_crossslot(keys) {
                 return Some(err);
             }
@@ -2933,6 +3029,29 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
                     .await;
             }
             None
+        }
+
+        // set store: crossslot check on dest + all source keys
+        Command::SUnionStore {
+            ref dest,
+            ref keys,
+        }
+        | Command::SInterStore {
+            ref dest,
+            ref keys,
+        }
+        | Command::SDiffStore {
+            ref dest,
+            ref keys,
+        } => {
+            let mut all_keys = vec![dest.clone()];
+            all_keys.extend(keys.iter().cloned());
+            if let Err(err) = cluster.check_crossslot(&all_keys) {
+                return Some(err);
+            }
+            cluster
+                .check_slot_with_migration(dest.as_bytes(), asking)
+                .await
         }
 
         // rename: crossslot check on both keys
@@ -4224,6 +4343,124 @@ async fn execute(
             let req = ShardRequest::SCard { key };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SUnion { keys } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SUnion { keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::StringArray(members)) => Frame::Array(
+                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SInter { keys } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SInter { keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::StringArray(members)) => Frame::Array(
+                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SDiff { keys } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SDiff { keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::StringArray(members)) => Frame::Array(
+                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SUnionStore { dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::SUnionStore { dest, keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::SetStoreResult { count, .. }) => Frame::Integer(count as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SInterStore { dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::SInterStore { dest, keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::SetStoreResult { count, .. }) => Frame::Integer(count as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SDiffStore { dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::SDiffStore { dest, keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::SetStoreResult { count, .. }) => Frame::Integer(count as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SRandMember { key, count } => {
+            let count = count.unwrap_or(1);
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SRandMember { key, count };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::StringArray(members)) => Frame::Array(
+                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SPop { key, count } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SPop { key, count };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::StringArray(members)) => Frame::Array(
+                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SMisMember { key, members } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SMisMember { key, members };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::BoolArray(arr)) => Frame::Array(
+                    arr.into_iter().map(|b| Frame::Integer(i64::from(b))).collect(),
+                ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),

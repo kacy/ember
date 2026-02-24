@@ -305,12 +305,12 @@ impl Keyspace {
     /// Stores the union of all source sets into `dest`.
     ///
     /// Overwrites the destination if it already exists. Returns the
-    /// cardinality of the resulting set.
+    /// cardinality and stored members (for AOF persistence).
     pub fn sunionstore(
         &mut self,
         dest: &str,
         keys: &[String],
-    ) -> Result<usize, WriteError> {
+    ) -> Result<(usize, Vec<String>), WriteError> {
         let members = self.sunion(keys).map_err(|_| WriteError::WrongType)?;
         self.store_set_result(dest, members)
     }
@@ -320,7 +320,7 @@ impl Keyspace {
         &mut self,
         dest: &str,
         keys: &[String],
-    ) -> Result<usize, WriteError> {
+    ) -> Result<(usize, Vec<String>), WriteError> {
         let members = self.sinter(keys).map_err(|_| WriteError::WrongType)?;
         self.store_set_result(dest, members)
     }
@@ -330,17 +330,18 @@ impl Keyspace {
         &mut self,
         dest: &str,
         keys: &[String],
-    ) -> Result<usize, WriteError> {
+    ) -> Result<(usize, Vec<String>), WriteError> {
         let members = self.sdiff(keys).map_err(|_| WriteError::WrongType)?;
         self.store_set_result(dest, members)
     }
 
     /// Writes a computed set result to `dest`, replacing any existing key.
+    /// Returns the count and the stored members (for AOF).
     fn store_set_result(
         &mut self,
         dest: &str,
         members: Vec<String>,
-    ) -> Result<usize, WriteError> {
+    ) -> Result<(usize, Vec<String>), WriteError> {
         // delete destination first
         self.remove_if_expired(dest);
         if let Some(old) = self.entries.remove(dest) {
@@ -351,7 +352,7 @@ impl Keyspace {
 
         let count = members.len();
         if count == 0 {
-            return Ok(0);
+            return Ok((0, vec![]));
         }
 
         let member_bytes: usize = members
@@ -360,6 +361,7 @@ impl Keyspace {
             .sum();
         self.reserve_memory(true, dest, memory::HASHSET_BASE_OVERHEAD, member_bytes)?;
 
+        let stored = members.clone();
         let set: std::collections::HashSet<String> = members.into_iter().collect();
         let value = Value::Set(Box::new(set));
         self.memory.add(dest, &value);
@@ -367,7 +369,7 @@ impl Keyspace {
         entry.version = self.next_ver();
         self.entries.insert(CompactString::from(dest), entry);
 
-        Ok(count)
+        Ok((count, stored))
     }
 
     /// Returns random members from a set without removing them.
@@ -770,7 +772,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.sadd("s1", &["a".into(), "b".into()]).unwrap();
         ks.sadd("s2", &["b".into(), "c".into()]).unwrap();
-        let count = ks.sunionstore("dest", &["s1".into(), "s2".into()]).unwrap();
+        let (count, _) = ks.sunionstore("dest", &["s1".into(), "s2".into()]).unwrap();
         assert_eq!(count, 3);
         let mut members = ks.smembers("dest").unwrap();
         members.sort();
@@ -782,7 +784,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
         ks.sadd("s2", &["b".into(), "c".into(), "d".into()]).unwrap();
-        let count = ks.sinterstore("dest", &["s1".into(), "s2".into()]).unwrap();
+        let (count, _) = ks.sinterstore("dest", &["s1".into(), "s2".into()]).unwrap();
         assert_eq!(count, 2);
         let mut members = ks.smembers("dest").unwrap();
         members.sort();
@@ -794,7 +796,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
         ks.sadd("s2", &["b".into()]).unwrap();
-        let count = ks.sdiffstore("dest", &["s1".into(), "s2".into()]).unwrap();
+        let (count, _) = ks.sdiffstore("dest", &["s1".into(), "s2".into()]).unwrap();
         assert_eq!(count, 2);
     }
 
