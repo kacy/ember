@@ -132,6 +132,29 @@ pub enum CopyError {
     OutOfMemory,
 }
 
+/// Error returned by LSET.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LsetError {
+    /// Key holds a different type.
+    WrongType,
+    /// Key does not exist.
+    NoSuchKey,
+    /// Index is beyond list bounds.
+    IndexOutOfRange,
+}
+
+impl std::fmt::Display for LsetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LsetError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
+            LsetError::NoSuchKey => write!(f, "ERR no such key"),
+            LsetError::IndexOutOfRange => write!(f, "ERR index out of range"),
+        }
+    }
+}
+
+impl std::error::Error for LsetError {}
+
 impl std::fmt::Display for RenameError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
