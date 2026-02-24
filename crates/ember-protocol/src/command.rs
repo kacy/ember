@@ -88,6 +88,12 @@ pub enum Command {
     /// STRLEN `key`. Returns the length of the string value stored at key.
     Strlen { key: String },
 
+    /// GETRANGE `key` `start` `end`. Returns a substring of the string at key.
+    GetRange { key: String, start: i64, end: i64 },
+
+    /// SETRANGE `key` `offset` `value`. Overwrites part of the string at key.
+    SetRange { key: String, offset: usize, value: Bytes },
+
     /// KEYS `pattern`. Returns all keys matching a glob pattern.
     Keys { pattern: String },
 
@@ -782,6 +788,8 @@ impl Command {
             Command::IncrByFloat { .. } => "incrbyfloat",
             Command::Append { .. } => "append",
             Command::Strlen { .. } => "strlen",
+            Command::GetRange { .. } => "getrange",
+            Command::SetRange { .. } => "setrange",
 
             // key lifecycle
             Command::Del { .. } => "del",
@@ -1074,14 +1082,16 @@ impl Command {
             Command::Monitor => CONNECTION | ADMIN | SLOW,
 
             // string — reads
-            Command::Get { .. } | Command::MGet { .. } | Command::Strlen { .. } => {
-                READ | STRING | FAST
-            }
+            Command::Get { .. }
+            | Command::MGet { .. }
+            | Command::Strlen { .. }
+            | Command::GetRange { .. } => READ | STRING | FAST,
 
             // string — writes
-            Command::Set { .. } | Command::MSet { .. } | Command::Append { .. } => {
-                WRITE | STRING | SLOW
-            }
+            Command::Set { .. }
+            | Command::MSet { .. }
+            | Command::Append { .. }
+            | Command::SetRange { .. } => WRITE | STRING | SLOW,
             Command::Incr { .. }
             | Command::Decr { .. }
             | Command::IncrBy { .. }
@@ -1271,6 +1281,8 @@ impl Command {
             | Command::IncrByFloat { key, .. }
             | Command::Append { key, .. }
             | Command::Strlen { key }
+            | Command::GetRange { key, .. }
+            | Command::SetRange { key, .. }
             | Command::Persist { key }
             | Command::Expire { key, .. }
             | Command::Pexpire { key, .. }
@@ -1404,6 +1416,8 @@ impl Command {
             "SETNX" => parse_setnx(&frames[1..]),
             "SETEX" => parse_setex(&frames[1..]),
             "PSETEX" => parse_psetex(&frames[1..]),
+            "GETRANGE" | "SUBSTR" => parse_getrange(&frames[1..]),
+            "SETRANGE" => parse_setrange(&frames[1..]),
             "KEYS" => parse_keys(&frames[1..]),
             "RENAME" => parse_rename(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
@@ -1888,6 +1902,28 @@ fn parse_psetex(args: &[Frame]) -> Result<Command, ProtocolError> {
         nx: false,
         xx: false,
     })
+}
+
+/// GETRANGE key start end (also aliases SUBSTR).
+fn parse_getrange(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("GETRANGE"));
+    }
+    let key = extract_string(&args[0])?;
+    let start = parse_i64(&args[1], "GETRANGE")?;
+    let end = parse_i64(&args[2], "GETRANGE")?;
+    Ok(Command::GetRange { key, start, end })
+}
+
+/// SETRANGE key offset value.
+fn parse_setrange(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("SETRANGE"));
+    }
+    let key = extract_string(&args[0])?;
+    let offset = parse_u64(&args[1], "SETRANGE")? as usize;
+    let value = extract_bytes(&args[2])?;
+    Ok(Command::SetRange { key, offset, value })
 }
 
 fn parse_keys(args: &[Frame]) -> Result<Command, ProtocolError> {
