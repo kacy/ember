@@ -103,6 +103,7 @@ const TAG_LSET: u8 = 28;
 const TAG_LTRIM: u8 = 29;
 const TAG_LINSERT: u8 = 30;
 const TAG_LREM: u8 = 31;
+const TAG_SETRANGE: u8 = 32;
 
 // vector
 #[cfg(feature = "vector")]
@@ -188,6 +189,8 @@ pub enum AofRecord {
     DecrBy { key: String, delta: i64 },
     /// APPEND key value.
     Append { key: String, value: Bytes },
+    /// SETRANGE key offset value.
+    SetRange { key: String, offset: usize, value: Bytes },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
     /// COPY source destination [REPLACE].
@@ -263,6 +266,7 @@ impl AofRecord {
             AofRecord::IncrBy { .. } => TAG_INCRBY,
             AofRecord::DecrBy { .. } => TAG_DECRBY,
             AofRecord::Append { .. } => TAG_APPEND,
+            AofRecord::SetRange { .. } => TAG_SETRANGE,
             AofRecord::Rename { .. } => TAG_RENAME,
             AofRecord::Copy { .. } => TAG_COPY,
             #[cfg(feature = "vector")]
@@ -355,6 +359,9 @@ impl AofRecord {
             }
             AofRecord::Append { key, value } => {
                 1 + LEN_PREFIX + key.len() + LEN_PREFIX + value.len()
+            }
+            AofRecord::SetRange { key, value, .. } => {
+                1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + value.len()
             }
             AofRecord::Rename { key, newkey } => {
                 1 + LEN_PREFIX + key.len() + LEN_PREFIX + newkey.len()
@@ -532,6 +539,13 @@ impl AofRecord {
             // key + bytes value (no expire)
             AofRecord::Append { key, value } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, value)?;
+            }
+
+            // key + offset (as i64) + bytes value
+            AofRecord::SetRange { key, offset, value } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *offset as i64)?;
                 format::write_bytes(&mut buf, value)?;
             }
 
@@ -766,6 +780,12 @@ impl AofRecord {
                 let key = read_string(&mut cursor, "key")?;
                 let value = Bytes::from(format::read_bytes(&mut cursor)?);
                 Ok(AofRecord::Append { key, value })
+            }
+            TAG_SETRANGE => {
+                let key = read_string(&mut cursor, "key")?;
+                let offset = format::read_i64(&mut cursor)? as usize;
+                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                Ok(AofRecord::SetRange { key, offset, value })
             }
             TAG_RENAME => {
                 let key = read_string(&mut cursor, "key")?;

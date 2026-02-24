@@ -1780,6 +1780,20 @@ async fn prepare_command(
         Command::Strlen { key } => {
             route!(key, ShardRequest::Strlen { key }, ResponseTag::LenResult)
         }
+        Command::GetRange { key, start, end } => {
+            route!(
+                key,
+                ShardRequest::GetRange { key, start, end },
+                ResponseTag::Get
+            )
+        }
+        Command::SetRange { key, offset, value } => {
+            route!(
+                key,
+                ShardRequest::SetRange { key, offset, value },
+                ResponseTag::LenResultOom
+            )
+        }
         Command::Expire { key, seconds } => {
             route!(
                 key,
@@ -3057,6 +3071,8 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::DecrBy { ref key, .. }
         | Command::Append { ref key, .. }
         | Command::Strlen { ref key }
+        | Command::GetRange { ref key, .. }
+        | Command::SetRange { ref key, .. }
         | Command::IncrByFloat { ref key, .. }
         | Command::Persist { ref key }
         | Command::Pttl { ref key }
@@ -3432,6 +3448,30 @@ async fn execute(
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::GetRange { key, start, end } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::GetRange { key, start, end };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SetRange { key, offset, value } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SetRange { key, offset, value };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }

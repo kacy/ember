@@ -146,6 +146,16 @@ pub enum ShardRequest {
     Strlen {
         key: String,
     },
+    GetRange {
+        key: String,
+        start: i64,
+        end: i64,
+    },
+    SetRange {
+        key: String,
+        offset: usize,
+        value: Bytes,
+    },
     /// Returns all keys matching a glob pattern in this shard.
     Keys {
         pattern: String,
@@ -1409,6 +1419,13 @@ fn dispatch(
             Ok(len) => ShardResponse::Len(len),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::GetRange { key, start, end } => match ks.getrange(key, *start, *end) {
+            Ok(data) => ShardResponse::Value(Some(Value::String(data))),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SetRange { key, offset, value } => {
+            write_result_len(ks.setrange(key, *offset, value))
+        }
         ShardRequest::Keys { pattern } => {
             let keys = ks.keys(pattern);
             ShardResponse::StringArray(keys)

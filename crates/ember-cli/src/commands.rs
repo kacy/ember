@@ -80,6 +80,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the value of a key",
     },
     CommandInfo {
+        name: "GETRANGE",
+        args: "key start end",
+        group: "string",
+        summary: "get a substring of the string stored at a key",
+    },
+    CommandInfo {
         name: "INCR",
         args: "key",
         group: "string",
@@ -134,10 +140,22 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "set the value of a key, only if the key does not exist",
     },
     CommandInfo {
+        name: "SETRANGE",
+        args: "key offset value",
+        group: "string",
+        summary: "overwrite part of a string at key starting at the specified offset",
+    },
+    CommandInfo {
         name: "STRLEN",
         args: "key",
         group: "string",
         summary: "get the length of the value stored at a key",
+    },
+    CommandInfo {
+        name: "SUBSTR",
+        args: "key start end",
+        group: "string",
+        summary: "get a substring of the string stored at a key (alias for GETRANGE)",
     },
     // --- generic ---
     CommandInfo {
