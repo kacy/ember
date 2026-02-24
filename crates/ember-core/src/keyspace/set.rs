@@ -197,7 +197,10 @@ impl Keyspace {
         }
 
         // start with the first set, intersect with the rest
-        let entry = self.entries.get_mut(keys[0].as_str()).expect("checked above");
+        let entry = self
+            .entries
+            .get_mut(keys[0].as_str())
+            .expect("checked above");
         let Value::Set(ref base) = entry.value else {
             unreachable!("type checked above");
         };
@@ -357,11 +360,7 @@ impl Keyspace {
     /// - `count > 0`: return up to `count` distinct members
     /// - `count < 0`: return `|count|` members, allowing duplicates
     /// - `count == 0`: return empty
-    pub fn srandmember(
-        &mut self,
-        key: &str,
-        count: i64,
-    ) -> Result<Vec<String>, WrongType> {
+    pub fn srandmember(&mut self, key: &str, count: i64) -> Result<Vec<String>, WrongType> {
         if count == 0 {
             return Ok(vec![]);
         }
@@ -379,7 +378,11 @@ impl Keyspace {
         let result = if count > 0 {
             // distinct members, up to set size
             let n = (count as usize).min(set.len());
-            set.iter().choose_multiple(&mut rng, n).into_iter().cloned().collect()
+            set.iter()
+                .choose_multiple(&mut rng, n)
+                .into_iter()
+                .cloned()
+                .collect()
         } else {
             // allow duplicates, return exactly |count| elements
             let n = count.unsigned_abs() as usize;
@@ -419,7 +422,12 @@ impl Keyspace {
 
         let n = count.min(set.len());
         let mut rng = rand::rng();
-        let chosen: Vec<String> = set.iter().choose_multiple(&mut rng, n).into_iter().cloned().collect();
+        let chosen: Vec<String> = set
+            .iter()
+            .choose_multiple(&mut rng, n)
+            .into_iter()
+            .cloned()
+            .collect();
 
         let mut removed_bytes = 0usize;
         for member in &chosen {
@@ -440,11 +448,7 @@ impl Keyspace {
     /// Checks membership for multiple members at once.
     ///
     /// Returns a boolean for each member in the same order.
-    pub fn smismember(
-        &mut self,
-        key: &str,
-        members: &[String],
-    ) -> Result<Vec<bool>, WrongType> {
+    pub fn smismember(&mut self, key: &str, members: &[String]) -> Result<Vec<bool>, WrongType> {
         let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![false; members.len()]);
         };
@@ -674,8 +678,10 @@ mod tests {
     #[test]
     fn sinter_basic() {
         let mut ks = Keyspace::new();
-        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
-        ks.sadd("s2", &["b".into(), "c".into(), "d".into()]).unwrap();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
+        ks.sadd("s2", &["b".into(), "c".into(), "d".into()])
+            .unwrap();
         let mut result = ks.sinter(&["s1".into(), "s2".into()]).unwrap();
         result.sort();
         assert_eq!(result, vec!["b", "c"]);
@@ -710,7 +716,8 @@ mod tests {
     #[test]
     fn sdiff_basic() {
         let mut ks = Keyspace::new();
-        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
         ks.sadd("s2", &["b".into(), "d".into()]).unwrap();
         let mut result = ks.sdiff(&["s1".into(), "s2".into()]).unwrap();
         result.sort();
@@ -751,8 +758,10 @@ mod tests {
     #[test]
     fn sinterstore_basic() {
         let mut ks = Keyspace::new();
-        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
-        ks.sadd("s2", &["b".into(), "c".into(), "d".into()]).unwrap();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
+        ks.sadd("s2", &["b".into(), "c".into(), "d".into()])
+            .unwrap();
         let (count, _) = ks.sinterstore("dest", &["s1".into(), "s2".into()]).unwrap();
         assert_eq!(count, 2);
         let mut members = ks.smembers("dest").unwrap();
@@ -763,7 +772,8 @@ mod tests {
     #[test]
     fn sdiffstore_basic() {
         let mut ks = Keyspace::new();
-        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
         ks.sadd("s2", &["b".into()]).unwrap();
         let (count, _) = ks.sdiffstore("dest", &["s1".into(), "s2".into()]).unwrap();
         assert_eq!(count, 2);
@@ -889,7 +899,9 @@ mod tests {
     fn smismember_basic() {
         let mut ks = Keyspace::new();
         ks.sadd("s", &["a".into(), "c".into()]).unwrap();
-        let result = ks.smismember("s", &["a".into(), "b".into(), "c".into()]).unwrap();
+        let result = ks
+            .smismember("s", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
         assert_eq!(result, vec![true, false, true]);
     }
 

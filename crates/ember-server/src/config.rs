@@ -683,9 +683,7 @@ impl ConfigRegistry {
         cfg.bind = get("bind-address", "127.0.0.1");
 
         let raw = get("maxclients", "10000");
-        cfg.maxclients = raw
-            .parse()
-            .map_err(|_| bad_value("maxclients", &raw))?;
+        cfg.maxclients = raw.parse().map_err(|_| bad_value("maxclients", &raw))?;
 
         let raw = get("idle-timeout-secs", "300");
         cfg.idle_timeout_secs = raw

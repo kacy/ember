@@ -418,7 +418,11 @@ fn replay_aof(
                     }
                 }
             }
-            AofRecord::LRem { key, count: cnt, value } => {
+            AofRecord::LRem {
+                key,
+                count: cnt,
+                value,
+            } => {
                 if let Some(entry) = map.get_mut(&key) {
                     if let RecoveredValue::List(ref mut deque) = entry.0 {
                         let max = if cnt == 0 {

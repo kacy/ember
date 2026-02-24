@@ -12,10 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::acl;
-use crate::connection_common::{
-    format_monitor_event, validate_command_sizes,
-    TransactionState,
-};
+use crate::connection_common::{format_monitor_event, validate_command_sizes, TransactionState};
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;

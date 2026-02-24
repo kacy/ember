@@ -424,8 +424,15 @@ where
 
             // enter subscriber mode — this blocks until all subscriptions
             // are removed or the client disconnects
-            handler::handle_subscriber_mode(&mut stream, &mut buf, &mut out, ctx, pubsub, sub_frames)
-                .await?;
+            handler::handle_subscriber_mode(
+                &mut stream,
+                &mut buf,
+                &mut out,
+                ctx,
+                pubsub,
+                sub_frames,
+            )
+            .await?;
             return Ok(());
         }
 

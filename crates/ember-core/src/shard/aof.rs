@@ -98,10 +98,7 @@ pub(super) fn to_aof_records(
             }]
         }
         // ZINCRBY: persist as a ZADD with the final score (avoids float drift on replay)
-        (
-            ShardRequest::ZIncrBy { key, .. },
-            ShardResponse::ZIncrByResult { new_score, member },
-        ) => {
+        (ShardRequest::ZIncrBy { key, .. }, ShardResponse::ZIncrByResult { new_score, member }) => {
             smallvec![AofRecord::ZAdd {
                 key,
                 members: vec![(*new_score, member.clone())],
@@ -209,9 +206,7 @@ pub(super) fn to_aof_records(
         ) => {
             if *count > 0 {
                 smallvec![
-                    AofRecord::Del {
-                        key: dest.clone(),
-                    },
+                    AofRecord::Del { key: dest.clone() },
                     AofRecord::SAdd {
                         key: dest,
                         members: members.clone(),

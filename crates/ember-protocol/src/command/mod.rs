@@ -63,7 +63,11 @@ pub enum Command {
     GetRange { key: String, start: i64, end: i64 },
 
     /// SETRANGE `key` `offset` `value`. Overwrites part of the string at key.
-    SetRange { key: String, offset: usize, value: Bytes },
+    SetRange {
+        key: String,
+        offset: usize,
+        value: Bytes,
+    },
 
     /// KEYS `pattern`. Returns all keys matching a glob pattern.
     Keys { pattern: String },
@@ -201,19 +205,38 @@ pub enum Command {
     LIndex { key: String, index: i64 },
 
     /// LSET `key` `index` `element`. Sets the element at `index`.
-    LSet { key: String, index: i64, value: Bytes },
+    LSet {
+        key: String,
+        index: i64,
+        value: Bytes,
+    },
 
     /// LTRIM `key` `start` `stop`. Trims the list to the specified range.
     LTrim { key: String, start: i64, stop: i64 },
 
     /// LINSERT `key` BEFORE|AFTER `pivot` `element`. Inserts before or after pivot.
-    LInsert { key: String, before: bool, pivot: Bytes, value: Bytes },
+    LInsert {
+        key: String,
+        before: bool,
+        pivot: Bytes,
+        value: Bytes,
+    },
 
     /// LREM `key` `count` `element`. Removes elements equal to value.
-    LRem { key: String, count: i64, value: Bytes },
+    LRem {
+        key: String,
+        count: i64,
+        value: Bytes,
+    },
 
     /// LPOS `key` `element` \[RANK rank\] \[COUNT count\] \[MAXLEN maxlen\].
-    LPos { key: String, element: Bytes, rank: i64, count: Option<usize>, maxlen: usize },
+    LPos {
+        key: String,
+        element: Bytes,
+        rank: i64,
+        count: Option<usize>,
+        maxlen: usize,
+    },
 
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },

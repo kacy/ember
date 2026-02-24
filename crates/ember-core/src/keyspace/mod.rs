@@ -610,9 +610,7 @@ impl Keyspace {
                     EvictionPolicy::NoEviction => {
                         self.oom_rejections += 1;
                         // log first rejection, then every 1000th to avoid flooding
-                        if self.oom_rejections == 1
-                            || self.oom_rejections.is_multiple_of(1000)
-                        {
+                        if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000) {
                             warn!(
                                 used_bytes = self.memory.used_bytes(),
                                 limit,
@@ -626,8 +624,7 @@ impl Keyspace {
                     EvictionPolicy::AllKeysLru => {
                         if !self.try_evict() {
                             self.oom_rejections += 1;
-                            if self.oom_rejections == 1
-                                || self.oom_rejections.is_multiple_of(1000)
+                            if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000)
                             {
                                 warn!(
                                     used_bytes = self.memory.used_bytes(),

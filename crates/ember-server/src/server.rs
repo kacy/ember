@@ -189,7 +189,10 @@ fn on_connection_done(ctx: &ServerContext, client_id: u64) {
 async fn drain_connections(semaphore: &Arc<Semaphore>, max_conn: usize) {
     let max_conn_u32 = u32::try_from(max_conn).unwrap_or(u32::MAX);
     let active = max_conn_u32.saturating_sub(semaphore.available_permits() as u32);
-    info!(active_connections = active, "waiting for connections to drain...");
+    info!(
+        active_connections = active,
+        "waiting for connections to drain..."
+    );
 
     let drain = semaphore.acquire_many(max_conn_u32);
     match tokio::time::timeout(Duration::from_secs(30), drain).await {

@@ -260,12 +260,7 @@ impl Keyspace {
     /// If the key doesn't exist, a new sorted set is created.
     ///
     /// Returns the new score.
-    pub fn zincrby(
-        &mut self,
-        key: &str,
-        increment: f64,
-        member: &str,
-    ) -> Result<f64, WriteError> {
+    pub fn zincrby(&mut self, key: &str, increment: f64, member: &str) -> Result<f64, WriteError> {
         self.remove_if_expired(key);
 
         let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
@@ -340,11 +335,7 @@ impl Keyspace {
 
     /// Removes and returns up to `count` members with the lowest scores.
     /// Deletes the key if the set becomes empty.
-    pub fn zpopmin(
-        &mut self,
-        key: &str,
-        count: usize,
-    ) -> Result<Vec<(String, f64)>, WrongType> {
+    pub fn zpopmin(&mut self, key: &str, count: usize) -> Result<Vec<(String, f64)>, WrongType> {
         if self.remove_if_expired(key) {
             return Ok(vec![]);
         }
@@ -384,11 +375,7 @@ impl Keyspace {
 
     /// Removes and returns up to `count` members with the highest scores.
     /// Deletes the key if the set becomes empty.
-    pub fn zpopmax(
-        &mut self,
-        key: &str,
-        count: usize,
-    ) -> Result<Vec<(String, f64)>, WrongType> {
+    pub fn zpopmax(&mut self, key: &str, count: usize) -> Result<Vec<(String, f64)>, WrongType> {
         if self.remove_if_expired(key) {
             return Ok(vec![]);
         }

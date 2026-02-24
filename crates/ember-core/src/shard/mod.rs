@@ -719,10 +719,7 @@ pub enum ShardResponse {
     /// Scored array of (member, score) pairs (e.g. ZRANGE).
     ScoredArray(Vec<(String, f64)>),
     /// ZINCRBY result: new score + the member/score for AOF persistence.
-    ZIncrByResult {
-        new_score: f64,
-        member: String,
-    },
+    ZIncrByResult { new_score: f64, member: String },
     /// ZPOPMIN/ZPOPMAX result: popped members for both response and AOF.
     ZPopResult(Vec<(String, f64)>),
     /// A bulk string result (e.g. INCRBYFLOAT).
@@ -1591,9 +1588,7 @@ fn dispatch(
             Err(e) => match e {
                 LsetError::WrongType => ShardResponse::WrongType,
                 LsetError::NoSuchKey => ShardResponse::Err("ERR no such key".into()),
-                LsetError::IndexOutOfRange => {
-                    ShardResponse::Err("ERR index out of range".into())
-                }
+                LsetError::IndexOutOfRange => ShardResponse::Err("ERR index out of range".into()),
             },
         },
         ShardRequest::LTrim { key, start, stop } => match ks.ltrim(key, *start, *stop) {
@@ -1813,15 +1808,9 @@ fn dispatch(
             Ok(members) => ShardResponse::StringArray(members),
             Err(_) => ShardResponse::WrongType,
         },
-        ShardRequest::SUnionStore { dest, keys } => {
-            store_set_response(ks.sunionstore(dest, keys))
-        }
-        ShardRequest::SInterStore { dest, keys } => {
-            store_set_response(ks.sinterstore(dest, keys))
-        }
-        ShardRequest::SDiffStore { dest, keys } => {
-            store_set_response(ks.sdiffstore(dest, keys))
-        }
+        ShardRequest::SUnionStore { dest, keys } => store_set_response(ks.sunionstore(dest, keys)),
+        ShardRequest::SInterStore { dest, keys } => store_set_response(ks.sinterstore(dest, keys)),
+        ShardRequest::SDiffStore { dest, keys } => store_set_response(ks.sdiffstore(dest, keys)),
         ShardRequest::SRandMember { key, count } => match ks.srandmember(key, *count) {
             Ok(members) => ShardResponse::StringArray(members),
             Err(_) => ShardResponse::WrongType,

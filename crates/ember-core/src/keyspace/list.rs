@@ -133,8 +133,7 @@ impl Keyspace {
             let Value::List(ref mut deque) = entry.value else {
                 unreachable!("type checked");
             };
-            let pos = resolve_index(index, deque.len())
-                .ok_or(LsetError::IndexOutOfRange)?;
+            let pos = resolve_index(index, deque.len()).ok_or(LsetError::IndexOutOfRange)?;
             let elem = deque.get_mut(pos).ok_or(LsetError::IndexOutOfRange)?;
             let old_len = elem.len();
             let new_len = value.len();
@@ -151,9 +150,7 @@ impl Keyspace {
             if delta > 0 {
                 entry.cached_value_size += delta as usize;
             } else if delta < 0 {
-                entry.cached_value_size = entry
-                    .cached_value_size
-                    .saturating_sub((-delta) as usize);
+                entry.cached_value_size = entry.cached_value_size.saturating_sub((-delta) as usize);
             }
         }
         if delta > 0 {
@@ -432,7 +429,11 @@ impl Keyspace {
                 }
             }
         } else {
-            let start = if maxlen == 0 { 0 } else { len.saturating_sub(maxlen) };
+            let start = if maxlen == 0 {
+                0
+            } else {
+                len.saturating_sub(maxlen)
+            };
             for i in (start..len).rev() {
                 if deque.get(i).map(|e| e.as_ref() == element).unwrap_or(false) {
                     if skipped < skip {
@@ -890,10 +891,7 @@ mod tests {
     fn lset_wrong_type() {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("val"), None, false, false);
-        assert_eq!(
-            ks.lset("s", 0, Bytes::from("x")),
-            Err(LsetError::WrongType)
-        );
+        assert_eq!(ks.lset("s", 0, Bytes::from("x")), Err(LsetError::WrongType));
     }
 
     #[test]
@@ -998,9 +996,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.rpush("list", &[Bytes::from("a"), Bytes::from("c")])
             .unwrap();
-        let len = ks
-            .linsert("list", true, b"c", Bytes::from("b"))
-            .unwrap();
+        let len = ks.linsert("list", true, b"c", Bytes::from("b")).unwrap();
         assert_eq!(len, 3);
         let items = ks.lrange("list", 0, -1).unwrap();
         assert_eq!(
@@ -1014,9 +1010,7 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.rpush("list", &[Bytes::from("a"), Bytes::from("c")])
             .unwrap();
-        let len = ks
-            .linsert("list", false, b"a", Bytes::from("b"))
-            .unwrap();
+        let len = ks.linsert("list", false, b"a", Bytes::from("b")).unwrap();
         assert_eq!(len, 3);
         let items = ks.lrange("list", 0, -1).unwrap();
         assert_eq!(
@@ -1039,10 +1033,7 @@ mod tests {
     #[test]
     fn linsert_missing_key() {
         let mut ks = Keyspace::new();
-        assert_eq!(
-            ks.linsert("nope", true, b"a", Bytes::from("x")).unwrap(),
-            0
-        );
+        assert_eq!(ks.linsert("nope", true, b"a", Bytes::from("x")).unwrap(), 0);
     }
 
     #[test]

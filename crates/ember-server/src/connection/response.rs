@@ -328,12 +328,7 @@ pub(super) fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> F
             ShardResponse::IntegerArray(positions) => {
                 if count.is_some() {
                     // COUNT was specified: always return array
-                    Frame::Array(
-                        positions
-                            .into_iter()
-                            .map(Frame::Integer)
-                            .collect(),
-                    )
+                    Frame::Array(positions.into_iter().map(Frame::Integer).collect())
                 } else {
                     // no COUNT: return single integer or null
                     if let Some(&pos) = positions.first() {
