@@ -220,6 +220,24 @@ pub enum Command {
         timeout_secs: f64,
     },
 
+    /// LINDEX `key` `index`. Returns the element at `index` in the list.
+    LIndex { key: String, index: i64 },
+
+    /// LSET `key` `index` `element`. Sets the element at `index`.
+    LSet { key: String, index: i64, value: Bytes },
+
+    /// LTRIM `key` `start` `stop`. Trims the list to the specified range.
+    LTrim { key: String, start: i64, stop: i64 },
+
+    /// LINSERT `key` BEFORE|AFTER `pivot` `element`. Inserts before or after pivot.
+    LInsert { key: String, before: bool, pivot: Bytes, value: Bytes },
+
+    /// LREM `key` `count` `element`. Removes elements equal to value.
+    LRem { key: String, count: i64, value: Bytes },
+
+    /// LPOS `key` `element` \[RANK rank\] \[COUNT count\] \[MAXLEN maxlen\].
+    LPos { key: String, element: Bytes, rank: i64, count: Option<usize>, maxlen: usize },
+
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },
 
@@ -812,6 +830,12 @@ impl Command {
             Command::LLen { .. } => "llen",
             Command::BLPop { .. } => "blpop",
             Command::BRPop { .. } => "brpop",
+            Command::LIndex { .. } => "lindex",
+            Command::LSet { .. } => "lset",
+            Command::LTrim { .. } => "ltrim",
+            Command::LInsert { .. } => "linsert",
+            Command::LRem { .. } => "lrem",
+            Command::LPos { .. } => "lpos",
 
             // sorted set
             Command::ZAdd { .. } => "zadd",
@@ -965,6 +989,10 @@ impl Command {
                 | Command::RPop { .. }
                 | Command::BLPop { .. }
                 | Command::BRPop { .. }
+                | Command::LSet { .. }
+                | Command::LTrim { .. }
+                | Command::LInsert { .. }
+                | Command::LRem { .. }
             // sorted set
                 | Command::ZAdd { .. }
                 | Command::ZRem { .. }
@@ -1085,12 +1113,18 @@ impl Command {
 
             // list — reads
             Command::LRange { .. } | Command::LLen { .. } => READ | LIST | SLOW,
+            Command::LIndex { .. } => READ | LIST | FAST,
+            Command::LPos { .. } => READ | LIST | SLOW,
 
             // list — writes
             Command::LPush { .. }
             | Command::RPush { .. }
             | Command::LPop { .. }
-            | Command::RPop { .. } => WRITE | LIST | FAST,
+            | Command::RPop { .. }
+            | Command::LSet { .. } => WRITE | LIST | FAST,
+            Command::LTrim { .. }
+            | Command::LInsert { .. }
+            | Command::LRem { .. } => WRITE | LIST | SLOW,
             Command::BLPop { .. } | Command::BRPop { .. } => WRITE | LIST | SLOW,
 
             // sorted set — reads
@@ -1252,6 +1286,12 @@ impl Command {
             | Command::RPop { key }
             | Command::LRange { key, .. }
             | Command::LLen { key }
+            | Command::LIndex { key, .. }
+            | Command::LSet { key, .. }
+            | Command::LTrim { key, .. }
+            | Command::LInsert { key, .. }
+            | Command::LRem { key, .. }
+            | Command::LPos { key, .. }
             | Command::ZAdd { key, .. }
             | Command::ZRem { key, .. }
             | Command::ZScore { key, .. }
@@ -1390,6 +1430,12 @@ impl Command {
             "LLEN" => parse_llen(&frames[1..]),
             "BLPOP" => parse_blpop(&frames[1..]),
             "BRPOP" => parse_brpop(&frames[1..]),
+            "LINDEX" => parse_lindex(&frames[1..]),
+            "LSET" => parse_lset(&frames[1..]),
+            "LTRIM" => parse_ltrim(&frames[1..]),
+            "LINSERT" => parse_linsert(&frames[1..]),
+            "LREM" => parse_lrem(&frames[1..]),
+            "LPOS" => parse_lpos(&frames[1..]),
             "TYPE" => parse_type(&frames[1..]),
             "ZADD" => parse_zadd(&frames[1..]),
             "ZREM" => parse_zrem(&frames[1..]),
@@ -2180,6 +2226,150 @@ fn parse_brpop(args: &[Frame]) -> Result<Command, ProtocolError> {
     let timeout_secs = parse_timeout(&args[args.len() - 1], "BRPOP")?;
     let keys = extract_strings(&args[..args.len() - 1])?;
     Ok(Command::BRPop { keys, timeout_secs })
+}
+
+fn parse_lindex(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("LINDEX"));
+    }
+    let key = extract_string(&args[0])?;
+    let index = parse_i64(&args[1], "LINDEX")?;
+    Ok(Command::LIndex { key, index })
+}
+
+fn parse_lset(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("LSET"));
+    }
+    let key = extract_string(&args[0])?;
+    let index = parse_i64(&args[1], "LSET")?;
+    let value = extract_bytes(&args[2])?;
+    Ok(Command::LSet { key, index, value })
+}
+
+fn parse_ltrim(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("LTRIM"));
+    }
+    let key = extract_string(&args[0])?;
+    let start = parse_i64(&args[1], "LTRIM")?;
+    let stop = parse_i64(&args[2], "LTRIM")?;
+    Ok(Command::LTrim { key, start, stop })
+}
+
+fn parse_linsert(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 4 {
+        return Err(wrong_arity("LINSERT"));
+    }
+    let key = extract_string(&args[0])?;
+    let direction = extract_string(&args[1])?;
+    let before = match direction.to_ascii_uppercase().as_str() {
+        "BEFORE" => true,
+        "AFTER" => false,
+        _ => {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "ERR syntax error".into(),
+            ))
+        }
+    };
+    let pivot = extract_bytes(&args[2])?;
+    let value = extract_bytes(&args[3])?;
+    Ok(Command::LInsert {
+        key,
+        before,
+        pivot,
+        value,
+    })
+}
+
+fn parse_lrem(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("LREM"));
+    }
+    let key = extract_string(&args[0])?;
+    let count = parse_i64(&args[1], "LREM")?;
+    let value = extract_bytes(&args[2])?;
+    Ok(Command::LRem { key, count, value })
+}
+
+fn parse_lpos(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("LPOS"));
+    }
+    let key = extract_string(&args[0])?;
+    if args.len() < 2 {
+        return Err(wrong_arity("LPOS"));
+    }
+    let element = extract_bytes(&args[1])?;
+
+    let mut rank: i64 = 1;
+    let mut count: Option<usize> = None;
+    let mut maxlen: usize = 0;
+
+    let mut i = 2;
+    while i < args.len() {
+        let opt = extract_string(&args[i])?.to_ascii_uppercase();
+        match opt.as_str() {
+            "RANK" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "ERR syntax error".into(),
+                    ));
+                }
+                rank = parse_i64(&args[i], "LPOS")?;
+                if rank == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative values for starting from the end of the list".into(),
+                    ));
+                }
+            }
+            "COUNT" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "ERR syntax error".into(),
+                    ));
+                }
+                let n = parse_i64(&args[i], "LPOS")?;
+                if n < 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "ERR COUNT can't be negative".into(),
+                    ));
+                }
+                count = Some(n as usize);
+            }
+            "MAXLEN" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "ERR syntax error".into(),
+                    ));
+                }
+                let n = parse_i64(&args[i], "LPOS")?;
+                if n < 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "ERR MAXLEN can't be negative".into(),
+                    ));
+                }
+                maxlen = n as usize;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "ERR syntax error".into(),
+                ))
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Command::LPos {
+        key,
+        element,
+        rank,
+        count,
+        maxlen,
+    })
 }
 
 /// Extracts the timeout argument for BLPOP/BRPOP. Redis accepts integer or
