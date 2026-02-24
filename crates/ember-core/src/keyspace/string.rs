@@ -280,6 +280,87 @@ impl Keyspace {
             None => Ok(0),
         }
     }
+
+    /// Returns a substring of the string stored at key, determined by
+    /// the offsets `start` and `end` (both inclusive). Negative offsets
+    /// count from the end of the string (-1 is the last character).
+    ///
+    /// Returns an empty string if the key does not exist, or if the
+    /// computed range is empty after clamping.
+    pub fn getrange(&mut self, key: &str, start: i64, end: i64) -> Result<Bytes, WrongType> {
+        self.remove_if_expired(key);
+
+        let data = match self.entries.get_mut(key) {
+            Some(e) => match &e.value {
+                Value::String(b) => {
+                    let data = b.clone();
+                    e.touch();
+                    data
+                }
+                _ => return Err(WrongType),
+            },
+            None => return Ok(Bytes::new()),
+        };
+
+        let len = data.len() as i64;
+        // convert negative indices to positive
+        let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
+        let e = if end < 0 { (len + end).max(0) } else { end.min(len - 1) } as usize;
+
+        if s > e || s >= data.len() {
+            return Ok(Bytes::new());
+        }
+        Ok(data.slice(s..=e))
+    }
+
+    /// Overwrites part of the string stored at key, starting at the
+    /// specified byte offset. If the offset is beyond the current string
+    /// length, the string is zero-padded. Creates the key if it doesn't
+    /// exist. Returns the new string length.
+    ///
+    /// Preserves the existing TTL.
+    pub fn setrange(&mut self, key: &str, offset: usize, value: &[u8]) -> Result<usize, WriteError> {
+        self.remove_if_expired(key);
+
+        let (existing, expire) = match self.entries.get(key) {
+            Some(entry) => match &entry.value {
+                Value::String(data) => {
+                    let expire = time::remaining_ms(entry.expires_at_ms).map(Duration::from_millis);
+                    (data.clone(), expire)
+                }
+                _ => return Err(WriteError::WrongType),
+            },
+            None => (Bytes::new(), None),
+        };
+
+        // build the new string: existing prefix + zero-padding + overlay
+        let needed = offset.saturating_add(value.len());
+        let new_len = existing.len().max(needed);
+        let mut buf = Vec::with_capacity(new_len);
+
+        // copy existing data up to the offset (or all of it if offset is beyond)
+        let copy_len = existing.len().min(offset);
+        buf.extend_from_slice(&existing[..copy_len]);
+
+        // zero-pad if offset is beyond the existing length
+        if offset > existing.len() {
+            buf.resize(offset, 0);
+        }
+
+        // overlay the new value
+        buf.extend_from_slice(value);
+
+        // append any remaining tail from the original string
+        if offset + value.len() < existing.len() {
+            buf.extend_from_slice(&existing[offset + value.len()..]);
+        }
+
+        let result_len = buf.len();
+        match self.set(key.to_owned(), Bytes::from(buf), expire, false, false) {
+            SetResult::Ok | SetResult::Blocked => Ok(result_len),
+            SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -611,6 +692,120 @@ mod tests {
         let binary = Bytes::from(vec![0u8, 1, 2, 255, 0, 128]);
         ks.set("binary".into(), binary.clone(), None, false, false);
         assert_eq!(ks.get("binary").unwrap(), Some(Value::String(binary)));
+    }
+
+    // --- getrange ---
+
+    #[test]
+    fn getrange_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("Hello, World!"), None, false, false);
+        assert_eq!(ks.getrange("key", 0, 4).unwrap(), Bytes::from("Hello"));
+        assert_eq!(ks.getrange("key", 7, 11).unwrap(), Bytes::from("World"));
+    }
+
+    #[test]
+    fn getrange_negative_indices() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("Hello"), None, false, false);
+        // last 3 chars
+        assert_eq!(ks.getrange("key", -3, -1).unwrap(), Bytes::from("llo"));
+        // first to second-to-last
+        assert_eq!(ks.getrange("key", 0, -2).unwrap(), Bytes::from("Hell"));
+    }
+
+    #[test]
+    fn getrange_out_of_bounds() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("Hello"), None, false, false);
+        // end beyond string length → clamps
+        assert_eq!(ks.getrange("key", 0, 100).unwrap(), Bytes::from("Hello"));
+        // start beyond end → empty
+        assert_eq!(ks.getrange("key", 3, 1).unwrap(), Bytes::new());
+    }
+
+    #[test]
+    fn getrange_missing_key() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.getrange("nope", 0, 10).unwrap(), Bytes::new());
+    }
+
+    #[test]
+    fn getrange_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("list", &[Bytes::from("a")]).unwrap();
+        assert!(ks.getrange("list", 0, 1).is_err());
+    }
+
+    #[test]
+    fn getrange_empty_string() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from(""), None, false, false);
+        assert_eq!(ks.getrange("key", 0, 0).unwrap(), Bytes::new());
+    }
+
+    // --- setrange ---
+
+    #[test]
+    fn setrange_basic() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("Hello World"), None, false, false);
+        let len = ks.setrange("key", 6, b"Redis").unwrap();
+        assert_eq!(len, 11);
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("Hello Redis")))
+        );
+    }
+
+    #[test]
+    fn setrange_zero_padding() {
+        let mut ks = Keyspace::new();
+        let len = ks.setrange("key", 5, b"Hi").unwrap();
+        assert_eq!(len, 7);
+        let val = match ks.get("key").unwrap() {
+            Some(Value::String(b)) => b,
+            other => panic!("expected String, got {other:?}"),
+        };
+        assert_eq!(&val[..5], &[0, 0, 0, 0, 0]);
+        assert_eq!(&val[5..], b"Hi");
+    }
+
+    #[test]
+    fn setrange_extends_string() {
+        let mut ks = Keyspace::new();
+        ks.set("key".into(), Bytes::from("abc"), None, false, false);
+        let len = ks.setrange("key", 3, b"def").unwrap();
+        assert_eq!(len, 6);
+        assert_eq!(
+            ks.get("key").unwrap(),
+            Some(Value::String(Bytes::from("abcdef")))
+        );
+    }
+
+    #[test]
+    fn setrange_preserves_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "key".into(),
+            Bytes::from("hello"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
+        ks.setrange("key", 0, b"jello").unwrap();
+        match ks.ttl("key") {
+            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
+            other => panic!("expected TTL preserved, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn setrange_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.lpush("list", &[Bytes::from("a")]).unwrap();
+        let err = ks.setrange("list", 0, b"val").unwrap_err();
+        assert_eq!(err, WriteError::WrongType);
     }
 
     // --- encoding ---
