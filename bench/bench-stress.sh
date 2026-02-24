@@ -42,7 +42,7 @@ echo "memory tracking accuracy and allocation overhead."
 echo ""
 
 cleanup
-$EMBER_BIN --port $EMBER_PORT --no-grpc > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_PORT > /dev/null 2>&1 &
 sleep 1
 redis-cli -p $EMBER_PORT PING > /dev/null || { echo "ember failed to start"; exit 1; }
 
@@ -72,7 +72,7 @@ echo "then measures steady-state throughput under memory pressure."
 echo ""
 
 # start with tight memory limit to force eviction quickly
-$EMBER_BIN --port $EMBER_PORT --no-grpc --maxmemory 32mb > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_PORT --max-memory 32M > /dev/null 2>&1 &
 sleep 1
 redis-cli -p $EMBER_PORT PING > /dev/null || { echo "ember failed to start"; exit 1; }
 
@@ -113,7 +113,7 @@ echo "tests rapid connection/disconnection under burst load."
 echo "verifies semaphore-based connection limiting works correctly."
 echo ""
 
-$EMBER_BIN --port $EMBER_PORT --no-grpc > /dev/null 2>&1 &
+$EMBER_BIN --port $EMBER_PORT > /dev/null 2>&1 &
 sleep 1
 redis-cli -p $EMBER_PORT PING > /dev/null || { echo "ember failed to start"; exit 1; }
 
