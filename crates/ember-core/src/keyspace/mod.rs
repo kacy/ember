@@ -340,6 +340,8 @@ pub struct KeyspaceStats {
     pub keys_expired: u64,
     /// Cumulative count of keys removed by eviction.
     pub keys_evicted: u64,
+    /// Cumulative count of write commands rejected due to memory limits.
+    pub oom_rejections: u64,
 }
 
 /// Number of random keys to sample when looking for an eviction candidate.
@@ -368,6 +370,8 @@ pub struct Keyspace {
     expired_total: u64,
     /// Cumulative count of keys removed by eviction.
     evicted_total: u64,
+    /// Cumulative count of write rejections due to memory limits.
+    oom_rejections: u64,
     /// When set, large values are dropped on a background thread instead
     /// of inline on the shard thread. See [`crate::dropper`].
     drop_handle: Option<DropHandle>,
@@ -391,6 +395,7 @@ impl Keyspace {
             expiry_count: 0,
             expired_total: 0,
             evicted_total: 0,
+            oom_rejections: 0,
             drop_handle: None,
             next_version: 0,
         }
@@ -602,9 +607,36 @@ impl Keyspace {
             let limit = memory::effective_limit(max);
             while self.memory.used_bytes() + estimated_increase > limit {
                 match self.config.eviction_policy {
-                    EvictionPolicy::NoEviction => return false,
+                    EvictionPolicy::NoEviction => {
+                        self.oom_rejections += 1;
+                        // log first rejection, then every 1000th to avoid flooding
+                        if self.oom_rejections == 1
+                            || self.oom_rejections.is_multiple_of(1000)
+                        {
+                            warn!(
+                                used_bytes = self.memory.used_bytes(),
+                                limit,
+                                requested = estimated_increase,
+                                total_rejections = self.oom_rejections,
+                                "OOM: write rejected (policy: noeviction)"
+                            );
+                        }
+                        return false;
+                    }
                     EvictionPolicy::AllKeysLru => {
                         if !self.try_evict() {
+                            self.oom_rejections += 1;
+                            if self.oom_rejections == 1
+                                || self.oom_rejections.is_multiple_of(1000)
+                            {
+                                warn!(
+                                    used_bytes = self.memory.used_bytes(),
+                                    limit,
+                                    requested = estimated_increase,
+                                    total_rejections = self.oom_rejections,
+                                    "OOM: write rejected (eviction exhausted)"
+                                );
+                            }
                             return false;
                         }
                     }
@@ -1038,6 +1070,7 @@ impl Keyspace {
             keys_with_expiry: self.expiry_count,
             keys_expired: self.expired_total,
             keys_evicted: self.evicted_total,
+            oom_rejections: self.oom_rejections,
         }
     }
 
