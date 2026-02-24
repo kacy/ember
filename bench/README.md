@@ -140,9 +140,18 @@ shows how vector insert throughput scales when distributing vectors across multi
 
 insert throughput scales nearly linearly with shard count since each shard does its own HNSW graph construction independently. query latency also improves with sharding — smaller per-shard indexes mean faster kNN graph traversal.
 
-#### SIFT1M recall accuracy (128-dim, 1M vectors, 10k queries)
+#### SIFT1M (1M vectors, 128-dim, 10k queries)
 
-*run `bench/bench-vector.sh --sift --qdrant` on a c2-standard-8 (32GB) to populate. SIFT1M is 1M × 128 × 4B = 512MB raw data; ember HNSW peaks around 1.5GB RSS, well within 32GB.*
+real-world accuracy and throughput on the standard SIFT1M benchmark dataset. tested on GCP c2-standard-8.
+
+| metric | ember |
+|--------|-------|
+| insert (vectors/sec) | 3,755 |
+| query (queries/sec) | 1,596 |
+| query p99 (ms) | 0.78ms |
+| recall@10 | **0.9339** |
+
+93.4% recall@10 with M=16, ef_construction=64 — competitive with dedicated vector databases at the same HNSW parameters. insert throughput is higher than random vectors because SIFT features are integer-valued and sparser, making HNSW graph construction cheaper.
 
 ### pipeline scaling (ember sharded)
 
