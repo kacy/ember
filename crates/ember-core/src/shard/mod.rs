@@ -66,7 +66,7 @@ use crate::keyspace::{
     IncrError, IncrFloatError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult,
     WriteError,
 };
-use crate::types::sorted_set::ZAddFlags;
+use crate::types::sorted_set::{ScoreBound, ZAddFlags};
 use crate::types::Value;
 
 /// How often the shard runs active expiration. 100ms matches
@@ -264,6 +264,10 @@ pub enum ShardRequest {
         key: String,
         member: String,
     },
+    ZRevRank {
+        key: String,
+        member: String,
+    },
     ZCard {
         key: String,
     },
@@ -272,6 +276,44 @@ pub enum ShardRequest {
         start: i64,
         stop: i64,
         with_scores: bool,
+    },
+    ZRevRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    },
+    ZCount {
+        key: String,
+        min: ScoreBound,
+        max: ScoreBound,
+    },
+    ZIncrBy {
+        key: String,
+        increment: f64,
+        member: String,
+    },
+    ZRangeByScore {
+        key: String,
+        min: ScoreBound,
+        max: ScoreBound,
+        offset: usize,
+        count: Option<usize>,
+    },
+    ZRevRangeByScore {
+        key: String,
+        min: ScoreBound,
+        max: ScoreBound,
+        offset: usize,
+        count: Option<usize>,
+    },
+    ZPopMin {
+        key: String,
+        count: usize,
+    },
+    ZPopMax {
+        key: String,
+        count: usize,
     },
     HSet {
         key: String,
@@ -539,6 +581,13 @@ pub enum ShardResponse {
     Rank(Option<usize>),
     /// Scored array of (member, score) pairs (e.g. ZRANGE).
     ScoredArray(Vec<(String, f64)>),
+    /// ZINCRBY result: new score + the member/score for AOF persistence.
+    ZIncrByResult {
+        new_score: f64,
+        member: String,
+    },
+    /// ZPOPMIN/ZPOPMAX result: popped members for both response and AOF.
+    ZPopResult(Vec<(String, f64)>),
     /// A bulk string result (e.g. INCRBYFLOAT).
     BulkString(String),
     /// Command used against a key holding the wrong kind of value.
@@ -1392,10 +1441,64 @@ fn dispatch(
             Ok(len) => ShardResponse::Len(len),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::ZRevRank { key, member } => match ks.zrevrank(key, member) {
+            Ok(rank) => ShardResponse::Rank(rank),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::ZRange {
             key, start, stop, ..
         } => match ks.zrange(key, *start, *stop) {
             Ok(items) => ShardResponse::ScoredArray(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRevRange {
+            key, start, stop, ..
+        } => match ks.zrevrange(key, *start, *stop) {
+            Ok(items) => ShardResponse::ScoredArray(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZCount { key, min, max } => match ks.zcount(key, *min, *max) {
+            Ok(count) => ShardResponse::Len(count),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZIncrBy {
+            key,
+            increment,
+            member,
+        } => match ks.zincrby(key, *increment, member) {
+            Ok(new_score) => ShardResponse::ZIncrByResult {
+                new_score,
+                member: member.clone(),
+            },
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::ZRangeByScore {
+            key,
+            min,
+            max,
+            offset,
+            count,
+        } => match ks.zrangebyscore(key, *min, *max, *offset, *count) {
+            Ok(items) => ShardResponse::ScoredArray(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRevRangeByScore {
+            key,
+            min,
+            max,
+            offset,
+            count,
+        } => match ks.zrevrangebyscore(key, *min, *max, *offset, *count) {
+            Ok(items) => ShardResponse::ScoredArray(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZPopMin { key, count } => match ks.zpopmin(key, *count) {
+            Ok(items) => ShardResponse::ZPopResult(items),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZPopMax { key, count } => match ks.zpopmax(key, *count) {
+            Ok(items) => ShardResponse::ZPopResult(items),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),

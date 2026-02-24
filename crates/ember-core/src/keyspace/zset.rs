@@ -235,6 +235,267 @@ impl Keyspace {
         }
     }
 
+    /// Returns the reverse rank of a member (highest score = 0).
+    ///
+    /// Returns `Ok(None)` if the key or member doesn't exist.
+    /// Returns `Err(WrongType)` on type mismatch.
+    pub fn zrevrank(&mut self, key: &str, member: &str) -> Result<Option<usize>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(None),
+            Some(entry) => match &entry.value {
+                Value::SortedSet(ss) => {
+                    let rank = ss.rev_rank(member);
+                    entry.touch();
+                    Ok(rank)
+                }
+                _ => Err(WrongType),
+            },
+        }
+    }
+
+    /// Returns a range of members in reverse rank order (highest first).
+    pub fn zrevrange(
+        &mut self,
+        key: &str,
+        start: i64,
+        stop: i64,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![]),
+            Some(entry) => {
+                let result = match &entry.value {
+                    Value::SortedSet(ss) => {
+                        let items = ss.rev_range_by_rank(start, stop);
+                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
+                    }
+                    _ => Err(WrongType),
+                };
+                if result.is_ok() {
+                    entry.touch();
+                }
+                result
+            }
+        }
+    }
+
+    /// Counts members with scores in the given bounds.
+    pub fn zcount(
+        &mut self,
+        key: &str,
+        min: ScoreBound,
+        max: ScoreBound,
+    ) -> Result<usize, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(0);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(0),
+            Some(entry) => match &entry.value {
+                Value::SortedSet(ss) => {
+                    let count = ss.count_by_score(min, max);
+                    entry.touch();
+                    Ok(count)
+                }
+                _ => Err(WrongType),
+            },
+        }
+    }
+
+    /// Increments the score of a member in a sorted set. If the member
+    /// doesn't exist, it is added with the increment as its score.
+    /// If the key doesn't exist, a new sorted set is created.
+    ///
+    /// Returns the new score.
+    pub fn zincrby(
+        &mut self,
+        key: &str,
+        increment: f64,
+        member: &str,
+    ) -> Result<f64, WriteError> {
+        self.remove_if_expired(key);
+
+        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
+
+        // worst case: member is new
+        self.reserve_memory(
+            is_new,
+            key,
+            SortedSet::BASE_OVERHEAD,
+            SortedSet::estimated_member_cost(member),
+        )?;
+
+        if is_new {
+            self.insert_empty(key, Value::SortedSet(Box::default()));
+        }
+
+        let new_score = self
+            .track_size(key, |entry| {
+                let Value::SortedSet(ref mut ss) = entry.value else {
+                    unreachable!("type verified by ensure_collection_type");
+                };
+                let score = ss.incr(member.to_owned(), increment);
+                entry.touch();
+                score
+            })
+            .unwrap_or(increment);
+
+        Ok(new_score)
+    }
+
+    /// Returns members with scores in the given range, in ascending order.
+    pub fn zrangebyscore(
+        &mut self,
+        key: &str,
+        min: ScoreBound,
+        max: ScoreBound,
+        offset: usize,
+        count: Option<usize>,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![]),
+            Some(entry) => {
+                let result = match &entry.value {
+                    Value::SortedSet(ss) => {
+                        let items = ss.range_by_score(min, max, offset, count);
+                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
+                    }
+                    _ => Err(WrongType),
+                };
+                if result.is_ok() {
+                    entry.touch();
+                }
+                result
+            }
+        }
+    }
+
+    /// Returns members with scores in the given range, in descending order.
+    pub fn zrevrangebyscore(
+        &mut self,
+        key: &str,
+        min: ScoreBound,
+        max: ScoreBound,
+        offset: usize,
+        count: Option<usize>,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![]),
+            Some(entry) => {
+                let result = match &entry.value {
+                    Value::SortedSet(ss) => {
+                        let items = ss.rev_range_by_score(min, max, offset, count);
+                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
+                    }
+                    _ => Err(WrongType),
+                };
+                if result.is_ok() {
+                    entry.touch();
+                }
+                result
+            }
+        }
+    }
+
+    /// Removes and returns up to `count` members with the lowest scores.
+    /// Deletes the key if the set becomes empty.
+    pub fn zpopmin(
+        &mut self,
+        key: &str,
+        count: usize,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        let Some(entry) = self.entries.get(key) else {
+            return Ok(vec![]);
+        };
+        if !matches!(entry.value, Value::SortedSet(_)) {
+            return Err(WrongType);
+        }
+
+        let ver = self.next_ver();
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(vec![]);
+        };
+        let old_entry_size = entry.entry_size(key);
+        let mut removed_bytes = 0usize;
+        let popped = if let Value::SortedSet(ref mut ss) = entry.value {
+            let items = ss.pop_min(count);
+            for (member, _) in &items {
+                removed_bytes += SortedSet::estimated_member_cost(member);
+            }
+            items
+        } else {
+            vec![]
+        };
+
+        if !popped.is_empty() {
+            entry.version = ver;
+            entry.touch();
+        }
+
+        let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
+        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
+
+        Ok(popped)
+    }
+
+    /// Removes and returns up to `count` members with the highest scores.
+    /// Deletes the key if the set becomes empty.
+    pub fn zpopmax(
+        &mut self,
+        key: &str,
+        count: usize,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![]);
+        }
+        let Some(entry) = self.entries.get(key) else {
+            return Ok(vec![]);
+        };
+        if !matches!(entry.value, Value::SortedSet(_)) {
+            return Err(WrongType);
+        }
+
+        let ver = self.next_ver();
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(vec![]);
+        };
+        let old_entry_size = entry.entry_size(key);
+        let mut removed_bytes = 0usize;
+        let popped = if let Value::SortedSet(ref mut ss) = entry.value {
+            let items = ss.pop_max(count);
+            for (member, _) in &items {
+                removed_bytes += SortedSet::estimated_member_cost(member);
+            }
+            items
+        } else {
+            vec![]
+        };
+
+        if !popped.is_empty() {
+            entry.version = ver;
+            entry.touch();
+        }
+
+        let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
+        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
+
+        Ok(popped)
+    }
+
     /// Returns the number of members in a sorted set, or 0 if the key doesn't exist.
     ///
     /// Returns `Err(WrongType)` on type mismatch.

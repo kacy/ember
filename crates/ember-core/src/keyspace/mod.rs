@@ -18,7 +18,7 @@ use tracing::warn;
 use crate::dropper::DropHandle;
 use crate::memory::{self, MemoryTracker};
 use crate::time;
-use crate::types::sorted_set::{SortedSet, ZAddFlags};
+use crate::types::sorted_set::{ScoreBound, SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
 mod hash;

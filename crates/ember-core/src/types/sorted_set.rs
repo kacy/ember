@@ -23,6 +23,8 @@ use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
 
+pub use ember_protocol::command::ScoreBound;
+
 /// Flags that control ZADD behavior.
 #[derive(Debug, Clone, Default)]
 pub struct ZAddFlags {
@@ -164,6 +166,15 @@ impl SortedSet {
         Some(self.search_idx(score, name).unwrap())
     }
 
+    /// Returns the reverse rank of a member (highest score = rank 0).
+    /// Returns `None` if the member is not present.
+    ///
+    /// O(log n) — binary search followed by subtraction.
+    pub fn rev_rank(&self, member: &str) -> Option<usize> {
+        let rank = self.rank(member)?;
+        Some(self.sorted.len() - 1 - rank)
+    }
+
     /// Returns members in the given rank range, inclusive on both ends.
     /// Supports negative indices: -1 = last, -2 = second to last, etc.
     pub fn range_by_rank(&self, start: i64, stop: i64) -> Vec<(&str, f64)> {
@@ -179,6 +190,141 @@ impl SortedSet {
             .iter()
             .map(|(score, member)| (&**member, score.0))
             .collect()
+    }
+
+    /// Returns members in the given rank range, in reverse order (highest first).
+    /// Supports negative indices: -1 = last, -2 = second to last, etc.
+    pub fn rev_range_by_rank(&self, start: i64, stop: i64) -> Vec<(&str, f64)> {
+        let len = self.sorted.len() as i64;
+        let (s, e) = super::normalize_range(start, stop, len);
+        if s > e {
+            return Vec::new();
+        }
+        let s = s as usize;
+        let e = e as usize;
+
+        self.sorted[s..=e]
+            .iter()
+            .rev()
+            .map(|(score, member)| (&**member, score.0))
+            .collect()
+    }
+
+    /// Returns members whose scores fall within `[min, max]`.
+    ///
+    /// Both bounds are inclusive. Use `ScoreBound` variants for exclusive
+    /// bounds or infinity via the `range_by_score_bounds` method.
+    /// Results are returned in ascending score order.
+    ///
+    /// If `offset` and `count` are provided (LIMIT), skips `offset` results
+    /// and returns at most `count`.
+    pub fn range_by_score(
+        &self,
+        min: ScoreBound,
+        max: ScoreBound,
+        offset: usize,
+        count: Option<usize>,
+    ) -> Vec<(&str, f64)> {
+        let start = self.lower_bound_idx(&min);
+        let end = self.upper_bound_idx(&max);
+        if start > end || end >= self.sorted.len() {
+            return Vec::new();
+        }
+
+        let iter = self.sorted[start..=end]
+            .iter()
+            .skip(offset)
+            .map(|(score, member)| (&**member, score.0));
+
+        match count {
+            Some(n) => iter.take(n).collect(),
+            None => iter.collect(),
+        }
+    }
+
+    /// Returns members whose scores fall within the given bounds, in
+    /// reverse (descending) score order.
+    pub fn rev_range_by_score(
+        &self,
+        min: ScoreBound,
+        max: ScoreBound,
+        offset: usize,
+        count: Option<usize>,
+    ) -> Vec<(&str, f64)> {
+        let start = self.lower_bound_idx(&min);
+        let end = self.upper_bound_idx(&max);
+        if start > end || end >= self.sorted.len() {
+            return Vec::new();
+        }
+
+        let iter = self.sorted[start..=end]
+            .iter()
+            .rev()
+            .skip(offset)
+            .map(|(score, member)| (&**member, score.0));
+
+        match count {
+            Some(n) => iter.take(n).collect(),
+            None => iter.collect(),
+        }
+    }
+
+    /// Counts members whose scores fall within the given bounds.
+    pub fn count_by_score(&self, min: ScoreBound, max: ScoreBound) -> usize {
+        let start = self.lower_bound_idx(&min);
+        let end = self.upper_bound_idx(&max);
+        // end >= sorted.len() catches the usize::MAX sentinel (no matching elements)
+        if start > end || end >= self.sorted.len() {
+            return 0;
+        }
+        end - start + 1
+    }
+
+    /// Increments the score of a member by `delta`. If the member doesn't
+    /// exist, it is added with `delta` as its score.
+    ///
+    /// Returns the new score.
+    pub fn incr(&mut self, member: String, delta: f64) -> f64 {
+        let new_score = match self.scores.get(member.as_str()) {
+            Some(&old_score) => old_score.0 + delta,
+            None => delta,
+        };
+        // reuse add() which handles both insert and update
+        self.add(member, new_score);
+        new_score
+    }
+
+    /// Removes and returns up to `count` members with the lowest scores.
+    ///
+    /// Returns (member, score) pairs in ascending score order.
+    /// Uses `drain` for O(count) instead of repeated O(n) removals.
+    pub fn pop_min(&mut self, count: usize) -> Vec<(String, f64)> {
+        let n = count.min(self.sorted.len());
+        let drained: Vec<_> = self.sorted.drain(..n).collect();
+        let mut result = Vec::with_capacity(n);
+        for (score, member) in drained {
+            self.scores.remove(&*member);
+            self.data_bytes -= member.len();
+            result.push((member.to_string(), score.0));
+        }
+        result
+    }
+
+    /// Removes and returns up to `count` members with the highest scores.
+    ///
+    /// Returns (member, score) pairs in descending score order.
+    /// Uses `split_off` for O(count) removal from the tail.
+    pub fn pop_max(&mut self, count: usize) -> Vec<(String, f64)> {
+        let n = count.min(self.sorted.len());
+        let split_at = self.sorted.len() - n;
+        let tail = self.sorted.split_off(split_at);
+        let mut result = Vec::with_capacity(n);
+        for (score, member) in tail.into_iter().rev() {
+            self.scores.remove(&*member);
+            self.data_bytes -= member.len();
+            result.push((member.to_string(), score.0));
+        }
+        result
     }
 
     /// Returns the number of members.
@@ -232,6 +378,55 @@ impl SortedSet {
     fn search_idx(&self, score: OrderedFloat<f64>, name: &Arc<str>) -> Result<usize, usize> {
         self.sorted
             .binary_search_by(|(s, m)| s.cmp(&score).then_with(|| (**m).cmp(&**name)))
+    }
+
+    /// Returns the first index whose score satisfies the lower bound.
+    ///
+    /// For `Inclusive(v)`, returns the first index with score >= v.
+    /// For `Exclusive(v)`, returns the first index with score > v.
+    /// For `NegInf`, returns 0. For `PosInf`, returns len (empty range).
+    fn lower_bound_idx(&self, bound: &ScoreBound) -> usize {
+        match *bound {
+            ScoreBound::NegInf => 0,
+            ScoreBound::PosInf => self.sorted.len(),
+            ScoreBound::Inclusive(v) => {
+                let target = OrderedFloat(v);
+                self.sorted.partition_point(|(s, _)| *s < target)
+            }
+            ScoreBound::Exclusive(v) => {
+                let target = OrderedFloat(v);
+                self.sorted.partition_point(|(s, _)| *s <= target)
+            }
+        }
+    }
+
+    /// Returns the last index whose score satisfies the upper bound,
+    /// or `usize::MAX` (sentinel for empty range) if no element qualifies.
+    ///
+    /// For `Inclusive(v)`, returns the last index with score <= v.
+    /// For `Exclusive(v)`, returns the last index with score < v.
+    /// For `PosInf`, returns len - 1. For `NegInf`, returns sentinel.
+    fn upper_bound_idx(&self, bound: &ScoreBound) -> usize {
+        match *bound {
+            ScoreBound::NegInf => usize::MAX, // sentinel: no valid range
+            ScoreBound::PosInf => {
+                if self.sorted.is_empty() {
+                    usize::MAX
+                } else {
+                    self.sorted.len() - 1
+                }
+            }
+            ScoreBound::Inclusive(v) => {
+                let target = OrderedFloat(v);
+                let past = self.sorted.partition_point(|(s, _)| *s <= target);
+                past.wrapping_sub(1) // wraps to usize::MAX if past == 0
+            }
+            ScoreBound::Exclusive(v) => {
+                let target = OrderedFloat(v);
+                let past = self.sorted.partition_point(|(s, _)| *s < target);
+                past.wrapping_sub(1) // wraps to usize::MAX if past == 0
+            }
+        }
     }
 }
 
@@ -576,5 +771,272 @@ mod tests {
         for i in 0..100 {
             assert_eq!(ss.rank(&format!("member:{i:03}")), Some(i));
         }
+    }
+
+    #[test]
+    fn rev_rank_ordering() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 100.0);
+        ss.add("b".into(), 200.0);
+        ss.add("c".into(), 300.0);
+
+        assert_eq!(ss.rev_rank("c"), Some(0));
+        assert_eq!(ss.rev_rank("b"), Some(1));
+        assert_eq!(ss.rev_rank("a"), Some(2));
+        assert_eq!(ss.rev_rank("d"), None);
+    }
+
+    #[test]
+    fn rev_range_by_rank_basic() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 10.0);
+        ss.add("b".into(), 20.0);
+        ss.add("c".into(), 30.0);
+
+        let result = ss.rev_range_by_rank(0, -1);
+        assert_eq!(result, vec![("c", 30.0), ("b", 20.0), ("a", 10.0)]);
+
+        let result = ss.rev_range_by_rank(0, 1);
+        assert_eq!(result, vec![("b", 20.0), ("a", 10.0)]);
+    }
+
+    #[test]
+    fn range_by_score_inclusive() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+        ss.add("d".into(), 4.0);
+
+        let result = ss.range_by_score(
+            ScoreBound::Inclusive(2.0),
+            ScoreBound::Inclusive(3.0),
+            0,
+            None,
+        );
+        assert_eq!(result, vec![("b", 2.0), ("c", 3.0)]);
+    }
+
+    #[test]
+    fn range_by_score_exclusive() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+        ss.add("d".into(), 4.0);
+
+        let result = ss.range_by_score(
+            ScoreBound::Exclusive(1.0),
+            ScoreBound::Exclusive(4.0),
+            0,
+            None,
+        );
+        assert_eq!(result, vec![("b", 2.0), ("c", 3.0)]);
+    }
+
+    #[test]
+    fn range_by_score_infinity() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+
+        let all = ss.range_by_score(ScoreBound::NegInf, ScoreBound::PosInf, 0, None);
+        assert_eq!(all.len(), 3);
+
+        let up_to_2 = ss.range_by_score(ScoreBound::NegInf, ScoreBound::Inclusive(2.0), 0, None);
+        assert_eq!(up_to_2, vec![("a", 1.0), ("b", 2.0)]);
+
+        let from_2 = ss.range_by_score(ScoreBound::Inclusive(2.0), ScoreBound::PosInf, 0, None);
+        assert_eq!(from_2, vec![("b", 2.0), ("c", 3.0)]);
+    }
+
+    #[test]
+    fn range_by_score_with_limit() {
+        let mut ss = SortedSet::new();
+        for i in 0..10 {
+            ss.add(format!("m{i}"), i as f64);
+        }
+
+        let result = ss.range_by_score(ScoreBound::NegInf, ScoreBound::PosInf, 2, Some(3));
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].0, "m2");
+        assert_eq!(result[2].0, "m4");
+    }
+
+    #[test]
+    fn range_by_score_empty_range() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 5.0);
+
+        let result = ss.range_by_score(
+            ScoreBound::Inclusive(2.0),
+            ScoreBound::Inclusive(4.0),
+            0,
+            None,
+        );
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn rev_range_by_score_basic() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+
+        let result = ss.rev_range_by_score(
+            ScoreBound::Inclusive(1.0),
+            ScoreBound::Inclusive(3.0),
+            0,
+            None,
+        );
+        assert_eq!(result, vec![("c", 3.0), ("b", 2.0), ("a", 1.0)]);
+    }
+
+    #[test]
+    fn count_by_score_basic() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+        ss.add("d".into(), 4.0);
+
+        assert_eq!(
+            ss.count_by_score(ScoreBound::NegInf, ScoreBound::PosInf),
+            4
+        );
+        assert_eq!(
+            ss.count_by_score(ScoreBound::Inclusive(2.0), ScoreBound::Inclusive(3.0)),
+            2
+        );
+        assert_eq!(
+            ss.count_by_score(ScoreBound::Exclusive(1.0), ScoreBound::Exclusive(4.0)),
+            2
+        );
+        assert_eq!(
+            ss.count_by_score(ScoreBound::Inclusive(5.0), ScoreBound::Inclusive(10.0)),
+            0
+        );
+    }
+
+    #[test]
+    fn count_by_score_on_empty_set() {
+        let ss = SortedSet::new();
+        assert_eq!(ss.count_by_score(ScoreBound::NegInf, ScoreBound::PosInf), 0);
+    }
+
+    #[test]
+    fn incr_new_member() {
+        let mut ss = SortedSet::new();
+        let score = ss.incr("alice".into(), 5.0);
+        assert_eq!(score, 5.0);
+        assert_eq!(ss.score("alice"), Some(5.0));
+        assert_eq!(ss.len(), 1);
+    }
+
+    #[test]
+    fn incr_existing_member() {
+        let mut ss = SortedSet::new();
+        ss.add("alice".into(), 10.0);
+        let score = ss.incr("alice".into(), 5.0);
+        assert_eq!(score, 15.0);
+        assert_eq!(ss.score("alice"), Some(15.0));
+        assert_eq!(ss.len(), 1);
+    }
+
+    #[test]
+    fn incr_negative_delta() {
+        let mut ss = SortedSet::new();
+        ss.add("alice".into(), 10.0);
+        let score = ss.incr("alice".into(), -3.0);
+        assert_eq!(score, 7.0);
+    }
+
+    #[test]
+    fn pop_min_basic() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+
+        let popped = ss.pop_min(2);
+        assert_eq!(popped, vec![("a".into(), 1.0), ("b".into(), 2.0)]);
+        assert_eq!(ss.len(), 1);
+        assert_eq!(ss.score("c"), Some(3.0));
+        assert_eq!(ss.score("a"), None);
+    }
+
+    #[test]
+    fn pop_max_basic() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        ss.add("b".into(), 2.0);
+        ss.add("c".into(), 3.0);
+
+        let popped = ss.pop_max(2);
+        assert_eq!(popped, vec![("c".into(), 3.0), ("b".into(), 2.0)]);
+        assert_eq!(ss.len(), 1);
+        assert_eq!(ss.score("a"), Some(1.0));
+        assert_eq!(ss.score("c"), None);
+    }
+
+    #[test]
+    fn pop_min_more_than_available() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        let popped = ss.pop_min(5);
+        assert_eq!(popped.len(), 1);
+        assert!(ss.is_empty());
+    }
+
+    #[test]
+    fn pop_max_more_than_available() {
+        let mut ss = SortedSet::new();
+        ss.add("a".into(), 1.0);
+        let popped = ss.pop_max(5);
+        assert_eq!(popped.len(), 1);
+        assert!(ss.is_empty());
+    }
+
+    #[test]
+    fn pop_min_empty() {
+        let mut ss = SortedSet::new();
+        assert!(ss.pop_min(1).is_empty());
+    }
+
+    #[test]
+    fn pop_max_empty() {
+        let mut ss = SortedSet::new();
+        assert!(ss.pop_max(1).is_empty());
+    }
+
+    #[test]
+    fn pop_min_data_bytes_consistent() {
+        let mut ss = SortedSet::new();
+        ss.add("hello".into(), 1.0);
+        ss.add("world".into(), 2.0);
+        assert_eq!(ss.data_bytes, 10);
+
+        ss.pop_min(1);
+        assert_eq!(ss.data_bytes, 5);
+
+        ss.pop_min(1);
+        assert_eq!(ss.data_bytes, 0);
+    }
+
+    #[test]
+    fn pop_max_data_bytes_consistent() {
+        let mut ss = SortedSet::new();
+        ss.add("hello".into(), 1.0);
+        ss.add("world".into(), 2.0);
+        assert_eq!(ss.data_bytes, 10);
+
+        ss.pop_max(1);
+        assert_eq!(ss.data_bytes, 5);
+
+        ss.pop_max(1);
+        assert_eq!(ss.data_bytes, 0);
     }
 }

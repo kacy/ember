@@ -250,6 +250,57 @@ pub enum Command {
         with_scores: bool,
     },
 
+    /// ZREVRANGE `key` `start` `stop` \[WITHSCORES\]. Returns a range by rank in reverse order.
+    ZRevRange {
+        key: String,
+        start: i64,
+        stop: i64,
+        with_scores: bool,
+    },
+
+    /// ZREVRANK `key` `member`. Returns the reverse rank of a member.
+    ZRevRank { key: String, member: String },
+
+    /// ZCOUNT `key` `min` `max`. Counts members with scores in the given range.
+    ZCount {
+        key: String,
+        min: ScoreBound,
+        max: ScoreBound,
+    },
+
+    /// ZINCRBY `key` `increment` `member`. Increments the score of a member.
+    ZIncrBy {
+        key: String,
+        increment: f64,
+        member: String,
+    },
+
+    /// ZRANGEBYSCORE `key` `min` `max` \[WITHSCORES\] \[LIMIT offset count\].
+    ZRangeByScore {
+        key: String,
+        min: ScoreBound,
+        max: ScoreBound,
+        with_scores: bool,
+        offset: usize,
+        count: Option<usize>,
+    },
+
+    /// ZREVRANGEBYSCORE `key` `max` `min` \[WITHSCORES\] \[LIMIT offset count\].
+    ZRevRangeByScore {
+        key: String,
+        min: ScoreBound,
+        max: ScoreBound,
+        with_scores: bool,
+        offset: usize,
+        count: Option<usize>,
+    },
+
+    /// ZPOPMIN `key` \[count\]. Removes and returns the lowest scored members.
+    ZPopMin { key: String, count: usize },
+
+    /// ZPOPMAX `key` \[count\]. Removes and returns the highest scored members.
+    ZPopMax { key: String, count: usize },
+
     /// HSET `key` `field` `value` \[field value ...\]. Sets field-value pairs in a hash.
     HSet {
         key: String,
@@ -619,6 +670,22 @@ pub enum Command {
     Unknown(String),
 }
 
+/// A score bound for sorted set range queries (ZRANGEBYSCORE, ZCOUNT, etc.).
+///
+/// Redis supports `-inf`, `+inf`, inclusive (default), and exclusive
+/// bounds (prefixed with `(`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScoreBound {
+    /// Negative infinity — matches all scores from the bottom.
+    NegInf,
+    /// Positive infinity — matches all scores to the top.
+    PosInf,
+    /// Inclusive bound: score >= value (for min) or score <= value (for max).
+    Inclusive(f64),
+    /// Exclusive bound: score > value (for min) or score < value (for max).
+    Exclusive(f64),
+}
+
 /// Flags for the ZADD command.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ZAddFlags {
@@ -724,8 +791,16 @@ impl Command {
             Command::ZRem { .. } => "zrem",
             Command::ZScore { .. } => "zscore",
             Command::ZRank { .. } => "zrank",
+            Command::ZRevRank { .. } => "zrevrank",
             Command::ZCard { .. } => "zcard",
             Command::ZRange { .. } => "zrange",
+            Command::ZRevRange { .. } => "zrevrange",
+            Command::ZCount { .. } => "zcount",
+            Command::ZIncrBy { .. } => "zincrby",
+            Command::ZRangeByScore { .. } => "zrangebyscore",
+            Command::ZRevRangeByScore { .. } => "zrevrangebyscore",
+            Command::ZPopMin { .. } => "zpopmin",
+            Command::ZPopMax { .. } => "zpopmax",
 
             // hash
             Command::HSet { .. } => "hset",
@@ -857,6 +932,9 @@ impl Command {
             // sorted set
                 | Command::ZAdd { .. }
                 | Command::ZRem { .. }
+                | Command::ZIncrBy { .. }
+                | Command::ZPopMin { .. }
+                | Command::ZPopMax { .. }
             // hash
                 | Command::HSet { .. }
                 | Command::HDel { .. }
@@ -976,13 +1054,22 @@ impl Command {
             Command::BLPop { .. } | Command::BRPop { .. } => WRITE | LIST | SLOW,
 
             // sorted set — reads
-            Command::ZScore { .. } | Command::ZRank { .. } | Command::ZCard { .. } => {
-                READ | SORTEDSET | FAST
-            }
-            Command::ZRange { .. } => READ | SORTEDSET | SLOW,
+            Command::ZScore { .. }
+            | Command::ZRank { .. }
+            | Command::ZRevRank { .. }
+            | Command::ZCard { .. }
+            | Command::ZCount { .. } => READ | SORTEDSET | FAST,
+            Command::ZRange { .. }
+            | Command::ZRevRange { .. }
+            | Command::ZRangeByScore { .. }
+            | Command::ZRevRangeByScore { .. } => READ | SORTEDSET | SLOW,
 
             // sorted set — writes
-            Command::ZAdd { .. } | Command::ZRem { .. } => WRITE | SORTEDSET | SLOW,
+            Command::ZAdd { .. }
+            | Command::ZRem { .. }
+            | Command::ZIncrBy { .. }
+            | Command::ZPopMin { .. }
+            | Command::ZPopMax { .. } => WRITE | SORTEDSET | SLOW,
 
             // hash — reads
             Command::HGet { .. } | Command::HExists { .. } | Command::HLen { .. } => {
@@ -1248,8 +1335,22 @@ impl Command {
             "ZREM" => parse_zrem(&frames[1..]),
             "ZSCORE" => parse_zscore(&frames[1..]),
             "ZRANK" => parse_zrank(&frames[1..]),
+            "ZREVRANK" => parse_zrevrank(&frames[1..]),
             "ZCARD" => parse_zcard(&frames[1..]),
             "ZRANGE" => parse_zrange(&frames[1..]),
+            "ZREVRANGE" => parse_zrevrange(&frames[1..]),
+            "ZCOUNT" => parse_zcount(&frames[1..]),
+            "ZINCRBY" => parse_zincrby(&frames[1..]),
+            "ZRANGEBYSCORE" => parse_zrangebyscore(&frames[1..]),
+            "ZREVRANGEBYSCORE" => parse_zrevrangebyscore(&frames[1..]),
+            "ZPOPMIN" => {
+                let (key, count) = parse_zpop_args(&frames[1..], "ZPOPMIN")?;
+                Ok(Command::ZPopMin { key, count })
+            }
+            "ZPOPMAX" => {
+                let (key, count) = parse_zpop_args(&frames[1..], "ZPOPMAX")?;
+                Ok(Command::ZPopMax { key, count })
+            }
             "HSET" => parse_hset(&frames[1..]),
             "HGET" => parse_hget(&frames[1..]),
             "HGETALL" => parse_hgetall(&frames[1..]),
@@ -2193,6 +2294,218 @@ fn parse_zrange(args: &[Frame]) -> Result<Command, ProtocolError> {
         stop,
         with_scores,
     })
+}
+
+fn parse_zrevrange(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 || args.len() > 4 {
+        return Err(wrong_arity("ZREVRANGE"));
+    }
+    let key = extract_string(&args[0])?;
+    let start = parse_i64(&args[1], "ZREVRANGE")?;
+    let stop = parse_i64(&args[2], "ZREVRANGE")?;
+
+    let with_scores = if args.len() == 4 {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let opt = uppercase_arg(&args[3], &mut kw)?;
+        if opt != "WITHSCORES" {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "unsupported ZREVRANGE option '{opt}'"
+            )));
+        }
+        true
+    } else {
+        false
+    };
+
+    Ok(Command::ZRevRange {
+        key,
+        start,
+        stop,
+        with_scores,
+    })
+}
+
+fn parse_zrevrank(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("ZREVRANK"));
+    }
+    let key = extract_string(&args[0])?;
+    let member = extract_string(&args[1])?;
+    Ok(Command::ZRevRank { key, member })
+}
+
+/// Parses a Redis score bound string.
+///
+/// Supports `-inf`, `+inf`, `inf`, exclusive `(value`, and plain inclusive values.
+fn parse_score_bound(frame: &Frame, cmd: &str) -> Result<ScoreBound, ProtocolError> {
+    let bytes = extract_raw_bytes(frame)?;
+    let s = std::str::from_utf8(bytes).map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!("invalid score bound for '{cmd}'"))
+    })?;
+
+    match s {
+        "-inf" => Ok(ScoreBound::NegInf),
+        "+inf" | "inf" => Ok(ScoreBound::PosInf),
+        _ if s.starts_with('(') => {
+            let val = s[1..].parse::<f64>().map_err(|_| {
+                ProtocolError::InvalidCommandFrame(format!(
+                    "min or max is not a float for '{cmd}'"
+                ))
+            })?;
+            Ok(ScoreBound::Exclusive(val))
+        }
+        _ => {
+            let val = s.parse::<f64>().map_err(|_| {
+                ProtocolError::InvalidCommandFrame(format!(
+                    "min or max is not a float for '{cmd}'"
+                ))
+            })?;
+            Ok(ScoreBound::Inclusive(val))
+        }
+    }
+}
+
+fn parse_zcount(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("ZCOUNT"));
+    }
+    let key = extract_string(&args[0])?;
+    let min = parse_score_bound(&args[1], "ZCOUNT")?;
+    let max = parse_score_bound(&args[2], "ZCOUNT")?;
+    Ok(Command::ZCount { key, min, max })
+}
+
+fn parse_zincrby(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("ZINCRBY"));
+    }
+    let key = extract_string(&args[0])?;
+    let increment = parse_f64(&args[1], "ZINCRBY")?;
+    let member = extract_string(&args[2])?;
+    Ok(Command::ZIncrBy {
+        key,
+        increment,
+        member,
+    })
+}
+
+/// Parses ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]
+fn parse_zrangebyscore(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 {
+        return Err(wrong_arity("ZRANGEBYSCORE"));
+    }
+    let key = extract_string(&args[0])?;
+    let min = parse_score_bound(&args[1], "ZRANGEBYSCORE")?;
+    let max = parse_score_bound(&args[2], "ZRANGEBYSCORE")?;
+
+    let mut with_scores = false;
+    let mut offset = 0usize;
+    let mut count = None;
+    let mut idx = 3;
+
+    while idx < args.len() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let opt = uppercase_arg(&args[idx], &mut kw)?;
+        match opt {
+            "WITHSCORES" => {
+                with_scores = true;
+                idx += 1;
+            }
+            "LIMIT" => {
+                if idx + 2 >= args.len() {
+                    return Err(wrong_arity("ZRANGEBYSCORE"));
+                }
+                offset = parse_i64(&args[idx + 1], "ZRANGEBYSCORE")? as usize;
+                count = Some(parse_i64(&args[idx + 2], "ZRANGEBYSCORE")? as usize);
+                idx += 3;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported ZRANGEBYSCORE option '{opt}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::ZRangeByScore {
+        key,
+        min,
+        max,
+        with_scores,
+        offset,
+        count,
+    })
+}
+
+/// Parses ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]
+///
+/// Note: Redis reverses min/max argument order for this command.
+fn parse_zrevrangebyscore(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 {
+        return Err(wrong_arity("ZREVRANGEBYSCORE"));
+    }
+    let key = extract_string(&args[0])?;
+    // Redis: ZREVRANGEBYSCORE key max min — the order is reversed
+    let max = parse_score_bound(&args[1], "ZREVRANGEBYSCORE")?;
+    let min = parse_score_bound(&args[2], "ZREVRANGEBYSCORE")?;
+
+    let mut with_scores = false;
+    let mut offset = 0usize;
+    let mut count = None;
+    let mut idx = 3;
+
+    while idx < args.len() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let opt = uppercase_arg(&args[idx], &mut kw)?;
+        match opt {
+            "WITHSCORES" => {
+                with_scores = true;
+                idx += 1;
+            }
+            "LIMIT" => {
+                if idx + 2 >= args.len() {
+                    return Err(wrong_arity("ZREVRANGEBYSCORE"));
+                }
+                offset = parse_i64(&args[idx + 1], "ZREVRANGEBYSCORE")? as usize;
+                count = Some(parse_i64(&args[idx + 2], "ZREVRANGEBYSCORE")? as usize);
+                idx += 3;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported ZREVRANGEBYSCORE option '{opt}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::ZRevRangeByScore {
+        key,
+        min,
+        max,
+        with_scores,
+        offset,
+        count,
+    })
+}
+
+/// Shared argument parsing for ZPOPMIN/ZPOPMAX: key [count]
+fn parse_zpop_args(args: &[Frame], cmd: &'static str) -> Result<(String, usize), ProtocolError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(wrong_arity(cmd));
+    }
+    let key = extract_string(&args[0])?;
+    let count = if args.len() == 2 {
+        let c = parse_i64(&args[1], cmd)?;
+        if c < 0 {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "value is out of range for '{cmd}'"
+            )));
+        }
+        c as usize
+    } else {
+        1
+    };
+    Ok((key, count))
 }
 
 // --- hash commands ---

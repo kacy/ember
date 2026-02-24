@@ -72,6 +72,26 @@ pub(super) fn to_aof_records(
                 members: removed.clone(),
             }]
         }
+        // ZINCRBY: persist as a ZADD with the final score (avoids float drift on replay)
+        (
+            ShardRequest::ZIncrBy { key, .. },
+            ShardResponse::ZIncrByResult { new_score, member },
+        ) => {
+            smallvec![AofRecord::ZAdd {
+                key,
+                members: vec![(*new_score, member.clone())],
+            }]
+        }
+        // ZPOPMIN/ZPOPMAX: persist as ZREM of the removed members
+        (
+            ShardRequest::ZPopMin { key, .. } | ShardRequest::ZPopMax { key, .. },
+            ShardResponse::ZPopResult(items),
+        ) if !items.is_empty() => {
+            smallvec![AofRecord::ZRem {
+                key,
+                members: items.iter().map(|(m, _)| m.clone()).collect(),
+            }]
+        }
         (ShardRequest::Incr { key }, ShardResponse::Integer(_)) => {
             smallvec![AofRecord::Incr { key }]
         }

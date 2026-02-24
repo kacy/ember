@@ -83,10 +83,14 @@ enum ResponseTag {
     ZRemResult,
     /// ZSCORE: Score(Some) → Bulk, Score(None) → Null
     ZScoreResult,
-    /// ZRANK: Rank(Some) → Integer, Rank(None) → Null
+    /// ZRANK/ZREVRANK: Rank(Some) → Integer, Rank(None) → Null
     ZRankResult,
-    /// ZRANGE: ScoredArray → Array (with_scores handled by tag variant)
+    /// ZRANGE/ZREVRANGE/ZRANGEBYSCORE/ZREVRANGEBYSCORE: ScoredArray → Array
     ZRangeResult { with_scores: bool },
+    /// ZINCRBY: ZIncrByResult → Bulk (score as string)
+    ZIncrByResult,
+    /// ZPOPMIN/ZPOPMAX: ZPopResult → Array of member/score pairs
+    ZPopResult,
     /// HSET: Len → Integer (with OOM)
     HSetResult,
     /// HGET: Value(Some(String)) → Bulk, Value(None) → Null
@@ -1913,8 +1917,108 @@ async fn prepare_command(
                 ResponseTag::ZRangeResult { with_scores }
             )
         }
+        Command::ZRevRank { key, member } => {
+            route!(
+                key,
+                ShardRequest::ZRevRank { key, member },
+                ResponseTag::ZRankResult
+            )
+        }
         Command::ZCard { key } => {
             route!(key, ShardRequest::ZCard { key }, ResponseTag::LenResult)
+        }
+        Command::ZRevRange {
+            key,
+            start,
+            stop,
+            with_scores,
+        } => {
+            route!(
+                key,
+                ShardRequest::ZRevRange {
+                    key,
+                    start,
+                    stop,
+                    with_scores
+                },
+                ResponseTag::ZRangeResult { with_scores }
+            )
+        }
+        Command::ZCount { key, min, max } => {
+            route!(
+                key,
+                ShardRequest::ZCount { key, min, max },
+                ResponseTag::LenResult
+            )
+        }
+        Command::ZIncrBy {
+            key,
+            increment,
+            member,
+        } => {
+            route!(
+                key,
+                ShardRequest::ZIncrBy {
+                    key,
+                    increment,
+                    member
+                },
+                ResponseTag::ZIncrByResult
+            )
+        }
+        Command::ZRangeByScore {
+            key,
+            min,
+            max,
+            with_scores,
+            offset,
+            count,
+        } => {
+            route!(
+                key,
+                ShardRequest::ZRangeByScore {
+                    key,
+                    min,
+                    max,
+                    offset,
+                    count
+                },
+                ResponseTag::ZRangeResult { with_scores }
+            )
+        }
+        Command::ZRevRangeByScore {
+            key,
+            min,
+            max,
+            with_scores,
+            offset,
+            count,
+        } => {
+            route!(
+                key,
+                ShardRequest::ZRevRangeByScore {
+                    key,
+                    min,
+                    max,
+                    offset,
+                    count
+                },
+                ResponseTag::ZRangeResult { with_scores }
+            )
+        }
+        Command::ZPopMin { key, count } => {
+            route!(
+                key,
+                ShardRequest::ZPopMin { key, count },
+                ResponseTag::ZPopResult
+            )
+        }
+        Command::ZPopMax { key, count } => {
+            route!(
+                key,
+                ShardRequest::ZPopMax { key, count },
+                ResponseTag::ZPopResult
+            )
         }
 
         // -- hash commands --
@@ -2482,6 +2586,28 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
 
+        ResponseTag::ZIncrByResult => match resp {
+            ShardResponse::ZIncrByResult { new_score, .. } => {
+                Frame::Bulk(Bytes::from(format!("{new_score}")))
+            }
+            ShardResponse::WrongType => wrongtype_error(),
+            ShardResponse::OutOfMemory => oom_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
+        ResponseTag::ZPopResult => match resp {
+            ShardResponse::ZPopResult(items) => {
+                let mut frames = Vec::with_capacity(items.len() * 2);
+                for (member, score) in items {
+                    frames.push(Frame::Bulk(Bytes::from(member)));
+                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                }
+                Frame::Array(frames)
+            }
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
         ResponseTag::HGetAllResult => match resp {
             ShardResponse::HashFields(fields) => {
                 let mut frames = Vec::with_capacity(fields.len() * 2);
@@ -2724,8 +2850,16 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::ZRem { ref key, .. }
         | Command::ZScore { ref key, .. }
         | Command::ZRank { ref key, .. }
+        | Command::ZRevRank { ref key, .. }
         | Command::ZRange { ref key, .. }
+        | Command::ZRevRange { ref key, .. }
         | Command::ZCard { ref key }
+        | Command::ZCount { ref key, .. }
+        | Command::ZIncrBy { ref key, .. }
+        | Command::ZRangeByScore { ref key, .. }
+        | Command::ZRevRangeByScore { ref key, .. }
+        | Command::ZPopMin { ref key, .. }
+        | Command::ZPopMax { ref key, .. }
         | Command::HSet { ref key, .. }
         | Command::HGet { ref key, .. }
         | Command::HGetAll { ref key }
@@ -3711,11 +3845,188 @@ async fn execute(
             }
         }
 
+        Command::ZRevRank { key, member } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRevRank { key, member };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Rank(Some(r))) => Frame::Integer(r as i64),
+                Ok(ShardResponse::Rank(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::ZCard { key } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ZCard { key };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRevRange {
+            key,
+            start,
+            stop,
+            with_scores,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRevRange {
+                key,
+                start,
+                stop,
+                with_scores,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZCount { key, min, max } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZCount { key, min, max };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZIncrBy {
+            key,
+            increment,
+            member,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZIncrBy {
+                key,
+                increment,
+                member,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZIncrByResult { new_score, .. }) => {
+                    Frame::Bulk(Bytes::from(format!("{new_score}")))
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRangeByScore {
+            key,
+            min,
+            max,
+            with_scores,
+            offset,
+            count,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRangeByScore {
+                key,
+                min,
+                max,
+                offset,
+                count,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRevRangeByScore {
+            key,
+            min,
+            max,
+            with_scores,
+            offset,
+            count,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRevRangeByScore {
+                key,
+                min,
+                max,
+                offset,
+                count,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZPopMin { key, count } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZPopMin { key, count };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZPopResult(items)) => {
+                    let mut frames = Vec::with_capacity(items.len() * 2);
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZPopMax { key, count } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZPopMax { key, count };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZPopResult(items)) => {
+                    let mut frames = Vec::with_capacity(items.len() * 2);
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                    }
+                    Frame::Array(frames)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
