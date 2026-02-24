@@ -172,6 +172,317 @@ impl Keyspace {
         }
     }
 
+    /// Returns the union of all given sets.
+    ///
+    /// Keys that don't exist are treated as empty sets. Returns an error
+    /// only if any key holds a non-set type.
+    pub fn sunion(&mut self, keys: &[String]) -> Result<Vec<String>, WrongType> {
+        let mut result = std::collections::HashSet::new();
+        for key in keys {
+            self.remove_if_expired(key);
+            match self.entries.get_mut(key.as_str()) {
+                None => {}
+                Some(entry) => match &entry.value {
+                    Value::Set(set) => {
+                        result.extend(set.iter().cloned());
+                        entry.touch();
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        Ok(result.into_iter().collect())
+    }
+
+    /// Returns the intersection of all given sets.
+    ///
+    /// If any key doesn't exist, the result is empty. Returns an error
+    /// only if any key holds a non-set type.
+    pub fn sinter(&mut self, keys: &[String]) -> Result<Vec<String>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // check types and find missing keys first
+        for key in keys {
+            self.remove_if_expired(key);
+            match self.entries.get(key.as_str()) {
+                None => return Ok(vec![]), // any missing key → empty intersection
+                Some(entry) => {
+                    if !matches!(&entry.value, Value::Set(_)) {
+                        return Err(WrongType);
+                    }
+                }
+            }
+        }
+
+        // start with the first set, intersect with the rest
+        let entry = self.entries.get_mut(keys[0].as_str()).expect("checked above");
+        let Value::Set(ref base) = entry.value else {
+            unreachable!("type checked above");
+        };
+        let candidates: Vec<String> = base.iter().cloned().collect();
+        entry.touch();
+
+        let result: Vec<String> = candidates
+            .into_iter()
+            .filter(|member| {
+                keys[1..].iter().all(|key| {
+                    self.entries
+                        .get(key.as_str())
+                        .and_then(|e| match &e.value {
+                            Value::Set(s) => Some(s.contains(member)),
+                            _ => None,
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .collect();
+
+        // touch remaining keys
+        for key in &keys[1..] {
+            if let Some(entry) = self.entries.get_mut(key.as_str()) {
+                entry.touch();
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Returns members of the first set that are not in any of the other sets.
+    ///
+    /// If the first key doesn't exist, the result is empty. Returns an error
+    /// only if any key holds a non-set type.
+    pub fn sdiff(&mut self, keys: &[String]) -> Result<Vec<String>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // type-check all keys
+        for key in keys {
+            self.remove_if_expired(key);
+            if let Some(entry) = self.entries.get(key.as_str()) {
+                if !matches!(&entry.value, Value::Set(_)) {
+                    return Err(WrongType);
+                }
+            }
+        }
+
+        let Some(first_entry) = self.entries.get_mut(keys[0].as_str()) else {
+            return Ok(vec![]);
+        };
+        let Value::Set(ref base) = first_entry.value else {
+            unreachable!("type checked above");
+        };
+        let candidates: Vec<String> = base.iter().cloned().collect();
+        first_entry.touch();
+
+        let result: Vec<String> = candidates
+            .into_iter()
+            .filter(|member| {
+                !keys[1..].iter().any(|key| {
+                    self.entries
+                        .get(key.as_str())
+                        .and_then(|e| match &e.value {
+                            Value::Set(s) => Some(s.contains(member)),
+                            _ => None,
+                        })
+                        .unwrap_or(false)
+                })
+            })
+            .collect();
+
+        // touch remaining keys
+        for key in &keys[1..] {
+            if let Some(entry) = self.entries.get_mut(key.as_str()) {
+                entry.touch();
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Stores the union of all source sets into `dest`.
+    ///
+    /// Overwrites the destination if it already exists. Returns the
+    /// cardinality of the resulting set.
+    pub fn sunionstore(
+        &mut self,
+        dest: &str,
+        keys: &[String],
+    ) -> Result<usize, WriteError> {
+        let members = self.sunion(keys).map_err(|_| WriteError::WrongType)?;
+        self.store_set_result(dest, members)
+    }
+
+    /// Stores the intersection of all source sets into `dest`.
+    pub fn sinterstore(
+        &mut self,
+        dest: &str,
+        keys: &[String],
+    ) -> Result<usize, WriteError> {
+        let members = self.sinter(keys).map_err(|_| WriteError::WrongType)?;
+        self.store_set_result(dest, members)
+    }
+
+    /// Stores the difference of sets (first minus the rest) into `dest`.
+    pub fn sdiffstore(
+        &mut self,
+        dest: &str,
+        keys: &[String],
+    ) -> Result<usize, WriteError> {
+        let members = self.sdiff(keys).map_err(|_| WriteError::WrongType)?;
+        self.store_set_result(dest, members)
+    }
+
+    /// Writes a computed set result to `dest`, replacing any existing key.
+    fn store_set_result(
+        &mut self,
+        dest: &str,
+        members: Vec<String>,
+    ) -> Result<usize, WriteError> {
+        // delete destination first
+        self.remove_if_expired(dest);
+        if let Some(old) = self.entries.remove(dest) {
+            self.memory.remove(dest, &old.value);
+            self.decrement_expiry_if_set(&old);
+            self.defer_drop(old.value);
+        }
+
+        let count = members.len();
+        if count == 0 {
+            return Ok(0);
+        }
+
+        let member_bytes: usize = members
+            .iter()
+            .map(|m| m.len() + memory::HASHSET_MEMBER_OVERHEAD)
+            .sum();
+        self.reserve_memory(true, dest, memory::HASHSET_BASE_OVERHEAD, member_bytes)?;
+
+        let set: std::collections::HashSet<String> = members.into_iter().collect();
+        let value = Value::Set(Box::new(set));
+        self.memory.add(dest, &value);
+        let mut entry = Entry::new(value, None);
+        entry.version = self.next_ver();
+        self.entries.insert(CompactString::from(dest), entry);
+
+        Ok(count)
+    }
+
+    /// Returns random members from a set without removing them.
+    ///
+    /// - `count > 0`: return up to `count` distinct members
+    /// - `count < 0`: return `|count|` members, allowing duplicates
+    /// - `count == 0`: return empty
+    pub fn srandmember(
+        &mut self,
+        key: &str,
+        count: i64,
+    ) -> Result<Vec<String>, WrongType> {
+        if self.remove_if_expired(key) || count == 0 {
+            return Ok(vec![]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![]),
+            Some(entry) => {
+                let Value::Set(ref set) = entry.value else {
+                    return Err(WrongType);
+                };
+                if set.is_empty() {
+                    entry.touch();
+                    return Ok(vec![]);
+                }
+
+                let mut rng = rand::rng();
+                let result = if count > 0 {
+                    // distinct members, up to set size
+                    let n = (count as usize).min(set.len());
+                    set.iter().choose_multiple(&mut rng, n).into_iter().cloned().collect()
+                } else {
+                    // allow duplicates, return exactly |count| elements
+                    let n = count.unsigned_abs() as usize;
+                    let members: Vec<&String> = set.iter().collect();
+                    use rand::Rng;
+                    (0..n)
+                        .map(|_| members[rng.random_range(0..members.len())].clone())
+                        .collect()
+                };
+
+                entry.touch();
+                Ok(result)
+            }
+        }
+    }
+
+    /// Removes and returns up to `count` random members from a set.
+    pub fn spop(&mut self, key: &str, count: usize) -> Result<Vec<String>, WrongType> {
+        if self.remove_if_expired(key) || count == 0 {
+            return Ok(vec![]);
+        }
+
+        let ver = self.next_ver();
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(vec![]);
+        };
+        if !matches!(entry.value, Value::Set(_)) {
+            return Err(WrongType);
+        }
+
+        let old_entry_size = entry.entry_size(key);
+
+        // reborrow to get mutable access to the set
+        let Value::Set(ref mut set) = entry.value else {
+            unreachable!("type checked above");
+        };
+        if set.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let n = count.min(set.len());
+        let mut rng = rand::rng();
+        let chosen: Vec<String> = set.iter().choose_multiple(&mut rng, n).into_iter().cloned().collect();
+
+        let mut removed_bytes = 0usize;
+        for member in &chosen {
+            set.remove(member);
+            removed_bytes += member.len() + memory::HASHSET_MEMBER_OVERHEAD;
+        }
+        let is_empty = set.is_empty();
+
+        if !chosen.is_empty() {
+            entry.version = ver;
+        }
+
+        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
+
+        Ok(chosen)
+    }
+
+    /// Checks membership for multiple members at once.
+    ///
+    /// Returns a boolean for each member in the same order.
+    pub fn smismember(
+        &mut self,
+        key: &str,
+        members: &[String],
+    ) -> Result<Vec<bool>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(vec![false; members.len()]);
+        }
+        match self.entries.get_mut(key) {
+            None => Ok(vec![false; members.len()]),
+            Some(entry) => match &entry.value {
+                Value::Set(set) => {
+                    let result = members.iter().map(|m| set.contains(m)).collect();
+                    entry.touch();
+                    Ok(result)
+                }
+                _ => Err(WrongType),
+            },
+        }
+    }
+
     /// Returns the cardinality (number of elements) of a set.
     pub fn scard(&mut self, key: &str) -> Result<usize, WrongType> {
         if self.remove_if_expired(key) {
@@ -350,6 +661,279 @@ mod tests {
         }
         // all 20 members collected
         assert_eq!(collected.len(), 20);
+    }
+
+    // --- sunion ---
+
+    #[test]
+    fn sunion_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into()]).unwrap();
+        ks.sadd("s2", &["b".into(), "c".into()]).unwrap();
+        let mut result = ks.sunion(&["s1".into(), "s2".into()]).unwrap();
+        result.sort();
+        assert_eq!(result, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn sunion_with_missing_key() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into()]).unwrap();
+        let mut result = ks.sunion(&["s1".into(), "missing".into()]).unwrap();
+        result.sort();
+        assert_eq!(result, vec!["a"]);
+    }
+
+    #[test]
+    fn sunion_empty_keys() {
+        let mut ks = Keyspace::new();
+        assert!(ks.sunion(&[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn sunion_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into()]).unwrap();
+        ks.set("str".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.sunion(&["s1".into(), "str".into()]).is_err());
+    }
+
+    // --- sinter ---
+
+    #[test]
+    fn sinter_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
+        ks.sadd("s2", &["b".into(), "c".into(), "d".into()]).unwrap();
+        let mut result = ks.sinter(&["s1".into(), "s2".into()]).unwrap();
+        result.sort();
+        assert_eq!(result, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn sinter_missing_key_returns_empty() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into()]).unwrap();
+        let result = ks.sinter(&["s1".into(), "missing".into()]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sinter_disjoint_sets() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into()]).unwrap();
+        ks.sadd("s2", &["b".into()]).unwrap();
+        let result = ks.sinter(&["s1".into(), "s2".into()]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sinter_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("str".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.sinter(&["str".into()]).is_err());
+    }
+
+    // --- sdiff ---
+
+    #[test]
+    fn sdiff_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
+        ks.sadd("s2", &["b".into(), "d".into()]).unwrap();
+        let mut result = ks.sdiff(&["s1".into(), "s2".into()]).unwrap();
+        result.sort();
+        assert_eq!(result, vec!["a", "c"]);
+    }
+
+    #[test]
+    fn sdiff_missing_first_key() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s2", &["a".into()]).unwrap();
+        let result = ks.sdiff(&["missing".into(), "s2".into()]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn sdiff_missing_second_key() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into()]).unwrap();
+        let mut result = ks.sdiff(&["s1".into(), "missing".into()]).unwrap();
+        result.sort();
+        assert_eq!(result, vec!["a", "b"]);
+    }
+
+    // --- sunionstore / sinterstore / sdiffstore ---
+
+    #[test]
+    fn sunionstore_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into()]).unwrap();
+        ks.sadd("s2", &["b".into(), "c".into()]).unwrap();
+        let count = ks.sunionstore("dest", &["s1".into(), "s2".into()]).unwrap();
+        assert_eq!(count, 3);
+        let mut members = ks.smembers("dest").unwrap();
+        members.sort();
+        assert_eq!(members, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn sinterstore_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
+        ks.sadd("s2", &["b".into(), "c".into(), "d".into()]).unwrap();
+        let count = ks.sinterstore("dest", &["s1".into(), "s2".into()]).unwrap();
+        assert_eq!(count, 2);
+        let mut members = ks.smembers("dest").unwrap();
+        members.sort();
+        assert_eq!(members, vec!["b", "c"]);
+    }
+
+    #[test]
+    fn sdiffstore_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()]).unwrap();
+        ks.sadd("s2", &["b".into()]).unwrap();
+        let count = ks.sdiffstore("dest", &["s1".into(), "s2".into()]).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn store_overwrites_destination() {
+        let mut ks = Keyspace::new();
+        ks.sadd("dest", &["old".into()]).unwrap();
+        ks.sadd("s1", &["new".into()]).unwrap();
+        ks.sunionstore("dest", &["s1".into()]).unwrap();
+        let members = ks.smembers("dest").unwrap();
+        assert_eq!(members, vec!["new"]);
+    }
+
+    #[test]
+    fn store_empty_result_deletes_dest() {
+        let mut ks = Keyspace::new();
+        ks.sadd("dest", &["old".into()]).unwrap();
+        // intersect with missing key → empty result
+        ks.sinterstore("dest", &["missing".into()]).unwrap();
+        assert_eq!(ks.value_type("dest"), "none");
+    }
+
+    // --- srandmember ---
+
+    #[test]
+    fn srandmember_positive_count() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "b".into(), "c".into()]).unwrap();
+        let result = ks.srandmember("s", 2).unwrap();
+        assert_eq!(result.len(), 2);
+        // all returned members should be from the set
+        for m in &result {
+            assert!(["a", "b", "c"].contains(&m.as_str()));
+        }
+        // results should be distinct
+        let unique: std::collections::HashSet<_> = result.iter().collect();
+        assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn srandmember_count_larger_than_set() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "b".into()]).unwrap();
+        let result = ks.srandmember("s", 10).unwrap();
+        assert_eq!(result.len(), 2); // capped at set size
+    }
+
+    #[test]
+    fn srandmember_negative_count_allows_duplicates() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["only".into()]).unwrap();
+        let result = ks.srandmember("s", -5).unwrap();
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|m| m == "only"));
+    }
+
+    #[test]
+    fn srandmember_zero_returns_empty() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into()]).unwrap();
+        assert!(ks.srandmember("s", 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn srandmember_missing_key() {
+        let mut ks = Keyspace::new();
+        assert!(ks.srandmember("missing", 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn srandmember_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("str".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.srandmember("str", 1).is_err());
+    }
+
+    // --- spop ---
+
+    #[test]
+    fn spop_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "b".into(), "c".into()]).unwrap();
+        let result = ks.spop("s", 1).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(ks.scard("s").unwrap(), 2);
+    }
+
+    #[test]
+    fn spop_all_members() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "b".into()]).unwrap();
+        let result = ks.spop("s", 10).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(ks.value_type("s"), "none"); // auto-deleted
+    }
+
+    #[test]
+    fn spop_missing_key() {
+        let mut ks = Keyspace::new();
+        assert!(ks.spop("missing", 1).unwrap().is_empty());
+    }
+
+    #[test]
+    fn spop_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("str".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.spop("str", 1).is_err());
+    }
+
+    #[test]
+    fn spop_zero_count() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into()]).unwrap();
+        assert!(ks.spop("s", 0).unwrap().is_empty());
+        assert_eq!(ks.scard("s").unwrap(), 1);
+    }
+
+    // --- smismember ---
+
+    #[test]
+    fn smismember_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s", &["a".into(), "c".into()]).unwrap();
+        let result = ks.smismember("s", &["a".into(), "b".into(), "c".into()]).unwrap();
+        assert_eq!(result, vec![true, false, true]);
+    }
+
+    #[test]
+    fn smismember_missing_key() {
+        let mut ks = Keyspace::new();
+        let result = ks.smismember("missing", &["a".into()]).unwrap();
+        assert_eq!(result, vec![false]);
+    }
+
+    #[test]
+    fn smismember_wrong_type() {
+        let mut ks = Keyspace::new();
+        ks.set("str".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.smismember("str", &["a".into()]).is_err());
     }
 
     #[test]
