@@ -6,7 +6,7 @@
   <a href="https://github.com/kacy/ember/actions"><img src="https://github.com/kacy/ember/workflows/ci/badge.svg" alt="build status"></a>
   <a href="https://crates.io/crates/ember-server"><img src="https://img.shields.io/crates/v/ember-server.svg" alt="crates.io"></a>
   <img src="https://img.shields.io/badge/rust-1.93%2B-blue.svg" alt="rust version">
-  <a href="https://github.com/kacy/ember/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="license"></a>
+  <a href="https://github.com/kacy/ember/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license"></a>
   <a href="https://charts.emberdb.com"><img src="https://img.shields.io/badge/helm-charts.emberdb.com-0f1689.svg" alt="helm chart"></a>
   <a href="https://github.com/kacy/homebrew-ember"><img src="https://img.shields.io/badge/homebrew-kacy%2Fember-f9a825.svg" alt="homebrew"></a>
 </p>
@@ -502,4 +502,4 @@ see [SECURITY.md](SECURITY.md) for:
 
 ## license
 
-MIT
+Apache 2.0

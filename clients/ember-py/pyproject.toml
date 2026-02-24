@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "python client for the ember cache server over gRPC"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "Apache-2.0"
 dependencies = [
     "grpcio>=1.60",
     "protobuf>=4.25",
