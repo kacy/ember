@@ -23,21 +23,7 @@ use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
 
-/// A score bound for range queries (ZRANGEBYSCORE, ZCOUNT, etc.).
-///
-/// Redis supports `-inf`, `+inf`, inclusive (default), and exclusive
-/// bounds (prefixed with `(`). This enum captures all four variants.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScoreBound {
-    /// Negative infinity — matches all scores from the bottom.
-    NegInf,
-    /// Positive infinity — matches all scores to the top.
-    PosInf,
-    /// Inclusive bound: score >= value (for min) or score <= value (for max).
-    Inclusive(f64),
-    /// Exclusive bound: score > value (for min) or score < value (for max).
-    Exclusive(f64),
-}
+pub use ember_protocol::command::ScoreBound;
 
 /// Flags that control ZADD behavior.
 #[derive(Debug, Clone, Default)]
