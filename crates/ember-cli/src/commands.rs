@@ -110,10 +110,28 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "set multiple keys to multiple values",
     },
     CommandInfo {
+        name: "PSETEX",
+        args: "key milliseconds value",
+        group: "string",
+        summary: "set the value and expiration in milliseconds of a key",
+    },
+    CommandInfo {
         name: "SET",
         args: "key value [EX seconds | PX milliseconds] [NX|XX]",
         group: "string",
         summary: "set the string value of a key",
+    },
+    CommandInfo {
+        name: "SETEX",
+        args: "key seconds value",
+        group: "string",
+        summary: "set the value and expiration of a key",
+    },
+    CommandInfo {
+        name: "SETNX",
+        args: "key value",
+        group: "string",
+        summary: "set the value of a key, only if the key does not exist",
     },
     CommandInfo {
         name: "STRLEN",
