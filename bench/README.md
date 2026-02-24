@@ -242,11 +242,11 @@ per-key memory overhead across data types. string: 1M keys, 64B values. hash: 10
 | data type | ember | redis |
 |-----------|-------|-------|
 | string (64B) | 208 B/key | **173 B/key** |
-| hash (5 fields) | 451 B/key | **170 B/key** |
+| hash (5 fields) | 243 B/key | **170 B/key** |
 | sorted set | 115 B/member | **111 B/member** |
 | vector (128-dim) | 853 B/vector | — |
 
-redis is more memory-efficient for most data types thanks to ziplist/listpack compact encodings. ember's sharded architecture uses additional metadata for shard routing, which accounts for the per-key overhead on string keys.
+redis is more memory-efficient for most data types thanks to ziplist/listpack compact encodings. ember's sharded architecture uses additional metadata for shard routing, which accounts for the per-key overhead on string keys. hash memory was reduced from 451 to 243 B/key by replacing per-field `(CompactString, Bytes)` tuples (48 bytes overhead each) with a packed byte buffer (6 bytes overhead per field).
 
 ## running benchmarks
 
