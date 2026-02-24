@@ -87,10 +87,13 @@ class EmberClient(VectorClient):
     def insert_batch(self, ids: list, vectors: np.ndarray, key: str = None):
         target = key or self.keys[0]
         dim = vectors.shape[1]
-        args = [target, "DIM", str(dim)]
+        # binary mode: send each vector as a raw LE f32 blob instead of
+        # dim separate string arguments. eliminates 256K str(float()) calls
+        # per batch and 256K parse::<f32>() calls on the server.
+        args = [target, "DIM", str(dim), "BINARY"]
         for i, vid in enumerate(ids):
             args.append(vid)
-            args.extend(str(float(v)) for v in vectors[i])
+            args.append(vectors[i].tobytes())
         args += ["METRIC", "COSINE", "M", "16", "EF", "64"]
         self.conn.execute_command("VADD_BATCH", *args)
 
@@ -365,10 +368,10 @@ def benchmark_insert(client: VectorClient, vectors: np.ndarray,
             for batch_ids, batch_vecs, key in chunk:
                 target = key or client.keys[0]
                 dim = batch_vecs.shape[1]
-                args = [target, "DIM", str(dim)]
+                args = [target, "DIM", str(dim), "BINARY"]
                 for j, vid in enumerate(batch_ids):
                     args.append(vid)
-                    args.extend(str(float(v)) for v in batch_vecs[j])
+                    args.append(batch_vecs[j].tobytes())
                 args += ["METRIC", "COSINE", "M", "16", "EF", "64"]
                 pipe.execute_command("VADD_BATCH", *args)
             pipe.execute()

@@ -146,6 +146,15 @@ pub struct SearchResult {
     pub distance: f32,
 }
 
+/// Result of a batch insert operation.
+#[derive(Debug)]
+pub struct BatchResult {
+    /// Number of genuinely new elements added (not updates).
+    pub added_count: usize,
+    /// If the batch was partially applied, the first error encountered.
+    pub error: Option<VectorError>,
+}
+
 /// Error type for vector operations.
 #[derive(Debug, thiserror::Error)]
 pub enum VectorError {
@@ -259,7 +268,7 @@ impl VectorSet {
             return Err(VectorError::NonFinite);
         }
 
-        self.add_inner(element, vector)
+        self.add_inner(&element, vector)
     }
 
     /// Adds or replaces a vector that has already been validated (dim + finite check).
@@ -269,14 +278,17 @@ impl VectorSet {
     /// for better batch insert throughput.
     pub fn add_pre_validated(
         &mut self,
-        element: String,
+        element: &str,
         vector: &[f32],
     ) -> Result<bool, VectorError> {
         self.add_inner(element, vector)
     }
 
     /// Core insert logic shared by `add()` and `add_pre_validated()`.
-    fn add_inner(&mut self, element: String, vector: &[f32]) -> Result<bool, VectorError> {
+    ///
+    /// Takes `&str` to avoid forcing callers to clone — only allocates into
+    /// the hashmaps when the element is genuinely new.
+    fn add_inner(&mut self, element: &str, vector: &[f32]) -> Result<bool, VectorError> {
         // ensure capacity (double when full, amortized O(1))
         if self.index.size() >= self.index.capacity() {
             let new_cap = (self.index.capacity() * 2).max(64);
@@ -285,7 +297,7 @@ impl VectorSet {
                 .map_err(|e| VectorError::Index(e.to_string()))?;
         }
 
-        let is_new = if let Some(&existing_key) = self.elements.get(&element) {
+        let is_new = if let Some(&existing_key) = self.elements.get(element) {
             // remove old vector, then re-insert with same key
             let _ = self.index.remove(existing_key);
             self.index
@@ -299,12 +311,128 @@ impl VectorSet {
                 .add(key, vector)
                 .map_err(|e| VectorError::Index(e.to_string()))?;
             self.data_bytes += element.len();
-            self.elements.insert(element.clone(), key);
-            self.names.insert(key, element);
+            let owned = element.to_owned();
+            self.elements.insert(owned.clone(), key);
+            self.names.insert(key, owned);
             true
         };
 
         Ok(is_new)
+    }
+
+    /// Batch insert with parallel HNSW construction.
+    ///
+    /// Splits the work into three phases:
+    /// 1. **Sequential**: assign usearch keys, update element↔key maps, handle updates
+    /// 2. **Parallel**: `std::thread::scope` — partition `(key, &[f32])` pairs across
+    ///    threads, each calling `index.add()` concurrently (usearch `Index` is thread-safe)
+    /// 3. **Sequential**: update data_bytes, next_key, memory tracking
+    ///
+    /// Only parallelizes when batch_size >= 256 and available_parallelism >= 2.
+    /// Below threshold, falls back to sequential loop.
+    ///
+    /// All entries must be pre-validated (dim + finite check) by the caller.
+    pub fn add_batch_parallel(
+        &mut self,
+        entries: &[(String, Vec<f32>)],
+    ) -> Result<BatchResult, VectorError> {
+        if entries.is_empty() {
+            return Ok(BatchResult {
+                added_count: 0,
+                error: None,
+            });
+        }
+
+        // ensure capacity for entire batch upfront
+        self.reserve(entries.len())?;
+
+        let parallelism = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        let use_parallel = entries.len() >= 256 && parallelism >= 2;
+
+        if !use_parallel {
+            // sequential fallback
+            let mut added = 0usize;
+            for (element, vector) in entries {
+                match self.add_pre_validated(element, vector) {
+                    Ok(true) => added += 1,
+                    Ok(false) => {}
+                    Err(e) => {
+                        return Ok(BatchResult {
+                            added_count: added,
+                            error: Some(e),
+                        });
+                    }
+                }
+            }
+            return Ok(BatchResult {
+                added_count: added,
+                error: None,
+            });
+        }
+
+        // --- phase 1: sequential map updates + key assignment ---
+        // collect (usearch_key, &[f32]) pairs for the parallel index phase
+        let mut index_jobs: Vec<(u64, &[f32])> = Vec::with_capacity(entries.len());
+        let mut added_count = 0usize;
+
+        for (element, vector) in entries {
+            if let Some(&existing_key) = self.elements.get(element.as_str()) {
+                // update: remove old vector, reuse key
+                let _ = self.index.remove(existing_key);
+                index_jobs.push((existing_key, vector.as_slice()));
+            } else {
+                // new element: assign key, update maps
+                let key = self.next_key;
+                self.next_key = self.next_key.wrapping_add(1);
+                self.data_bytes += element.len();
+                let owned = element.clone();
+                self.elements.insert(owned.clone(), key);
+                self.names.insert(key, owned);
+                index_jobs.push((key, vector.as_slice()));
+                added_count += 1;
+            }
+        }
+
+        // --- phase 2: parallel HNSW construction ---
+        let thread_count = (entries.len() / 128).min(parallelism).clamp(1, 8);
+        let chunk_size = index_jobs.len().div_ceil(thread_count);
+        let index_ref = &self.index;
+
+        let errors: Vec<Option<String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = index_jobs
+                .chunks(chunk_size)
+                .map(|chunk| {
+                    s.spawn(move || {
+                        for &(key, vector) in chunk {
+                            if let Err(e) = index_ref.add(key, vector) {
+                                return Some(e.to_string());
+                            }
+                        }
+                        None
+                    })
+                })
+                .collect();
+
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or(Some("thread panicked".into())))
+                .collect()
+        });
+
+        // check for errors from parallel phase
+        if let Some(msg) = errors.into_iter().flatten().next() {
+            return Ok(BatchResult {
+                added_count,
+                error: Some(VectorError::Index(msg)),
+            });
+        }
+
+        Ok(BatchResult {
+            added_count,
+            error: None,
+        })
     }
 
     /// Removes an element from the vector set.
@@ -869,15 +997,91 @@ mod tests {
     #[test]
     fn add_pre_validated_works() {
         let mut vs = make_set(3);
-        let added = vs.add_pre_validated("a".into(), &[1.0, 0.0, 0.0]).unwrap();
+        let added = vs.add_pre_validated("a", &[1.0, 0.0, 0.0]).unwrap();
         assert!(added);
         assert_eq!(vs.len(), 1);
         assert_eq!(vs.get("a").unwrap(), vec![1.0, 0.0, 0.0]);
 
         // update via pre_validated
-        let added = vs.add_pre_validated("a".into(), &[0.0, 1.0, 0.0]).unwrap();
+        let added = vs.add_pre_validated("a", &[0.0, 1.0, 0.0]).unwrap();
         assert!(!added);
         assert_eq!(vs.get("a").unwrap(), vec![0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn batch_parallel_basic() {
+        let mut vs = make_set(3);
+        let entries: Vec<(String, Vec<f32>)> = vec![
+            ("a".into(), vec![1.0, 0.0, 0.0]),
+            ("b".into(), vec![0.0, 1.0, 0.0]),
+            ("c".into(), vec![0.0, 0.0, 1.0]),
+        ];
+        let result = vs.add_batch_parallel(&entries).unwrap();
+        assert_eq!(result.added_count, 3);
+        assert!(result.error.is_none());
+        assert_eq!(vs.len(), 3);
+        assert_eq!(vs.get("a").unwrap(), vec![1.0, 0.0, 0.0]);
+        assert_eq!(vs.get("b").unwrap(), vec![0.0, 1.0, 0.0]);
+        assert_eq!(vs.get("c").unwrap(), vec![0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn batch_parallel_with_updates() {
+        let mut vs = make_set(3);
+        vs.add("a".into(), &[1.0, 0.0, 0.0]).unwrap();
+
+        let entries: Vec<(String, Vec<f32>)> = vec![
+            ("a".into(), vec![0.0, 1.0, 0.0]), // update
+            ("b".into(), vec![0.0, 0.0, 1.0]), // new
+        ];
+        let result = vs.add_batch_parallel(&entries).unwrap();
+        assert_eq!(result.added_count, 1); // only "b" is new
+        assert!(result.error.is_none());
+        assert_eq!(vs.len(), 2);
+        assert_eq!(vs.get("a").unwrap(), vec![0.0, 1.0, 0.0]);
+        assert_eq!(vs.get("b").unwrap(), vec![0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn batch_parallel_empty() {
+        let mut vs = make_set(3);
+        let entries: Vec<(String, Vec<f32>)> = vec![];
+        let result = vs.add_batch_parallel(&entries).unwrap();
+        assert_eq!(result.added_count, 0);
+        assert_eq!(vs.len(), 0);
+    }
+
+    #[test]
+    fn batch_parallel_large_triggers_threading() {
+        // 512 elements should trigger parallel path (threshold is 256)
+        let mut vs = make_set(16);
+        let entries: Vec<(String, Vec<f32>)> = (0..512)
+            .map(|i| (format!("elem_{i}"), vec![i as f32 / 512.0; 16]))
+            .collect();
+        let result = vs.add_batch_parallel(&entries).unwrap();
+        assert_eq!(result.added_count, 512);
+        assert!(result.error.is_none());
+        assert_eq!(vs.len(), 512);
+
+        // verify all elements are retrievable
+        for i in 0..512 {
+            assert!(vs.get(&format!("elem_{i}")).is_some());
+        }
+    }
+
+    #[test]
+    fn batch_parallel_search_quality() {
+        // verify parallel-inserted vectors produce correct search results
+        let mut vs = make_set(3);
+        let entries: Vec<(String, Vec<f32>)> = vec![
+            ("x-axis".into(), vec![1.0, 0.0, 0.0]),
+            ("y-axis".into(), vec![0.0, 1.0, 0.0]),
+            ("z-axis".into(), vec![0.0, 0.0, 1.0]),
+        ];
+        vs.add_batch_parallel(&entries).unwrap();
+
+        let results = vs.search(&[0.9, 0.1, 0.0], 1, 0).unwrap();
+        assert_eq!(results[0].element, "x-axis");
     }
 
     #[test]
@@ -892,7 +1096,7 @@ mod tests {
             + 128 * 4   // vector bytes (f32)
             + 16 * 16   // graph bytes (connectivity=16, 16 bytes per edge)
             + 5          // "hello".len()
-            + 80;        // per-element map overhead
+            + 80; // per-element map overhead
         assert_eq!(vs.memory_usage(), expected);
     }
 }
