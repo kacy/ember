@@ -324,25 +324,38 @@ pub(super) fn write_aof_record(
     fsync_policy: FsyncPolicy,
     shard_id: u16,
     aof_errors: &mut u32,
+    disk_full: &mut bool,
 ) {
     if let Some(ref mut writer) = *aof_writer {
         let mut ok = true;
         if let Err(e) = writer.write_record(record) {
-            log_aof_error(shard_id, aof_errors, "write", &e);
+            if log_aof_error(shard_id, aof_errors, "write", &e) {
+                *disk_full = true;
+            }
             ok = false;
         }
         if fsync_policy == FsyncPolicy::Always {
             if let Err(e) = writer.sync() {
-                log_aof_error(shard_id, aof_errors, "sync", &e);
+                if log_aof_error(shard_id, aof_errors, "sync", &e) {
+                    *disk_full = true;
+                }
                 ok = false;
             }
         }
         if ok && *aof_errors > 0 {
             let missed = *aof_errors;
             *aof_errors = 0;
+            *disk_full = false;
             info!(shard_id, missed_errors = missed, "aof writes recovered");
         }
     }
+}
+
+/// Returns `true` if the error indicates the disk is full (ENOSPC or EDQUOT).
+fn is_disk_full_error(err: &ember_persistence::format::FormatError) -> bool {
+    // ENOSPC = 28 (Linux + macOS), EDQUOT = 122 (Linux) / 69 (macOS)
+    matches!(err, ember_persistence::format::FormatError::Io(ref io_err)
+        if matches!(io_err.raw_os_error(), Some(28) | Some(69) | Some(122)))
 }
 
 /// Logs an AOF error with rate-limiting and severity awareness.
@@ -352,28 +365,29 @@ pub(super) fn write_aof_record(
 /// After the first failure, subsequent consecutive errors are suppressed —
 /// only every 1000th error is logged to avoid flooding under sustained
 /// disk-full conditions.
+///
+/// Returns `true` if this was a disk-full error, so the caller can set
+/// the `disk_full` flag to reject subsequent writes.
 pub(super) fn log_aof_error(
     shard_id: u16,
     consecutive: &mut u32,
     op: &str,
     err: &ember_persistence::format::FormatError,
-) {
+) -> bool {
     *consecutive = consecutive.saturating_add(1);
+
+    let disk_full = is_disk_full_error(err);
 
     // rate-limit: log first failure, then every 1000th
     if *consecutive != 1 && !(*consecutive).is_multiple_of(1000) {
-        return;
+        return disk_full;
     }
 
-    // ENOSPC = 28 (Linux + macOS), EDQUOT = 122 (Linux) / 69 (macOS)
-    let is_disk_full = matches!(err, ember_persistence::format::FormatError::Io(ref io_err)
-        if matches!(io_err.raw_os_error(), Some(28) | Some(69) | Some(122)));
-
-    if is_disk_full {
+    if disk_full {
         error!(
             shard_id,
             consecutive_errors = *consecutive,
-            "aof {op} failed: disk full — writes continue without durability"
+            "aof {op} failed: disk full — new writes will be rejected"
         );
     } else {
         warn!(
@@ -382,6 +396,8 @@ pub(super) fn log_aof_error(
             "aof {op} failed: {err}"
         );
     }
+
+    disk_full
 }
 
 /// Broadcasts a single replication event, used by blocking pop operations

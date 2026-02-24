@@ -606,6 +606,68 @@ pub enum ShardRequest {
     },
 }
 
+impl ShardRequest {
+    /// Returns `true` if this request mutates the keyspace and should be
+    /// rejected when the AOF disk is full. Read-only operations, admin
+    /// commands, and scan operations always proceed.
+    fn is_write(&self) -> bool {
+        #[allow(unreachable_patterns)]
+        match self {
+            ShardRequest::Set { .. }
+            | ShardRequest::Incr { .. }
+            | ShardRequest::Decr { .. }
+            | ShardRequest::IncrBy { .. }
+            | ShardRequest::DecrBy { .. }
+            | ShardRequest::IncrByFloat { .. }
+            | ShardRequest::Append { .. }
+            | ShardRequest::Del { .. }
+            | ShardRequest::Unlink { .. }
+            | ShardRequest::Rename { .. }
+            | ShardRequest::Copy { .. }
+            | ShardRequest::Expire { .. }
+            | ShardRequest::Persist { .. }
+            | ShardRequest::Pexpire { .. }
+            | ShardRequest::LPush { .. }
+            | ShardRequest::RPush { .. }
+            | ShardRequest::LPop { .. }
+            | ShardRequest::RPop { .. }
+            | ShardRequest::LSet { .. }
+            | ShardRequest::LTrim { .. }
+            | ShardRequest::LInsert { .. }
+            | ShardRequest::LRem { .. }
+            | ShardRequest::BLPop { .. }
+            | ShardRequest::BRPop { .. }
+            | ShardRequest::ZAdd { .. }
+            | ShardRequest::ZRem { .. }
+            | ShardRequest::ZIncrBy { .. }
+            | ShardRequest::ZPopMin { .. }
+            | ShardRequest::ZPopMax { .. }
+            | ShardRequest::HSet { .. }
+            | ShardRequest::HDel { .. }
+            | ShardRequest::HIncrBy { .. }
+            | ShardRequest::SAdd { .. }
+            | ShardRequest::SRem { .. }
+            | ShardRequest::SPop { .. }
+            | ShardRequest::SUnionStore { .. }
+            | ShardRequest::SInterStore { .. }
+            | ShardRequest::SDiffStore { .. }
+            | ShardRequest::FlushDb
+            | ShardRequest::FlushDbAsync
+            | ShardRequest::RestoreKey { .. } => true,
+            #[cfg(feature = "protobuf")]
+            ShardRequest::ProtoSet { .. }
+            | ShardRequest::ProtoRegisterAof { .. }
+            | ShardRequest::ProtoSetField { .. }
+            | ShardRequest::ProtoDelField { .. } => true,
+            #[cfg(feature = "vector")]
+            ShardRequest::VAdd { .. }
+            | ShardRequest::VAddBatch { .. }
+            | ShardRequest::VRem { .. } => true,
+            _ => false,
+        }
+    }
+}
+
 /// The shard's response to a request.
 #[derive(Debug)]
 pub enum ShardResponse {
@@ -1070,6 +1132,10 @@ async fn run_shard(
     // consecutive AOF write/sync failure counter for rate-limited logging
     let mut aof_errors: u32 = 0;
 
+    // when true, write commands are rejected with an error until disk
+    // space is available again (detected on the periodic fsync tick).
+    let mut disk_full: bool = false;
+
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(EXPIRY_TICK);
     expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1094,6 +1160,7 @@ async fn run_shard(
                             lpop_waiters: &mut lpop_waiters,
                             rpop_waiters: &mut rpop_waiters,
                             aof_errors: &mut aof_errors,
+                            disk_full: &mut disk_full,
                             #[cfg(feature = "protobuf")]
                             schema_registry: &schema_registry,
                         };
@@ -1116,11 +1183,18 @@ async fn run_shard(
             _ = fsync_tick.tick(), if fsync_policy == FsyncPolicy::EverySec => {
                 if let Some(ref mut writer) = aof_writer {
                     if let Err(e) = writer.sync() {
-                        aof::log_aof_error(shard_id, &mut aof_errors, "sync", &e);
+                        if aof::log_aof_error(shard_id, &mut aof_errors, "sync", &e) {
+                            disk_full = true;
+                        }
                     } else if aof_errors > 0 {
                         let missed = aof_errors;
                         aof_errors = 0;
-                        info!(shard_id, missed_errors = missed, "aof sync recovered");
+                        if disk_full {
+                            disk_full = false;
+                            info!(shard_id, missed_errors = missed, "aof sync recovered, accepting writes again");
+                        } else {
+                            info!(shard_id, missed_errors = missed, "aof sync recovered");
+                        }
                     }
                 }
             }
@@ -1153,6 +1227,8 @@ struct ProcessCtx<'a> {
     /// Consecutive AOF write/sync failures. Used to rate-limit error logging
     /// so a sustained disk-full condition doesn't flood logs.
     aof_errors: &'a mut u32,
+    /// When true, write commands are rejected until disk space recovers.
+    disk_full: &'a mut bool,
     #[cfg(feature = "protobuf")]
     schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -1211,6 +1287,15 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     let fsync_policy = ctx.fsync_policy;
     let shard_id = ctx.shard_id;
 
+    // reject writes when AOF is enabled and disk is full. reads and admin
+    // commands still go through so operators can inspect and recover.
+    if *ctx.disk_full && ctx.aof_writer.is_some() && request.is_write() {
+        reply.send(ShardResponse::Err(
+            "ERR disk full, write rejected — free disk space to resume writes".into(),
+        ));
+        return;
+    }
+
     // handle blocking pop requests before dispatch — they carry a waiter
     // oneshot that must be consumed here rather than going through the
     // normal dispatch → response path.
@@ -1252,19 +1337,24 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         let mut batch_ok = true;
         for record in &records {
             if let Err(e) = writer.write_record(record) {
-                aof::log_aof_error(shard_id, ctx.aof_errors, "write", &e);
+                if aof::log_aof_error(shard_id, ctx.aof_errors, "write", &e) {
+                    *ctx.disk_full = true;
+                }
                 batch_ok = false;
             }
         }
         if !records.is_empty() && fsync_policy == FsyncPolicy::Always {
             if let Err(e) = writer.sync() {
-                aof::log_aof_error(shard_id, ctx.aof_errors, "sync", &e);
+                if aof::log_aof_error(shard_id, ctx.aof_errors, "sync", &e) {
+                    *ctx.disk_full = true;
+                }
                 batch_ok = false;
             }
         }
         if batch_ok && *ctx.aof_errors > 0 {
             let missed = *ctx.aof_errors;
             *ctx.aof_errors = 0;
+            *ctx.disk_full = false;
             info!(shard_id, missed_errors = missed, "aof writes recovered");
         }
     }
@@ -2737,5 +2827,50 @@ mod tests {
         // verify fields
         assert_eq!(ks.hget("myhash2", "f1").unwrap(), Some(Bytes::from("v1")));
         assert_eq!(ks.hget("myhash2", "f2").unwrap(), Some(Bytes::from("v2")));
+    }
+
+    #[test]
+    fn is_write_classifies_correctly() {
+        // write commands
+        assert!(ShardRequest::Set {
+            key: "k".into(),
+            value: Bytes::from("v"),
+            expire: None,
+            nx: false,
+            xx: false,
+        }
+        .is_write());
+        assert!(ShardRequest::Del { key: "k".into() }.is_write());
+        assert!(ShardRequest::Incr { key: "k".into() }.is_write());
+        assert!(ShardRequest::LPush {
+            key: "k".into(),
+            values: vec![],
+        }
+        .is_write());
+        assert!(ShardRequest::HSet {
+            key: "k".into(),
+            fields: vec![],
+        }
+        .is_write());
+        assert!(ShardRequest::SAdd {
+            key: "k".into(),
+            members: vec![],
+        }
+        .is_write());
+        assert!(ShardRequest::FlushDb.is_write());
+
+        // read commands
+        assert!(!ShardRequest::Get { key: "k".into() }.is_write());
+        assert!(!ShardRequest::Exists { key: "k".into() }.is_write());
+        assert!(!ShardRequest::Ttl { key: "k".into() }.is_write());
+        assert!(!ShardRequest::DbSize.is_write());
+        assert!(!ShardRequest::Stats.is_write());
+        assert!(!ShardRequest::LLen { key: "k".into() }.is_write());
+        assert!(!ShardRequest::HGet {
+            key: "k".into(),
+            field: "f".into(),
+        }
+        .is_write());
+        assert!(!ShardRequest::SMembers { key: "k".into() }.is_write());
     }
 }

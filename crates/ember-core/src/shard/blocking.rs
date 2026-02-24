@@ -45,6 +45,7 @@ pub(super) fn handle_blocking_pop(
                 fsync_policy,
                 shard_id,
                 ctx.aof_errors,
+                ctx.disk_full,
             );
             aof::broadcast_replication(
                 record,
@@ -120,6 +121,7 @@ pub(super) fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
                             fsync_policy,
                             shard_id,
                             ctx.aof_errors,
+                            ctx.disk_full,
                         );
                         aof::broadcast_replication(
                             record,
