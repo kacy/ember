@@ -99,6 +99,10 @@ const TAG_PERSIST: u8 = 10;
 const TAG_PEXPIRE: u8 = 11;
 const TAG_RENAME: u8 = 22;
 const TAG_COPY: u8 = 27;
+const TAG_LSET: u8 = 28;
+const TAG_LTRIM: u8 = 29;
+const TAG_LINSERT: u8 = 30;
+const TAG_LREM: u8 = 31;
 
 // vector
 #[cfg(feature = "vector")]
@@ -133,6 +137,19 @@ pub enum AofRecord {
     LPop { key: String },
     /// RPOP key.
     RPop { key: String },
+    /// LSET key index element.
+    LSet { key: String, index: i64, value: Bytes },
+    /// LTRIM key start stop.
+    LTrim { key: String, start: i64, stop: i64 },
+    /// LINSERT key BEFORE|AFTER pivot element.
+    LInsert {
+        key: String,
+        before: bool,
+        pivot: Bytes,
+        value: Bytes,
+    },
+    /// LREM key count element.
+    LRem { key: String, count: i64, value: Bytes },
     /// ZADD key score member [score member ...].
     ZAdd {
         key: String,
@@ -228,6 +245,10 @@ impl AofRecord {
             AofRecord::RPush { .. } => TAG_RPUSH,
             AofRecord::LPop { .. } => TAG_LPOP,
             AofRecord::RPop { .. } => TAG_RPOP,
+            AofRecord::LSet { .. } => TAG_LSET,
+            AofRecord::LTrim { .. } => TAG_LTRIM,
+            AofRecord::LInsert { .. } => TAG_LINSERT,
+            AofRecord::LRem { .. } => TAG_LREM,
             AofRecord::ZAdd { .. } => TAG_ZADD,
             AofRecord::ZRem { .. } => TAG_ZREM,
             AofRecord::Persist { .. } => TAG_PERSIST,
@@ -286,6 +307,23 @@ impl AofRecord {
             AofRecord::LPush { key, values } | AofRecord::RPush { key, values } => {
                 let values_size: usize = values.iter().map(|v| LEN_PREFIX + v.len()).sum();
                 1 + LEN_PREFIX + key.len() + 4 + values_size
+            }
+            // 1 tag + 4 key-len + key + 8 index + 4 value-len + value
+            AofRecord::LSet { key, value, .. } => {
+                1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + value.len()
+            }
+            // 1 tag + 4 key-len + key + 8 start + 8 stop
+            AofRecord::LTrim { key, .. } => 1 + LEN_PREFIX + key.len() + 8 + 8,
+            // 1 tag + 4 key-len + key + 1 before + 4 pivot-len + pivot + 4 value-len + value
+            AofRecord::LInsert {
+                key,
+                pivot,
+                value,
+                ..
+            } => 1 + LEN_PREFIX + key.len() + 1 + LEN_PREFIX + pivot.len() + LEN_PREFIX + value.len(),
+            // 1 tag + 4 key-len + key + 8 count + 4 value-len + value
+            AofRecord::LRem { key, value, .. } => {
+                1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + value.len()
             }
             AofRecord::ZAdd { key, members } => {
                 let members_size: usize =
@@ -410,6 +448,40 @@ impl AofRecord {
                 for v in values {
                     format::write_bytes(&mut buf, v)?;
                 }
+            }
+
+            // key + index + value
+            AofRecord::LSet { key, index, value } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *index)?;
+                format::write_bytes(&mut buf, value)?;
+            }
+
+            // key + start + stop
+            AofRecord::LTrim { key, start, stop } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *start)?;
+                format::write_i64(&mut buf, *stop)?;
+            }
+
+            // key + before(u8) + pivot + value
+            AofRecord::LInsert {
+                key,
+                before,
+                pivot,
+                value,
+            } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_u8(&mut buf, if *before { 1 } else { 0 })?;
+                format::write_bytes(&mut buf, pivot)?;
+                format::write_bytes(&mut buf, value)?;
+            }
+
+            // key + count + value
+            AofRecord::LRem { key, count, value } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, *count)?;
+                format::write_bytes(&mut buf, value)?;
             }
 
             // key + string list
@@ -576,6 +648,37 @@ impl AofRecord {
             TAG_RPOP => {
                 let key = read_string(&mut cursor, "key")?;
                 Ok(AofRecord::RPop { key })
+            }
+            TAG_LSET => {
+                let key = read_string(&mut cursor, "key")?;
+                let index = format::read_i64(&mut cursor)?;
+                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                Ok(AofRecord::LSet { key, index, value })
+            }
+            TAG_LTRIM => {
+                let key = read_string(&mut cursor, "key")?;
+                let start = format::read_i64(&mut cursor)?;
+                let stop = format::read_i64(&mut cursor)?;
+                Ok(AofRecord::LTrim { key, start, stop })
+            }
+            TAG_LINSERT => {
+                let key = read_string(&mut cursor, "key")?;
+                let before_byte = format::read_u8(&mut cursor)?;
+                let before = before_byte != 0;
+                let pivot = Bytes::from(format::read_bytes(&mut cursor)?);
+                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                Ok(AofRecord::LInsert {
+                    key,
+                    before,
+                    pivot,
+                    value,
+                })
+            }
+            TAG_LREM => {
+                let key = read_string(&mut cursor, "key")?;
+                let count = format::read_i64(&mut cursor)?;
+                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                Ok(AofRecord::LRem { key, count, value })
             }
             TAG_ZADD => {
                 let key = read_string(&mut cursor, "key")?;

@@ -56,6 +56,31 @@ pub(super) fn to_aof_records(
         (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
             smallvec![AofRecord::RPop { key }]
         }
+        (ShardRequest::LSet { key, index, value }, ShardResponse::Ok) => {
+            smallvec![AofRecord::LSet { key, index, value }]
+        }
+        (ShardRequest::LTrim { key, start, stop }, ShardResponse::Ok) => {
+            smallvec![AofRecord::LTrim { key, start, stop }]
+        }
+        (
+            ShardRequest::LInsert {
+                key,
+                before,
+                pivot,
+                value,
+            },
+            ShardResponse::Integer(n),
+        ) if *n > 0 => {
+            smallvec![AofRecord::LInsert {
+                key,
+                before,
+                pivot,
+                value,
+            }]
+        }
+        (ShardRequest::LRem { key, count, value }, ShardResponse::Len(n)) if *n > 0 => {
+            smallvec![AofRecord::LRem { key, count, value }]
+        }
         (ShardRequest::ZAdd { key, .. }, ShardResponse::ZAddLen { applied, .. })
             if !applied.is_empty() =>
         {
