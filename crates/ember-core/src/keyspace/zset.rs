@@ -113,19 +113,12 @@ impl Keyspace {
     /// Returns `Ok(None)` if the key or member doesn't exist.
     /// Returns `Err(WrongType)` on type mismatch.
     pub fn zscore(&mut self, key: &str, member: &str) -> Result<Option<f64>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(None);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(None),
-            Some(entry) => match &entry.value {
-                Value::SortedSet(ss) => {
-                    let score = ss.score(member);
-                    entry.touch();
-                    Ok(score)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => Ok(ss.score(member)),
+            _ => Err(WrongType),
         }
     }
 
@@ -134,19 +127,12 @@ impl Keyspace {
     /// Returns `Ok(None)` if the key or member doesn't exist.
     /// Returns `Err(WrongType)` on type mismatch.
     pub fn zrank(&mut self, key: &str, member: &str) -> Result<Option<usize>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(None);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(None),
-            Some(entry) => match &entry.value {
-                Value::SortedSet(ss) => {
-                    let rank = ss.rank(member);
-                    entry.touch();
-                    Ok(rank)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => Ok(ss.rank(member)),
+            _ => Err(WrongType),
         }
     }
 
@@ -161,24 +147,15 @@ impl Keyspace {
         start: i64,
         stop: i64,
     ) -> Result<Vec<(String, f64)>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => {
-                let result = match &entry.value {
-                    Value::SortedSet(ss) => {
-                        let items = ss.range_by_rank(start, stop);
-                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
-                    }
-                    _ => Err(WrongType),
-                };
-                if result.is_ok() {
-                    entry.touch();
-                }
-                result
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => {
+                let items = ss.range_by_rank(start, stop);
+                Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
             }
+            _ => Err(WrongType),
         }
     }
 
@@ -194,45 +171,39 @@ impl Keyspace {
         count: usize,
         pattern: Option<&str>,
     ) -> Result<(u64, Vec<(String, f64)>), WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok((0, vec![]));
-        }
-        match self.entries.get_mut(key) {
-            None => Ok((0, vec![])),
-            Some(entry) => {
-                let Value::SortedSet(ref ss) = entry.value else {
-                    return Err(WrongType);
-                };
+        };
+        let Value::SortedSet(ref ss) = entry.value else {
+            return Err(WrongType);
+        };
 
-                let target = if count == 0 { 10 } else { count };
-                let compiled = pattern.map(GlobPattern::new);
-                let mut result = Vec::with_capacity(target);
-                let mut pos = 0u64;
-                let mut done = true;
+        let target = if count == 0 { 10 } else { count };
+        let compiled = pattern.map(GlobPattern::new);
+        let mut result = Vec::with_capacity(target);
+        let mut pos = 0u64;
+        let mut done = true;
 
-                for (member, score) in ss.iter() {
-                    if pos < cursor {
-                        pos += 1;
-                        continue;
-                    }
-                    if let Some(ref pat) = compiled {
-                        if !pat.matches(member) {
-                            pos += 1;
-                            continue;
-                        }
-                    }
-                    result.push((member.to_owned(), score));
+        for (member, score) in ss.iter() {
+            if pos < cursor {
+                pos += 1;
+                continue;
+            }
+            if let Some(ref pat) = compiled {
+                if !pat.matches(member) {
                     pos += 1;
-                    if result.len() >= target {
-                        done = false;
-                        break;
-                    }
+                    continue;
                 }
-
-                entry.touch();
-                Ok(if done { (0, result) } else { (pos, result) })
+            }
+            result.push((member.to_owned(), score));
+            pos += 1;
+            if result.len() >= target {
+                done = false;
+                break;
             }
         }
+
+        Ok(if done { (0, result) } else { (pos, result) })
     }
 
     /// Returns the reverse rank of a member (highest score = 0).
@@ -240,19 +211,12 @@ impl Keyspace {
     /// Returns `Ok(None)` if the key or member doesn't exist.
     /// Returns `Err(WrongType)` on type mismatch.
     pub fn zrevrank(&mut self, key: &str, member: &str) -> Result<Option<usize>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(None);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(None),
-            Some(entry) => match &entry.value {
-                Value::SortedSet(ss) => {
-                    let rank = ss.rev_rank(member);
-                    entry.touch();
-                    Ok(rank)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => Ok(ss.rev_rank(member)),
+            _ => Err(WrongType),
         }
     }
 
@@ -263,24 +227,15 @@ impl Keyspace {
         start: i64,
         stop: i64,
     ) -> Result<Vec<(String, f64)>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => {
-                let result = match &entry.value {
-                    Value::SortedSet(ss) => {
-                        let items = ss.rev_range_by_rank(start, stop);
-                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
-                    }
-                    _ => Err(WrongType),
-                };
-                if result.is_ok() {
-                    entry.touch();
-                }
-                result
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => {
+                let items = ss.rev_range_by_rank(start, stop);
+                Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
             }
+            _ => Err(WrongType),
         }
     }
 
@@ -291,19 +246,12 @@ impl Keyspace {
         min: ScoreBound,
         max: ScoreBound,
     ) -> Result<usize, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(0);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(0),
-            Some(entry) => match &entry.value {
-                Value::SortedSet(ss) => {
-                    let count = ss.count_by_score(min, max);
-                    entry.touch();
-                    Ok(count)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => Ok(ss.count_by_score(min, max)),
+            _ => Err(WrongType),
         }
     }
 
@@ -357,24 +305,15 @@ impl Keyspace {
         offset: usize,
         count: Option<usize>,
     ) -> Result<Vec<(String, f64)>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => {
-                let result = match &entry.value {
-                    Value::SortedSet(ss) => {
-                        let items = ss.range_by_score(min, max, offset, count);
-                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
-                    }
-                    _ => Err(WrongType),
-                };
-                if result.is_ok() {
-                    entry.touch();
-                }
-                result
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => {
+                let items = ss.range_by_score(min, max, offset, count);
+                Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
             }
+            _ => Err(WrongType),
         }
     }
 
@@ -387,24 +326,15 @@ impl Keyspace {
         offset: usize,
         count: Option<usize>,
     ) -> Result<Vec<(String, f64)>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => {
-                let result = match &entry.value {
-                    Value::SortedSet(ss) => {
-                        let items = ss.rev_range_by_score(min, max, offset, count);
-                        Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
-                    }
-                    _ => Err(WrongType),
-                };
-                if result.is_ok() {
-                    entry.touch();
-                }
-                result
+        };
+        match &entry.value {
+            Value::SortedSet(ss) => {
+                let items = ss.rev_range_by_score(min, max, offset, count);
+                Ok(items.into_iter().map(|(m, s)| (m.to_owned(), s)).collect())
             }
+            _ => Err(WrongType),
         }
     }
 
