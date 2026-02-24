@@ -358,6 +358,8 @@ gcloud compute instances delete ember-bench --zone=us-central1-a
 | `bench-grpc.sh` | gRPC vs RESP3 standard operations |
 | `bench-pubsub.sh` | pub/sub throughput and fan-out latency |
 | `bench-proto.sh` | protobuf storage overhead (PROTO.* vs raw SET/GET) |
+| `bench-datatypes.sh` | data type throughput: lists, sets, sorted sets, hashes |
+| `bench-stress.sh` | stress tests: large values, eviction, connection storm |
 | `setup-vm.sh` | bootstrap dependencies on fresh ubuntu VM |
 | `setup-vm-vector.sh` | additional dependencies for vector benchmarks |
 
