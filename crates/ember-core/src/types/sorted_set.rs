@@ -87,15 +87,15 @@ impl SortedSet {
 
     /// Adds or updates a member with the given score. Returns whether the
     /// member was newly added and/or updated.
-    pub fn add(&mut self, member: String, score: f64) -> AddResult {
+    pub fn add(&mut self, member: &str, score: f64) -> AddResult {
         self.add_with_flags(member, score, &ZAddFlags::default())
     }
 
     /// Adds or updates a member with ZADD flag semantics.
-    pub fn add_with_flags(&mut self, member: String, score: f64, flags: &ZAddFlags) -> AddResult {
+    pub fn add_with_flags(&mut self, member: &str, score: f64, flags: &ZAddFlags) -> AddResult {
         let new_score = OrderedFloat(score);
 
-        if let Some(&old_score) = self.scores.get(member.as_str()) {
+        if let Some(&old_score) = self.scores.get(member) {
             // member exists — skip if any flag condition prevents the update
             if flags.nx
                 || (flags.gt && new_score <= old_score)
@@ -107,7 +107,7 @@ impl SortedSet {
             // reuse the existing Arc from scores to avoid a new heap allocation
             let name: Arc<str> = self
                 .scores
-                .get_key_value(member.as_str())
+                .get_key_value(member)
                 .unwrap()
                 .0
                 .clone();
@@ -128,7 +128,7 @@ impl SortedSet {
             if flags.xx {
                 return AddResult::UNCHANGED;
             }
-            let name: Arc<str> = Arc::from(member.as_str());
+            let name: Arc<str> = Arc::from(member);
             self.data_bytes += member.len();
             self.scores.insert(name.clone(), new_score);
             let idx = self.search_idx(new_score, &name).unwrap_err();
@@ -284,8 +284,8 @@ impl SortedSet {
     /// exist, it is added with `delta` as its score.
     ///
     /// Returns the new score.
-    pub fn incr(&mut self, member: String, delta: f64) -> f64 {
-        let new_score = match self.scores.get(member.as_str()) {
+    pub fn incr(&mut self, member: &str, delta: f64) -> f64 {
+        let new_score = match self.scores.get(member) {
             Some(&old_score) => old_score.0 + delta,
             None => delta,
         };
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn add_and_score() {
         let mut ss = SortedSet::new();
-        let result = ss.add("alice".into(), 100.0);
+        let result = ss.add("alice", 100.0);
         assert!(result.added);
         assert!(!result.updated);
         assert_eq!(ss.score("alice"), Some(100.0));
@@ -453,8 +453,8 @@ mod tests {
     #[test]
     fn update_existing_score() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
-        let result = ss.add("alice".into(), 200.0);
+        ss.add("alice", 100.0);
+        let result = ss.add("alice", 200.0);
         assert!(!result.added);
         assert!(result.updated);
         assert_eq!(ss.score("alice"), Some(200.0));
@@ -464,8 +464,8 @@ mod tests {
     #[test]
     fn same_score_no_update() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
-        let result = ss.add("alice".into(), 100.0);
+        ss.add("alice", 100.0);
+        let result = ss.add("alice", 100.0);
         assert!(!result.added);
         assert!(!result.updated);
     }
@@ -473,7 +473,7 @@ mod tests {
     #[test]
     fn remove_existing() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
+        ss.add("alice", 100.0);
         assert!(ss.remove("alice"));
         assert!(ss.is_empty());
         assert_eq!(ss.score("alice"), None);
@@ -488,9 +488,9 @@ mod tests {
     #[test]
     fn rank_ordering() {
         let mut ss = SortedSet::new();
-        ss.add("c".into(), 300.0);
-        ss.add("a".into(), 100.0);
-        ss.add("b".into(), 200.0);
+        ss.add("c", 300.0);
+        ss.add("a", 100.0);
+        ss.add("b", 200.0);
 
         assert_eq!(ss.rank("a"), Some(0));
         assert_eq!(ss.rank("b"), Some(1));
@@ -501,9 +501,9 @@ mod tests {
     #[test]
     fn equal_scores_lexicographic_order() {
         let mut ss = SortedSet::new();
-        ss.add("charlie".into(), 100.0);
-        ss.add("alice".into(), 100.0);
-        ss.add("bob".into(), 100.0);
+        ss.add("charlie", 100.0);
+        ss.add("alice", 100.0);
+        ss.add("bob", 100.0);
 
         // same score: should be alphabetical
         assert_eq!(ss.rank("alice"), Some(0));
@@ -514,9 +514,9 @@ mod tests {
     #[test]
     fn range_by_rank_basic() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 10.0);
-        ss.add("b".into(), 20.0);
-        ss.add("c".into(), 30.0);
+        ss.add("a", 10.0);
+        ss.add("b", 20.0);
+        ss.add("c", 30.0);
 
         let result = ss.range_by_rank(0, -1);
         assert_eq!(result, vec![("a", 10.0), ("b", 20.0), ("c", 30.0)]);
@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn range_by_rank_out_of_bounds() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 10.0);
+        ss.add("a", 10.0);
 
         // start > stop
         assert!(ss.range_by_rank(2, 1).is_empty());
@@ -545,19 +545,19 @@ mod tests {
     #[test]
     fn nx_flag_skips_existing() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
+        ss.add("alice", 100.0);
 
         let flags = ZAddFlags {
             nx: true,
             ..Default::default()
         };
-        let result = ss.add_with_flags("alice".into(), 999.0, &flags);
+        let result = ss.add_with_flags("alice", 999.0, &flags);
         assert!(!result.added);
         assert!(!result.updated);
         assert_eq!(ss.score("alice"), Some(100.0));
 
         // but adding a new member works
-        let result = ss.add_with_flags("bob".into(), 50.0, &flags);
+        let result = ss.add_with_flags("bob", 50.0, &flags);
         assert!(result.added);
     }
 
@@ -569,13 +569,13 @@ mod tests {
             ..Default::default()
         };
 
-        let result = ss.add_with_flags("alice".into(), 100.0, &flags);
+        let result = ss.add_with_flags("alice", 100.0, &flags);
         assert!(!result.added);
         assert!(ss.is_empty());
 
         // but updating an existing member works
-        ss.add("bob".into(), 50.0);
-        let result = ss.add_with_flags("bob".into(), 75.0, &flags);
+        ss.add("bob", 50.0);
+        let result = ss.add_with_flags("bob", 75.0, &flags);
         assert!(result.updated);
         assert_eq!(ss.score("bob"), Some(75.0));
     }
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn gt_flag_only_increases() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
+        ss.add("alice", 100.0);
 
         let flags = ZAddFlags {
             gt: true,
@@ -591,12 +591,12 @@ mod tests {
         };
 
         // lower score — skip
-        let result = ss.add_with_flags("alice".into(), 50.0, &flags);
+        let result = ss.add_with_flags("alice", 50.0, &flags);
         assert!(!result.updated);
         assert_eq!(ss.score("alice"), Some(100.0));
 
         // higher score — update
-        let result = ss.add_with_flags("alice".into(), 200.0, &flags);
+        let result = ss.add_with_flags("alice", 200.0, &flags);
         assert!(result.updated);
         assert_eq!(ss.score("alice"), Some(200.0));
     }
@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn lt_flag_only_decreases() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
+        ss.add("alice", 100.0);
 
         let flags = ZAddFlags {
             lt: true,
@@ -612,12 +612,12 @@ mod tests {
         };
 
         // higher score — skip
-        let result = ss.add_with_flags("alice".into(), 200.0, &flags);
+        let result = ss.add_with_flags("alice", 200.0, &flags);
         assert!(!result.updated);
         assert_eq!(ss.score("alice"), Some(100.0));
 
         // lower score — update
-        let result = ss.add_with_flags("alice".into(), 50.0, &flags);
+        let result = ss.add_with_flags("alice", 50.0, &flags);
         assert!(result.updated);
         assert_eq!(ss.score("alice"), Some(50.0));
     }
@@ -626,18 +626,18 @@ mod tests {
     fn memory_usage_grows_with_members() {
         let mut ss = SortedSet::new();
         let base = ss.memory_usage();
-        ss.add("alice".into(), 100.0);
+        ss.add("alice", 100.0);
         let with_one = ss.memory_usage();
         assert!(with_one > base);
-        ss.add("bob".into(), 200.0);
+        ss.add("bob", 200.0);
         assert!(ss.memory_usage() > with_one);
     }
 
     #[test]
     fn memory_usage_shrinks_on_remove() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 100.0);
-        ss.add("bob".into(), 200.0);
+        ss.add("alice", 100.0);
+        ss.add("bob", 200.0);
         let before = ss.memory_usage();
         ss.remove("alice");
         assert!(ss.memory_usage() < before);
@@ -646,9 +646,9 @@ mod tests {
     #[test]
     fn iter_sorted_order() {
         let mut ss = SortedSet::new();
-        ss.add("c".into(), 3.0);
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
+        ss.add("c", 3.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
 
         let items: Vec<_> = ss.iter().collect();
         assert_eq!(items, vec![("a", 1.0), ("b", 2.0), ("c", 3.0)]);
@@ -657,14 +657,14 @@ mod tests {
     #[test]
     fn update_score_changes_rank() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 10.0);
-        ss.add("b".into(), 20.0);
-        ss.add("c".into(), 30.0);
+        ss.add("a", 10.0);
+        ss.add("b", 20.0);
+        ss.add("c", 30.0);
 
         assert_eq!(ss.rank("a"), Some(0));
 
         // move "a" to the top
-        ss.add("a".into(), 50.0);
+        ss.add("a", 50.0);
         assert_eq!(ss.rank("a"), Some(2));
         assert_eq!(ss.rank("b"), Some(0));
     }
@@ -672,9 +672,9 @@ mod tests {
     #[test]
     fn positive_infinity_score() {
         let mut ss = SortedSet::new();
-        ss.add("normal".into(), 100.0);
-        ss.add("infinite".into(), f64::INFINITY);
-        ss.add("large".into(), 1e308);
+        ss.add("normal", 100.0);
+        ss.add("infinite", f64::INFINITY);
+        ss.add("large", 1e308);
 
         // infinity should sort after everything
         assert_eq!(ss.rank("infinite"), Some(2));
@@ -685,9 +685,9 @@ mod tests {
     #[test]
     fn negative_infinity_score() {
         let mut ss = SortedSet::new();
-        ss.add("normal".into(), 100.0);
-        ss.add("neg_inf".into(), f64::NEG_INFINITY);
-        ss.add("small".into(), -1e308);
+        ss.add("normal", 100.0);
+        ss.add("neg_inf", f64::NEG_INFINITY);
+        ss.add("small", -1e308);
 
         // negative infinity should sort before everything
         assert_eq!(ss.rank("neg_inf"), Some(0));
@@ -698,9 +698,9 @@ mod tests {
     #[test]
     fn zero_score() {
         let mut ss = SortedSet::new();
-        ss.add("positive".into(), 1.0);
-        ss.add("zero".into(), 0.0);
-        ss.add("negative".into(), -1.0);
+        ss.add("positive", 1.0);
+        ss.add("zero", 0.0);
+        ss.add("negative", -1.0);
 
         assert_eq!(ss.rank("negative"), Some(0));
         assert_eq!(ss.rank("zero"), Some(1));
@@ -717,9 +717,9 @@ mod tests {
     #[test]
     fn range_by_rank_inverted_indices() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
 
         // start > stop with positive indices should return empty
         let result = ss.range_by_rank(2, 0);
@@ -729,8 +729,8 @@ mod tests {
     #[test]
     fn remove_all_members_leaves_empty() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
 
         ss.remove("a");
         ss.remove("b");
@@ -744,14 +744,14 @@ mod tests {
         let mut ss = SortedSet::new();
         assert_eq!(ss.data_bytes, 0);
 
-        ss.add("hello".into(), 1.0); // len = 5
+        ss.add("hello", 1.0); // len = 5
         assert_eq!(ss.data_bytes, 5);
 
-        ss.add("world".into(), 2.0); // len = 5
+        ss.add("world", 2.0); // len = 5
         assert_eq!(ss.data_bytes, 10);
 
         // update doesn't change data_bytes
-        ss.add("hello".into(), 99.0);
+        ss.add("hello", 99.0);
         assert_eq!(ss.data_bytes, 10);
 
         ss.remove("hello");
@@ -766,7 +766,7 @@ mod tests {
         // verify rank is correct for a larger set (regression guard for binary search)
         let mut ss = SortedSet::new();
         for i in 0..100 {
-            ss.add(format!("member:{i:03}"), i as f64);
+            ss.add(&format!("member:{i:03}"), i as f64);
         }
         for i in 0..100 {
             assert_eq!(ss.rank(&format!("member:{i:03}")), Some(i));
@@ -776,9 +776,9 @@ mod tests {
     #[test]
     fn rev_rank_ordering() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 100.0);
-        ss.add("b".into(), 200.0);
-        ss.add("c".into(), 300.0);
+        ss.add("a", 100.0);
+        ss.add("b", 200.0);
+        ss.add("c", 300.0);
 
         assert_eq!(ss.rev_rank("c"), Some(0));
         assert_eq!(ss.rev_rank("b"), Some(1));
@@ -789,9 +789,9 @@ mod tests {
     #[test]
     fn rev_range_by_rank_basic() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 10.0);
-        ss.add("b".into(), 20.0);
-        ss.add("c".into(), 30.0);
+        ss.add("a", 10.0);
+        ss.add("b", 20.0);
+        ss.add("c", 30.0);
 
         let result = ss.rev_range_by_rank(0, -1);
         assert_eq!(result, vec![("c", 30.0), ("b", 20.0), ("a", 10.0)]);
@@ -803,10 +803,10 @@ mod tests {
     #[test]
     fn range_by_score_inclusive() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
-        ss.add("d".into(), 4.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
+        ss.add("d", 4.0);
 
         let result = ss.range_by_score(
             ScoreBound::Inclusive(2.0),
@@ -820,10 +820,10 @@ mod tests {
     #[test]
     fn range_by_score_exclusive() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
-        ss.add("d".into(), 4.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
+        ss.add("d", 4.0);
 
         let result = ss.range_by_score(
             ScoreBound::Exclusive(1.0),
@@ -837,9 +837,9 @@ mod tests {
     #[test]
     fn range_by_score_infinity() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
 
         let all = ss.range_by_score(ScoreBound::NegInf, ScoreBound::PosInf, 0, None);
         assert_eq!(all.len(), 3);
@@ -855,7 +855,7 @@ mod tests {
     fn range_by_score_with_limit() {
         let mut ss = SortedSet::new();
         for i in 0..10 {
-            ss.add(format!("m{i}"), i as f64);
+            ss.add(&format!("m{i}"), i as f64);
         }
 
         let result = ss.range_by_score(ScoreBound::NegInf, ScoreBound::PosInf, 2, Some(3));
@@ -867,8 +867,8 @@ mod tests {
     #[test]
     fn range_by_score_empty_range() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 5.0);
+        ss.add("a", 1.0);
+        ss.add("b", 5.0);
 
         let result = ss.range_by_score(
             ScoreBound::Inclusive(2.0),
@@ -882,9 +882,9 @@ mod tests {
     #[test]
     fn rev_range_by_score_basic() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
 
         let result = ss.rev_range_by_score(
             ScoreBound::Inclusive(1.0),
@@ -898,10 +898,10 @@ mod tests {
     #[test]
     fn count_by_score_basic() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
-        ss.add("d".into(), 4.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
+        ss.add("d", 4.0);
 
         assert_eq!(
             ss.count_by_score(ScoreBound::NegInf, ScoreBound::PosInf),
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn incr_new_member() {
         let mut ss = SortedSet::new();
-        let score = ss.incr("alice".into(), 5.0);
+        let score = ss.incr("alice", 5.0);
         assert_eq!(score, 5.0);
         assert_eq!(ss.score("alice"), Some(5.0));
         assert_eq!(ss.len(), 1);
@@ -939,8 +939,8 @@ mod tests {
     #[test]
     fn incr_existing_member() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 10.0);
-        let score = ss.incr("alice".into(), 5.0);
+        ss.add("alice", 10.0);
+        let score = ss.incr("alice", 5.0);
         assert_eq!(score, 15.0);
         assert_eq!(ss.score("alice"), Some(15.0));
         assert_eq!(ss.len(), 1);
@@ -949,17 +949,17 @@ mod tests {
     #[test]
     fn incr_negative_delta() {
         let mut ss = SortedSet::new();
-        ss.add("alice".into(), 10.0);
-        let score = ss.incr("alice".into(), -3.0);
+        ss.add("alice", 10.0);
+        let score = ss.incr("alice", -3.0);
         assert_eq!(score, 7.0);
     }
 
     #[test]
     fn pop_min_basic() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
 
         let popped = ss.pop_min(2);
         assert_eq!(popped, vec![("a".into(), 1.0), ("b".into(), 2.0)]);
@@ -971,9 +971,9 @@ mod tests {
     #[test]
     fn pop_max_basic() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
-        ss.add("b".into(), 2.0);
-        ss.add("c".into(), 3.0);
+        ss.add("a", 1.0);
+        ss.add("b", 2.0);
+        ss.add("c", 3.0);
 
         let popped = ss.pop_max(2);
         assert_eq!(popped, vec![("c".into(), 3.0), ("b".into(), 2.0)]);
@@ -985,7 +985,7 @@ mod tests {
     #[test]
     fn pop_min_more_than_available() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
+        ss.add("a", 1.0);
         let popped = ss.pop_min(5);
         assert_eq!(popped.len(), 1);
         assert!(ss.is_empty());
@@ -994,7 +994,7 @@ mod tests {
     #[test]
     fn pop_max_more_than_available() {
         let mut ss = SortedSet::new();
-        ss.add("a".into(), 1.0);
+        ss.add("a", 1.0);
         let popped = ss.pop_max(5);
         assert_eq!(popped.len(), 1);
         assert!(ss.is_empty());
@@ -1015,8 +1015,8 @@ mod tests {
     #[test]
     fn pop_min_data_bytes_consistent() {
         let mut ss = SortedSet::new();
-        ss.add("hello".into(), 1.0);
-        ss.add("world".into(), 2.0);
+        ss.add("hello", 1.0);
+        ss.add("world", 2.0);
         assert_eq!(ss.data_bytes, 10);
 
         ss.pop_min(1);
@@ -1029,8 +1029,8 @@ mod tests {
     #[test]
     fn pop_max_data_bytes_consistent() {
         let mut ss = SortedSet::new();
-        ss.add("hello".into(), 1.0);
-        ss.add("world".into(), 2.0);
+        ss.add("hello", 1.0);
+        ss.add("world", 2.0);
         assert_eq!(ss.data_bytes, 10);
 
         ss.pop_max(1);
