@@ -611,17 +611,42 @@ impl ConfigRegistry {
             return Err(format!("ERR Unsupported CONFIG parameter: {param}"));
         }
 
-        // validate numeric params before storing
+        // validate numeric params before storing — check both parse and bounds
         match key.as_str() {
             "slowlog-log-slower-than" => {
-                value.parse::<i64>().map_err(|_| {
+                let v = value.parse::<i64>().map_err(|_| {
                     format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
                 })?;
+                if v < -1 {
+                    return Err(format!(
+                        "ERR Invalid argument '{value}' for CONFIG SET '{key}' (must be >= -1)"
+                    ));
+                }
             }
-            "slowlog-max-len" | "maxclients" | "max-pipeline-depth" => {
+            "slowlog-max-len" => {
                 value.parse::<usize>().map_err(|_| {
                     format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
                 })?;
+            }
+            "maxclients" => {
+                let v = value.parse::<usize>().map_err(|_| {
+                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
+                })?;
+                if v < 1 {
+                    return Err(format!(
+                        "ERR Invalid argument '{value}' for CONFIG SET '{key}' (must be >= 1)"
+                    ));
+                }
+            }
+            "max-pipeline-depth" => {
+                let v = value.parse::<usize>().map_err(|_| {
+                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
+                })?;
+                if v < 1 {
+                    return Err(format!(
+                        "ERR Invalid argument '{value}' for CONFIG SET '{key}' (must be >= 1)"
+                    ));
+                }
             }
             "idle-timeout-secs" => {
                 value.parse::<u64>().map_err(|_| {
@@ -644,21 +669,42 @@ impl ConfigRegistry {
     pub fn rewrite(&self, config_path: &Path) -> Result<(), String> {
         let params = self.params.read().unwrap_or_else(|e| e.into_inner());
 
-        // helper to read a param with a default fallback
+        // helpers for reading params with type-safe parsing
         let get = |key: &str, default: &str| -> String {
             params.get(key).cloned().unwrap_or_else(|| default.into())
         };
+        let bad_value = |key: &str, raw: &str| -> String {
+            format!("ERR CONFIG REWRITE failed: invalid value '{raw}' for '{key}'")
+        };
 
         let mut cfg = EmberConfig::default();
-        cfg.port = get("port", "6379").parse().unwrap_or(6379);
+        let raw = get("port", "6379");
+        cfg.port = raw.parse().map_err(|_| bad_value("port", &raw))?;
         cfg.bind = get("bind-address", "127.0.0.1");
-        cfg.maxclients = get("maxclients", "10000").parse().unwrap_or(10_000);
-        cfg.idle_timeout_secs = get("idle-timeout-secs", "300").parse().unwrap_or(300);
-        cfg.max_pipeline_depth = get("max-pipeline-depth", "10000").parse().unwrap_or(10_000);
-        cfg.max_auth_failures = get("max-auth-failures", "10").parse().unwrap_or(10);
+
+        let raw = get("maxclients", "10000");
+        cfg.maxclients = raw
+            .parse()
+            .map_err(|_| bad_value("maxclients", &raw))?;
+
+        let raw = get("idle-timeout-secs", "300");
+        cfg.idle_timeout_secs = raw
+            .parse()
+            .map_err(|_| bad_value("idle-timeout-secs", &raw))?;
+
+        let raw = get("max-pipeline-depth", "10000");
+        cfg.max_pipeline_depth = raw
+            .parse()
+            .map_err(|_| bad_value("max-pipeline-depth", &raw))?;
+
+        let raw = get("max-auth-failures", "10");
+        cfg.max_auth_failures = raw
+            .parse()
+            .map_err(|_| bad_value("max-auth-failures", &raw))?;
 
         // memory
-        let maxmem_bytes: u64 = get("maxmemory", "0").parse().unwrap_or(0);
+        let raw = get("maxmemory", "0");
+        let maxmem_bytes: u64 = raw.parse().map_err(|_| bad_value("maxmemory", &raw))?;
         cfg.maxmemory = if maxmem_bytes == 0 {
             String::new()
         } else {
@@ -669,34 +715,63 @@ impl ConfigRegistry {
         // persistence
         cfg.appendonly = get("appendonly", "no") == "yes";
         cfg.appendfsync = get("appendfsync", "everysec");
-        cfg.active_expiry_interval_ms = get("active-expiry-interval-ms", "100")
+
+        let raw = get("active-expiry-interval-ms", "100");
+        cfg.active_expiry_interval_ms = raw
             .parse()
-            .unwrap_or(100);
-        cfg.aof_fsync_interval_secs = get("aof-fsync-interval-secs", "1").parse().unwrap_or(1);
+            .map_err(|_| bad_value("active-expiry-interval-ms", &raw))?;
+
+        let raw = get("aof-fsync-interval-secs", "1");
+        cfg.aof_fsync_interval_secs = raw
+            .parse()
+            .map_err(|_| bad_value("aof-fsync-interval-secs", &raw))?;
 
         // monitoring
-        cfg.slowlog_log_slower_than = get("slowlog-log-slower-than", "10000")
+        let raw = get("slowlog-log-slower-than", "10000");
+        cfg.slowlog_log_slower_than = raw
             .parse()
-            .unwrap_or(10_000);
-        cfg.slowlog_max_len = get("slowlog-max-len", "128").parse().unwrap_or(128);
+            .map_err(|_| bad_value("slowlog-log-slower-than", &raw))?;
+
+        let raw = get("slowlog-max-len", "128");
+        cfg.slowlog_max_len = raw
+            .parse()
+            .map_err(|_| bad_value("slowlog-max-len", &raw))?;
 
         // protocol limits
         cfg.max_key_len = get("max-key-len", "512kb");
         cfg.max_value_len = get("max-value-len", "512mb");
-        cfg.max_subscriptions_per_connection = get("max-subscriptions-per-connection", "10000")
+
+        let raw = get("max-subscriptions-per-connection", "10000");
+        cfg.max_subscriptions_per_connection = raw
             .parse()
-            .unwrap_or(10_000);
-        cfg.max_pattern_len = get("max-pattern-len", "256").parse().unwrap_or(256);
-        cfg.read_buffer_capacity = get("read-buffer-capacity", "4096").parse().unwrap_or(4096);
+            .map_err(|_| bad_value("max-subscriptions-per-connection", &raw))?;
+
+        let raw = get("max-pattern-len", "256");
+        cfg.max_pattern_len = raw
+            .parse()
+            .map_err(|_| bad_value("max-pattern-len", &raw))?;
+
+        let raw = get("read-buffer-capacity", "4096");
+        cfg.read_buffer_capacity = raw
+            .parse()
+            .map_err(|_| bad_value("read-buffer-capacity", &raw))?;
         cfg.max_buffer_size = get("max-buffer-size", "64mb");
 
         // engine internals
-        cfg.engine.shard_channel_buffer = get("shard-channel-buffer", "256").parse().unwrap_or(256);
-        cfg.engine.replication_broadcast_capacity = get("replication-broadcast-capacity", "65536")
+        let raw = get("shard-channel-buffer", "256");
+        cfg.engine.shard_channel_buffer = raw
             .parse()
-            .unwrap_or(65_536);
-        cfg.engine.stats_poll_interval_secs =
-            get("stats-poll-interval-secs", "5").parse().unwrap_or(5);
+            .map_err(|_| bad_value("shard-channel-buffer", &raw))?;
+
+        let raw = get("replication-broadcast-capacity", "65536");
+        cfg.engine.replication_broadcast_capacity = raw
+            .parse()
+            .map_err(|_| bad_value("replication-broadcast-capacity", &raw))?;
+
+        let raw = get("stats-poll-interval-secs", "5");
+        cfg.engine.stats_poll_interval_secs = raw
+            .parse()
+            .map_err(|_| bad_value("stats-poll-interval-secs", &raw))?;
 
         drop(params); // release read lock before file I/O
 
@@ -1041,5 +1116,35 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn config_set_maxclients_rejects_zero() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+        let result = registry.set("maxclients", "0");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be >= 1"));
+    }
+
+    #[test]
+    fn config_set_max_pipeline_depth_rejects_zero() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+        let result = registry.set("max-pipeline-depth", "0");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be >= 1"));
+    }
+
+    #[test]
+    fn config_set_slowlog_rejects_below_minus_one() {
+        let cfg = EmberConfig::default();
+        let registry = cfg.to_registry();
+        // -1 means disabled (valid)
+        assert!(registry.set("slowlog-log-slower-than", "-1").is_ok());
+        // -2 is invalid
+        let result = registry.set("slowlog-log-slower-than", "-2");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be >= -1"));
     }
 }
