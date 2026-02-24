@@ -353,6 +353,33 @@ pub enum Command {
     /// SCARD `key`. Returns the cardinality (number of members) of a set.
     SCard { key: String },
 
+    /// SUNION `key` \[key ...\]. Returns the union of all given sets.
+    SUnion { keys: Vec<String> },
+
+    /// SINTER `key` \[key ...\]. Returns the intersection of all given sets.
+    SInter { keys: Vec<String> },
+
+    /// SDIFF `key` \[key ...\]. Returns members of the first set not in the others.
+    SDiff { keys: Vec<String> },
+
+    /// SUNIONSTORE `destination` `key` \[key ...\]. Stores the union into `destination`.
+    SUnionStore { dest: String, keys: Vec<String> },
+
+    /// SINTERSTORE `destination` `key` \[key ...\]. Stores the intersection into `destination`.
+    SInterStore { dest: String, keys: Vec<String> },
+
+    /// SDIFFSTORE `destination` `key` \[key ...\]. Stores the difference into `destination`.
+    SDiffStore { dest: String, keys: Vec<String> },
+
+    /// SRANDMEMBER `key` \[count\]. Returns random members without removing them.
+    SRandMember { key: String, count: Option<i64> },
+
+    /// SPOP `key` \[count\]. Removes and returns random members.
+    SPop { key: String, count: usize },
+
+    /// SMISMEMBER `key` `member` \[member ...\]. Checks multiple members at once.
+    SMisMember { key: String, members: Vec<String> },
+
     // --- cluster commands ---
     /// CLUSTER INFO. Returns cluster state and configuration information.
     ClusterInfo,
@@ -820,6 +847,15 @@ impl Command {
             Command::SMembers { .. } => "smembers",
             Command::SIsMember { .. } => "sismember",
             Command::SCard { .. } => "scard",
+            Command::SUnion { .. } => "sunion",
+            Command::SInter { .. } => "sinter",
+            Command::SDiff { .. } => "sdiff",
+            Command::SUnionStore { .. } => "sunionstore",
+            Command::SInterStore { .. } => "sinterstore",
+            Command::SDiffStore { .. } => "sdiffstore",
+            Command::SRandMember { .. } => "srandmember",
+            Command::SPop { .. } => "spop",
+            Command::SMisMember { .. } => "smismember",
 
             // cluster
             Command::ClusterInfo => "cluster_info",
@@ -942,6 +978,10 @@ impl Command {
             // set
                 | Command::SAdd { .. }
                 | Command::SRem { .. }
+                | Command::SUnionStore { .. }
+                | Command::SInterStore { .. }
+                | Command::SDiffStore { .. }
+                | Command::SPop { .. }
             // server / persistence
                 | Command::FlushDb { .. }
                 | Command::ConfigSet { .. }
@@ -1086,11 +1126,22 @@ impl Command {
             }
 
             // set — reads
-            Command::SIsMember { .. } | Command::SCard { .. } => READ | SET | FAST,
-            Command::SMembers { .. } => READ | SET | SLOW,
+            Command::SIsMember { .. }
+            | Command::SCard { .. }
+            | Command::SMisMember { .. } => READ | SET | FAST,
+            Command::SMembers { .. }
+            | Command::SRandMember { .. } => READ | SET | SLOW,
+            Command::SUnion { .. }
+            | Command::SInter { .. }
+            | Command::SDiff { .. } => READ | SET | SLOW,
 
             // set — writes
-            Command::SAdd { .. } | Command::SRem { .. } => WRITE | SET | FAST,
+            Command::SAdd { .. } | Command::SRem { .. } | Command::SPop { .. } => {
+                WRITE | SET | FAST
+            }
+            Command::SUnionStore { .. }
+            | Command::SInterStore { .. }
+            | Command::SDiffStore { .. } => WRITE | SET | SLOW,
 
             // server
             Command::DbSize => SERVER | KEYSPACE | READ | FAST,
@@ -1223,6 +1274,9 @@ impl Command {
             | Command::SIsMember { key, .. }
             | Command::SCard { key }
             | Command::SScan { key, .. }
+            | Command::SRandMember { key, .. }
+            | Command::SPop { key, .. }
+            | Command::SMisMember { key, .. }
             | Command::HScan { key, .. }
             | Command::ZScan { key, .. }
             | Command::VAdd { key, .. }
@@ -1248,7 +1302,13 @@ impl Command {
             | Command::Touch { keys }
             | Command::MGet { keys }
             | Command::BLPop { keys, .. }
-            | Command::BRPop { keys, .. } => keys.first().map(String::as_str),
+            | Command::BRPop { keys, .. }
+            | Command::SUnion { keys }
+            | Command::SInter { keys }
+            | Command::SDiff { keys } => keys.first().map(String::as_str),
+            Command::SUnionStore { dest, .. }
+            | Command::SInterStore { dest, .. }
+            | Command::SDiffStore { dest, .. } => Some(dest),
             Command::MSet { pairs } => pairs.first().map(|(k, _)| k.as_str()),
             _ => None,
         }
@@ -1366,6 +1426,15 @@ impl Command {
             "SMEMBERS" => parse_smembers(&frames[1..]),
             "SISMEMBER" => parse_sismember(&frames[1..]),
             "SCARD" => parse_scard(&frames[1..]),
+            "SUNION" => parse_multi_key_set("SUNION", &frames[1..]),
+            "SINTER" => parse_multi_key_set("SINTER", &frames[1..]),
+            "SDIFF" => parse_multi_key_set("SDIFF", &frames[1..]),
+            "SUNIONSTORE" => parse_store_set("SUNIONSTORE", &frames[1..]),
+            "SINTERSTORE" => parse_store_set("SINTERSTORE", &frames[1..]),
+            "SDIFFSTORE" => parse_store_set("SDIFFSTORE", &frames[1..]),
+            "SRANDMEMBER" => parse_srandmember(&frames[1..]),
+            "SPOP" => parse_spop(&frames[1..]),
+            "SMISMEMBER" => parse_smismember(&frames[1..]),
             "CLUSTER" => parse_cluster(&frames[1..]),
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
@@ -2651,6 +2720,81 @@ fn parse_scard(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
     let key = extract_string(&args[0])?;
     Ok(Command::SCard { key })
+}
+
+fn parse_multi_key_set(cmd: &'static str, args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity(cmd));
+    }
+    let keys = extract_strings(args)?;
+    match cmd {
+        "SUNION" => Ok(Command::SUnion { keys }),
+        "SINTER" => Ok(Command::SInter { keys }),
+        "SDIFF" => Ok(Command::SDiff { keys }),
+        _ => Err(wrong_arity(cmd)),
+    }
+}
+
+fn parse_store_set(cmd: &'static str, args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity(cmd));
+    }
+    let dest = extract_string(&args[0])?;
+    let keys = extract_strings(&args[1..])?;
+    match cmd {
+        "SUNIONSTORE" => Ok(Command::SUnionStore { dest, keys }),
+        "SINTERSTORE" => Ok(Command::SInterStore { dest, keys }),
+        "SDIFFSTORE" => Ok(Command::SDiffStore { dest, keys }),
+        _ => Err(wrong_arity(cmd)),
+    }
+}
+
+fn parse_srandmember(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(wrong_arity("SRANDMEMBER"));
+    }
+    let key = extract_string(&args[0])?;
+    let count = if args.len() == 2 {
+        let s = extract_string(&args[1])?;
+        let n: i64 = s.parse().map_err(|_| {
+            ProtocolError::InvalidCommandFrame("ERR value is not an integer or out of range".into())
+        })?;
+        Some(n)
+    } else {
+        None
+    };
+    Ok(Command::SRandMember { key, count })
+}
+
+fn parse_spop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(wrong_arity("SPOP"));
+    }
+    let key = extract_string(&args[0])?;
+    let count = if args.len() == 2 {
+        let s = extract_string(&args[1])?;
+        let n: i64 = s.parse().map_err(|_| {
+            ProtocolError::InvalidCommandFrame("ERR value is not an integer or out of range".into())
+        })?;
+        if n < 0 {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "ERR value is not an integer or out of range".into(),
+            ));
+        }
+        n as usize
+    } else {
+        1
+    };
+    Ok(Command::SPop { key, count })
+}
+
+fn parse_smismember(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("SMISMEMBER"));
+    }
+    let key = extract_string(&args[0])?;
+    let members = extract_strings(&args[1..])?;
+    Ok(Command::SMisMember { key, members })
 }
 
 // --- cluster commands ---

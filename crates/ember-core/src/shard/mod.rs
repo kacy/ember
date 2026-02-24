@@ -370,6 +370,39 @@ pub enum ShardRequest {
     SCard {
         key: String,
     },
+    SUnion {
+        keys: Vec<String>,
+    },
+    SInter {
+        keys: Vec<String>,
+    },
+    SDiff {
+        keys: Vec<String>,
+    },
+    SUnionStore {
+        dest: String,
+        keys: Vec<String>,
+    },
+    SInterStore {
+        dest: String,
+        keys: Vec<String>,
+    },
+    SDiffStore {
+        dest: String,
+        keys: Vec<String>,
+    },
+    SRandMember {
+        key: String,
+        count: i64,
+    },
+    SPop {
+        key: String,
+        count: usize,
+    },
+    SMisMember {
+        key: String,
+        members: Vec<String>,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -604,6 +637,10 @@ pub enum ShardResponse {
     HDelLen { count: usize, removed: Vec<String> },
     /// Array of strings (e.g. HKEYS).
     StringArray(Vec<String>),
+    /// Array of booleans (e.g. SMISMEMBER).
+    BoolArray(Vec<bool>),
+    /// SUNIONSTORE/SINTERSTORE/SDIFFSTORE result: count + stored members for AOF.
+    SetStoreResult { count: usize, members: Vec<String> },
     /// Serialized key dump with remaining TTL (for MIGRATE/DUMP).
     KeyDump { data: Vec<u8>, ttl_ms: i64 },
     /// In-memory snapshot of the full shard state (for replication).
@@ -1288,6 +1325,14 @@ fn write_result_len(result: Result<usize, WriteError>) -> ShardResponse {
     }
 }
 
+fn store_set_response(result: Result<(usize, Vec<String>), WriteError>) -> ShardResponse {
+    match result {
+        Ok((count, members)) => ShardResponse::SetStoreResult { count, members },
+        Err(WriteError::WrongType) => ShardResponse::WrongType,
+        Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+    }
+}
+
 /// Routes a request to the appropriate keyspace operation and returns a response.
 ///
 /// This is the hot path — every read and write goes through here.
@@ -1571,6 +1616,39 @@ fn dispatch(
         },
         ShardRequest::SCard { key } => match ks.scard(key) {
             Ok(count) => ShardResponse::Len(count),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SUnion { keys } => match ks.sunion(keys) {
+            Ok(members) => ShardResponse::StringArray(members),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SInter { keys } => match ks.sinter(keys) {
+            Ok(members) => ShardResponse::StringArray(members),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SDiff { keys } => match ks.sdiff(keys) {
+            Ok(members) => ShardResponse::StringArray(members),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SUnionStore { dest, keys } => {
+            store_set_response(ks.sunionstore(dest, keys))
+        }
+        ShardRequest::SInterStore { dest, keys } => {
+            store_set_response(ks.sinterstore(dest, keys))
+        }
+        ShardRequest::SDiffStore { dest, keys } => {
+            store_set_response(ks.sdiffstore(dest, keys))
+        }
+        ShardRequest::SRandMember { key, count } => match ks.srandmember(key, *count) {
+            Ok(members) => ShardResponse::StringArray(members),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SPop { key, count } => match ks.spop(key, *count) {
+            Ok(members) => ShardResponse::StringArray(members),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SMisMember { key, members } => match ks.smismember(key, members) {
+            Ok(results) => ShardResponse::BoolArray(results),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::SScan {

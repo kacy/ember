@@ -162,6 +162,36 @@ pub(super) fn to_aof_records(
         (ShardRequest::SRem { key, members }, ShardResponse::Len(count)) if *count > 0 => {
             smallvec![AofRecord::SRem { key, members }]
         }
+        // SPOP: persist as SREM of the removed members
+        (ShardRequest::SPop { key, .. }, ShardResponse::StringArray(members))
+            if !members.is_empty() =>
+        {
+            smallvec![AofRecord::SRem {
+                key,
+                members: members.clone(),
+            }]
+        }
+        // STORE commands: persist as DEL + SADD with the resulting members
+        (
+            ShardRequest::SUnionStore { dest, .. }
+            | ShardRequest::SInterStore { dest, .. }
+            | ShardRequest::SDiffStore { dest, .. },
+            ShardResponse::SetStoreResult { count, members },
+        ) => {
+            if *count > 0 {
+                smallvec![
+                    AofRecord::Del {
+                        key: dest.clone(),
+                    },
+                    AofRecord::SAdd {
+                        key: dest,
+                        members: members.clone(),
+                    },
+                ]
+            } else {
+                smallvec![AofRecord::Del { key: dest }]
+            }
+        }
         // Proto commands
         #[cfg(feature = "protobuf")]
         (
