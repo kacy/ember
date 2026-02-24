@@ -146,6 +146,18 @@ enum ResponseTag {
     /// Vector VINFO result
     #[cfg(feature = "vector")]
     VInfoResult,
+    /// LINDEX: Value(Some(String)) → Bulk, Value(None) → Null, WrongType
+    LIndexResult,
+    /// LSET: Ok → Simple("OK"), Err → Error, WrongType
+    LSetResult,
+    /// LTRIM: Ok → Simple("OK"), WrongType
+    LTrimResult,
+    /// LINSERT: Integer → Integer, WrongType, OOM
+    LInsertResult,
+    /// LREM: Len → Integer, WrongType
+    LRemResult,
+    /// LPOS: IntegerArray → Array/Null/Integer depending on COUNT
+    LPosResult { count: Option<usize> },
     /// SORT: Array → Array of Bulk, WrongType → error
     SortResult,
     /// PROTO.SET: Ok → Simple("OK"), Value(None) → Null
@@ -1854,6 +1866,74 @@ async fn prepare_command(
         Command::LLen { key } => {
             route!(key, ShardRequest::LLen { key }, ResponseTag::LenResult)
         }
+        Command::LIndex { key, index } => {
+            route!(
+                key,
+                ShardRequest::LIndex { key, index },
+                ResponseTag::LIndexResult
+            )
+        }
+        Command::LSet { key, index, value } => {
+            route!(
+                key,
+                ShardRequest::LSet { key, index, value },
+                ResponseTag::LSetResult
+            )
+        }
+        Command::LTrim { key, start, stop } => {
+            route!(
+                key,
+                ShardRequest::LTrim { key, start, stop },
+                ResponseTag::LTrimResult
+            )
+        }
+        Command::LInsert {
+            key,
+            before,
+            pivot,
+            value,
+        } => {
+            route!(
+                key,
+                ShardRequest::LInsert {
+                    key,
+                    before,
+                    pivot,
+                    value
+                },
+                ResponseTag::LInsertResult
+            )
+        }
+        Command::LRem { key, count, value } => {
+            route!(
+                key,
+                ShardRequest::LRem { key, count, value },
+                ResponseTag::LRemResult
+            )
+        }
+        Command::LPos {
+            key,
+            element,
+            rank,
+            count,
+            maxlen,
+        } => {
+            // When COUNT is not specified, fetch at most 1 match from the shard
+            // and return as a single value (not array). When COUNT is specified,
+            // pass the raw value (0 = all) and return an array.
+            let shard_count = count.unwrap_or(1);
+            route!(
+                key,
+                ShardRequest::LPos {
+                    key,
+                    element,
+                    rank,
+                    count: shard_count,
+                    maxlen
+                },
+                ResponseTag::LPosResult { count }
+            )
+        }
 
         // blocking list ops are handled in the main loop before dispatch;
         // if they reach here (e.g. inside MULTI), return an error.
@@ -2778,6 +2858,58 @@ fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> Frame {
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
 
+        // -- additional list commands --
+        ResponseTag::LIndexResult => match resp {
+            ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
+            ShardResponse::Value(None) => Frame::Null,
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::LSetResult => match resp {
+            ShardResponse::Ok => Frame::Simple("OK".into()),
+            ShardResponse::WrongType => wrongtype_error(),
+            ShardResponse::Err(msg) => Frame::Error(msg),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::LTrimResult => match resp {
+            ShardResponse::Ok => Frame::Simple("OK".into()),
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::LInsertResult => match resp {
+            ShardResponse::Integer(n) => Frame::Integer(n),
+            ShardResponse::WrongType => wrongtype_error(),
+            ShardResponse::OutOfMemory => oom_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::LRemResult => match resp {
+            ShardResponse::Len(n) => Frame::Integer(n as i64),
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+        ResponseTag::LPosResult { count } => match resp {
+            ShardResponse::IntegerArray(positions) => {
+                if count.is_some() {
+                    // COUNT was specified: always return array
+                    Frame::Array(
+                        positions
+                            .into_iter()
+                            .map(|p| Frame::Integer(p))
+                            .collect(),
+                    )
+                } else {
+                    // no COUNT: return single integer or null
+                    if let Some(&pos) = positions.first() {
+                        Frame::Integer(pos)
+                    } else {
+                        Frame::Null
+                    }
+                }
+            }
+            ShardResponse::WrongType => wrongtype_error(),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        },
+
         // -- vector commands --
         #[cfg(feature = "vector")]
         ResponseTag::VAddResult => match resp {
@@ -2936,6 +3068,12 @@ async fn cluster_slot_check(ctx: &ServerContext, cmd: &Command, asking: bool) ->
         | Command::RPop { ref key }
         | Command::LRange { ref key, .. }
         | Command::LLen { ref key }
+        | Command::LIndex { ref key, .. }
+        | Command::LSet { ref key, .. }
+        | Command::LTrim { ref key, .. }
+        | Command::LInsert { ref key, .. }
+        | Command::LRem { ref key, .. }
+        | Command::LPos { ref key, .. }
         | Command::ZAdd { ref key, .. }
         | Command::ZRem { ref key, .. }
         | Command::ZScore { ref key, .. }
@@ -3852,6 +3990,111 @@ async fn execute(
             let req = ShardRequest::LLen { key };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LIndex { key, index } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LIndex { key, index };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LSet { key, index, value } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LSet { key, index, value };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LTrim { key, start, stop } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LTrim { key, start, stop };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LInsert {
+            key,
+            before,
+            pivot,
+            value,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LInsert {
+                key,
+                before,
+                pivot,
+                value,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LRem { key, count, value } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LRem { key, count, value };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LPos {
+            key,
+            element,
+            rank,
+            count,
+            maxlen,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let shard_count = count.unwrap_or(1);
+            let req = ShardRequest::LPos {
+                key,
+                element,
+                rank,
+                count: shard_count,
+                maxlen,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::IntegerArray(positions)) => {
+                    if count.is_some() {
+                        Frame::Array(
+                            positions
+                                .into_iter()
+                                .map(|p| Frame::Integer(p))
+                                .collect(),
+                        )
+                    } else if let Some(&pos) = positions.first() {
+                        Frame::Integer(pos)
+                    } else {
+                        Frame::Null
+                    }
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),

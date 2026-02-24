@@ -63,8 +63,8 @@ use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{
-    IncrError, IncrFloatError, Keyspace, KeyspaceStats, SetResult, ShardConfig, TtlResult,
-    WriteError,
+    IncrError, IncrFloatError, Keyspace, KeyspaceStats, LsetError, SetResult, ShardConfig,
+    TtlResult, WriteError,
 };
 use crate::types::sorted_set::{ScoreBound, ZAddFlags};
 use crate::types::Value;
@@ -239,6 +239,38 @@ pub enum ShardRequest {
     },
     LLen {
         key: String,
+    },
+    LIndex {
+        key: String,
+        index: i64,
+    },
+    LSet {
+        key: String,
+        index: i64,
+        value: Bytes,
+    },
+    LTrim {
+        key: String,
+        start: i64,
+        stop: i64,
+    },
+    LInsert {
+        key: String,
+        before: bool,
+        pivot: Bytes,
+        value: Bytes,
+    },
+    LRem {
+        key: String,
+        count: i64,
+        value: Bytes,
+    },
+    LPos {
+        key: String,
+        element: Bytes,
+        rank: i64,
+        count: usize,
+        maxlen: usize,
     },
     Type {
         key: String,
@@ -637,6 +669,8 @@ pub enum ShardResponse {
     HDelLen { count: usize, removed: Vec<String> },
     /// Array of strings (e.g. HKEYS).
     StringArray(Vec<String>),
+    /// Array of integer positions (e.g. LPOS).
+    IntegerArray(Vec<i64>),
     /// Array of booleans (e.g. SMISMEMBER).
     BoolArray(Vec<bool>),
     /// SUNIONSTORE/SINTERSTORE/SDIFFSTORE result: count + stored members for AOF.
@@ -1439,6 +1473,48 @@ fn dispatch(
         },
         ShardRequest::LLen { key } => match ks.llen(key) {
             Ok(len) => ShardResponse::Len(len),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LIndex { key, index } => match ks.lindex(key, *index) {
+            Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LSet { key, index, value } => match ks.lset(key, *index, value.clone()) {
+            Ok(()) => ShardResponse::Ok,
+            Err(e) => match e {
+                LsetError::WrongType => ShardResponse::WrongType,
+                LsetError::NoSuchKey => ShardResponse::Err("ERR no such key".into()),
+                LsetError::IndexOutOfRange => {
+                    ShardResponse::Err("ERR index out of range".into())
+                }
+            },
+        },
+        ShardRequest::LTrim { key, start, stop } => match ks.ltrim(key, *start, *stop) {
+            Ok(()) => ShardResponse::Ok,
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LInsert {
+            key,
+            before,
+            pivot,
+            value,
+        } => match ks.linsert(key, *before, pivot, value.clone()) {
+            Ok(n) => ShardResponse::Integer(n),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::LRem { key, count, value } => match ks.lrem(key, *count, value) {
+            Ok(n) => ShardResponse::Len(n),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LPos {
+            key,
+            element,
+            rank,
+            count,
+            maxlen,
+        } => match ks.lpos(key, element, *rank, *count, *maxlen) {
+            Ok(positions) => ShardResponse::IntegerArray(positions),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::Type { key } => ShardResponse::TypeName(ks.value_type(key)),

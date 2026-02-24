@@ -189,16 +189,16 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "rename a key",
     },
     CommandInfo {
-        name: "SORT",
-        args: "key [ASC|DESC] [ALPHA] [LIMIT offset count] [STORE destination]",
-        group: "generic",
-        summary: "sort the elements in a list, set, or sorted set",
-    },
-    CommandInfo {
         name: "SCAN",
         args: "cursor [MATCH pattern] [COUNT count]",
         group: "generic",
         summary: "incrementally iterate the keys space",
+    },
+    CommandInfo {
+        name: "SORT",
+        args: "key [ASC|DESC] [ALPHA] [LIMIT offset count] [STORE destination]",
+        group: "generic",
+        summary: "sort the elements in a list, set, or sorted set",
     },
     CommandInfo {
         name: "TOUCH",
@@ -238,6 +238,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "remove and return the last element, or block until one is available",
     },
     CommandInfo {
+        name: "LINDEX",
+        args: "key index",
+        group: "list",
+        summary: "get an element from a list by its index",
+    },
+    CommandInfo {
+        name: "LINSERT",
+        args: "key BEFORE|AFTER pivot element",
+        group: "list",
+        summary: "insert an element before or after another element in a list",
+    },
+    CommandInfo {
         name: "LLEN",
         args: "key",
         group: "list",
@@ -250,6 +262,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "remove and return the first element of a list",
     },
     CommandInfo {
+        name: "LPOS",
+        args: "key element [RANK rank] [COUNT count] [MAXLEN maxlen]",
+        group: "list",
+        summary: "return the index of matching elements in a list",
+    },
+    CommandInfo {
         name: "LPUSH",
         args: "key value [value ...]",
         group: "list",
@@ -260,6 +278,24 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key start stop",
         group: "list",
         summary: "get a range of elements from a list",
+    },
+    CommandInfo {
+        name: "LREM",
+        args: "key count element",
+        group: "list",
+        summary: "remove elements from a list",
+    },
+    CommandInfo {
+        name: "LSET",
+        args: "key index element",
+        group: "list",
+        summary: "set the value of an element in a list by its index",
+    },
+    CommandInfo {
+        name: "LTRIM",
+        args: "key start stop",
+        group: "list",
+        summary: "trim a list to the specified range",
     },
     CommandInfo {
         name: "RPOP",
@@ -551,10 +587,10 @@ pub static COMMANDS: &[CommandInfo] = &[
     },
     // transactions
     CommandInfo {
-        name: "MULTI",
+        name: "DISCARD",
         args: "",
         group: "transactions",
-        summary: "mark the start of a transaction block",
+        summary: "discard all commands issued after MULTI",
     },
     CommandInfo {
         name: "EXEC",
@@ -563,22 +599,22 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "execute all commands issued after MULTI",
     },
     CommandInfo {
-        name: "DISCARD",
+        name: "MULTI",
         args: "",
         group: "transactions",
-        summary: "discard all commands issued after MULTI",
-    },
-    CommandInfo {
-        name: "WATCH",
-        args: "key [key ...]",
-        group: "transactions",
-        summary: "watch keys for optimistic locking before MULTI/EXEC",
+        summary: "mark the start of a transaction block",
     },
     CommandInfo {
         name: "UNWATCH",
         args: "",
         group: "transactions",
         summary: "forget about all watched keys",
+    },
+    CommandInfo {
+        name: "WATCH",
+        args: "key [key ...]",
+        group: "transactions",
+        summary: "watch keys for optimistic locking before MULTI/EXEC",
     },
 ];
 

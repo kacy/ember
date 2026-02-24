@@ -360,6 +360,107 @@ fn replay_aof(
                     }
                 }
             }
+            AofRecord::LSet { key, index, value } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        let len = deque.len();
+                        let resolved = if index < 0 {
+                            (len as i64 + index) as usize
+                        } else {
+                            index as usize
+                        };
+                        if resolved < len {
+                            deque[resolved] = value;
+                        }
+                    }
+                }
+            }
+            AofRecord::LTrim { key, start, stop } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        let len = deque.len() as i64;
+                        let s = if start < 0 {
+                            (start + len).max(0) as usize
+                        } else {
+                            (start as usize).min(len as usize)
+                        };
+                        let e = if stop < 0 {
+                            (stop + len).max(-1) as usize
+                        } else {
+                            (stop as usize).min((len as usize).saturating_sub(1))
+                        };
+                        if s > e || s >= len as usize {
+                            deque.clear();
+                        } else {
+                            *deque = deque.drain(s..=e).collect();
+                        }
+                        if deque.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            AofRecord::LInsert {
+                key,
+                before,
+                pivot,
+                value,
+            } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        if let Some(pos) = deque.iter().position(|el| el.as_ref() == pivot.as_ref())
+                        {
+                            let insert_at = if before { pos } else { pos + 1 };
+                            deque.insert(insert_at, value);
+                        }
+                    }
+                }
+            }
+            AofRecord::LRem { key, count: cnt, value } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        let max = if cnt == 0 {
+                            usize::MAX
+                        } else {
+                            cnt.unsigned_abs() as usize
+                        };
+                        let mut removed = 0;
+                        if cnt >= 0 {
+                            // forward scan
+                            deque.retain(|el| {
+                                if removed < max && el.as_ref() == value.as_ref() {
+                                    removed += 1;
+                                    false
+                                } else {
+                                    true
+                                }
+                            });
+                        } else {
+                            // reverse scan: collect indices, remove from back
+                            let mut indices: Vec<usize> = Vec::new();
+                            for (i, el) in deque.iter().enumerate().rev() {
+                                if el.as_ref() == value.as_ref() {
+                                    indices.push(i);
+                                    if indices.len() >= max {
+                                        break;
+                                    }
+                                }
+                            }
+                            // indices are already highest-first
+                            for i in indices {
+                                deque.remove(i);
+                            }
+                        }
+                        if deque.is_empty() {
+                            map.remove(&key);
+                            count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
             AofRecord::ZAdd { key, members } => {
                 let entry = map
                     .entry(key)

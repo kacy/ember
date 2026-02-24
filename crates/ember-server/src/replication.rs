@@ -601,6 +601,32 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
         }),
         AofRecord::LPop { key } => Some(ShardRequest::LPop { key: key.clone() }),
         AofRecord::RPop { key } => Some(ShardRequest::RPop { key: key.clone() }),
+        AofRecord::LSet { key, index, value } => Some(ShardRequest::LSet {
+            key: key.clone(),
+            index: *index,
+            value: value.clone(),
+        }),
+        AofRecord::LTrim { key, start, stop } => Some(ShardRequest::LTrim {
+            key: key.clone(),
+            start: *start,
+            stop: *stop,
+        }),
+        AofRecord::LInsert {
+            key,
+            before,
+            pivot,
+            value,
+        } => Some(ShardRequest::LInsert {
+            key: key.clone(),
+            before: *before,
+            pivot: pivot.clone(),
+            value: value.clone(),
+        }),
+        AofRecord::LRem { key, count, value } => Some(ShardRequest::LRem {
+            key: key.clone(),
+            count: *count,
+            value: value.clone(),
+        }),
         AofRecord::ZAdd { key, members } => Some(ShardRequest::ZAdd {
             key: key.clone(),
             members: members.clone(),
