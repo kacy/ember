@@ -4,7 +4,7 @@
 //! distance metric. Elements are named strings mapped to dense float vectors,
 //! analogous to how sorted set members have scores.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::fmt;
 
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
@@ -170,9 +170,9 @@ pub enum VectorError {
 pub struct VectorSet {
     index: Index,
     /// element name → usearch key
-    elements: HashMap<String, u64>,
+    elements: AHashMap<String, u64>,
     /// usearch key → element name (for translating search results)
-    names: HashMap<u64, String>,
+    names: AHashMap<u64, String>,
     /// monotonic key counter for usearch
     next_key: u64,
     /// vector dimensionality, locked after first insert
@@ -185,6 +185,8 @@ pub struct VectorSet {
     connectivity: usize,
     /// HNSW construction beam width (ef_construction)
     expansion_add: usize,
+    /// Cached sum of element name string lengths for O(1) memory_usage().
+    data_bytes: usize,
 }
 
 impl VectorSet {
@@ -216,14 +218,15 @@ impl VectorSet {
 
         Ok(Self {
             index,
-            elements: HashMap::new(),
-            names: HashMap::new(),
+            elements: AHashMap::new(),
+            names: AHashMap::new(),
             next_key: 0,
             dim,
             metric,
             quantization,
             connectivity,
             expansion_add,
+            data_bytes: 0,
         })
     }
 
@@ -256,6 +259,24 @@ impl VectorSet {
             return Err(VectorError::NonFinite);
         }
 
+        self.add_inner(element, vector)
+    }
+
+    /// Adds or replaces a vector that has already been validated (dim + finite check).
+    ///
+    /// Use this when the caller has already verified the vector is well-formed
+    /// (e.g. vadd_batch validates all vectors upfront). Skips redundant checks
+    /// for better batch insert throughput.
+    pub fn add_pre_validated(
+        &mut self,
+        element: String,
+        vector: &[f32],
+    ) -> Result<bool, VectorError> {
+        self.add_inner(element, vector)
+    }
+
+    /// Core insert logic shared by `add()` and `add_pre_validated()`.
+    fn add_inner(&mut self, element: String, vector: &[f32]) -> Result<bool, VectorError> {
         // ensure capacity (double when full, amortized O(1))
         if self.index.size() >= self.index.capacity() {
             let new_cap = (self.index.capacity() * 2).max(64);
@@ -277,6 +298,7 @@ impl VectorSet {
             self.index
                 .add(key, vector)
                 .map_err(|e| VectorError::Index(e.to_string()))?;
+            self.data_bytes += element.len();
             self.elements.insert(element.clone(), key);
             self.names.insert(key, element);
             true
@@ -290,6 +312,7 @@ impl VectorSet {
     /// Returns `true` if the element existed and was removed.
     pub fn remove(&mut self, element: &str) -> bool {
         if let Some(key) = self.elements.remove(element) {
+            self.data_bytes = self.data_bytes.saturating_sub(element.len());
             self.names.remove(&key);
             // usearch remove marks the entry as deleted (lazy tombstone).
             // the space is reclaimed on subsequent adds.
@@ -427,6 +450,7 @@ impl VectorSet {
 
     /// Estimates memory usage in bytes.
     ///
+    /// O(1) — uses cached `data_bytes` instead of iterating all element names.
     /// Accounts for: usearch index storage (vectors + HNSW graph),
     /// element↔key hashmaps, and string names.
     pub fn memory_usage(&self) -> usize {
@@ -436,20 +460,29 @@ impl VectorSet {
         let vector_bytes = count
             .saturating_mul(self.dim)
             .saturating_mul(self.quantization.bytes_per_element());
-        let graph_bytes = count.saturating_mul(self.connectivity).saturating_mul(16); // each edge is a u64 key
+        let graph_bytes = count.saturating_mul(self.connectivity).saturating_mul(16);
 
-        // rust-side hashmaps: elements + names
-        let name_bytes: usize = self
-            .elements
-            .keys()
-            .map(|name| name.len() + 80) // String + HashMap entry overhead for both maps
-            .sum();
+        // per-element hashmap overhead (80 bytes for both maps) + cached name lengths
+        let map_overhead = count.saturating_mul(Self::PER_ELEMENT_MAP_OVERHEAD);
 
-        Self::BASE_OVERHEAD + vector_bytes + graph_bytes + name_bytes
+        Self::BASE_OVERHEAD + vector_bytes + graph_bytes + self.data_bytes + map_overhead
+    }
+
+    /// Returns the estimated per-element byte cost (vector storage + graph
+    /// edges + hashmap overhead). Does NOT include the variable-length element
+    /// name — add that separately for incremental tracking.
+    pub fn per_element_bytes(&self) -> usize {
+        self.dim
+            .saturating_mul(self.quantization.bytes_per_element())
+            .saturating_add(self.connectivity.saturating_mul(16))
+            .saturating_add(Self::PER_ELEMENT_MAP_OVERHEAD)
     }
 
     /// Base overhead of an empty VectorSet (usearch index shell + two HashMaps).
     pub const BASE_OVERHEAD: usize = 128;
+
+    /// Per-element overhead for both hashmaps (String + HashMap entry in each).
+    const PER_ELEMENT_MAP_OVERHEAD: usize = 80;
 }
 
 impl fmt::Debug for VectorSet {
@@ -532,14 +565,15 @@ impl Clone for VectorSet {
                         })
                         .expect("cannot allocate 1-dim index — system is critically out of memory")
                     }),
-                    elements: HashMap::new(),
-                    names: HashMap::new(),
+                    elements: AHashMap::new(),
+                    names: AHashMap::new(),
                     next_key: 0,
                     dim: self.dim,
                     metric: self.metric,
                     quantization: self.quantization,
                     connectivity: 2,
                     expansion_add: 2,
+                    data_bytes: 0,
                 }
             })
     }
@@ -808,5 +842,57 @@ mod tests {
             let byte: u8 = quant.into();
             assert_eq!(QuantizationType::from_u8(byte), quant);
         }
+    }
+
+    #[test]
+    fn data_bytes_tracks_names() {
+        let mut vs = make_set(3);
+        assert_eq!(vs.data_bytes, 0);
+
+        vs.add("abc".into(), &[1.0, 0.0, 0.0]).unwrap();
+        assert_eq!(vs.data_bytes, 3);
+
+        // update same element — data_bytes unchanged
+        vs.add("abc".into(), &[0.0, 1.0, 0.0]).unwrap();
+        assert_eq!(vs.data_bytes, 3);
+
+        vs.add("xy".into(), &[0.0, 0.0, 1.0]).unwrap();
+        assert_eq!(vs.data_bytes, 5);
+
+        vs.remove("abc");
+        assert_eq!(vs.data_bytes, 2);
+
+        vs.remove("xy");
+        assert_eq!(vs.data_bytes, 0);
+    }
+
+    #[test]
+    fn add_pre_validated_works() {
+        let mut vs = make_set(3);
+        let added = vs.add_pre_validated("a".into(), &[1.0, 0.0, 0.0]).unwrap();
+        assert!(added);
+        assert_eq!(vs.len(), 1);
+        assert_eq!(vs.get("a").unwrap(), vec![1.0, 0.0, 0.0]);
+
+        // update via pre_validated
+        let added = vs.add_pre_validated("a".into(), &[0.0, 1.0, 0.0]).unwrap();
+        assert!(!added);
+        assert_eq!(vs.get("a").unwrap(), vec![0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn memory_usage_consistent() {
+        // verify O(1) memory_usage matches what the old O(n) version would produce
+        let mut vs = make_set(128);
+        let base = vs.memory_usage();
+        assert_eq!(base, VectorSet::BASE_OVERHEAD);
+
+        vs.add("hello".into(), &vec![0.0; 128]).unwrap();
+        let expected = VectorSet::BASE_OVERHEAD
+            + 128 * 4   // vector bytes (f32)
+            + 16 * 16   // graph bytes (connectivity=16, 16 bytes per edge)
+            + 5          // "hello".len()
+            + 80;        // per-element map overhead
+        assert_eq!(vs.memory_usage(), expected);
     }
 }

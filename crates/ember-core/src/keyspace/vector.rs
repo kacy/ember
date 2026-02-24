@@ -88,8 +88,9 @@ impl Keyspace {
 
     /// Adds multiple vectors to a vector set in a single operation.
     ///
-    /// All vectors are validated upfront (NaN/inf check) before any are inserted.
-    /// Memory is estimated for the entire batch with one `enforce_memory_limit` call.
+    /// All vectors are validated upfront (NaN/inf check) before any are inserted,
+    /// then inserted via the pre-validated path to skip redundant per-element checks.
+    /// Memory is tracked incrementally during the batch loop (no full-set rescan).
     /// On usearch error mid-batch, returns the error but already-applied vectors
     /// are included in the result for AOF persistence.
     #[allow(clippy::too_many_arguments)]
@@ -130,7 +131,7 @@ impl Keyspace {
                 )));
             }
             for &v in vec {
-                if v.is_nan() || v.is_infinite() {
+                if !v.is_finite() {
                     return Err(VectorWriteError::IndexError(format!(
                         "element '{elem}' contains NaN or infinity"
                     )));
@@ -172,10 +173,10 @@ impl Keyspace {
             Some(e) => e,
             None => return Err(VectorWriteError::IndexError("entry missing".into())),
         };
-        let old_entry_size = entry.entry_size(key);
 
         let mut added_count = 0;
         let mut applied = Vec::with_capacity(entries.len());
+        let mut bytes_added: usize = 0;
 
         match entry.value {
             Value::Vector(ref mut vs) => {
@@ -185,26 +186,29 @@ impl Keyspace {
                     return Err(VectorWriteError::IndexError(e.to_string()));
                 }
 
+                // per-element fixed cost (vector storage + graph edges + map overhead)
+                let per_elem = vs.per_element_bytes();
+
                 for (element, vector) in entries {
-                    // clone element for the index (which needs ownership),
-                    // then move both element and vector into applied
-                    match vs.add(element.clone(), &vector) {
-                        Ok(added) => {
-                            if added {
+                    let name_len = element.len();
+                    // vectors validated upfront — skip redundant per-element checks
+                    match vs.add_pre_validated(element.clone(), &vector) {
+                        Ok(is_new_elem) => {
+                            if is_new_elem {
                                 added_count += 1;
+                                bytes_added += per_elem + name_len;
                             }
                             applied.push((element, vector));
                         }
                         Err(e) => {
-                            // partial insert: return applied vectors so they can
-                            // be persisted to AOF despite the error
+                            // partial insert: apply incremental tracking for what
+                            // succeeded, then return error with applied vectors
                             entry.touch();
                             self.next_version += 1;
                             entry.version = self.next_version;
-                            let new_vs = memory::value_size(&entry.value);
-                            entry.cached_value_size = new_vs;
-                            let new_entry_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
-                            self.memory.adjust(old_entry_size, new_entry_size);
+                            entry.cached_value_size =
+                                entry.cached_value_size.saturating_add(bytes_added);
+                            self.memory.grow_by(bytes_added);
                             return Err(VectorWriteError::PartialBatch {
                                 message: format!(
                                     "error at element '{}': {e} ({} vectors applied before failure)",
@@ -223,10 +227,9 @@ impl Keyspace {
         entry.touch();
         self.next_version += 1;
         entry.version = self.next_version;
-        let new_vs = memory::value_size(&entry.value);
-        entry.cached_value_size = new_vs;
-        let new_entry_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
-        self.memory.adjust(old_entry_size, new_entry_size);
+        // incremental tracking — no full-set rescan via memory::value_size()
+        entry.cached_value_size = entry.cached_value_size.saturating_add(bytes_added);
+        self.memory.grow_by(bytes_added);
 
         Ok(VAddBatchResult {
             added_count,
