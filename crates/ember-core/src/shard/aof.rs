@@ -142,6 +142,10 @@ pub(super) fn to_aof_records(
         (ShardRequest::Append { key, value }, ShardResponse::Len(_)) => {
             smallvec![AofRecord::Append { key, value }]
         }
+        // SETRANGE: record the offset + overlay for replay
+        (ShardRequest::SetRange { key, offset, value }, ShardResponse::Len(_)) => {
+            smallvec![AofRecord::SetRange { key, offset, value }]
+        }
         (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => {
             smallvec![AofRecord::Rename { key, newkey }]
         }

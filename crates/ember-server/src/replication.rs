@@ -680,6 +680,11 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             key: key.clone(),
             value: value.clone(),
         }),
+        AofRecord::SetRange { key, offset, value } => Some(ShardRequest::SetRange {
+            key: key.clone(),
+            offset: *offset,
+            value: value.clone(),
+        }),
         AofRecord::Rename { key, newkey } => Some(ShardRequest::Rename {
             key: key.clone(),
             newkey: newkey.clone(),
@@ -753,6 +758,7 @@ fn primary_key_for_request(req: &ShardRequest) -> Option<&str> {
         | ShardRequest::DecrBy { key, .. }
         | ShardRequest::IncrByFloat { key, .. }
         | ShardRequest::Append { key, .. }
+        | ShardRequest::SetRange { key, .. }
         | ShardRequest::LPush { key, .. }
         | ShardRequest::RPush { key, .. }
         | ShardRequest::LPop { key }

@@ -529,6 +529,26 @@ fn replay_aof(
                     *data = Bytes::from(new_data);
                 }
             }
+            AofRecord::SetRange { key, offset, value } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::String(Bytes::new()), -1));
+                if let RecoveredValue::String(ref mut data) = entry.0 {
+                    let needed = offset.saturating_add(value.len());
+                    let new_len = data.len().max(needed);
+                    let mut buf = Vec::with_capacity(new_len);
+                    let copy_len = data.len().min(offset);
+                    buf.extend_from_slice(&data[..copy_len]);
+                    if offset > data.len() {
+                        buf.resize(offset, 0);
+                    }
+                    buf.extend_from_slice(&value);
+                    if offset + value.len() < data.len() {
+                        buf.extend_from_slice(&data[offset + value.len()..]);
+                    }
+                    *data = Bytes::from(buf);
+                }
+            }
             AofRecord::Rename { key, newkey } => {
                 if let Some(entry) = map.remove(&key) {
                     map.insert(newkey, entry);
