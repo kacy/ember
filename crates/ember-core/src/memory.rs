@@ -211,14 +211,16 @@ pub(crate) const VECDEQUE_ELEMENT_OVERHEAD: usize = 32;
 /// Base overhead for an empty VecDeque (internal buffer pointer + head/len).
 pub(crate) const VECDEQUE_BASE_OVERHEAD: usize = 24;
 
-/// Estimated overhead per entry in the compact hash Vec.
+/// Estimated overhead per entry in the packed hash buffer.
 ///
-/// Each entry is a tuple of CompactString (24 bytes, SSO-inlined ≤24 chars)
-/// and Bytes (24 bytes). No hash bucket overhead.
-pub(crate) const COMPACT_HASH_ENTRY_OVERHEAD: usize = 48;
+/// Each field is framed with a 2-byte name length and 4-byte value length.
+/// No per-field heap allocation — everything is contiguous in the buffer.
+pub(crate) const PACKED_HASH_ENTRY_OVERHEAD: usize = 6;
 
-/// Base overhead for the compact hash Vec (pointer + len + capacity).
-pub(crate) const COMPACT_VEC_BASE_OVERHEAD: usize = 24;
+/// Base overhead for the packed hash buffer.
+///
+/// Vec struct (ptr + len + cap = 24 bytes) plus the 2-byte field count header.
+pub(crate) const PACKED_HASH_BASE_OVERHEAD: usize = 26;
 
 /// Estimated overhead per entry in a HashMap (for large hashes).
 ///
@@ -252,12 +254,9 @@ pub fn value_size(value: &Value) -> usize {
         Value::Hash(hash) => {
             use crate::types::hash::HashValue;
             match hash.as_ref() {
-                HashValue::Compact(vec) => {
-                    let entry_bytes: usize = vec
-                        .iter()
-                        .map(|(k, v)| k.len() + v.len() + COMPACT_HASH_ENTRY_OVERHEAD)
-                        .sum();
-                    COMPACT_VEC_BASE_OVERHEAD + entry_bytes
+                HashValue::Packed(buf) => {
+                    // Vec struct overhead (24 bytes) + buffer contents
+                    24 + buf.len()
                 }
                 HashValue::Full(map) => {
                     let entry_bytes: usize = map
