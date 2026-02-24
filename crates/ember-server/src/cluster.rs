@@ -793,13 +793,13 @@ impl ClusterCoordinator {
     ///
     /// Returns `Ok(())` if all keys are in the same slot.
     /// Returns `Err(Frame)` with a CROSSSLOT error if they span multiple slots.
-    pub fn check_crossslot(&self, keys: &[String]) -> Result<(), Frame> {
+    pub fn check_crossslot<S: AsRef<[u8]>>(&self, keys: &[S]) -> Result<(), Frame> {
         if keys.len() <= 1 {
             return Ok(());
         }
-        let first_slot = key_slot(keys[0].as_bytes());
+        let first_slot = key_slot(keys[0].as_ref());
         for key in &keys[1..] {
-            if key_slot(key.as_bytes()) != first_slot {
+            if key_slot(key.as_ref()) != first_slot {
                 return Err(Frame::Error(
                     "CROSSSLOT Keys in request don't hash to the same slot".into(),
                 ));

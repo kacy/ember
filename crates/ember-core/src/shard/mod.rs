@@ -1031,7 +1031,7 @@ async fn run_shard(
                 RecoveredValue::SortedSet(members) => {
                     let mut ss = crate::types::sorted_set::SortedSet::new();
                     for (score, member) in members {
-                        ss.add(member, score);
+                        ss.add(&member, score);
                     }
                     Value::SortedSet(Box::new(ss))
                 }

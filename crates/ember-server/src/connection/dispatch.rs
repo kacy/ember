@@ -1243,7 +1243,7 @@ pub(super) async fn cluster_slot_check(
             store: Some(ref dest),
             ..
         } => {
-            let pair = [key.clone(), dest.clone()];
+            let pair = [key.as_str(), dest.as_str()];
             if let Err(err) = cluster.check_crossslot(&pair) {
                 return Some(err);
             }
@@ -1287,8 +1287,8 @@ pub(super) async fn cluster_slot_check(
             ref dest,
             ref keys,
         } => {
-            let mut all_keys = vec![dest.clone()];
-            all_keys.extend(keys.iter().cloned());
+            let mut all_keys: Vec<&str> = vec![dest];
+            all_keys.extend(keys.iter().map(|s| s.as_str()));
             if let Err(err) = cluster.check_crossslot(&all_keys) {
                 return Some(err);
             }
@@ -1302,7 +1302,7 @@ pub(super) async fn cluster_slot_check(
             ref key,
             ref newkey,
         } => {
-            let pair = [key.clone(), newkey.clone()];
+            let pair = [key.as_str(), newkey.as_str()];
             if let Err(err) = cluster.check_crossslot(&pair) {
                 return Some(err);
             }
@@ -1313,7 +1313,7 @@ pub(super) async fn cluster_slot_check(
 
         // mset: extract keys from pairs for crossslot check
         Command::MSet { ref pairs } => {
-            let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+            let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
             if let Err(err) = cluster.check_crossslot(&keys) {
                 return Some(err);
             }

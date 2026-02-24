@@ -37,7 +37,7 @@ impl Keyspace {
                 let mut count = 0;
                 let mut applied = Vec::new();
                 for (score, member) in members {
-                    let result = ss.add_with_flags(member.clone(), *score, flags);
+                    let result = ss.add_with_flags(member, *score, flags);
                     if result.added || result.updated {
                         applied.push((*score, member.clone()));
                     }
@@ -287,7 +287,7 @@ impl Keyspace {
                 let Value::SortedSet(ref mut ss) = entry.value else {
                     unreachable!("type verified by ensure_collection_type");
                 };
-                let score = ss.incr(member.to_owned(), increment);
+                let score = ss.incr(member, increment);
                 entry.touch();
                 score
             })
