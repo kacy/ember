@@ -18,12 +18,12 @@ impl Keyspace {
 
         let field_increase: usize = fields
             .iter()
-            .map(|(f, v)| f.len() + v.len() + memory::COMPACT_HASH_ENTRY_OVERHEAD)
+            .map(|(f, v)| f.len() + v.len() + memory::PACKED_HASH_ENTRY_OVERHEAD)
             .sum();
         self.reserve_memory(
             is_new,
             key,
-            memory::COMPACT_VEC_BASE_OVERHEAD,
+            memory::PACKED_HASH_BASE_OVERHEAD,
             field_increase,
         )?;
 
@@ -61,7 +61,7 @@ impl Keyspace {
             return Ok(None);
         };
         match &entry.value {
-            Value::Hash(hash) => Ok(hash.get(field).cloned()),
+            Value::Hash(hash) => Ok(hash.get(field).map(Bytes::copy_from_slice)),
             _ => Err(WrongType),
         }
     }
@@ -76,7 +76,7 @@ impl Keyspace {
         match &entry.value {
             Value::Hash(hash) => Ok(hash
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.clone()))
+                .map(|(k, v)| (k.to_string(), Bytes::copy_from_slice(v)))
                 .collect()),
             _ => Err(WrongType),
         }
@@ -104,7 +104,7 @@ impl Keyspace {
         let is_empty = if let Value::Hash(ref mut hash) = entry.value {
             for field in fields {
                 if let Some(val) = hash.remove(field) {
-                    removed_bytes += field.len() + val.len() + memory::COMPACT_HASH_ENTRY_OVERHEAD;
+                    removed_bytes += field.len() + val.len() + memory::PACKED_HASH_ENTRY_OVERHEAD;
                     removed.push(field.clone());
                 }
             }
@@ -163,12 +163,12 @@ impl Keyspace {
         let estimated_increase = if is_new {
             memory::ENTRY_OVERHEAD
                 + key.len()
-                + memory::COMPACT_VEC_BASE_OVERHEAD
+                + memory::PACKED_HASH_BASE_OVERHEAD
                 + field.len()
                 + val_str_len
-                + memory::COMPACT_HASH_ENTRY_OVERHEAD
+                + memory::PACKED_HASH_ENTRY_OVERHEAD
         } else {
-            field.len() + val_str_len + memory::COMPACT_HASH_ENTRY_OVERHEAD
+            field.len() + val_str_len + memory::PACKED_HASH_ENTRY_OVERHEAD
         };
 
         if !self.enforce_memory_limit(estimated_increase) {
@@ -230,7 +230,7 @@ impl Keyspace {
             return Ok(vec![]);
         };
         match &entry.value {
-            Value::Hash(hash) => Ok(hash.iter().map(|(_, v)| v.clone()).collect()),
+            Value::Hash(hash) => Ok(hash.iter().map(|(_, v)| Bytes::copy_from_slice(v)).collect()),
             _ => Err(WrongType),
         }
     }
@@ -271,7 +271,7 @@ impl Keyspace {
                     continue;
                 }
             }
-            result.push((field.to_string(), value.clone()));
+            result.push((field.to_string(), Bytes::copy_from_slice(value)));
             pos += 1;
             if result.len() >= target {
                 done = false;
@@ -292,7 +292,7 @@ impl Keyspace {
         match &entry.value {
             Value::Hash(hash) => Ok(fields
                 .iter()
-                .map(|f| hash.get(f.as_str()).cloned())
+                .map(|f| hash.get(f.as_str()).map(Bytes::copy_from_slice))
                 .collect()),
             _ => Err(WrongType),
         }

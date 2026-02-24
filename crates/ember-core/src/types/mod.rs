@@ -121,7 +121,7 @@ pub fn encoding_name(value: &Value) -> &'static str {
         }
         Value::List(_) => "listpack",
         Value::Hash(h) => match h.as_ref() {
-            hash::HashValue::Compact(_) => "listpack",
+            hash::HashValue::Packed(_) => "listpack",
             hash::HashValue::Full(_) => "hashtable",
         },
         Value::Set(_) => "hashtable",
