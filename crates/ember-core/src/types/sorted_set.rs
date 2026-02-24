@@ -105,12 +105,7 @@ impl SortedSet {
                 return AddResult::UNCHANGED;
             }
             // reuse the existing Arc from scores to avoid a new heap allocation
-            let name: Arc<str> = self
-                .scores
-                .get_key_value(member)
-                .unwrap()
-                .0
-                .clone();
+            let name: Arc<str> = self.scores.get_key_value(member).unwrap().0.clone();
             // remove old position in sorted vec
             let old_idx = self.search_idx(old_score, &name).unwrap();
             self.sorted.remove(old_idx);
@@ -903,10 +898,7 @@ mod tests {
         ss.add("c", 3.0);
         ss.add("d", 4.0);
 
-        assert_eq!(
-            ss.count_by_score(ScoreBound::NegInf, ScoreBound::PosInf),
-            4
-        );
+        assert_eq!(ss.count_by_score(ScoreBound::NegInf, ScoreBound::PosInf), 4);
         assert_eq!(
             ss.count_by_score(ScoreBound::Inclusive(2.0), ScoreBound::Inclusive(3.0)),
             2

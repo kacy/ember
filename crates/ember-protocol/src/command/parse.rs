@@ -1380,17 +1380,13 @@ fn parse_score_bound(frame: &Frame, cmd: &str) -> Result<ScoreBound, ProtocolErr
         "+inf" | "inf" => Ok(ScoreBound::PosInf),
         _ if s.starts_with('(') => {
             let val = s[1..].parse::<f64>().map_err(|_| {
-                ProtocolError::InvalidCommandFrame(format!(
-                    "min or max is not a float for '{cmd}'"
-                ))
+                ProtocolError::InvalidCommandFrame(format!("min or max is not a float for '{cmd}'"))
             })?;
             Ok(ScoreBound::Exclusive(val))
         }
         _ => {
             let val = s.parse::<f64>().map_err(|_| {
-                ProtocolError::InvalidCommandFrame(format!(
-                    "min or max is not a float for '{cmd}'"
-                ))
+                ProtocolError::InvalidCommandFrame(format!("min or max is not a float for '{cmd}'"))
             })?;
             Ok(ScoreBound::Inclusive(val))
         }
@@ -2523,8 +2519,12 @@ fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
     })
 }
 
-/// VADD_BATCH key DIM n element1 f32... element2 f32... [METRIC COSINE|L2|IP]
-/// [QUANT F32|F16|I8] [M n] [EF n]
+/// VADD_BATCH key DIM n [BINARY] element1 f32...|<blob> element2 f32...|<blob>
+/// [METRIC COSINE|L2|IP] [QUANT F32|F16|I8] [M n] [EF n]
+///
+/// When BINARY is specified, each vector is a single bulk string of `dim * 4`
+/// raw little-endian f32 bytes instead of `dim` separate text arguments.
+/// This eliminates string serialization overhead on both client and server.
 fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
     // minimum: key + DIM + n (even an empty batch needs the DIM declaration)
     if args.len() < 3 {
@@ -2554,53 +2554,103 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
         )));
     }
 
-    // parse entries: each is element_name followed by exactly `dim` floats.
-    // we detect the end of entries by checking whether enough args remain
-    // for a full entry (1 name + dim floats). this avoids misinterpreting
-    // element names like "metric" as flags.
+    // check for optional BINARY flag after DIM
     let mut idx = 3;
+    let binary_mode = if idx < args.len() {
+        let mut kw2 = [0u8; MAX_KEYWORD_LEN];
+        matches!(uppercase_arg(&args[idx], &mut kw2), Ok("BINARY"))
+    } else {
+        false
+    };
+    if binary_mode {
+        idx += 1;
+    }
+
     let mut entries: Vec<(String, Vec<f32>)> = Vec::new();
-    let entry_len = 1 + dim; // element name + dim floats
 
-    while idx < args.len() {
-        // not enough remaining args for a full entry — must be flags
-        if idx + entry_len > args.len() {
-            break;
-        }
+    if binary_mode {
+        // binary mode: each entry is element_name + single blob of dim*4 bytes
+        let blob_len = dim * 4;
+        let entry_len = 2; // element name + blob
 
-        // peek: if the token after the element name isn't a valid float,
-        // we've reached the flags section
-        if dim > 0 {
-            let peek = extract_string(&args[idx + 1])?;
-            if peek.parse::<f32>().is_err() {
+        while idx < args.len() {
+            if idx + entry_len > args.len() {
                 break;
             }
-        }
 
-        let element = extract_string(&args[idx])?;
-        idx += 1;
-
-        let mut vector = Vec::with_capacity(dim);
-        for _ in 0..dim {
-            let s = extract_string(&args[idx])?;
-            let v = s.parse::<f32>().map_err(|_| {
-                ProtocolError::InvalidCommandFrame(format!("VADD_BATCH: expected float, got '{s}'"))
-            })?;
-            if v.is_nan() || v.is_infinite() {
-                return Err(ProtocolError::InvalidCommandFrame(
-                    "VADD_BATCH: vector components must be finite (no NaN/infinity)".into(),
-                ));
+            // peek: if the second arg isn't exactly blob_len bytes, we've
+            // hit the flags section (flags are short text strings)
+            let blob_bytes = extract_bytes(&args[idx + 1])?;
+            if blob_bytes.len() != blob_len {
+                break;
             }
-            vector.push(v);
+
+            let element = extract_string(&args[idx])?;
             idx += 1;
+
+            // skip extract_bytes again — reuse what we already have
+            idx += 1;
+
+            // reinterpret raw LE bytes as f32 slice
+            let vector = bytes_to_f32_vec(&blob_bytes, dim)?;
+
+            entries.push((element, vector));
+
+            if entries.len() >= MAX_VADD_BATCH_SIZE {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "VADD_BATCH: batch size exceeds max {MAX_VADD_BATCH_SIZE}"
+                )));
+            }
         }
+    } else {
+        // text mode: each entry is element_name followed by exactly `dim` floats.
+        // we detect the end of entries by checking whether enough args remain
+        // for a full entry (1 name + dim floats). this avoids misinterpreting
+        // element names like "metric" as flags.
+        let entry_len = 1 + dim; // element name + dim floats
 
-        entries.push((element, vector));
+        while idx < args.len() {
+            // not enough remaining args for a full entry — must be flags
+            if idx + entry_len > args.len() {
+                break;
+            }
 
-        if entries.len() >= MAX_VADD_BATCH_SIZE {
-            return Err(ProtocolError::InvalidCommandFrame(format!(
-                "VADD_BATCH: batch size exceeds max {MAX_VADD_BATCH_SIZE}"
-            )));
+            // peek: if the token after the element name isn't a valid float,
+            // we've reached the flags section
+            if dim > 0 {
+                let peek = extract_string(&args[idx + 1])?;
+                if peek.parse::<f32>().is_err() {
+                    break;
+                }
+            }
+
+            let element = extract_string(&args[idx])?;
+            idx += 1;
+
+            let mut vector = Vec::with_capacity(dim);
+            for _ in 0..dim {
+                let s = extract_string(&args[idx])?;
+                let v = s.parse::<f32>().map_err(|_| {
+                    ProtocolError::InvalidCommandFrame(format!(
+                        "VADD_BATCH: expected float, got '{s}'"
+                    ))
+                })?;
+                if v.is_nan() || v.is_infinite() {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "VADD_BATCH: vector components must be finite (no NaN/infinity)".into(),
+                    ));
+                }
+                vector.push(v);
+                idx += 1;
+            }
+
+            entries.push((element, vector));
+
+            if entries.len() >= MAX_VADD_BATCH_SIZE {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "VADD_BATCH: batch size exceeds max {MAX_VADD_BATCH_SIZE}"
+                )));
+            }
         }
     }
 
@@ -2617,6 +2667,30 @@ fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
         connectivity,
         expansion_add,
     })
+}
+
+/// Converts a raw byte buffer of little-endian f32s into a Vec<f32>.
+///
+/// Validates that all values are finite (no NaN/infinity). The buffer
+/// must be exactly `dim * 4` bytes.
+fn bytes_to_f32_vec(data: &[u8], dim: usize) -> Result<Vec<f32>, ProtocolError> {
+    // compile-time endianness check — binary protocol assumes little-endian
+    #[cfg(not(target_endian = "little"))]
+    compile_error!("VADD_BATCH BINARY mode requires a little-endian target");
+
+    debug_assert_eq!(data.len(), dim * 4);
+
+    let mut vector = Vec::with_capacity(dim);
+    for chunk in data.chunks_exact(4) {
+        let v = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        if !v.is_finite() {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "VADD_BATCH BINARY: vector contains non-finite value (NaN/infinity)".into(),
+            ));
+        }
+        vector.push(v);
+    }
+    Ok(vector)
 }
 
 /// VSIM key f32 [f32 ...] COUNT k [EF n] [WITHSCORES]

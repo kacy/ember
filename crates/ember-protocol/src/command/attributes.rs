@@ -383,9 +383,9 @@ impl Command {
             | Command::LPop { .. }
             | Command::RPop { .. }
             | Command::LSet { .. } => WRITE | LIST | FAST,
-            Command::LTrim { .. }
-            | Command::LInsert { .. }
-            | Command::LRem { .. } => WRITE | LIST | SLOW,
+            Command::LTrim { .. } | Command::LInsert { .. } | Command::LRem { .. } => {
+                WRITE | LIST | SLOW
+            }
             Command::BLPop { .. } | Command::BRPop { .. } => WRITE | LIST | SLOW,
 
             // sorted set — reads
@@ -421,14 +421,13 @@ impl Command {
             }
 
             // set — reads
-            Command::SIsMember { .. }
-            | Command::SCard { .. }
-            | Command::SMisMember { .. } => READ | SET | FAST,
-            Command::SMembers { .. }
-            | Command::SRandMember { .. } => READ | SET | SLOW,
-            Command::SUnion { .. }
-            | Command::SInter { .. }
-            | Command::SDiff { .. } => READ | SET | SLOW,
+            Command::SIsMember { .. } | Command::SCard { .. } | Command::SMisMember { .. } => {
+                READ | SET | FAST
+            }
+            Command::SMembers { .. } | Command::SRandMember { .. } => READ | SET | SLOW,
+            Command::SUnion { .. } | Command::SInter { .. } | Command::SDiff { .. } => {
+                READ | SET | SLOW
+            }
 
             // set — writes
             Command::SAdd { .. } | Command::SRem { .. } | Command::SPop { .. } => {

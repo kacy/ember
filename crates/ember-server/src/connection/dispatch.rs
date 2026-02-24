@@ -4,14 +4,14 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
-use ember_core::{Engine, ShardRequest};
-use ember_protocol::{Command, Frame, SetExpire};
 use crate::acl;
 use crate::connection_common::{frame_to_monitor_args, validate_command_sizes, MonitorEvent};
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
+use bytes::Bytes;
+use ember_core::{Engine, ShardRequest};
+use ember_protocol::{Command, Frame, SetExpire};
 
 use super::{PendingResponse, PreparedDispatch, ResponseTag};
 
@@ -1275,18 +1275,9 @@ pub(super) async fn cluster_slot_check(
         }
 
         // set store: crossslot check on dest + all source keys
-        Command::SUnionStore {
-            ref dest,
-            ref keys,
-        }
-        | Command::SInterStore {
-            ref dest,
-            ref keys,
-        }
-        | Command::SDiffStore {
-            ref dest,
-            ref keys,
-        } => {
+        Command::SUnionStore { ref dest, ref keys }
+        | Command::SInterStore { ref dest, ref keys }
+        | Command::SDiffStore { ref dest, ref keys } => {
             let mut all_keys: Vec<&str> = vec![dest];
             all_keys.extend(keys.iter().map(|s| s.as_str()));
             if let Err(err) = cluster.check_crossslot(&all_keys) {

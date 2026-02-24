@@ -1,8 +1,8 @@
 use super::*;
 
-use bytes::Bytes;
 use crate::error::ProtocolError;
 use crate::types::Frame;
+use bytes::Bytes;
 
 /// Helper: build an array frame from bulk strings.
 fn cmd(parts: &[&str]) -> Frame {
@@ -1761,8 +1761,7 @@ fn asking_wrong_arity() {
 #[test]
 fn cluster_setslot_importing() {
     assert_eq!(
-        Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "100", "IMPORTING", "node123"]))
-            .unwrap(),
+        Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "100", "IMPORTING", "node123"])).unwrap(),
         Command::ClusterSetSlotImporting {
             slot: 100,
             node_id: "node123".into()
@@ -1773,8 +1772,7 @@ fn cluster_setslot_importing() {
 #[test]
 fn cluster_setslot_migrating() {
     assert_eq!(
-        Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "200", "MIGRATING", "node456"]))
-            .unwrap(),
+        Command::from_frame(cmd(&["CLUSTER", "SETSLOT", "200", "MIGRATING", "node456"])).unwrap(),
         Command::ClusterSetSlotMigrating {
             slot: 200,
             node_id: "node456".into()
@@ -1817,8 +1815,7 @@ fn cluster_setslot_wrong_arity() {
 #[test]
 fn migrate_basic() {
     assert_eq!(
-        Command::from_frame(cmd(&["MIGRATE", "127.0.0.1", "6379", "mykey", "0", "5000"]))
-            .unwrap(),
+        Command::from_frame(cmd(&["MIGRATE", "127.0.0.1", "6379", "mykey", "0", "5000"])).unwrap(),
         Command::Migrate {
             host: "127.0.0.1".into(),
             port: 6379,
@@ -1865,8 +1862,8 @@ fn migrate_wrong_arity() {
 
 #[test]
 fn migrate_invalid_port() {
-    let err = Command::from_frame(cmd(&["MIGRATE", "host", "notaport", "key", "0", "1000"]))
-        .unwrap_err();
+    let err =
+        Command::from_frame(cmd(&["MIGRATE", "host", "notaport", "key", "0", "1000"])).unwrap_err();
     assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
 }
 
@@ -1904,8 +1901,7 @@ fn cluster_addslotsrange_basic() {
 #[test]
 fn cluster_addslotsrange_multiple() {
     assert_eq!(
-        Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0", "100", "200", "300"]))
-            .unwrap(),
+        Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0", "100", "200", "300"])).unwrap(),
         Command::ClusterAddSlotsRange {
             ranges: vec![(0, 100), (200, 300)]
         },
@@ -2557,8 +2553,7 @@ fn proto_getfield_wrong_arity() {
     let err = Command::from_frame(cmd(&["PROTO.GETFIELD", "key"])).unwrap_err();
     assert!(matches!(err, ProtocolError::WrongArity(_)));
 
-    let err =
-        Command::from_frame(cmd(&["PROTO.GETFIELD", "key", "field", "extra"])).unwrap_err();
+    let err = Command::from_frame(cmd(&["PROTO.GETFIELD", "key", "field", "extra"])).unwrap_err();
     assert!(matches!(err, ProtocolError::WrongArity(_)));
 }
 
@@ -2613,8 +2608,7 @@ fn proto_delfield_wrong_arity() {
     let err = Command::from_frame(cmd(&["PROTO.DELFIELD", "key"])).unwrap_err();
     assert!(matches!(err, ProtocolError::WrongArity(_)));
 
-    let err =
-        Command::from_frame(cmd(&["PROTO.DELFIELD", "key", "field", "extra"])).unwrap_err();
+    let err = Command::from_frame(cmd(&["PROTO.DELFIELD", "key", "field", "extra"])).unwrap_err();
     assert!(matches!(err, ProtocolError::WrongArity(_)));
 }
 
@@ -2640,8 +2634,8 @@ fn vadd_basic() {
 fn vadd_with_options() {
     assert_eq!(
         Command::from_frame(cmd(&[
-            "VADD", "vecs", "elem1", "1.0", "2.0", "METRIC", "L2", "QUANT", "F16", "M", "32",
-            "EF", "128"
+            "VADD", "vecs", "elem1", "1.0", "2.0", "METRIC", "L2", "QUANT", "F16", "M", "32", "EF",
+            "128"
         ]))
         .unwrap(),
         Command::VAdd {
@@ -2676,22 +2670,20 @@ fn vadd_wrong_arity() {
 
 #[test]
 fn vadd_m_exceeds_max() {
-    let err =
-        Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "M", "9999"])).unwrap_err();
+    let err = Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "M", "9999"])).unwrap_err();
     assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
 }
 
 #[test]
 fn vadd_ef_exceeds_max() {
-    let err =
-        Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "EF", "9999"])).unwrap_err();
+    let err = Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "EF", "9999"])).unwrap_err();
     assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
 }
 
 #[test]
 fn vadd_unknown_metric() {
-    let err = Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "METRIC", "HAMMING"]))
-        .unwrap_err();
+    let err =
+        Command::from_frame(cmd(&["VADD", "key", "elem", "1.0", "METRIC", "HAMMING"])).unwrap_err();
     assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
 }
 
@@ -2875,6 +2867,194 @@ fn vadd_batch_ef_exceeds_max() {
     assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
 }
 
+// --- vadd_batch binary mode ---
+
+/// Helper to build a Frame::Array with mixed string and raw binary arguments.
+fn cmd_mixed(parts: Vec<CmdArg>) -> Frame {
+    Frame::Array(
+        parts
+            .into_iter()
+            .map(|arg| match arg {
+                CmdArg::Str(s) => Frame::Bulk(Bytes::from(s)),
+                CmdArg::Bytes(b) => Frame::Bulk(Bytes::from(b)),
+            })
+            .collect(),
+    )
+}
+
+enum CmdArg {
+    Str(String),
+    Bytes(Vec<u8>),
+}
+
+impl From<&str> for CmdArg {
+    fn from(s: &str) -> Self {
+        CmdArg::Str(s.to_string())
+    }
+}
+
+impl From<Vec<u8>> for CmdArg {
+    fn from(b: Vec<u8>) -> Self {
+        CmdArg::Bytes(b)
+    }
+}
+
+fn f32s_to_bytes(values: &[f32]) -> Vec<u8> {
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+#[test]
+fn vadd_batch_binary_basic() {
+    let vec_a: Vec<f32> = vec![0.1, 0.2, 0.3];
+    let vec_b: Vec<f32> = vec![0.4, 0.5, 0.6];
+    let result = Command::from_frame(cmd_mixed(vec![
+        "VADD_BATCH".into(),
+        "vecs".into(),
+        "DIM".into(),
+        "3".into(),
+        "BINARY".into(),
+        "a".into(),
+        f32s_to_bytes(&vec_a).into(),
+        "b".into(),
+        f32s_to_bytes(&vec_b).into(),
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        result,
+        Command::VAddBatch {
+            key: "vecs".into(),
+            entries: vec![("a".into(), vec_a), ("b".into(), vec_b)],
+            dim: 3,
+            metric: 0,
+            quantization: 0,
+            connectivity: 16,
+            expansion_add: 64,
+        }
+    );
+}
+
+#[test]
+fn vadd_batch_binary_with_flags() {
+    let vec_a: Vec<f32> = vec![1.0, 2.0];
+    let result = Command::from_frame(cmd_mixed(vec![
+        "VADD_BATCH".into(),
+        "vecs".into(),
+        "DIM".into(),
+        "2".into(),
+        "BINARY".into(),
+        "a".into(),
+        f32s_to_bytes(&vec_a).into(),
+        "METRIC".into(),
+        "L2".into(),
+        "M".into(),
+        "32".into(),
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        result,
+        Command::VAddBatch {
+            key: "vecs".into(),
+            entries: vec![("a".into(), vec_a)],
+            dim: 2,
+            metric: 1,
+            quantization: 0,
+            connectivity: 32,
+            expansion_add: 64,
+        }
+    );
+}
+
+#[test]
+fn vadd_batch_binary_empty() {
+    // BINARY flag but no entries — valid, returns empty batch
+    let result = Command::from_frame(cmd_mixed(vec![
+        "VADD_BATCH".into(),
+        "vecs".into(),
+        "DIM".into(),
+        "3".into(),
+        "BINARY".into(),
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        result,
+        Command::VAddBatch {
+            key: "vecs".into(),
+            entries: vec![],
+            dim: 3,
+            metric: 0,
+            quantization: 0,
+            connectivity: 16,
+            expansion_add: 64,
+        }
+    );
+}
+
+#[test]
+fn vadd_batch_binary_rejects_nan() {
+    let bad_vec = f32s_to_bytes(&[1.0, f32::NAN, 0.0]);
+    let err = Command::from_frame(cmd_mixed(vec![
+        "VADD_BATCH".into(),
+        "vecs".into(),
+        "DIM".into(),
+        "3".into(),
+        "BINARY".into(),
+        "a".into(),
+        bad_vec.into(),
+    ]))
+    .unwrap_err();
+    assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+}
+
+#[test]
+fn vadd_batch_binary_rejects_infinity() {
+    let bad_vec = f32s_to_bytes(&[f32::INFINITY, 0.0]);
+    let err = Command::from_frame(cmd_mixed(vec![
+        "VADD_BATCH".into(),
+        "vecs".into(),
+        "DIM".into(),
+        "2".into(),
+        "BINARY".into(),
+        "a".into(),
+        bad_vec.into(),
+    ]))
+    .unwrap_err();
+    assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+}
+
+#[test]
+fn vadd_batch_binary_matches_text() {
+    // verify binary and text parsing produce identical Command values
+    let vec_a: Vec<f32> = vec![0.5, -0.25, 1.0];
+
+    let text_result = Command::from_frame(cmd(&[
+        "VADD_BATCH",
+        "key",
+        "DIM",
+        "3",
+        "elem",
+        "0.5",
+        "-0.25",
+        "1.0",
+    ]))
+    .unwrap();
+
+    let binary_result = Command::from_frame(cmd_mixed(vec![
+        "VADD_BATCH".into(),
+        "key".into(),
+        "DIM".into(),
+        "3".into(),
+        "BINARY".into(),
+        "elem".into(),
+        f32s_to_bytes(&vec_a).into(),
+    ]))
+    .unwrap();
+
+    assert_eq!(text_result, binary_result);
+}
+
 #[test]
 fn vsim_basic() {
     assert_eq!(
@@ -2938,8 +3118,8 @@ fn vsim_count_exceeds_max() {
 
 #[test]
 fn vsim_ef_exceeds_max() {
-    let err = Command::from_frame(cmd(&["VSIM", "key", "1.0", "COUNT", "5", "EF", "9999"]))
-        .unwrap_err();
+    let err =
+        Command::from_frame(cmd(&["VSIM", "key", "1.0", "COUNT", "5", "EF", "9999"])).unwrap_err();
     assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
 }
 
@@ -3384,8 +3564,7 @@ fn parse_acl_setuser_no_rules() {
 #[test]
 fn parse_acl_setuser_with_rules() {
     assert_eq!(
-        Command::from_frame(cmd(&["ACL", "SETUSER", "alice", "on", ">pass", "+@read"]))
-            .unwrap(),
+        Command::from_frame(cmd(&["ACL", "SETUSER", "alice", "on", ">pass", "+@read"])).unwrap(),
         Command::AclSetUser {
             username: "alice".into(),
             rules: vec!["on".into(), ">pass".into(), "+@read".into()],

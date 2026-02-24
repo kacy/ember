@@ -5,15 +5,15 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::connection_common::{get_rss_bytes, human_bytes};
+use crate::pubsub::PubSubManager;
+use crate::server::{format_client_list, ServerContext};
+use crate::slowlog::SlowLog;
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::connection_common::{get_rss_bytes, human_bytes};
-use crate::pubsub::PubSubManager;
-use crate::server::{format_client_list, ServerContext};
-use crate::slowlog::SlowLog;
 
 /// Executes a parsed command and returns the response frame.
 ///
@@ -896,12 +896,7 @@ pub(super) async fn execute(
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::IntegerArray(positions)) => {
                     if count.is_some() {
-                        Frame::Array(
-                            positions
-                                .into_iter()
-                                .map(Frame::Integer)
-                                .collect(),
-                        )
+                        Frame::Array(positions.into_iter().map(Frame::Integer).collect())
                     } else if let Some(&pos) = positions.first() {
                         Frame::Integer(pos)
                     } else {
@@ -1411,7 +1406,10 @@ pub(super) async fn execute(
             let req = ShardRequest::SUnion { keys };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
-                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                    members
+                        .into_iter()
+                        .map(|m| Frame::Bulk(Bytes::from(m)))
+                        .collect(),
                 ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1425,7 +1423,10 @@ pub(super) async fn execute(
             let req = ShardRequest::SInter { keys };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
-                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                    members
+                        .into_iter()
+                        .map(|m| Frame::Bulk(Bytes::from(m)))
+                        .collect(),
                 ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1439,7 +1440,10 @@ pub(super) async fn execute(
             let req = ShardRequest::SDiff { keys };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
-                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                    members
+                        .into_iter()
+                        .map(|m| Frame::Bulk(Bytes::from(m)))
+                        .collect(),
                 ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1489,7 +1493,10 @@ pub(super) async fn execute(
             let req = ShardRequest::SRandMember { key, count };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
-                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                    members
+                        .into_iter()
+                        .map(|m| Frame::Bulk(Bytes::from(m)))
+                        .collect(),
                 ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1502,7 +1509,10 @@ pub(super) async fn execute(
             let req = ShardRequest::SPop { key, count };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::StringArray(members)) => Frame::Array(
-                    members.into_iter().map(|m| Frame::Bulk(Bytes::from(m))).collect(),
+                    members
+                        .into_iter()
+                        .map(|m| Frame::Bulk(Bytes::from(m)))
+                        .collect(),
                 ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1515,7 +1525,9 @@ pub(super) async fn execute(
             let req = ShardRequest::SMisMember { key, members };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::BoolArray(arr)) => Frame::Array(
-                    arr.into_iter().map(|b| Frame::Integer(i64::from(b))).collect(),
+                    arr.into_iter()
+                        .map(|b| Frame::Integer(i64::from(b)))
+                        .collect(),
                 ),
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),

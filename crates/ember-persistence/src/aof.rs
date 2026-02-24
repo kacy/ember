@@ -139,7 +139,11 @@ pub enum AofRecord {
     /// RPOP key.
     RPop { key: String },
     /// LSET key index element.
-    LSet { key: String, index: i64, value: Bytes },
+    LSet {
+        key: String,
+        index: i64,
+        value: Bytes,
+    },
     /// LTRIM key start stop.
     LTrim { key: String, start: i64, stop: i64 },
     /// LINSERT key BEFORE|AFTER pivot element.
@@ -150,7 +154,11 @@ pub enum AofRecord {
         value: Bytes,
     },
     /// LREM key count element.
-    LRem { key: String, count: i64, value: Bytes },
+    LRem {
+        key: String,
+        count: i64,
+        value: Bytes,
+    },
     /// ZADD key score member [score member ...].
     ZAdd {
         key: String,
@@ -190,7 +198,11 @@ pub enum AofRecord {
     /// APPEND key value.
     Append { key: String, value: Bytes },
     /// SETRANGE key offset value.
-    SetRange { key: String, offset: usize, value: Bytes },
+    SetRange {
+        key: String,
+        offset: usize,
+        value: Bytes,
+    },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
     /// COPY source destination [REPLACE].
@@ -320,11 +332,10 @@ impl AofRecord {
             AofRecord::LTrim { key, .. } => 1 + LEN_PREFIX + key.len() + 8 + 8,
             // 1 tag + 4 key-len + key + 1 before + 4 pivot-len + pivot + 4 value-len + value
             AofRecord::LInsert {
-                key,
-                pivot,
-                value,
-                ..
-            } => 1 + LEN_PREFIX + key.len() + 1 + LEN_PREFIX + pivot.len() + LEN_PREFIX + value.len(),
+                key, pivot, value, ..
+            } => {
+                1 + LEN_PREFIX + key.len() + 1 + LEN_PREFIX + pivot.len() + LEN_PREFIX + value.len()
+            }
             // 1 tag + 4 key-len + key + 8 count + 4 value-len + value
             AofRecord::LRem { key, value, .. } => {
                 1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + value.len()

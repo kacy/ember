@@ -174,56 +174,51 @@ impl Keyspace {
             None => return Err(VectorWriteError::IndexError("entry missing".into())),
         };
 
-        let mut added_count = 0;
-        let mut applied = Vec::with_capacity(entries.len());
-        let mut bytes_added: usize = 0;
-
-        match entry.value {
+        let batch_result = match entry.value {
             Value::Vector(ref mut vs) => {
-                // pre-allocate index capacity for the entire batch to avoid
-                // incremental resizes during insertion
-                if let Err(e) = vs.reserve(entries.len()) {
-                    return Err(VectorWriteError::IndexError(e.to_string()));
-                }
-
-                // per-element fixed cost (vector storage + graph edges + map overhead)
                 let per_elem = vs.per_element_bytes();
 
-                for (element, vector) in entries {
-                    let name_len = element.len();
-                    // vectors validated upfront — skip redundant per-element checks
-                    match vs.add_pre_validated(element.clone(), &vector) {
-                        Ok(is_new_elem) => {
-                            if is_new_elem {
-                                added_count += 1;
-                                bytes_added += per_elem + name_len;
-                            }
-                            applied.push((element, vector));
-                        }
-                        Err(e) => {
-                            // partial insert: apply incremental tracking for what
-                            // succeeded, then return error with applied vectors
-                            entry.touch();
-                            self.next_version += 1;
-                            entry.version = self.next_version;
-                            entry.cached_value_size =
-                                entry.cached_value_size.saturating_add(bytes_added);
-                            self.memory.grow_by(bytes_added);
-                            return Err(VectorWriteError::PartialBatch {
-                                message: format!(
-                                    "error at element '{}': {e} ({} vectors applied before failure)",
-                                    element,
-                                    applied.len()
-                                ),
-                                applied,
-                            });
-                        }
-                    }
+                // use parallel HNSW construction for large batches
+                let result = vs
+                    .add_batch_parallel(&entries)
+                    .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
+
+                // compute memory delta from what was actually added
+                let bytes_added = if result.added_count > 0 {
+                    // sum up name lengths of new elements. since we don't know
+                    // exactly which were new vs updates, estimate using the
+                    // per-element cost * added_count + average name length
+                    let total_name_bytes: usize = entries.iter().map(|(e, _)| e.len()).sum();
+                    let avg_name = total_name_bytes / entries.len();
+                    result.added_count.saturating_mul(per_elem + avg_name)
+                } else {
+                    0
+                };
+
+                if let Some(ref err) = result.error {
+                    // partial success — track what was applied before returning error
+                    entry.touch();
+                    self.next_version += 1;
+                    entry.version = self.next_version;
+                    entry.cached_value_size = entry.cached_value_size.saturating_add(bytes_added);
+                    self.memory.grow_by(bytes_added);
+
+                    // return the partial results for AOF persistence
+                    return Err(VectorWriteError::PartialBatch {
+                        message: format!(
+                            "batch error: {err} ({} vectors added before failure)",
+                            result.added_count,
+                        ),
+                        applied: entries,
+                    });
                 }
+
+                (result.added_count, bytes_added)
             }
             _ => return Err(VectorWriteError::WrongType),
-        }
+        };
 
+        let (added_count, bytes_added) = batch_result;
         entry.touch();
         self.next_version += 1;
         entry.version = self.next_version;
@@ -233,7 +228,7 @@ impl Keyspace {
 
         Ok(VAddBatchResult {
             added_count,
-            applied,
+            applied: entries,
         })
     }
 

@@ -140,9 +140,17 @@ async fn run_benchmark_async(
                 }
             }
             "lpush" => {
-                if run_workload(args, host, port, password, tls, "LPUSH", WorkloadKind::LPush)
-                    .await
-                    .is_err()
+                if run_workload(
+                    args,
+                    host,
+                    port,
+                    password,
+                    tls,
+                    "LPUSH",
+                    WorkloadKind::LPush,
+                )
+                .await
+                .is_err()
                 {
                     return ExitCode::FAILURE;
                 }
@@ -174,7 +182,10 @@ async fn run_benchmark_async(
             "hget" => {
                 // pre-populate hash keys so HGET has data to read
                 if !args.quiet {
-                    println!("  pre-populating {} hash keys...", format_num(args.keyspace));
+                    println!(
+                        "  pre-populating {} hash keys...",
+                        format_num(args.keyspace)
+                    );
                 }
                 if prepopulate_hashes(args, host, port, password, tls)
                     .await

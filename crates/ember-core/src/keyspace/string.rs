@@ -298,8 +298,16 @@ impl Keyspace {
 
         let len = data.len() as i64;
         // convert negative indices to positive
-        let s = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-        let e = if end < 0 { (len + end).max(0) } else { end.min(len - 1) } as usize;
+        let s = if start < 0 {
+            (len + start).max(0)
+        } else {
+            start.min(len)
+        } as usize;
+        let e = if end < 0 {
+            (len + end).max(0)
+        } else {
+            end.min(len - 1)
+        } as usize;
 
         if s > e || s >= data.len() {
             return Ok(Bytes::new());
@@ -313,7 +321,12 @@ impl Keyspace {
     /// exist. Returns the new string length.
     ///
     /// Preserves the existing TTL.
-    pub fn setrange(&mut self, key: &str, offset: usize, value: &[u8]) -> Result<usize, WriteError> {
+    pub fn setrange(
+        &mut self,
+        key: &str,
+        offset: usize,
+        value: &[u8],
+    ) -> Result<usize, WriteError> {
         self.remove_if_expired(key);
 
         let (existing, expire) = match self.entries.get(key) {
@@ -693,7 +706,13 @@ mod tests {
     #[test]
     fn getrange_basic() {
         let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("Hello, World!"), None, false, false);
+        ks.set(
+            "key".into(),
+            Bytes::from("Hello, World!"),
+            None,
+            false,
+            false,
+        );
         assert_eq!(ks.getrange("key", 0, 4).unwrap(), Bytes::from("Hello"));
         assert_eq!(ks.getrange("key", 7, 11).unwrap(), Bytes::from("World"));
     }
