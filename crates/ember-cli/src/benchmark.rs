@@ -139,10 +139,64 @@ async fn run_benchmark_async(
                     return ExitCode::FAILURE;
                 }
             }
+            "lpush" => {
+                if run_workload(args, host, port, password, tls, "LPUSH", WorkloadKind::LPush)
+                    .await
+                    .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+            }
+            "sadd" => {
+                if run_workload(args, host, port, password, tls, "SADD", WorkloadKind::SAdd)
+                    .await
+                    .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+            }
+            "zadd" => {
+                if run_workload(args, host, port, password, tls, "ZADD", WorkloadKind::ZAdd)
+                    .await
+                    .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+            }
+            "hset" => {
+                if run_workload(args, host, port, password, tls, "HSET", WorkloadKind::HSet)
+                    .await
+                    .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+            }
+            "hget" => {
+                // pre-populate hash keys so HGET has data to read
+                if !args.quiet {
+                    println!("  pre-populating {} hash keys...", format_num(args.keyspace));
+                }
+                if prepopulate_hashes(args, host, port, password, tls)
+                    .await
+                    .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+                if run_workload(args, host, port, password, tls, "HGET", WorkloadKind::HGet)
+                    .await
+                    .is_err()
+                {
+                    return ExitCode::FAILURE;
+                }
+            }
             other => {
                 eprintln!(
                     "{}",
-                    format!("unknown workload: {other} (valid: ping, set, get, multi)").yellow()
+                    format!(
+                        "unknown workload: {other} (valid: ping, set, get, multi, \
+                         lpush, sadd, zadd, hset, hget)"
+                    )
+                    .yellow()
                 );
             }
         }
@@ -159,6 +213,16 @@ enum WorkloadKind {
     Get,
     /// MULTI + SET + EXEC per operation — measures transaction overhead.
     Multi,
+    /// LPUSH key value — list write throughput.
+    LPush,
+    /// SADD key member — set write throughput.
+    SAdd,
+    /// ZADD key score member — sorted set write throughput.
+    ZAdd,
+    /// HSET key field value — hash write throughput.
+    HSet,
+    /// HGET key field — hash read throughput (requires pre-population).
+    HGet,
 }
 
 /// Runs a single workload benchmark.
@@ -261,6 +325,40 @@ async fn run_workload(
                         WorkloadKind::Get => Frame::Array(vec![
                             Frame::Bulk(Bytes::from_static(b"GET")),
                             Frame::Bulk(Bytes::from(key)),
+                        ]),
+                        WorkloadKind::LPush => Frame::Array(vec![
+                            Frame::Bulk(Bytes::from_static(b"LPUSH")),
+                            Frame::Bulk(Bytes::from(key)),
+                            Frame::Bulk(Bytes::from(value.clone())),
+                        ]),
+                        WorkloadKind::SAdd => {
+                            let member = format!("m:{}", rng.random_range(0_u64..1_000_000));
+                            Frame::Array(vec![
+                                Frame::Bulk(Bytes::from_static(b"SADD")),
+                                Frame::Bulk(Bytes::from(key)),
+                                Frame::Bulk(Bytes::from(member)),
+                            ])
+                        }
+                        WorkloadKind::ZAdd => {
+                            let score = rng.random_range(0.0_f64..1_000_000.0);
+                            let member = format!("m:{}", rng.random_range(0_u64..1_000_000));
+                            Frame::Array(vec![
+                                Frame::Bulk(Bytes::from_static(b"ZADD")),
+                                Frame::Bulk(Bytes::from(key)),
+                                Frame::Bulk(Bytes::from(format!("{score}"))),
+                                Frame::Bulk(Bytes::from(member)),
+                            ])
+                        }
+                        WorkloadKind::HSet => Frame::Array(vec![
+                            Frame::Bulk(Bytes::from_static(b"HSET")),
+                            Frame::Bulk(Bytes::from(key)),
+                            Frame::Bulk(Bytes::from_static(b"field")),
+                            Frame::Bulk(Bytes::from(value.clone())),
+                        ]),
+                        WorkloadKind::HGet => Frame::Array(vec![
+                            Frame::Bulk(Bytes::from_static(b"HGET")),
+                            Frame::Bulk(Bytes::from(key)),
+                            Frame::Bulk(Bytes::from_static(b"field")),
                         ]),
                     };
                     frame.serialize(&mut ser_buf);
@@ -398,6 +496,89 @@ async fn prepopulate(
                 let frame = Frame::Array(vec![
                     Frame::Bulk(Bytes::from_static(b"SET")),
                     Frame::Bulk(Bytes::from(key)),
+                    Frame::Bulk(Bytes::from(value.clone())),
+                ]);
+                conn.set_command(&frame);
+
+                if let Err(e) = conn.send_pipeline(batch).await {
+                    eprintln!("{}", format!("prepopulate error: {e}").red());
+                    return Err(());
+                }
+                sent += batch as u64;
+            }
+
+            Ok(())
+        });
+
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(())) => return Err(()),
+            Err(e) => {
+                eprintln!("{}", format!("prepopulate panic: {e}").red());
+                return Err(());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Pre-populates hash keys before an HGET benchmark.
+async fn prepopulate_hashes(
+    args: &BenchmarkArgs,
+    host: &str,
+    port: u16,
+    password: Option<&str>,
+    tls: Option<&TlsClientConfig>,
+) -> Result<(), ()> {
+    let value = generate_value(args.data_size);
+    let clients = args.clients.max(1) as usize;
+    let per_client = args.keyspace / clients as u64;
+    let remainder = args.keyspace % clients as u64;
+    let pipeline = args.pipeline.max(1) as usize;
+
+    let mut handles = Vec::with_capacity(clients);
+
+    for i in 0..clients {
+        let start = per_client * i as u64 + (i as u64).min(remainder);
+        let count = per_client + if (i as u64) < remainder { 1 } else { 0 };
+        if count == 0 {
+            continue;
+        }
+
+        let host = host.to_string();
+        let password = password.map(|s| s.to_string());
+        let value = value.clone();
+        let tls = tls.cloned();
+
+        let handle = tokio::spawn(async move {
+            let mut conn = match BenchConnection::connect(&host, port, tls.as_ref()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}", format!("prepopulate connect: {e}").red());
+                    return Err(());
+                }
+            };
+
+            if let Some(ref pw) = password {
+                if let Err(e) = conn.authenticate(pw).await {
+                    eprintln!("{}", format!("prepopulate auth: {e}").red());
+                    return Err(());
+                }
+            }
+
+            let mut sent: u64 = 0;
+            while sent < count {
+                let batch = pipeline.min((count - sent) as usize);
+                let key = format!("key:{:012}", start + sent);
+                let frame = Frame::Array(vec![
+                    Frame::Bulk(Bytes::from_static(b"HSET")),
+                    Frame::Bulk(Bytes::from(key)),
+                    Frame::Bulk(Bytes::from_static(b"field")),
                     Frame::Bulk(Bytes::from(value.clone())),
                 ]);
                 conn.set_command(&frame);

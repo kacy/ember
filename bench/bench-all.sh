@@ -84,34 +84,40 @@ fi
 # 3. memory per data type
 run_bench "memory (all data types)" bench/bench-memory.sh --vector
 
-# 4. encryption overhead
+# 4. data type throughput
+run_bench "data type throughput" bench/bench-datatypes.sh
+
+# 5. stress tests (large values, eviction, connection storm)
+run_bench "stress tests" bench/bench-stress.sh
+
+# 6. encryption overhead
 run_bench "encryption overhead" bench/bench-encryption.sh
 
-# 5. vector similarity (full comparison)
+# 7. vector similarity (full comparison)
 if command -v docker &> /dev/null; then
     run_bench "vector similarity (full)" bench/bench-vector.sh --qdrant --ember-grpc
 else
     run_bench "vector similarity (ember only)" bench/bench-vector.sh --ember-only --ember-grpc
 fi
 
-# 6. SIFT1M recall accuracy
+# 8. SIFT1M recall accuracy
 if command -v docker &> /dev/null; then
     run_bench "SIFT1M recall accuracy" bench/bench-vector.sh --sift --qdrant
 else
     run_bench "SIFT1M recall accuracy" bench/bench-vector.sh --sift --ember-only
 fi
 
-# 7. gRPC vs RESP3
+# 9. gRPC vs RESP3
 if [[ -f "bench/bench-grpc.sh" ]]; then
     run_bench "gRPC vs RESP3" bench/bench-grpc.sh
 fi
 
-# 8. pub/sub
+# 10. pub/sub
 if [[ -f "bench/bench-pubsub.sh" ]]; then
     run_bench "pub/sub throughput" bench/bench-pubsub.sh
 fi
 
-# 9. protobuf storage
+# 11. protobuf storage
 if [[ -f "bench/bench-proto.sh" ]] && command -v protoc &> /dev/null; then
     run_bench "protobuf storage overhead" bench/bench-proto.sh
 else
