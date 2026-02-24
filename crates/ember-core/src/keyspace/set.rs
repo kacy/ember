@@ -85,37 +85,23 @@ impl Keyspace {
 
     /// Returns all members of a set.
     pub fn smembers(&mut self, key: &str) -> Result<Vec<String>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => match &entry.value {
-                Value::Set(set) => {
-                    let result = set.iter().cloned().collect();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Set(set) => Ok(set.iter().cloned().collect()),
+            _ => Err(WrongType),
         }
     }
 
     /// Checks if a member exists in a set.
     pub fn sismember(&mut self, key: &str, member: &str) -> Result<bool, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(false);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(false),
-            Some(entry) => match &entry.value {
-                Value::Set(set) => {
-                    let result = set.contains(member);
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Set(set) => Ok(set.contains(member)),
+            _ => Err(WrongType),
         }
     }
 
@@ -131,45 +117,39 @@ impl Keyspace {
         count: usize,
         pattern: Option<&str>,
     ) -> Result<(u64, Vec<String>), WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok((0, vec![]));
-        }
-        match self.entries.get_mut(key) {
-            None => Ok((0, vec![])),
-            Some(entry) => {
-                let Value::Set(ref set) = entry.value else {
-                    return Err(WrongType);
-                };
+        };
+        let Value::Set(ref set) = entry.value else {
+            return Err(WrongType);
+        };
 
-                let target = if count == 0 { 10 } else { count };
-                let compiled = pattern.map(GlobPattern::new);
-                let mut result = Vec::with_capacity(target);
-                let mut pos = 0u64;
-                let mut done = true;
+        let target = if count == 0 { 10 } else { count };
+        let compiled = pattern.map(GlobPattern::new);
+        let mut result = Vec::with_capacity(target);
+        let mut pos = 0u64;
+        let mut done = true;
 
-                for member in set.iter() {
-                    if pos < cursor {
-                        pos += 1;
-                        continue;
-                    }
-                    if let Some(ref pat) = compiled {
-                        if !pat.matches(member) {
-                            pos += 1;
-                            continue;
-                        }
-                    }
-                    result.push(member.clone());
+        for member in set.iter() {
+            if pos < cursor {
+                pos += 1;
+                continue;
+            }
+            if let Some(ref pat) = compiled {
+                if !pat.matches(member) {
                     pos += 1;
-                    if result.len() >= target {
-                        done = false;
-                        break;
-                    }
+                    continue;
                 }
-
-                entry.touch();
-                Ok(if done { (0, result) } else { (pos, result) })
+            }
+            result.push(member.clone());
+            pos += 1;
+            if result.len() >= target {
+                done = false;
+                break;
             }
         }
+
+        Ok(if done { (0, result) } else { (pos, result) })
     }
 
     /// Returns the union of all given sets.
@@ -382,39 +362,35 @@ impl Keyspace {
         key: &str,
         count: i64,
     ) -> Result<Vec<String>, WrongType> {
-        if self.remove_if_expired(key) || count == 0 {
+        if count == 0 {
             return Ok(vec![]);
         }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => {
-                let Value::Set(ref set) = entry.value else {
-                    return Err(WrongType);
-                };
-                if set.is_empty() {
-                    entry.touch();
-                    return Ok(vec![]);
-                }
-
-                let mut rng = rand::rng();
-                let result = if count > 0 {
-                    // distinct members, up to set size
-                    let n = (count as usize).min(set.len());
-                    set.iter().choose_multiple(&mut rng, n).into_iter().cloned().collect()
-                } else {
-                    // allow duplicates, return exactly |count| elements
-                    let n = count.unsigned_abs() as usize;
-                    let members: Vec<&String> = set.iter().collect();
-                    use rand::Rng;
-                    (0..n)
-                        .map(|_| members[rng.random_range(0..members.len())].clone())
-                        .collect()
-                };
-
-                entry.touch();
-                Ok(result)
-            }
+        let Some(entry) = self.get_live_entry(key) else {
+            return Ok(vec![]);
+        };
+        let Value::Set(ref set) = entry.value else {
+            return Err(WrongType);
+        };
+        if set.is_empty() {
+            return Ok(vec![]);
         }
+
+        let mut rng = rand::rng();
+        let result = if count > 0 {
+            // distinct members, up to set size
+            let n = (count as usize).min(set.len());
+            set.iter().choose_multiple(&mut rng, n).into_iter().cloned().collect()
+        } else {
+            // allow duplicates, return exactly |count| elements
+            let n = count.unsigned_abs() as usize;
+            let members: Vec<&String> = set.iter().collect();
+            use rand::Rng;
+            (0..n)
+                .map(|_| members[rng.random_range(0..members.len())].clone())
+                .collect()
+        };
+
+        Ok(result)
     }
 
     /// Removes and returns up to `count` random members from a set.
@@ -469,19 +445,12 @@ impl Keyspace {
         key: &str,
         members: &[String],
     ) -> Result<Vec<bool>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![false; members.len()]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![false; members.len()]),
-            Some(entry) => match &entry.value {
-                Value::Set(set) => {
-                    let result = members.iter().map(|m| set.contains(m)).collect();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Set(set) => Ok(members.iter().map(|m| set.contains(m)).collect()),
+            _ => Err(WrongType),
         }
     }
 

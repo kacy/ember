@@ -57,19 +57,12 @@ impl Keyspace {
     ///
     /// Returns `None` if the key or field doesn't exist.
     pub fn hget(&mut self, key: &str, field: &str) -> Result<Option<Bytes>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(None);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(None),
-            Some(entry) => match &entry.value {
-                Value::Hash(hash) => {
-                    let result = hash.get(field).cloned();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Hash(hash) => Ok(hash.get(field).cloned()),
+            _ => Err(WrongType),
         }
     }
 
@@ -77,22 +70,15 @@ impl Keyspace {
     ///
     /// Returns an empty vec if the key doesn't exist.
     pub fn hgetall(&mut self, key: &str) -> Result<Vec<(String, Bytes)>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => match &entry.value {
-                Value::Hash(hash) => {
-                    let result: Vec<_> = hash
-                        .iter()
-                        .map(|(k, v)| (k.to_string(), v.clone()))
-                        .collect();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Hash(hash) => Ok(hash
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect()),
+            _ => Err(WrongType),
         }
     }
 
@@ -137,19 +123,12 @@ impl Keyspace {
 
     /// Checks if a field exists in a hash.
     pub fn hexists(&mut self, key: &str, field: &str) -> Result<bool, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(false);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(false),
-            Some(entry) => match &entry.value {
-                Value::Hash(hash) => {
-                    let result = hash.contains_key(field);
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Hash(hash) => Ok(hash.contains_key(field)),
+            _ => Err(WrongType),
         }
     }
 
@@ -236,37 +215,23 @@ impl Keyspace {
 
     /// Returns all field names in a hash.
     pub fn hkeys(&mut self, key: &str) -> Result<Vec<String>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => match &entry.value {
-                Value::Hash(hash) => {
-                    let result = hash.iter().map(|(k, _)| k.to_string()).collect();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Hash(hash) => Ok(hash.iter().map(|(k, _)| k.to_string()).collect()),
+            _ => Err(WrongType),
         }
     }
 
     /// Returns all values in a hash.
     pub fn hvals(&mut self, key: &str) -> Result<Vec<Bytes>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => match &entry.value {
-                Value::Hash(hash) => {
-                    let result = hash.iter().map(|(_, v)| v.clone()).collect();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Hash(hash) => Ok(hash.iter().map(|(_, v)| v.clone()).collect()),
+            _ => Err(WrongType),
         }
     }
 
@@ -282,67 +247,54 @@ impl Keyspace {
         count: usize,
         pattern: Option<&str>,
     ) -> Result<(u64, Vec<(String, Bytes)>), WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok((0, vec![]));
-        }
-        match self.entries.get_mut(key) {
-            None => Ok((0, vec![])),
-            Some(entry) => {
-                let Value::Hash(ref hash) = entry.value else {
-                    return Err(WrongType);
-                };
+        };
+        let Value::Hash(ref hash) = entry.value else {
+            return Err(WrongType);
+        };
 
-                let target = if count == 0 { 10 } else { count };
-                let compiled = pattern.map(GlobPattern::new);
-                let mut result = Vec::with_capacity(target);
-                let mut pos = 0u64;
-                let mut done = true;
+        let target = if count == 0 { 10 } else { count };
+        let compiled = pattern.map(GlobPattern::new);
+        let mut result = Vec::with_capacity(target);
+        let mut pos = 0u64;
+        let mut done = true;
 
-                for (field, value) in hash.iter() {
-                    if pos < cursor {
-                        pos += 1;
-                        continue;
-                    }
-                    if let Some(ref pat) = compiled {
-                        if !pat.matches(field) {
-                            pos += 1;
-                            continue;
-                        }
-                    }
-                    result.push((field.to_string(), value.clone()));
+        for (field, value) in hash.iter() {
+            if pos < cursor {
+                pos += 1;
+                continue;
+            }
+            if let Some(ref pat) = compiled {
+                if !pat.matches(field) {
                     pos += 1;
-                    if result.len() >= target {
-                        done = false;
-                        break;
-                    }
+                    continue;
                 }
-
-                entry.touch();
-                Ok(if done { (0, result) } else { (pos, result) })
+            }
+            result.push((field.to_string(), value.clone()));
+            pos += 1;
+            if result.len() >= target {
+                done = false;
+                break;
             }
         }
+
+        Ok(if done { (0, result) } else { (pos, result) })
     }
 
     /// Gets multiple field values from a hash.
     ///
     /// Returns `None` for fields that don't exist.
     pub fn hmget(&mut self, key: &str, fields: &[String]) -> Result<Vec<Option<Bytes>>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(fields.iter().map(|_| None).collect());
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(fields.iter().map(|_| None).collect()),
-            Some(entry) => match &entry.value {
-                Value::Hash(hash) => {
-                    let result = fields
-                        .iter()
-                        .map(|f| hash.get(f.as_str()).cloned())
-                        .collect();
-                    entry.touch();
-                    Ok(result)
-                }
-                _ => Err(WrongType),
-            },
+        };
+        match &entry.value {
+            Value::Hash(hash) => Ok(fields
+                .iter()
+                .map(|f| hash.get(f.as_str()).cloned())
+                .collect()),
+            _ => Err(WrongType),
         }
     }
 }

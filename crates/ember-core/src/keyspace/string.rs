@@ -288,18 +288,12 @@ impl Keyspace {
     /// Returns an empty string if the key does not exist, or if the
     /// computed range is empty after clamping.
     pub fn getrange(&mut self, key: &str, start: i64, end: i64) -> Result<Bytes, WrongType> {
-        self.remove_if_expired(key);
-
-        let data = match self.entries.get_mut(key) {
-            Some(e) => match &e.value {
-                Value::String(b) => {
-                    let data = b.clone();
-                    e.touch();
-                    data
-                }
-                _ => return Err(WrongType),
-            },
-            None => return Ok(Bytes::new()),
+        let Some(entry) = self.get_live_entry(key) else {
+            return Ok(Bytes::new());
+        };
+        let data = match &entry.value {
+            Value::String(b) => b.clone(),
+            _ => return Err(WrongType),
         };
 
         let len = data.len() as i64;

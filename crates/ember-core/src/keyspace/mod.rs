@@ -1257,6 +1257,24 @@ impl Keyspace {
         expired
     }
 
+    /// Returns a mutable reference to the entry for `key`, or `None` if the
+    /// key doesn't exist or has expired.
+    ///
+    /// Combines the three steps that almost every read operation repeats:
+    /// 1. Remove the key if it has expired (lazy expiration).
+    /// 2. Look up the entry in the map.
+    /// 3. Touch the entry to update its last-access timestamp for LRU.
+    ///
+    /// Callers still need to match on the entry's value type and handle
+    /// `WrongType` themselves — this helper just eliminates the common
+    /// expiry + lookup + touch boilerplate.
+    fn get_live_entry(&mut self, key: &str) -> Option<&mut Entry> {
+        self.remove_if_expired(key);
+        let entry = self.entries.get_mut(key)?;
+        entry.touch();
+        Some(entry)
+    }
+
     /// Sends a value to the background drop thread if one is configured
     /// and the value is large enough to justify the overhead.
     fn defer_drop(&self, value: Value) {

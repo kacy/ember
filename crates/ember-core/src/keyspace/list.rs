@@ -59,34 +59,25 @@ impl Keyspace {
     /// indices are clamped to the list boundaries. Returns `Err(WrongType)`
     /// on type mismatch. Missing keys return an empty vec.
     pub fn lrange(&mut self, key: &str, start: i64, stop: i64) -> Result<Vec<Bytes>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-        match self.entries.get_mut(key) {
-            None => Ok(vec![]),
-            Some(entry) => {
-                let result = match &entry.value {
-                    Value::List(deque) => {
-                        let len = deque.len() as i64;
-                        let (s, e) = normalize_range(start, stop, len);
-                        // empty range: inverted indices or both out of bounds
-                        if s > e {
-                            return Ok(vec![]);
-                        }
-                        Ok(deque
-                            .iter()
-                            .skip(s as usize)
-                            .take((e - s + 1) as usize)
-                            .cloned()
-                            .collect())
-                    }
-                    _ => Err(WrongType),
-                };
-                if result.is_ok() {
-                    entry.touch();
+        };
+        match &entry.value {
+            Value::List(deque) => {
+                let len = deque.len() as i64;
+                let (s, e) = normalize_range(start, stop, len);
+                // empty range: inverted indices or both out of bounds
+                if s > e {
+                    return Ok(vec![]);
                 }
-                result
+                Ok(deque
+                    .iter()
+                    .skip(s as usize)
+                    .take((e - s + 1) as usize)
+                    .cloned()
+                    .collect())
             }
+            _ => Err(WrongType),
         }
     }
 
@@ -111,23 +102,15 @@ impl Keyspace {
     /// Negative indices count from the tail (-1 = last element).
     /// Returns `Err(WrongType)` if the key holds a non-list value.
     pub fn lindex(&mut self, key: &str, index: i64) -> Result<Option<Bytes>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(None);
-        }
-        let entry = match self.entries.get_mut(key) {
-            None => return Ok(None),
-            Some(e) => e,
         };
-        let result = match &entry.value {
+        match &entry.value {
             Value::List(deque) => {
                 Ok(resolve_index(index, deque.len()).and_then(|i| deque.get(i).cloned()))
             }
             _ => Err(WrongType),
-        };
-        if result.is_ok() {
-            entry.touch();
         }
-        result
     }
 
     /// Sets the element at `index` to `value`.
@@ -418,63 +401,53 @@ impl Keyspace {
         count: usize,
         maxlen: usize,
     ) -> Result<Vec<i64>, WrongType> {
-        if self.remove_if_expired(key) {
+        let Some(entry) = self.get_live_entry(key) else {
             return Ok(vec![]);
-        }
-
-        let entry = match self.entries.get_mut(key) {
-            None => return Ok(vec![]),
-            Some(e) => e,
         };
 
-        let result = {
-            let Value::List(ref deque) = entry.value else {
-                return Err(WrongType);
-            };
+        let Value::List(ref deque) = entry.value else {
+            return Err(WrongType);
+        };
 
-            let len = deque.len();
-            let limit = if maxlen == 0 { len } else { maxlen.min(len) };
-            let rank = if rank == 0 { 1 } else { rank };
-            let forward = rank > 0;
-            let skip = (rank.unsigned_abs() as usize).saturating_sub(1);
+        let len = deque.len();
+        let limit = if maxlen == 0 { len } else { maxlen.min(len) };
+        let rank = if rank == 0 { 1 } else { rank };
+        let forward = rank > 0;
+        let skip = (rank.unsigned_abs() as usize).saturating_sub(1);
 
-            let mut skipped = 0usize;
-            let mut results = Vec::new();
+        let mut skipped = 0usize;
+        let mut results = Vec::new();
 
-            if forward {
-                for i in 0..limit {
-                    if deque.get(i).map(|e| e.as_ref() == element).unwrap_or(false) {
-                        if skipped < skip {
-                            skipped += 1;
-                        } else {
-                            results.push(i as i64);
-                            if count > 0 && results.len() >= count {
-                                break;
-                            }
-                        }
-                    }
-                }
-            } else {
-                let start = if maxlen == 0 { 0 } else { len.saturating_sub(maxlen) };
-                for i in (start..len).rev() {
-                    if deque.get(i).map(|e| e.as_ref() == element).unwrap_or(false) {
-                        if skipped < skip {
-                            skipped += 1;
-                        } else {
-                            results.push(i as i64);
-                            if count > 0 && results.len() >= count {
-                                break;
-                            }
+        if forward {
+            for i in 0..limit {
+                if deque.get(i).map(|e| e.as_ref() == element).unwrap_or(false) {
+                    if skipped < skip {
+                        skipped += 1;
+                    } else {
+                        results.push(i as i64);
+                        if count > 0 && results.len() >= count {
+                            break;
                         }
                     }
                 }
             }
+        } else {
+            let start = if maxlen == 0 { 0 } else { len.saturating_sub(maxlen) };
+            for i in (start..len).rev() {
+                if deque.get(i).map(|e| e.as_ref() == element).unwrap_or(false) {
+                    if skipped < skip {
+                        skipped += 1;
+                    } else {
+                        results.push(i as i64);
+                        if count > 0 && results.len() >= count {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
-            results
-        };
-
-        entry.touch();
-        Ok(result)
+        Ok(results)
     }
 
     /// Internal push implementation shared by lpush/rpush.
