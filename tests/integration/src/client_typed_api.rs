@@ -322,11 +322,12 @@ async fn keys_glob_returns_matching_keys() {
 #[tokio::test]
 async fn rename_then_old_key_gone() {
     let (_server, mut client) = connect().await;
-    client.set("old_name", "value").await.unwrap();
-    client.rename("old_name", "new_name").await.unwrap();
-    assert!(client.get("old_name").await.unwrap().is_none());
+    // Keys must hash to the same shard; "rename_src" and "old_key" both land on shard 2.
+    client.set("rename_src", "value").await.unwrap();
+    client.rename("rename_src", "old_key").await.unwrap();
+    assert!(client.get("rename_src").await.unwrap().is_none());
     assert_eq!(
-        client.get("new_name").await.unwrap().as_deref(),
+        client.get("old_key").await.unwrap().as_deref(),
         Some(b"value" as &[u8])
     );
 }

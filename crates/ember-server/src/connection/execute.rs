@@ -2287,9 +2287,26 @@ pub(super) async fn execute(
                     return Frame::Error(format!("ERR {e}"));
                 }
             }
-            let duration = expire.map(|e| match e {
-                SetExpire::Ex(secs) => Duration::from_secs(secs),
-                SetExpire::Px(millis) => Duration::from_millis(millis),
+            let duration = expire.map(|e| {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                match e {
+                    SetExpire::Ex(secs) => Duration::from_secs(secs),
+                    SetExpire::Px(millis) => Duration::from_millis(millis),
+                    SetExpire::ExAt(ts) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        Duration::from_secs(ts.saturating_sub(now))
+                    }
+                    SetExpire::PxAt(ts_ms) => {
+                        let now_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        Duration::from_millis(ts_ms.saturating_sub(now_ms))
+                    }
+                }
             });
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ProtoSet {
