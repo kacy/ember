@@ -203,7 +203,7 @@ ember-cli benchmark -t set,multi -n 100000 -c 50
 | 1 | ~200k | 1.0x |
 | 8 | ~1.8M | 9x |
 
-sharded mode scales well with cores for pipelined workloads thanks to the dispatch-collect pipeline pattern, where each CPU core owns a keyspace partition and processes its shard's commands independently.
+ember scales well with cores for pipelined workloads thanks to the dispatch-collect pipeline pattern, where each CPU core owns a keyspace partition and processes its shard's commands independently.
 
 ### gRPC vs RESP3
 

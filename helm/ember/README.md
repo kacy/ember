@@ -40,7 +40,6 @@ helm uninstall my-ember
 | `ember.evictionPolicy` | eviction policy when memory is full | `noeviction` |
 | `ember.appendonly` | enable AOF persistence | `false` |
 | `ember.appendfsync` | AOF fsync policy (`always`, `everysec`, `no`) | `everysec` |
-| `ember.concurrent` | use concurrent mode instead of sharded | `false` |
 | `ember.requirepass` | require password for client connections | `""` (disabled) |
 | `resources` | CPU/memory resource requests and limits | `{}` |
 | `serviceAccount.create` | create a service account | `true` |

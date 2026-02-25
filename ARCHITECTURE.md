@@ -24,11 +24,7 @@ for a high-level introduction, see the [readme](README.md).
 
 ## 1. execution model
 
-ember supports two execution modes that can be selected at startup.
-
-### sharded mode (default)
-
-the default mode assigns one tokio task to each logical CPU core, and each task owns an exclusive partition of the keyspace. there is no locking on the hot path — commands are routed to the correct shard over a bounded mpsc channel, processed, and replied to via a oneshot.
+ember assigns one tokio task to each logical CPU core, and each task owns an exclusive partition of the keyspace. there is no locking on the hot path — commands are routed to the correct shard over a bounded mpsc channel, processed, and replied to via a oneshot.
 
 **key routing** uses FNV-1a 64-bit hashing rather than the xxhash family. the reason is determinism across restarts: FNV-1a uses fixed constants (`offset = 0xcbf29ce484222325`, `prime = 0x100000001b3`) whereas xxhash seeds itself per-process. since AOF and snapshot recovery must route recovered keys to the exact same shard they were written from, a non-deterministic hash would corrupt the keyspace on startup.
 
@@ -46,15 +42,7 @@ the routing api on `Engine` has five methods:
 | `send_to_shard(idx, req)` | direct shard access by index (SCAN) |
 | `dispatch_to_shard(idx, req)` | non-blocking dispatch returning a oneshot receiver |
 
-sharded mode supports all five data types and all 135+ commands.
-
-### concurrent mode (`--concurrent`)
-
-an alternative backed by `DashMap<Box<str>, Entry>`. connection handlers access the map directly, with no channels or per-shard tasks. `Box<str>` is used instead of `String` to save 8 bytes per key (no capacity field).
-
-this mode is roughly 2× faster for pure string workloads because it eliminates the channel round-trip. the trade-off is that it only supports strings (GET, SET, and basic key commands). complex data types require shard-local ownership that DashMap can't provide.
-
-the reason both modes exist: concurrent is strictly better for string-only workloads (session caches, simple counters), while sharded is necessary for applications using lists, sorted sets, hashes, or sets. rather than force a single compromise, both are available.
+all five data types and all 135+ commands are supported.
 
 ---
 

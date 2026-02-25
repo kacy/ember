@@ -151,7 +151,7 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | DEL | ✓ | multi-key |
 | UNLINK | ✓ | async background free for large collections |
 | EXISTS | ✓ | multi-key |
-| RENAME | ~ | source and destination must hash to the same shard in sharded mode |
+| RENAME | ~ | source and destination must hash to the same shard |
 | COPY | ✓ | |
 | KEYS | ✓ | glob patterns supported |
 | SCAN | ✓ | cursor is shard-aware but opaque — functionally identical to Redis |
@@ -419,8 +419,6 @@ Redis is single-threaded per process (with some background threads for persisten
 
 the practical effect: throughput scales linearly with core count for workloads where keys are distributed across shards. single-key workloads (one key with many operations) won't see a difference.
 
-if you're running a read-heavy workload with string values only, try `concurrent = true` in the config. this switches to a DashMap-backed keyspace that allows parallel readers without shard routing overhead.
-
 ### per-shard AOF
 
 Redis writes a single `appendonly.aof` file. Ember writes one AOF file per shard into the `data-dir`. this means recovery is parallelized across cores, which dramatically speeds up startup with large datasets.
@@ -429,7 +427,7 @@ the tradeoff: you can't just copy a single file. a backup needs the full `data-d
 
 ### RENAME cross-shard restriction
 
-in sharded mode, RENAME only works when the source and destination keys hash to the same shard. if they don't, Ember returns an error. this is the same constraint Redis Cluster imposes. use hashtags (`{user:1}`) to ensure related keys land on the same shard if you need to rename them.
+RENAME only works when the source and destination keys hash to the same shard. if they don't, Ember returns an error. this is the same constraint Redis Cluster imposes. use hashtags (`{user:1}`) to ensure related keys land on the same shard if you need to rename them.
 
 ### cluster consensus
 
