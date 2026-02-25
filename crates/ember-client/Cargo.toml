@@ -30,3 +30,6 @@ tls = [
     "dep:rustls-pki-types",
     "dep:rustls-native-certs",
 ]
+# Vector set commands (VADD, VSIM, etc.). Requires the server to be built
+# with the same feature enabled.
+vector = []

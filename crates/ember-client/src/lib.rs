@@ -51,6 +51,8 @@ mod pipeline;
 pub mod subscriber;
 #[cfg(feature = "tls")]
 pub mod tls;
+#[cfg(feature = "vector")]
+pub mod vector;
 
 pub use commands::{ScanPage, SlowlogEntry};
 pub use connection::{Client, ClientError};
@@ -59,3 +61,5 @@ pub use pipeline::Pipeline;
 pub use subscriber::{Message, Subscriber};
 #[cfg(feature = "tls")]
 pub use tls::TlsClientConfig;
+#[cfg(feature = "vector")]
+pub use vector::SimResult;
