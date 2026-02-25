@@ -790,6 +790,26 @@ impl Client {
         integer(frame)
     }
 
+    /// Increments the integer stored at `field` in the hash at `key` by
+    /// `delta`. Returns the new value.
+    pub async fn hincrby(
+        &mut self,
+        key: &str,
+        field: &str,
+        delta: i64,
+    ) -> Result<i64, ClientError> {
+        let d = delta.to_string();
+        let frame = self
+            .send_frame(cmd4(
+                b"HINCRBY",
+                key.as_bytes(),
+                field.as_bytes(),
+                d.as_bytes(),
+            ))
+            .await?;
+        integer(frame)
+    }
+
     /// Returns all field names in the hash at `key`.
     pub async fn hkeys(&mut self, key: &str) -> Result<Vec<Bytes>, ClientError> {
         let frame = self.send_frame(cmd2(b"HKEYS", key.as_bytes())).await?;
