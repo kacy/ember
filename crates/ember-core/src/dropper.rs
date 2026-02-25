@@ -139,7 +139,6 @@ mod tests {
                     expires_at_ms: 0,
                     cached_value_size: 0,
                     last_access_secs: 0,
-                    version: 0,
                 },
             );
         }

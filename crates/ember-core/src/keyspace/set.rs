@@ -51,7 +51,6 @@ impl Keyspace {
             return Ok(0);
         }
 
-        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(0);
         };
@@ -75,7 +74,7 @@ impl Keyspace {
             false
         };
         if removed > 0 {
-            entry.version = ver;
+            self.bump_version(key);
         }
 
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
@@ -348,9 +347,9 @@ impl Keyspace {
         let set: std::collections::HashSet<String> = members.into_iter().collect();
         let value = Value::Set(Box::new(set));
         self.memory.add(dest, &value);
-        let mut entry = Entry::new(value, None);
-        entry.version = self.next_ver();
+        let entry = Entry::new(value, None);
         self.entries.insert(CompactString::from(dest), entry);
+        self.bump_version(dest);
 
         Ok((count, stored))
     }
@@ -402,7 +401,6 @@ impl Keyspace {
             return Ok(vec![]);
         }
 
-        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
@@ -437,7 +435,7 @@ impl Keyspace {
         let is_empty = set.is_empty();
 
         if !chosen.is_empty() {
-            entry.version = ver;
+            self.bump_version(key);
         }
 
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);

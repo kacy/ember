@@ -53,9 +53,9 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            let mut entry = Entry::new(value, None);
-            entry.version = self.next_ver();
+            let entry = Entry::new(value, None);
             self.entries.insert(CompactString::from(key), entry);
+            self.bump_version(key);
         }
 
         let entry = match self.entries.get_mut(key) {
@@ -71,13 +71,12 @@ impl Keyspace {
             _ => return Err(VectorWriteError::WrongType),
         };
         entry.touch();
-        self.next_version += 1;
-        entry.version = self.next_version;
 
         let new_value_size = memory::value_size(&entry.value);
         entry.cached_value_size = new_value_size;
         let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
+        self.bump_version(key);
 
         Ok(VAddResult {
             element,
@@ -164,72 +163,73 @@ impl Keyspace {
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
             let value = Value::Vector(vs);
             self.memory.add(key, &value);
-            let mut new_entry = Entry::new(value, None);
-            new_entry.version = self.next_ver();
+            let new_entry = Entry::new(value, None);
             self.entries.insert(CompactString::from(key), new_entry);
+            self.bump_version(key);
         }
 
-        let entry = match self.entries.get_mut(key) {
-            Some(e) => e,
-            None => return Err(VectorWriteError::IndexError("entry missing".into())),
-        };
+        // batch result: Ok((added_count, bytes_added)) or Err with partial info
+        let batch_outcome = {
+            let entry = match self.entries.get_mut(key) {
+                Some(e) => e,
+                None => return Err(VectorWriteError::IndexError("entry missing".into())),
+            };
 
-        let batch_result = match entry.value {
-            Value::Vector(ref mut vs) => {
-                let per_elem = vs.per_element_bytes();
+            match entry.value {
+                Value::Vector(ref mut vs) => {
+                    let per_elem = vs.per_element_bytes();
 
-                // use parallel HNSW construction for large batches
-                let result = vs
-                    .add_batch_parallel(&entries)
-                    .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
+                    // use parallel HNSW construction for large batches
+                    let result = vs
+                        .add_batch_parallel(&entries)
+                        .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
 
-                // compute memory delta from what was actually added
-                let bytes_added = if result.added_count > 0 {
-                    // sum up name lengths of new elements. since we don't know
-                    // exactly which were new vs updates, estimate using the
-                    // per-element cost * added_count + average name length
-                    let total_name_bytes: usize = entries.iter().map(|(e, _)| e.len()).sum();
-                    let avg_name = total_name_bytes / entries.len();
-                    result.added_count.saturating_mul(per_elem + avg_name)
-                } else {
-                    0
-                };
+                    // compute memory delta from what was actually added
+                    let bytes_added = if result.added_count > 0 {
+                        // sum up name lengths of new elements. since we don't know
+                        // exactly which were new vs updates, estimate using the
+                        // per-element cost * added_count + average name length
+                        let total_name_bytes: usize = entries.iter().map(|(e, _)| e.len()).sum();
+                        let avg_name = total_name_bytes / entries.len();
+                        result.added_count.saturating_mul(per_elem + avg_name)
+                    } else {
+                        0
+                    };
 
-                if let Some(ref err) = result.error {
-                    // partial success — track what was applied before returning error
                     entry.touch();
-                    self.next_version += 1;
-                    entry.version = self.next_version;
                     entry.cached_value_size = entry.cached_value_size.saturating_add(bytes_added);
                     self.memory.grow_by(bytes_added);
 
-                    // return the partial results for AOF persistence
-                    return Err(VectorWriteError::PartialBatch {
-                        message: format!(
-                            "batch error: {err} ({} vectors added before failure)",
-                            result.added_count,
-                        ),
-                        applied: entries,
-                    });
+                    if let Some(err) = result.error {
+                        // partial success — track what was applied before returning error
+                        Err((err, result.added_count))
+                    } else {
+                        Ok((result.added_count, bytes_added))
+                    }
                 }
-
-                (result.added_count, bytes_added)
+                _ => return Err(VectorWriteError::WrongType),
             }
-            _ => return Err(VectorWriteError::WrongType),
         };
+        // entry borrow released — safe to call bump_version
 
-        let (added_count, bytes_added) = batch_result;
-        entry.touch();
-        self.next_version += 1;
-        entry.version = self.next_version;
-        // incremental tracking — no full-set rescan via memory::value_size()
-        entry.cached_value_size = entry.cached_value_size.saturating_add(bytes_added);
-        self.memory.grow_by(bytes_added);
-
-        Ok(VAddBatchResult {
-            added_count,
-            applied: entries,
-        })
+        match batch_outcome {
+            Err((err, added_count)) => {
+                self.bump_version(key);
+                Err(VectorWriteError::PartialBatch {
+                    message: format!(
+                        "batch error: {err} ({added_count} vectors added before failure)",
+                    ),
+                    applied: entries,
+                })
+            }
+            Ok((added_count, _bytes_added)) => {
+                self.bump_version(key);
+                Ok(VAddBatchResult {
+                    added_count,
+                    applied: entries,
+                })
+            }
+        }
     }
 
     /// Searches for the k nearest neighbors in a vector set.
@@ -282,13 +282,12 @@ impl Keyspace {
 
         if removed {
             entry.touch();
-            self.next_version += 1;
-            entry.version = self.next_version;
             let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
             let new_vs = memory::value_size(&entry.value);
             entry.cached_value_size = new_vs;
             let new_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
             self.memory.adjust(old_size, new_size);
+            self.bump_version(key);
 
             if is_empty {
                 self.memory.remove_with_size(new_size);

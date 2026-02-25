@@ -266,8 +266,11 @@ pub enum SetResult {
 /// `expires_at_ms` (the hot-path read fields) sit at the front so
 /// they share the first L1 cache line with the HashMap key pointer.
 /// `cached_value_size` is warm (used on writes). `last_access_secs`
-/// is cold (only used during eviction sampling). `version` is cold
-/// (only read on WATCH/EXEC).
+/// is cold (only used during eviction sampling).
+///
+/// Version tracking for WATCH/EXEC lives in a separate side table on
+/// Keyspace (`versions` map), not on every entry. This saves 8 bytes
+/// per entry since <1% of keys are ever WATCHed.
 #[derive(Debug, Clone)]
 pub(crate) struct Entry {
     pub(crate) value: Value,
@@ -280,9 +283,6 @@ pub(crate) struct Entry {
     /// Monotonic last access time in seconds since process start (for LRU).
     /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
     pub(crate) last_access_secs: u32,
-    /// Monotonic version counter for optimistic locking (WATCH/EXEC).
-    /// Bumped on every mutation so that EXEC can detect concurrent writes.
-    pub(crate) version: u64,
 }
 
 impl Entry {
@@ -293,7 +293,6 @@ impl Entry {
             expires_at_ms: time::expiry_from_duration(ttl),
             cached_value_size,
             last_access_secs: time::now_secs(),
-            version: 0,
         }
     }
 
@@ -378,6 +377,11 @@ pub struct Keyspace {
     /// Monotonic counter for entry versions. Each mutation gets the next
     /// value, giving WATCH a cheap way to detect concurrent writes.
     next_version: u64,
+    /// Side table for WATCH/EXEC version tracking. Only populated for
+    /// keys that have been WATCHed. On mutation, we bump the version
+    /// only if the key exists in this map — which is almost never,
+    /// so the hot path pays only a fast hash-miss lookup.
+    versions: AHashMap<CompactString, u64>,
 }
 
 impl Keyspace {
@@ -398,6 +402,7 @@ impl Keyspace {
             oom_rejections: 0,
             drop_handle: None,
             next_version: 0,
+            versions: AHashMap::new(),
         }
     }
 
@@ -408,21 +413,43 @@ impl Keyspace {
         self.drop_handle = Some(handle);
     }
 
-    /// Advances the version counter and returns the new value.
-    /// Called on every write so that WATCH can detect modifications.
-    fn next_ver(&mut self) -> u64 {
-        self.next_version += 1;
-        self.next_version
+    /// Bumps the version for a key in the side table, but only if the
+    /// key is being tracked (i.e. someone WATCHed it). When no keys
+    /// are watched, the versions map is empty and this is a fast miss.
+    fn bump_version(&mut self, key: &str) {
+        if let Some(ver) = self.versions.get_mut(key) {
+            self.next_version += 1;
+            *ver = self.next_version;
+        }
     }
 
     /// Returns the current version of a key, or `None` if the key is
     /// missing or expired. Used by WATCH/EXEC — cold path only.
-    pub fn key_version(&self, key: &str) -> Option<u64> {
+    ///
+    /// If the key hasn't been WATCHed yet, inserts the current
+    /// `next_version` so that future mutations will be detected.
+    pub fn key_version(&mut self, key: &str) -> Option<u64> {
         let entry = self.entries.get(key)?;
         if entry.is_expired() {
             return None;
         }
-        Some(entry.version)
+        let ver = *self
+            .versions
+            .entry(CompactString::from(key))
+            .or_insert(self.next_version);
+        Some(ver)
+    }
+
+    /// Removes version tracking for a key. Called on key deletion,
+    /// expiration, and eviction so the side table doesn't leak.
+    fn remove_version(&mut self, key: &str) {
+        self.versions.remove(key);
+    }
+
+    /// Removes all version tracking entries. Called on UNWATCH/DISCARD
+    /// or FLUSHDB.
+    pub fn clear_versions(&mut self) {
+        self.versions.clear();
     }
 
     /// Decrements the expiry count if the entry had a TTL set.
@@ -500,9 +527,9 @@ impl Keyspace {
     /// collection-write methods after type-checking and memory reservation.
     fn insert_empty(&mut self, key: &str, value: Value) {
         self.memory.add(key, &value);
-        let mut entry = Entry::new(value, None);
-        entry.version = self.next_ver();
+        let entry = Entry::new(value, None);
         self.entries.insert(CompactString::from(key), entry);
+        self.bump_version(key);
     }
 
     /// Measures entry size before and after a mutation, adjusting the
@@ -521,9 +548,7 @@ impl Keyspace {
         entry.cached_value_size = new_value_size;
         let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_size, new_size);
-        // bump version for WATCH optimistic locking
-        self.next_version += 1;
-        entry.version = self.next_version;
+        self.bump_version(key);
         Some(result)
     }
 
@@ -587,6 +612,7 @@ impl Keyspace {
                 self.memory.remove(&victim, &entry.value);
                 self.decrement_expiry_if_set(&entry);
                 self.evicted_total += 1;
+                self.remove_version(&victim);
                 self.defer_drop(entry.value);
                 return true;
             }
@@ -654,6 +680,7 @@ impl Keyspace {
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
             self.decrement_expiry_if_set(&entry);
+            self.remove_version(key);
             self.defer_drop(entry.value);
             true
         } else {
@@ -673,6 +700,7 @@ impl Keyspace {
         if let Some(entry) = self.entries.remove(key) {
             self.memory.remove(key, &entry.value);
             self.decrement_expiry_if_set(&entry);
+            self.remove_version(key);
             // always defer for UNLINK, regardless of value size
             if let Some(ref handle) = self.drop_handle {
                 handle.defer_value(entry.value);
@@ -690,6 +718,7 @@ impl Keyspace {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
         self.expiry_count = 0;
+        self.versions.clear();
         old
     }
 
@@ -828,8 +857,7 @@ impl Keyspace {
                     self.expiry_count += 1;
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(seconds.saturating_mul(1000));
-                self.next_version += 1;
-                entry.version = self.next_version;
+                self.bump_version(key);
                 true
             }
             None => false,
@@ -866,8 +894,7 @@ impl Keyspace {
                 if entry.expires_at_ms != 0 {
                     entry.expires_at_ms = 0;
                     self.expiry_count = self.expiry_count.saturating_sub(1);
-                    self.next_version += 1;
-                    entry.version = self.next_version;
+                    self.bump_version(key);
                     true
                 } else {
                     false
@@ -908,8 +935,7 @@ impl Keyspace {
                     self.expiry_count += 1;
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(millis);
-                self.next_version += 1;
-                entry.version = self.next_version;
+                self.bump_version(key);
                 true
             }
             None => false,
@@ -987,10 +1013,9 @@ impl Keyspace {
         if entry.expires_at_ms != 0 {
             self.expiry_count += 1;
         }
-        let ver = self.next_ver();
-        let mut entry = entry;
-        entry.version = ver;
+        self.remove_version(key);
         self.entries.insert(CompactString::from(newkey), entry);
+        self.bump_version(newkey);
         Ok(())
     }
 
@@ -1046,14 +1071,13 @@ impl Keyspace {
         if has_expiry {
             self.expiry_count += 1;
         }
-        let ver = self.next_ver();
         let mut entry = Entry::new(cloned_value, None);
         // preserve the source's absolute expiry timestamp
         if let Some(ts) = cloned_expire {
             entry.expires_at_ms = ts;
         }
-        entry.version = ver;
         self.entries.insert(CompactString::from(dest), entry);
+        self.bump_version(dest);
         Ok(true)
     }
 
@@ -1081,6 +1105,7 @@ impl Keyspace {
         self.entries.clear();
         self.memory.reset();
         self.expiry_count = 0;
+        self.versions.clear();
     }
 
     /// Returns `true` if the keyspace has no entries.
@@ -1189,9 +1214,9 @@ impl Keyspace {
             }
         }
 
-        let mut entry = Entry::new(value, ttl);
-        entry.version = self.next_ver();
-        self.entries.insert(CompactString::from(key), entry);
+        let entry = Entry::new(value, ttl);
+        self.entries.insert(CompactString::from(key.clone()), entry);
+        self.bump_version(&key);
     }
 
     /// Randomly samples up to `count` keys and removes any that have expired.
@@ -1230,6 +1255,7 @@ impl Keyspace {
             self.memory.remove(key, &entry.value);
             self.decrement_expiry_if_set(&entry);
             self.expired_total += 1;
+            self.remove_version(key);
             self.defer_drop(entry.value);
         }
     }
@@ -1248,6 +1274,7 @@ impl Keyspace {
                 self.memory.remove(key, &entry.value);
                 self.decrement_expiry_if_set(&entry);
                 self.expired_total += 1;
+                self.remove_version(key);
                 self.defer_drop(entry.value);
             }
         }
@@ -2300,10 +2327,14 @@ mod tests {
     }
 
     // --- key_version (WATCH support) ---
+    //
+    // Version tracking uses a lazily-populated side table. `key_version()`
+    // inserts the key into the table on first call (simulating WATCH).
+    // Subsequent mutations only bump the version if the key is tracked.
 
     #[test]
     fn key_version_returns_none_for_missing() {
-        let ks = Keyspace::new();
+        let mut ks = Keyspace::new();
         assert_eq!(ks.key_version("nope"), None);
     }
 
@@ -2311,6 +2342,7 @@ mod tests {
     fn key_version_changes_on_set() {
         let mut ks = Keyspace::new();
         ks.set("k".into(), Bytes::from("v1"), None, false, false);
+        // first call registers the key in the version table (like WATCH)
         let v1 = ks.key_version("k").expect("key should exist");
         ks.set("k".into(), Bytes::from("v2"), None, false, false);
         let v2 = ks.key_version("k").expect("key should exist");
@@ -2357,13 +2389,17 @@ mod tests {
     }
 
     #[test]
-    fn key_version_unique_across_keys() {
+    fn key_version_stable_without_watch() {
+        // if key_version is never called, mutations don't create
+        // version entries — the side table stays empty
         let mut ks = Keyspace::new();
         ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set("b".into(), Bytes::from("2"), None, false, false);
-        let va = ks.key_version("a").unwrap();
-        let vb = ks.key_version("b").unwrap();
-        assert_ne!(va, vb, "different keys should have different versions");
+        ks.set("a".into(), Bytes::from("2"), None, false, false);
+        // first call to key_version returns a snapshot
+        let v1 = ks.key_version("a").unwrap();
+        // no mutation between calls — version is stable
+        let v2 = ks.key_version("a").unwrap();
+        assert_eq!(v1, v2, "version should be stable without mutations");
     }
 
     // --- copy tests ---
