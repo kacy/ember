@@ -74,6 +74,10 @@ struct Args {
     #[arg(long, env = "EMBER_APPENDFSYNC")]
     appendfsync: Option<String>,
 
+    /// automatically trigger a background snapshot every N seconds. 0 = disabled
+    #[arg(long, default_value_t = 0, env = "EMBER_SAVE_INTERVAL")]
+    save_interval: u64,
+
     /// port for prometheus metrics HTTP endpoint (0 = disabled)
     #[arg(long, env = "EMBER_METRICS_PORT")]
     metrics_port: Option<u16>,
@@ -226,6 +230,9 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     }
     if let Some(ref fsync) = args.appendfsync {
         cfg.appendfsync = fsync.clone();
+    }
+    if args.save_interval > 0 {
+        cfg.save_interval_secs = args.save_interval;
     }
     if let Some(port) = args.metrics_port {
         cfg.metrics_port = port;
@@ -805,6 +812,7 @@ async fn main() {
             config_registry,
             limits,
             config_path,
+            cfg.save_interval_secs,
             #[cfg(feature = "grpc")]
             grpc_addr,
         )
@@ -828,6 +836,7 @@ async fn main() {
             config_registry,
             limits,
             config_path,
+            cfg.save_interval_secs,
             #[cfg(feature = "grpc")]
             grpc_addr,
         )

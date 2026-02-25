@@ -156,6 +156,9 @@ pub struct EmberConfig {
     pub active_expiry_interval_ms: u64,
     #[serde(rename = "aof-fsync-interval-secs")]
     pub aof_fsync_interval_secs: u64,
+    /// automatically trigger a background save every N seconds. 0 = disabled.
+    #[serde(rename = "save-interval-secs")]
+    pub save_interval_secs: u64,
 
     // -- monitoring --
     #[serde(rename = "metrics-port")]
@@ -220,6 +223,7 @@ impl Default for EmberConfig {
             appendfsync: "everysec".into(),
             active_expiry_interval_ms: 100,
             aof_fsync_interval_secs: 1,
+            save_interval_secs: 0,
 
             metrics_port: 0,
             slowlog_log_slower_than: 10_000,
@@ -434,6 +438,10 @@ impl EmberConfig {
         params.insert(
             "aof-fsync-interval-secs".into(),
             self.aof_fsync_interval_secs.to_string(),
+        );
+        params.insert(
+            "save-interval-secs".into(),
+            self.save_interval_secs.to_string(),
         );
         params.insert("max-key-len".into(), self.max_key_len.clone());
         params.insert("max-value-len".into(), self.max_value_len.clone());
@@ -723,6 +731,11 @@ impl ConfigRegistry {
         cfg.aof_fsync_interval_secs = raw
             .parse()
             .map_err(|_| bad_value("aof-fsync-interval-secs", &raw))?;
+
+        let raw = get("save-interval-secs", "0");
+        cfg.save_interval_secs = raw
+            .parse()
+            .map_err(|_| bad_value("save-interval-secs", &raw))?;
 
         // monitoring
         let raw = get("slowlog-log-slower-than", "10000");
