@@ -31,6 +31,7 @@ impl Keyspace {
             self.insert_empty(key, Value::Hash(Box::default()));
         }
 
+        let track_access = self.track_access;
         let added = self
             .track_size(key, |entry| {
                 let Value::Hash(ref mut hash) = entry.value else {
@@ -45,7 +46,7 @@ impl Keyspace {
                         added += 1;
                     }
                 }
-                entry.touch();
+                entry.touch(track_access);
                 added
             })
             .unwrap_or(0);
@@ -200,7 +201,7 @@ impl Keyspace {
         };
         let new_val = current_val.checked_add(delta).ok_or(IncrError::Overflow)?;
         hash.insert(field.into(), Bytes::from(new_val.to_string()));
-        entry.touch();
+        entry.touch(self.track_access);
 
         let new_value_size = memory::value_size(&entry.value);
         entry.cached_value_size = new_value_size as u32;

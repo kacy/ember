@@ -24,6 +24,7 @@ impl Keyspace {
             self.insert_empty(key, Value::Set(Box::default()));
         }
 
+        let track_access = self.track_access;
         let added = self
             .track_size(key, |entry| {
                 let Value::Set(ref mut set) = entry.value else {
@@ -35,7 +36,7 @@ impl Keyspace {
                         added += 1;
                     }
                 }
-                entry.touch();
+                entry.touch(track_access);
                 added
             })
             .unwrap_or(0);
@@ -164,7 +165,7 @@ impl Keyspace {
                 Some(entry) => match &entry.value {
                     Value::Set(set) => {
                         result.extend(set.iter().cloned());
-                        entry.touch();
+                        entry.touch(self.track_access);
                     }
                     _ => return Err(WrongType),
                 },
@@ -204,7 +205,7 @@ impl Keyspace {
             unreachable!("type checked above");
         };
         let candidates: Vec<String> = base.iter().cloned().collect();
-        entry.touch();
+        entry.touch(self.track_access);
 
         let result: Vec<String> = candidates
             .into_iter()
@@ -224,7 +225,7 @@ impl Keyspace {
         // touch remaining keys
         for key in &keys[1..] {
             if let Some(entry) = self.entries.get_mut(key.as_str()) {
-                entry.touch();
+                entry.touch(self.track_access);
             }
         }
 
@@ -257,7 +258,7 @@ impl Keyspace {
             unreachable!("type checked above");
         };
         let candidates: Vec<String> = base.iter().cloned().collect();
-        first_entry.touch();
+        first_entry.touch(self.track_access);
 
         let result: Vec<String> = candidates
             .into_iter()
@@ -277,7 +278,7 @@ impl Keyspace {
         // touch remaining keys
         for key in &keys[1..] {
             if let Some(entry) = self.entries.get_mut(key.as_str()) {
-                entry.touch();
+                entry.touch(self.track_access);
             }
         }
 

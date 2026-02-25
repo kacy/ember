@@ -144,7 +144,7 @@ impl Keyspace {
         let delta = new_len as isize - old_len as isize;
         {
             let entry = self.entries.get_mut(key).expect("key confirmed to exist");
-            entry.touch();
+            entry.touch(self.track_access);
             if delta > 0 {
                 entry.cached_value_size += delta as u32;
             } else if delta < 0 {
@@ -197,7 +197,7 @@ impl Keyspace {
             }
 
             let empty = matches!(&entry.value, Value::List(d) if d.is_empty());
-            entry.touch();
+            entry.touch(self.track_access);
             let nvs = if !empty {
                 let size = memory::value_size(&entry.value);
                 entry.cached_value_size = size as u32;
@@ -280,7 +280,7 @@ impl Keyspace {
 
             deque.insert(insert_pos, value);
             let len = deque.len() as i64;
-            entry.touch();
+            entry.touch(self.track_access);
             entry.cached_value_size += element_cost as u32;
             len
         };
@@ -359,7 +359,7 @@ impl Keyspace {
             }
 
             let empty = deque.is_empty();
-            entry.touch();
+            entry.touch(self.track_access);
 
             if !empty {
                 entry.cached_value_size =
@@ -490,7 +490,7 @@ impl Keyspace {
                 }
             }
             let len = deque.len();
-            entry.touch();
+            entry.touch(self.track_access);
             entry.cached_value_size += element_increase as u32;
             len
         };
@@ -525,7 +525,7 @@ impl Keyspace {
             } else {
                 deque.pop_back()
             };
-            entry.touch();
+            entry.touch(self.track_access);
 
             let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
             (popped, is_empty)

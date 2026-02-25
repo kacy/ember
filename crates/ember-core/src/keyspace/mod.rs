@@ -302,9 +302,14 @@ impl Entry {
         time::is_expired(self.expires_at_ms)
     }
 
-    /// Marks this entry as accessed right now.
-    fn touch(&mut self) {
-        self.last_access_secs = time::now_secs();
+    /// Marks this entry as accessed right now. When `track` is false
+    /// (NoEviction policy), this is a no-op — skipping the `now_secs()`
+    /// call on every access.
+    #[inline(always)]
+    fn touch(&mut self, track: bool) {
+        if track {
+            self.last_access_secs = time::now_secs();
+        }
     }
 
     /// Returns the full estimated memory footprint of this entry
@@ -383,6 +388,11 @@ pub struct Keyspace {
     /// only if the key exists in this map — which is almost never,
     /// so the hot path pays only a fast hash-miss lookup.
     versions: AHashMap<CompactString, u64>,
+    /// Whether to update `last_access_secs` on every access. Only useful
+    /// when the eviction policy needs LRU timestamps (AllKeysLru).
+    /// When false (NoEviction), we skip the `now_secs()` call on every
+    /// read/write — saving a syscall per operation on the hot path.
+    track_access: bool,
 }
 
 impl Keyspace {
@@ -393,6 +403,7 @@ impl Keyspace {
 
     /// Creates a new, empty keyspace with the given config.
     pub fn with_config(config: ShardConfig) -> Self {
+        let track_access = config.eviction_policy == EvictionPolicy::AllKeysLru;
         Self {
             entries: AHashMap::new(),
             memory: MemoryTracker::new(),
@@ -404,6 +415,7 @@ impl Keyspace {
             drop_handle: None,
             next_version: 0,
             versions: AHashMap::new(),
+            track_access,
         }
     }
 
@@ -757,7 +769,7 @@ impl Keyspace {
         }
         match self.entries.get_mut(key) {
             Some(entry) => {
-                entry.touch();
+                entry.touch(self.track_access);
                 true
             }
             None => false,
@@ -780,7 +792,7 @@ impl Keyspace {
         }
         let entry = match self.entries.get_mut(key) {
             Some(e) => {
-                e.touch();
+                e.touch(self.track_access);
                 e
             }
             None => return Ok(Vec::new()),
@@ -1297,7 +1309,7 @@ impl Keyspace {
     fn get_live_entry(&mut self, key: &str) -> Option<&mut Entry> {
         self.remove_if_expired(key);
         let entry = self.entries.get_mut(key)?;
-        entry.touch();
+        entry.touch(self.track_access);
         Some(entry)
     }
 

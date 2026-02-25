@@ -29,6 +29,7 @@ impl Keyspace {
             self.insert_empty(key, Value::SortedSet(Box::default()));
         }
 
+        let track_access = self.track_access;
         let (count, applied) = self
             .track_size(key, |entry| {
                 let Value::SortedSet(ref mut ss) = entry.value else {
@@ -49,7 +50,7 @@ impl Keyspace {
                         count += 1;
                     }
                 }
-                entry.touch();
+                entry.touch(track_access);
                 (count, applied)
             })
             .unwrap_or_default();
@@ -86,6 +87,7 @@ impl Keyspace {
             return Ok(vec![]);
         };
         let old_entry_size = entry.entry_size(key);
+        let track_access = self.track_access;
         let mut removed = Vec::new();
         let mut removed_bytes: usize = 0;
         if let Value::SortedSet(ref mut ss) = entry.value {
@@ -96,7 +98,7 @@ impl Keyspace {
                 }
             }
         }
-        entry.touch();
+        entry.touch(track_access);
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
@@ -277,13 +279,14 @@ impl Keyspace {
             self.insert_empty(key, Value::SortedSet(Box::default()));
         }
 
+        let track_access = self.track_access;
         let new_score = self
             .track_size(key, |entry| {
                 let Value::SortedSet(ref mut ss) = entry.value else {
                     unreachable!("type verified by ensure_collection_type");
                 };
                 let score = ss.incr(member, increment);
-                entry.touch();
+                entry.touch(track_access);
                 score
             })
             .unwrap_or(increment);
@@ -350,6 +353,7 @@ impl Keyspace {
             return Ok(vec![]);
         };
         let old_entry_size = entry.entry_size(key);
+        let track_access = self.track_access;
         let mut removed_bytes = 0usize;
         let popped = if let Value::SortedSet(ref mut ss) = entry.value {
             let items = ss.pop_min(count);
@@ -362,7 +366,7 @@ impl Keyspace {
         };
 
         if !popped.is_empty() {
-            entry.touch();
+            entry.touch(track_access);
         }
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
@@ -392,6 +396,7 @@ impl Keyspace {
             return Ok(vec![]);
         };
         let old_entry_size = entry.entry_size(key);
+        let track_access = self.track_access;
         let mut removed_bytes = 0usize;
         let popped = if let Value::SortedSet(ref mut ss) = entry.value {
             let items = ss.pop_max(count);
@@ -404,7 +409,7 @@ impl Keyspace {
         };
 
         if !popped.is_empty() {
-            entry.touch();
+            entry.touch(track_access);
         }
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());

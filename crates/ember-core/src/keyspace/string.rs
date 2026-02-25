@@ -15,7 +15,7 @@ impl Keyspace {
             Some(e) => {
                 return match &e.value {
                     Value::String(_) => {
-                        e.touch();
+                        e.touch(self.track_access);
                         Ok(Some(e.value.clone()))
                     }
                     _ => Err(WrongType),
@@ -42,7 +42,7 @@ impl Keyspace {
                 return match &e.value {
                     Value::String(b) => {
                         let data = b.clone();
-                        e.touch();
+                        e.touch(self.track_access);
                         Ok(Some(data))
                     }
                     _ => Err(WrongType),
