@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
+use ember_protocol::command::ScoreBound;
 use subtle::ConstantTimeEq;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::service::interceptor::InterceptedService;
@@ -194,6 +195,40 @@ fn parse_expire(seconds: u64, millis: u64) -> Option<Duration> {
         Some(Duration::from_secs(seconds))
     } else {
         None
+    }
+}
+
+/// Parses a Redis-style score bound string into a `ScoreBound`.
+///
+/// Supports "-inf", "+inf", exclusive bounds like "(5.0", and inclusive
+/// bounds like "5.0". Returns an error status for invalid strings.
+#[allow(clippy::result_large_err)]
+fn parse_score_bound(s: &str) -> Result<ScoreBound, Status> {
+    match s {
+        "-inf" | "-INF" => Ok(ScoreBound::NegInf),
+        "+inf" | "+INF" | "inf" | "INF" => Ok(ScoreBound::PosInf),
+        s if s.starts_with('(') => s[1..].parse::<f64>().map(ScoreBound::Exclusive).map_err(|_| {
+            Status::invalid_argument(format!("invalid score bound: {s}"))
+        }),
+        s => s.parse::<f64>().map(ScoreBound::Inclusive).map_err(|_| {
+            Status::invalid_argument(format!("invalid score bound: {s}"))
+        }),
+    }
+}
+
+/// Converts a ScoredArray response into a ZRangeResponse.
+///
+/// When `with_scores` is false, scores are set to 0.0 — clients should
+/// ignore them. This avoids a second round-trip to the engine.
+fn scored_array_to_zrange(arr: Vec<(String, f64)>, with_scores: bool) -> ZRangeResponse {
+    ZRangeResponse {
+        members: arr
+            .into_iter()
+            .map(|(member, score)| ScoreMember {
+                member,
+                score: if with_scores { score } else { 0.0 },
+            })
+            .collect(),
     }
 }
 
@@ -2097,6 +2132,1132 @@ impl EmberCache for EmberService {
     }
 
     // -----------------------------------------------------------------------
+    // strings (extended)
+    // -----------------------------------------------------------------------
+
+    async fn get_del(
+        &self,
+        request: Request<GetDelRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let key = request.into_inner().key;
+        validate_key(&key, &self.ctx.limits)?;
+        let resp = self
+            .route(&key, ShardRequest::GetDel { key: key.clone() })
+            .await?;
+        self.record_command(start, "GETDEL");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn get_ex(
+        &self,
+        request: Request<GetExRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+
+        // map proto expiry fields to the engine's Option<Option<u64>> convention:
+        //   None        = leave TTL unchanged
+        //   Some(None)  = persist (remove TTL)
+        //   Some(Some(ms)) = set TTL to this many milliseconds
+        let expire = if req.persist {
+            Some(None)
+        } else if req.expire_millis > 0 {
+            Some(Some(req.expire_millis))
+        } else if req.expire_seconds > 0 {
+            Some(Some(req.expire_seconds * 1_000))
+        } else {
+            None
+        };
+
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::GetEx {
+                    key: req.key.clone(),
+                    expire,
+                },
+            )
+            .await?;
+        self.record_command(start, "GETEX");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn get_range(
+        &self,
+        request: Request<GetRangeRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::GetRange {
+                    key: req.key.clone(),
+                    start: req.start,
+                    end: req.end,
+                },
+            )
+            .await?;
+        self.record_command(start, "GETRANGE");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn set_range(
+        &self,
+        request: Request<SetRangeRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        validate_value(&req.value, &self.ctx.limits)?;
+        if req.offset < 0 {
+            return Err(Status::invalid_argument("offset must not be negative"));
+        }
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SetRange {
+                    key: req.key.clone(),
+                    offset: req.offset as usize,
+                    value: bytes::Bytes::from(req.value),
+                },
+            )
+            .await?;
+        self.record_command(start, "SETRANGE");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // keys (extended)
+    // -----------------------------------------------------------------------
+
+    async fn copy(&self, request: Request<CopyRequest>) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.source, &self.ctx.limits)?;
+        validate_key(&req.destination, &self.ctx.limits)?;
+
+        if !self.engine.same_shard(&req.source, &req.destination) {
+            return Err(Status::failed_precondition(
+                "ERR source and destination keys must hash to the same shard",
+            ));
+        }
+
+        let resp = self
+            .route(
+                &req.source,
+                ShardRequest::Copy {
+                    source: req.source.clone(),
+                    destination: req.destination,
+                    replace: req.replace,
+                },
+            )
+            .await?;
+        self.record_command(start, "COPY");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            ShardResponse::Err(msg) => Err(Status::not_found(msg)),
+            ShardResponse::OutOfMemory => Err(Status::resource_exhausted("OOM")),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn random_key(
+        &self,
+        _request: Request<RandomKeyRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let responses = self.broadcast(|| ShardRequest::RandomKey).await?;
+
+        // pick the first non-empty result from any shard
+        let key = responses.into_iter().find_map(|resp| match resp {
+            ShardResponse::StringArray(mut v) if !v.is_empty() => Some(v.remove(0)),
+            _ => None,
+        });
+
+        self.record_command(start, "RANDOMKEY");
+        Ok(Response::new(GetResponse {
+            value: key.map(|k| k.into_bytes()),
+        }))
+    }
+
+    async fn touch(&self, request: Request<TouchRequest>) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+        for k in &keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+
+        let responses = self
+            .engine
+            .route_multi(&keys, |k| ShardRequest::Touch { key: k })
+            .await
+            .map_err(|_| Status::unavailable("shard unavailable"))?;
+
+        let mut count = 0i64;
+        for resp in responses {
+            if let ShardResponse::Bool(true) = resp {
+                count += 1;
+            }
+        }
+        self.record_command(start, "TOUCH");
+        Ok(Response::new(IntResponse { value: count }))
+    }
+
+    // -----------------------------------------------------------------------
+    // lists (extended)
+    // -----------------------------------------------------------------------
+
+    async fn l_index(
+        &self,
+        request: Request<LIndexRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LIndex {
+                    key: req.key.clone(),
+                    index: req.index,
+                },
+            )
+            .await?;
+        self.record_command(start, "LINDEX");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn l_set(
+        &self,
+        request: Request<LSetRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        validate_value(&req.value, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LSet {
+                    key: req.key.clone(),
+                    index: req.index,
+                    value: bytes::Bytes::from(req.value),
+                },
+            )
+            .await?;
+        self.record_command(start, "LSET");
+
+        match resp {
+            ShardResponse::Ok => Ok(Response::new(StatusResponse {
+                status: "OK".to_string(),
+            })),
+            ShardResponse::Err(msg) => Err(Status::failed_precondition(msg)),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn l_trim(
+        &self,
+        request: Request<LTrimRequest>,
+    ) -> Result<Response<StatusResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LTrim {
+                    key: req.key.clone(),
+                    start: req.start,
+                    stop: req.stop,
+                },
+            )
+            .await?;
+        self.record_command(start, "LTRIM");
+
+        match resp {
+            ShardResponse::Ok => Ok(Response::new(StatusResponse {
+                status: "OK".to_string(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn l_insert(
+        &self,
+        request: Request<LInsertRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LInsert {
+                    key: req.key.clone(),
+                    before: req.before,
+                    pivot: bytes::Bytes::from(req.pivot),
+                    value: bytes::Bytes::from(req.value),
+                },
+            )
+            .await?;
+        self.record_command(start, "LINSERT");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::OutOfMemory => Err(Status::resource_exhausted("OOM")),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn l_rem(
+        &self,
+        request: Request<LRemRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LRem {
+                    key: req.key.clone(),
+                    count: req.count,
+                    value: bytes::Bytes::from(req.value),
+                },
+            )
+            .await?;
+        self.record_command(start, "LREM");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn l_pos(
+        &self,
+        request: Request<LPosRequest>,
+    ) -> Result<Response<OptionalIntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        // if count is absent or 0, find first occurrence (count=0 means "all" in
+        // the engine, but we only return one result via OptionalIntResponse).
+        let count = req.count.unwrap_or(0) as usize;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::LPos {
+                    key: req.key.clone(),
+                    element: bytes::Bytes::from(req.value),
+                    rank: 0,
+                    count,
+                    maxlen: 0,
+                },
+            )
+            .await?;
+        self.record_command(start, "LPOS");
+
+        match resp {
+            ShardResponse::IntegerArray(positions) => Ok(Response::new(OptionalIntResponse {
+                value: positions.into_iter().next(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn l_move(
+        &self,
+        request: Request<LMoveRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.source, &self.ctx.limits)?;
+        validate_key(&req.destination, &self.ctx.limits)?;
+
+        if !self.engine.same_shard(&req.source, &req.destination) {
+            return Err(Status::failed_precondition(
+                "ERR source and destination keys must hash to the same shard",
+            ));
+        }
+
+        let resp = self
+            .route(
+                &req.source,
+                ShardRequest::LMove {
+                    source: req.source.clone(),
+                    destination: req.destination,
+                    src_left: req.src_left,
+                    dst_left: req.dst_left,
+                },
+            )
+            .await?;
+        self.record_command(start, "LMOVE");
+
+        match resp {
+            ShardResponse::Value(Some(v)) => Ok(Response::new(GetResponse {
+                value: Some(value_to_bytes(v)),
+            })),
+            ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
+            ShardResponse::OutOfMemory => Err(Status::resource_exhausted("OOM")),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sets (extended)
+    // -----------------------------------------------------------------------
+
+    async fn s_union(
+        &self,
+        request: Request<SUnionRequest>,
+    ) -> Result<Response<KeysResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+        if keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let resp = self
+            .route(&keys[0].clone(), ShardRequest::SUnion { keys })
+            .await?;
+        self.record_command(start, "SUNION");
+
+        match resp {
+            ShardResponse::StringArray(members) => Ok(Response::new(KeysResponse { keys: members })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_inter(
+        &self,
+        request: Request<SInterRequest>,
+    ) -> Result<Response<KeysResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+        if keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let resp = self
+            .route(&keys[0].clone(), ShardRequest::SInter { keys })
+            .await?;
+        self.record_command(start, "SINTER");
+
+        match resp {
+            ShardResponse::StringArray(members) => Ok(Response::new(KeysResponse { keys: members })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_diff(
+        &self,
+        request: Request<SDiffRequest>,
+    ) -> Result<Response<KeysResponse>, Status> {
+        let start = Instant::now();
+        let keys = request.into_inner().keys;
+        if keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let resp = self
+            .route(&keys[0].clone(), ShardRequest::SDiff { keys })
+            .await?;
+        self.record_command(start, "SDIFF");
+
+        match resp {
+            ShardResponse::StringArray(members) => Ok(Response::new(KeysResponse { keys: members })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_union_store(
+        &self,
+        request: Request<SUnionStoreRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.destination, &self.ctx.limits)?;
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let dest = req.destination.clone();
+        let resp = self
+            .route(
+                &dest,
+                ShardRequest::SUnionStore {
+                    dest: req.destination,
+                    keys: req.keys,
+                },
+            )
+            .await?;
+        self.record_command(start, "SUNIONSTORE");
+
+        match resp {
+            ShardResponse::SetStoreResult { count, .. } => {
+                Ok(Response::new(IntResponse { value: count as i64 }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_inter_store(
+        &self,
+        request: Request<SInterStoreRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.destination, &self.ctx.limits)?;
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let dest = req.destination.clone();
+        let resp = self
+            .route(
+                &dest,
+                ShardRequest::SInterStore {
+                    dest: req.destination,
+                    keys: req.keys,
+                },
+            )
+            .await?;
+        self.record_command(start, "SINTERSTORE");
+
+        match resp {
+            ShardResponse::SetStoreResult { count, .. } => {
+                Ok(Response::new(IntResponse { value: count as i64 }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_diff_store(
+        &self,
+        request: Request<SDiffStoreRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.destination, &self.ctx.limits)?;
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let dest = req.destination.clone();
+        let resp = self
+            .route(
+                &dest,
+                ShardRequest::SDiffStore {
+                    dest: req.destination,
+                    keys: req.keys,
+                },
+            )
+            .await?;
+        self.record_command(start, "SDIFFSTORE");
+
+        match resp {
+            ShardResponse::SetStoreResult { count, .. } => {
+                Ok(Response::new(IntResponse { value: count as i64 }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_rand_member(
+        &self,
+        request: Request<SRandMemberRequest>,
+    ) -> Result<Response<ArrayResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SRandMember {
+                    key: req.key.clone(),
+                    count: req.count as i64,
+                },
+            )
+            .await?;
+        self.record_command(start, "SRANDMEMBER");
+
+        match resp {
+            ShardResponse::StringArray(members) => Ok(Response::new(ArrayResponse {
+                values: members.into_iter().map(|s| s.into_bytes()).collect(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_pop(
+        &self,
+        request: Request<SPopRequest>,
+    ) -> Result<Response<ArrayResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SPop {
+                    key: req.key.clone(),
+                    count: req.count as usize,
+                },
+            )
+            .await?;
+        self.record_command(start, "SPOP");
+
+        match resp {
+            ShardResponse::StringArray(members) => Ok(Response::new(ArrayResponse {
+                values: members.into_iter().map(|s| s.into_bytes()).collect(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn s_mis_member(
+        &self,
+        request: Request<SMisMemberRequest>,
+    ) -> Result<Response<BoolArrayResponse>, Status> {
+
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SMisMember {
+                    key: req.key.clone(),
+                    members: req.members,
+                },
+            )
+            .await?;
+        self.record_command(start, "SMISMEMBER");
+
+        match resp {
+            ShardResponse::BoolArray(results) => {
+                Ok(Response::new(BoolArrayResponse { values: results }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // hashes (extended)
+    // -----------------------------------------------------------------------
+
+    async fn h_scan(
+        &self,
+        request: Request<HScanRequest>,
+    ) -> Result<Response<HScanResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let count = if req.count == 0 { 10 } else { req.count as usize };
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HScan {
+                    key: req.key.clone(),
+                    cursor: req.cursor,
+                    count,
+                    pattern: req.pattern,
+                },
+            )
+            .await?;
+        self.record_command(start, "HSCAN");
+
+        match resp {
+            ShardResponse::CollectionScan { cursor, items } => {
+                // items are interleaved: [field, value, field, value, ...]
+                let fields = items
+                    .chunks(2)
+                    .filter_map(|pair| {
+                        if pair.len() == 2 {
+                            Some(FieldValue {
+                                field: String::from_utf8_lossy(&pair[0]).into_owned(),
+                                value: pair[1].to_vec(),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Ok(Response::new(HScanResponse { cursor, fields }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sorted sets (extended)
+    // -----------------------------------------------------------------------
+
+    async fn z_rev_rank(
+        &self,
+        request: Request<ZRevRankRequest>,
+    ) -> Result<Response<OptionalIntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRevRank {
+                    key: req.key.clone(),
+                    member: req.member,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZREVRANK");
+
+        match resp {
+            ShardResponse::Rank(r) => Ok(Response::new(OptionalIntResponse {
+                value: r.map(|n| n as i64),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_rev_range(
+        &self,
+        request: Request<ZRevRangeRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let with_scores = req.with_scores;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRevRange {
+                    key: req.key.clone(),
+                    start: req.start,
+                    stop: req.stop,
+                    with_scores,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZREVRANGE");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => {
+                Ok(Response::new(scored_array_to_zrange(arr, with_scores)))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_count(
+        &self,
+        request: Request<ZCountRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let min = parse_score_bound(&req.min)?;
+        let max = parse_score_bound(&req.max)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZCount {
+                    key: req.key.clone(),
+                    min,
+                    max,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZCOUNT");
+
+        match resp {
+            ShardResponse::Len(n) => Ok(Response::new(IntResponse { value: n as i64 })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_incr_by(
+        &self,
+        request: Request<ZIncrByRequest>,
+    ) -> Result<Response<FloatResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZIncrBy {
+                    key: req.key.clone(),
+                    increment: req.delta,
+                    member: req.member,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZINCRBY");
+
+        match resp {
+            ShardResponse::ZIncrByResult { new_score, .. } => Ok(Response::new(FloatResponse {
+                value: new_score.to_string(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_range_by_score(
+        &self,
+        request: Request<ZRangeByScoreRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let min = parse_score_bound(&req.min)?;
+        let max = parse_score_bound(&req.max)?;
+        let with_scores = req.with_scores;
+        let offset = req.offset.unwrap_or(0).max(0) as usize;
+        let count = req.count.map(|c| c.max(0) as usize);
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRangeByScore {
+                    key: req.key.clone(),
+                    min,
+                    max,
+                    offset,
+                    count,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZRANGEBYSCORE");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => {
+                Ok(Response::new(scored_array_to_zrange(arr, with_scores)))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_rev_range_by_score(
+        &self,
+        request: Request<ZRevRangeByScoreRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        // note: for ZREVRANGEBYSCORE, max and min are swapped in the proto
+        let max = parse_score_bound(&req.max)?;
+        let min = parse_score_bound(&req.min)?;
+        let with_scores = req.with_scores;
+        let offset = req.offset.unwrap_or(0).max(0) as usize;
+        let count = req.count.map(|c| c.max(0) as usize);
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRevRangeByScore {
+                    key: req.key.clone(),
+                    min,
+                    max,
+                    offset,
+                    count,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZREVRANGEBYSCORE");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => {
+                Ok(Response::new(scored_array_to_zrange(arr, with_scores)))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_pop_min(
+        &self,
+        request: Request<ZPopMinRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZPopMin {
+                    key: req.key.clone(),
+                    count: req.count as usize,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZPOPMIN");
+
+        match resp {
+            ShardResponse::ZPopResult(pairs) => Ok(Response::new(ZRangeResponse {
+                members: pairs
+                    .into_iter()
+                    .map(|(member, score)| ScoreMember { member, score })
+                    .collect(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_pop_max(
+        &self,
+        request: Request<ZPopMaxRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZPopMax {
+                    key: req.key.clone(),
+                    count: req.count as usize,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZPOPMAX");
+
+        match resp {
+            ShardResponse::ZPopResult(pairs) => Ok(Response::new(ZRangeResponse {
+                members: pairs
+                    .into_iter()
+                    .map(|(member, score)| ScoreMember { member, score })
+                    .collect(),
+            })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_diff(
+        &self,
+        request: Request<ZDiffRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let with_scores = req.with_scores;
+        let first_key = req.keys[0].clone();
+        let resp = self
+            .route(&first_key, ShardRequest::ZDiff { keys: req.keys })
+            .await?;
+        self.record_command(start, "ZDIFF");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => {
+                Ok(Response::new(scored_array_to_zrange(arr, with_scores)))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_inter(
+        &self,
+        request: Request<ZInterRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let with_scores = req.with_scores;
+        let first_key = req.keys[0].clone();
+        let resp = self
+            .route(&first_key, ShardRequest::ZInter { keys: req.keys })
+            .await?;
+        self.record_command(start, "ZINTER");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => {
+                Ok(Response::new(scored_array_to_zrange(arr, with_scores)))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_union(
+        &self,
+        request: Request<ZUnionRequest>,
+    ) -> Result<Response<ZRangeResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let with_scores = req.with_scores;
+        let first_key = req.keys[0].clone();
+        let resp = self
+            .route(&first_key, ShardRequest::ZUnion { keys: req.keys })
+            .await?;
+        self.record_command(start, "ZUNION");
+
+        match resp {
+            ShardResponse::ScoredArray(arr) => {
+                Ok(Response::new(scored_array_to_zrange(arr, with_scores)))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn z_scan(
+        &self,
+        request: Request<ZScanRequest>,
+    ) -> Result<Response<ZScanResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let count = if req.count == 0 { 10 } else { req.count as usize };
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZScan {
+                    key: req.key.clone(),
+                    cursor: req.cursor,
+                    count,
+                    pattern: req.pattern,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZSCAN");
+
+        match resp {
+            ShardResponse::CollectionScan { cursor, items } => {
+                // items are interleaved: [member, score_str, member, score_str, ...]
+                let members = items
+                    .chunks(2)
+                    .filter_map(|pair| {
+                        if pair.len() == 2 {
+                            let member = String::from_utf8_lossy(&pair[0]).into_owned();
+                            let score = String::from_utf8_lossy(&pair[1])
+                                .parse::<f64>()
+                                .unwrap_or(0.0);
+                            Some(ScoreMember { member, score })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Ok(Response::new(ZScanResponse { cursor, members }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // scans
+    // -----------------------------------------------------------------------
+
+    async fn s_scan(
+        &self,
+        request: Request<SScanRequest>,
+    ) -> Result<Response<SScanResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let count = if req.count == 0 { 10 } else { req.count as usize };
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SScan {
+                    key: req.key.clone(),
+                    cursor: req.cursor,
+                    count,
+                    pattern: req.pattern,
+                },
+            )
+            .await?;
+        self.record_command(start, "SSCAN");
+
+        match resp {
+            ShardResponse::CollectionScan { cursor, items } => {
+                let members = items
+                    .into_iter()
+                    .map(|b| String::from_utf8_lossy(&b).into_owned())
+                    .collect();
+                Ok(Response::new(SScanResponse { cursor, members }))
+            }
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // server (extended)
+    // -----------------------------------------------------------------------
+
+    async fn time(&self, _request: Request<TimeRequest>) -> Result<Response<TimeResponse>, Status> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        Ok(Response::new(TimeResponse {
+            seconds: now.as_secs() as i64,
+            microseconds: now.subsec_micros() as i64,
+        }))
+    }
+
+    async fn last_save(
+        &self,
+        _request: Request<LastSaveRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        use std::sync::atomic::Ordering;
+        Ok(Response::new(IntResponse {
+            value: self.ctx.last_save_timestamp.load(Ordering::Relaxed) as i64,
+        }))
+    }
+
+    // -----------------------------------------------------------------------
     // pipeline (bidirectional streaming)
     // -----------------------------------------------------------------------
 
@@ -2262,6 +3423,61 @@ async fn handle_pipeline_command(
         PubsubChannels => pub_sub_channels => Keys,
         PubsubNumsub   => pub_sub_num_sub  => PubsubNumsub,
         PubsubNumpat   => pub_sub_num_pat  => IntVal,
+
+        // extended strings
+        GetDel   => get_del   => Get,
+        GetEx    => get_ex    => Get,
+        GetRange => get_range => Get,
+        SetRange => set_range => IntVal,
+
+        // extended keys
+        Copy      => copy       => BoolVal,
+        RandomKey => random_key => Get,
+        Touch     => touch      => IntVal,
+
+        // extended lists
+        Lindex  => l_index  => Get,
+        Lset    => l_set    => Status,
+        Ltrim   => l_trim   => Status,
+        Linsert => l_insert => IntVal,
+        Lrem    => l_rem    => IntVal,
+        Lpos    => l_pos    => OptionalInt,
+        Lmove   => l_move   => Get,
+
+        // extended sets
+        Sunion      => s_union       => Keys,
+        Sinter      => s_inter       => Keys,
+        Sdiff       => s_diff        => Keys,
+        SunionStore => s_union_store => IntVal,
+        SinterStore => s_inter_store => IntVal,
+        SdiffStore  => s_diff_store  => IntVal,
+        SrandMember => s_rand_member => Array,
+        Spop        => s_pop         => Array,
+        Smismember  => s_mis_member  => BoolArray,
+
+        // extended hashes
+        Hscan => h_scan => Hscan,
+
+        // extended sorted sets
+        ZrevRank         => z_rev_rank          => OptionalInt,
+        ZrevRange        => z_rev_range         => Zrange,
+        Zcount           => z_count             => IntVal,
+        Zincrby          => z_incr_by           => FloatVal,
+        ZrangeByScore    => z_range_by_score    => Zrange,
+        ZrevRangeByScore => z_rev_range_by_score => Zrange,
+        Zpopmin          => z_pop_min           => Zrange,
+        Zpopmax          => z_pop_max           => Zrange,
+        Zdiff            => z_diff              => Zrange,
+        Zinter           => z_inter             => Zrange,
+        Zunion           => z_union             => Zrange,
+        Zscan            => z_scan              => Zscan,
+
+        // scans
+        Sscan => s_scan => Sscan,
+
+        // extended server
+        Time     => time      => TimeResp,
+        LastSave => last_save => IntVal,
     })
 }
 

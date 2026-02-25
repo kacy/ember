@@ -111,6 +111,69 @@ service EmberCache {
   rpc PubSubNumSub(PubSubNumSubRequest) returns (PubSubNumSubResponse);
   rpc PubSubNumPat(PubSubNumPatRequest) returns (IntResponse);
 
+  // --- strings (extended) ---
+
+  rpc GetDel(GetDelRequest) returns (GetResponse);
+  rpc GetEx(GetExRequest) returns (GetResponse);
+  rpc GetRange(GetRangeRequest) returns (GetResponse);
+  rpc SetRange(SetRangeRequest) returns (IntResponse);
+
+  // --- keys (extended) ---
+
+  rpc Copy(CopyRequest) returns (BoolResponse);
+  rpc RandomKey(RandomKeyRequest) returns (GetResponse);
+  rpc Touch(TouchRequest) returns (IntResponse);
+
+  // --- lists (extended) ---
+
+  rpc LIndex(LIndexRequest) returns (GetResponse);
+  rpc LSet(LSetRequest) returns (StatusResponse);
+  rpc LTrim(LTrimRequest) returns (StatusResponse);
+  rpc LInsert(LInsertRequest) returns (IntResponse);
+  rpc LRem(LRemRequest) returns (IntResponse);
+  rpc LPos(LPosRequest) returns (OptionalIntResponse);
+  rpc LMove(LMoveRequest) returns (GetResponse);
+
+  // --- sets (extended) ---
+
+  rpc SUnion(SUnionRequest) returns (KeysResponse);
+  rpc SInter(SInterRequest) returns (KeysResponse);
+  rpc SDiff(SDiffRequest) returns (KeysResponse);
+  rpc SUnionStore(SUnionStoreRequest) returns (IntResponse);
+  rpc SInterStore(SInterStoreRequest) returns (IntResponse);
+  rpc SDiffStore(SDiffStoreRequest) returns (IntResponse);
+  rpc SRandMember(SRandMemberRequest) returns (ArrayResponse);
+  rpc SPop(SPopRequest) returns (ArrayResponse);
+  rpc SMisMember(SMisMemberRequest) returns (BoolArrayResponse);
+
+  // --- hashes (extended) ---
+
+  rpc HScan(HScanRequest) returns (HScanResponse);
+
+  // --- sorted sets (extended) ---
+
+  rpc ZRevRank(ZRevRankRequest) returns (OptionalIntResponse);
+  rpc ZRevRange(ZRevRangeRequest) returns (ZRangeResponse);
+  rpc ZCount(ZCountRequest) returns (IntResponse);
+  rpc ZIncrBy(ZIncrByRequest) returns (FloatResponse);
+  rpc ZRangeByScore(ZRangeByScoreRequest) returns (ZRangeResponse);
+  rpc ZRevRangeByScore(ZRevRangeByScoreRequest) returns (ZRangeResponse);
+  rpc ZPopMin(ZPopMinRequest) returns (ZRangeResponse);
+  rpc ZPopMax(ZPopMaxRequest) returns (ZRangeResponse);
+  rpc ZDiff(ZDiffRequest) returns (ZRangeResponse);
+  rpc ZInter(ZInterRequest) returns (ZRangeResponse);
+  rpc ZUnion(ZUnionRequest) returns (ZRangeResponse);
+  rpc ZScan(ZScanRequest) returns (ZScanResponse);
+
+  // --- scans ---
+
+  rpc SScan(SScanRequest) returns (SScanResponse);
+
+  // --- server (extended) ---
+
+  rpc Time(TimeRequest) returns (TimeResponse);
+  rpc LastSave(LastSaveRequest) returns (IntResponse);
+
   // --- streaming ---
   // bidirectional streaming for batch operations, matching RESP3 pipelining.
 
@@ -135,6 +198,10 @@ message FloatResponse {
 
 message StatusResponse {
   string status = 1;
+}
+
+message BoolArrayResponse {
+  repeated bool values = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +294,32 @@ message StrlenRequest {
   string key = 1;
 }
 
+message GetDelRequest {
+  string key = 1;
+}
+
+message GetExRequest {
+  string key = 1;
+  // set expiry in seconds (ignored if expire_millis > 0).
+  uint64 expire_seconds = 2;
+  // set expiry in milliseconds (takes precedence over expire_seconds).
+  uint64 expire_millis = 3;
+  // remove the existing expiry, making the key persistent.
+  bool persist = 4;
+}
+
+message GetRangeRequest {
+  string key = 1;
+  int64 start = 2;
+  int64 end = 3;
+}
+
+message SetRangeRequest {
+  string key = 1;
+  int64 offset = 2;
+  bytes value = 3;
+}
+
 // ---------------------------------------------------------------------------
 // keys
 // ---------------------------------------------------------------------------
@@ -294,6 +387,19 @@ message ScanResponse {
   repeated string keys = 2;
 }
 
+message CopyRequest {
+  string source = 1;
+  string destination = 2;
+  // overwrite the destination key if it already exists.
+  bool replace = 3;
+}
+
+message RandomKeyRequest {}
+
+message TouchRequest {
+  repeated string keys = 1;
+}
+
 // ---------------------------------------------------------------------------
 // lists
 // ---------------------------------------------------------------------------
@@ -328,6 +434,54 @@ message ArrayResponse {
 
 message LLenRequest {
   string key = 1;
+}
+
+message LIndexRequest {
+  string key = 1;
+  int64 index = 2;
+}
+
+message LSetRequest {
+  string key = 1;
+  int64 index = 2;
+  bytes value = 3;
+}
+
+message LTrimRequest {
+  string key = 1;
+  int64 start = 2;
+  int64 stop = 3;
+}
+
+message LInsertRequest {
+  string key = 1;
+  // insert before (true) or after (false) the pivot.
+  bool before = 2;
+  bytes pivot = 3;
+  bytes value = 4;
+}
+
+message LRemRequest {
+  string key = 1;
+  // count > 0: remove from head; count < 0: remove from tail; 0: remove all.
+  int64 count = 2;
+  bytes value = 3;
+}
+
+message LPosRequest {
+  string key = 1;
+  bytes value = 2;
+  // maximum number of positions to return. absent or 0 returns the first match.
+  optional uint32 count = 3;
+}
+
+message LMoveRequest {
+  string source = 1;
+  string destination = 2;
+  // pop from the left (true) or right (false) of source.
+  bool src_left = 3;
+  // push to the left (true) or right (false) of destination.
+  bool dst_left = 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +548,19 @@ message OptionalArrayResponse {
   repeated OptionalValue values = 1;
 }
 
+message HScanRequest {
+  string key = 1;
+  uint64 cursor = 2;
+  optional string pattern = 3;
+  // hint for how many fields to return per call. server may return more or fewer.
+  uint32 count = 4;
+}
+
+message HScanResponse {
+  uint64 cursor = 1;
+  repeated FieldValue fields = 2;
+}
+
 // ---------------------------------------------------------------------------
 // sets
 // ---------------------------------------------------------------------------
@@ -419,6 +586,61 @@ message SIsMemberRequest {
 
 message SCardRequest {
   string key = 1;
+}
+
+message SUnionRequest {
+  repeated string keys = 1;
+}
+
+message SInterRequest {
+  repeated string keys = 1;
+}
+
+message SDiffRequest {
+  repeated string keys = 1;
+}
+
+message SUnionStoreRequest {
+  string destination = 1;
+  repeated string keys = 2;
+}
+
+message SInterStoreRequest {
+  string destination = 1;
+  repeated string keys = 2;
+}
+
+message SDiffStoreRequest {
+  string destination = 1;
+  repeated string keys = 2;
+}
+
+message SRandMemberRequest {
+  string key = 1;
+  // positive: return that many unique members; negative: allow repeats.
+  int32 count = 2;
+}
+
+message SPopRequest {
+  string key = 1;
+  uint32 count = 2;
+}
+
+message SMisMemberRequest {
+  string key = 1;
+  repeated string members = 2;
+}
+
+message SScanRequest {
+  string key = 1;
+  uint64 cursor = 2;
+  optional string pattern = 3;
+  uint32 count = 4;
+}
+
+message SScanResponse {
+  uint64 cursor = 1;
+  repeated string members = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +699,87 @@ message ZRangeRequest {
 message ZRangeResponse {
   // when with_scores is false, only member is populated.
   repeated ScoreMember members = 1;
+}
+
+message ZRevRankRequest {
+  string key = 1;
+  string member = 2;
+}
+
+message ZRevRangeRequest {
+  string key = 1;
+  int64 start = 2;
+  int64 stop = 3;
+  bool with_scores = 4;
+}
+
+message ZCountRequest {
+  string key = 1;
+  // min/max use redis score range syntax: "-inf", "+inf", "(5", "5".
+  string min = 2;
+  string max = 3;
+}
+
+message ZIncrByRequest {
+  string key = 1;
+  double delta = 2;
+  string member = 3;
+}
+
+message ZRangeByScoreRequest {
+  string key = 1;
+  string min = 2;
+  string max = 3;
+  optional int64 offset = 4;
+  optional int64 count = 5;
+  bool with_scores = 6;
+}
+
+message ZRevRangeByScoreRequest {
+  string key = 1;
+  // note: max comes before min for reverse range queries.
+  string max = 2;
+  string min = 3;
+  optional int64 offset = 4;
+  optional int64 count = 5;
+  bool with_scores = 6;
+}
+
+message ZPopMinRequest {
+  string key = 1;
+  uint32 count = 2;
+}
+
+message ZPopMaxRequest {
+  string key = 1;
+  uint32 count = 2;
+}
+
+message ZDiffRequest {
+  repeated string keys = 1;
+  bool with_scores = 2;
+}
+
+message ZInterRequest {
+  repeated string keys = 1;
+  bool with_scores = 2;
+}
+
+message ZUnionRequest {
+  repeated string keys = 1;
+  bool with_scores = 2;
+}
+
+message ZScanRequest {
+  string key = 1;
+  uint64 cursor = 2;
+  optional string pattern = 3;
+  uint32 count = 4;
+}
+
+message ZScanResponse {
+  uint64 cursor = 1;
+  repeated ScoreMember members = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +916,15 @@ message UnlinkRequest {
 message BgSaveRequest {}
 
 message BgRewriteAofRequest {}
+
+message TimeRequest {}
+
+message TimeResponse {
+  int64 seconds = 1;
+  int64 microseconds = 2;
+}
+
+message LastSaveRequest {}
 
 // ---------------------------------------------------------------------------
 // slowlog
@@ -757,6 +1069,61 @@ message PipelineRequest {
     PubSubNumSubRequest pubsub_numsub = 70;
     PubSubNumPatRequest pubsub_numpat = 71;
     VAddBatchRequest vadd_batch = 72;
+
+    // extended strings
+    GetDelRequest get_del = 73;
+    GetExRequest get_ex = 74;
+    GetRangeRequest get_range = 75;
+    SetRangeRequest set_range = 76;
+
+    // extended keys
+    CopyRequest copy = 77;
+    RandomKeyRequest random_key = 78;
+    TouchRequest touch = 79;
+
+    // extended lists
+    LIndexRequest lindex = 80;
+    LSetRequest lset = 81;
+    LTrimRequest ltrim = 82;
+    LInsertRequest linsert = 83;
+    LRemRequest lrem = 84;
+    LPosRequest lpos = 85;
+    LMoveRequest lmove = 86;
+
+    // extended sets
+    SUnionRequest sunion = 87;
+    SInterRequest sinter = 88;
+    SDiffRequest sdiff = 89;
+    SUnionStoreRequest sunion_store = 90;
+    SInterStoreRequest sinter_store = 91;
+    SDiffStoreRequest sdiff_store = 92;
+    SRandMemberRequest srand_member = 93;
+    SPopRequest spop = 94;
+    SMisMemberRequest smismember = 95;
+
+    // extended hashes
+    HScanRequest hscan = 96;
+
+    // extended sorted sets
+    ZRevRankRequest zrev_rank = 97;
+    ZRevRangeRequest zrev_range = 98;
+    ZCountRequest zcount = 99;
+    ZIncrByRequest zincrby = 100;
+    ZRangeByScoreRequest zrange_by_score = 101;
+    ZRevRangeByScoreRequest zrev_range_by_score = 102;
+    ZPopMinRequest zpopmin = 103;
+    ZPopMaxRequest zpopmax = 104;
+    ZDiffRequest zdiff = 105;
+    ZInterRequest zinter = 106;
+    ZUnionRequest zunion = 107;
+    ZScanRequest zscan = 108;
+
+    // scans
+    SScanRequest sscan = 109;
+
+    // extended server
+    TimeRequest time = 110;
+    LastSaveRequest last_save = 111;
   }
 }
 
@@ -791,6 +1158,11 @@ message PipelineResponse {
     EchoResponse echo = 27;
     SlowLogGetResponse slowlog_get = 28;
     PubSubNumSubResponse pubsub_numsub = 29;
+    BoolArrayResponse bool_array = 30;
+    HScanResponse hscan = 31;
+    ZScanResponse zscan = 32;
+    SScanResponse sscan = 33;
+    TimeResponse time_resp = 34;
   }
 }
 
