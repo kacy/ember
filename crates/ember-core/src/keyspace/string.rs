@@ -249,8 +249,9 @@ impl Keyspace {
             Value::String(ref b) => b.clone(),
             _ => unreachable!("type checked above"),
         };
-        self.memory
-            .remove_with_size(entry.cached_value_size as usize + key.len() + memory::ENTRY_OVERHEAD);
+        self.memory.remove_with_size(
+            entry.cached_value_size as usize + key.len() + memory::ENTRY_OVERHEAD,
+        );
         self.decrement_expiry_if_set(&entry);
         self.remove_version(key);
         Ok(Some(bytes))
@@ -996,7 +997,13 @@ mod tests {
     #[test]
     fn getex_no_option_leaves_ttl_unchanged() {
         let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), Some(Duration::from_secs(60)), false, false);
+        ks.set(
+            "k".into(),
+            Bytes::from("v"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
         let ttl_before = ks.ttl("k");
         let val = ks.getex("k", None).unwrap();
         assert_eq!(val, Some(Bytes::from("v")));
@@ -1009,7 +1016,13 @@ mod tests {
     #[test]
     fn getex_persist_clears_ttl() {
         let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), Some(Duration::from_secs(60)), false, false);
+        ks.set(
+            "k".into(),
+            Bytes::from("v"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
         let val = ks.getex("k", Some(None)).unwrap();
         assert_eq!(val, Some(Bytes::from("v")));
         assert!(matches!(ks.ttl("k"), TtlResult::NoExpiry));

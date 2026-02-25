@@ -339,7 +339,10 @@ pub async fn run_concurrent(
                         ctx_snap
                             .last_save_timestamp
                             .store(ts, std::sync::atomic::Ordering::Relaxed);
-                        tracing::info!(interval = save_interval_secs, "automatic snapshot completed");
+                        tracing::info!(
+                            interval = save_interval_secs,
+                            "automatic snapshot completed"
+                        );
                     }
                     Err(e) => tracing::warn!("automatic snapshot failed: {e}"),
                 }
@@ -609,7 +612,10 @@ pub async fn run_threaded(
                         ctx_snap
                             .last_save_timestamp
                             .store(ts, std::sync::atomic::Ordering::Relaxed);
-                        tracing::info!(interval = save_interval_secs, "automatic snapshot completed");
+                        tracing::info!(
+                            interval = save_interval_secs,
+                            "automatic snapshot completed"
+                        );
                     }
                     Err(e) => tracing::warn!("automatic snapshot failed: {e}"),
                 }

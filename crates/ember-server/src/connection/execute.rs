@@ -135,7 +135,7 @@ pub(super) async fn execute(
             nx,
             xx,
         } => {
-            let duration = expire.map(|e| set_expire_to_duration(e));
+            let duration = expire.map(set_expire_to_duration);
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::Set {
                 key,
@@ -1620,7 +1620,10 @@ pub(super) async fn execute(
                     }
                 })
             });
-            let req = ShardRequest::GetEx { key, expire: expire_ms };
+            let req = ShardRequest::GetEx {
+                key,
+                expire: expire_ms,
+            };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
                 Ok(ShardResponse::Value(None)) => Frame::Null,

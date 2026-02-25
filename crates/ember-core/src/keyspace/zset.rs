@@ -959,8 +959,18 @@ mod tests {
     #[test]
     fn zdiff_returns_members_unique_to_first() {
         let mut ks = Keyspace::new();
-        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into()), (3.0, "z".into())], &ZAddFlags::default()).unwrap();
-        ks.zadd("b", &[(1.0, "y".into()), (1.0, "w".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd(
+            "a",
+            &[(1.0, "x".into()), (2.0, "y".into()), (3.0, "z".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        ks.zadd(
+            "b",
+            &[(1.0, "y".into()), (1.0, "w".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
 
         let keys = vec!["a".to_owned(), "b".to_owned()];
         let diff = ks.zdiff(&keys).unwrap();
@@ -973,7 +983,8 @@ mod tests {
     #[test]
     fn zdiff_with_missing_second_key_returns_all() {
         let mut ks = Keyspace::new();
-        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default())
+            .unwrap();
         let keys = vec!["a".to_owned(), "missing".to_owned()];
         let diff = ks.zdiff(&keys).unwrap();
         assert_eq!(diff.len(), 1);
@@ -983,8 +994,18 @@ mod tests {
     #[test]
     fn zinter_returns_common_members_with_summed_scores() {
         let mut ks = Keyspace::new();
-        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into())], &ZAddFlags::default()).unwrap();
-        ks.zadd("b", &[(3.0, "x".into()), (4.0, "z".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd(
+            "a",
+            &[(1.0, "x".into()), (2.0, "y".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        ks.zadd(
+            "b",
+            &[(3.0, "x".into()), (4.0, "z".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
 
         let keys = vec!["a".to_owned(), "b".to_owned()];
         let inter = ks.zinter(&keys).unwrap();
@@ -996,8 +1017,10 @@ mod tests {
     #[test]
     fn zinter_empty_when_no_common_members() {
         let mut ks = Keyspace::new();
-        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default()).unwrap();
-        ks.zadd("b", &[(1.0, "y".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default())
+            .unwrap();
+        ks.zadd("b", &[(1.0, "y".into())], &ZAddFlags::default())
+            .unwrap();
         let keys = vec!["a".to_owned(), "b".to_owned()];
         assert!(ks.zinter(&keys).unwrap().is_empty());
     }
@@ -1005,8 +1028,18 @@ mod tests {
     #[test]
     fn zunion_combines_all_members_with_summed_scores() {
         let mut ks = Keyspace::new();
-        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into())], &ZAddFlags::default()).unwrap();
-        ks.zadd("b", &[(3.0, "x".into()), (4.0, "z".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd(
+            "a",
+            &[(1.0, "x".into()), (2.0, "y".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        ks.zadd(
+            "b",
+            &[(3.0, "x".into()), (4.0, "z".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
 
         let keys = vec!["a".to_owned(), "b".to_owned()];
         let union = ks.zunion(&keys).unwrap();

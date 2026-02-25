@@ -359,7 +359,10 @@ pub(super) fn to_aof_records(
             ShardResponse::Value(Some(_)),
         ) => match new_expire {
             Some(ms) if ms > 0 => {
-                smallvec![AofRecord::Pexpire { key, milliseconds: ms }]
+                smallvec![AofRecord::Pexpire {
+                    key,
+                    milliseconds: ms
+                }]
             }
             // PERSIST — expire set to 0 in the keyspace; record as pexpire 0
             // so replay calls persist. We use a negative sentinel to signal

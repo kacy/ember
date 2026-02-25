@@ -537,7 +537,7 @@ impl Keyspace {
         let Some(value) = popped else {
             return Ok(None);
         };
-        self.list_push(destination, &[value.clone()], dst_left)?;
+        self.list_push(destination, std::slice::from_ref(&value), dst_left)?;
         Ok(Some(value))
     }
 
@@ -1281,12 +1281,18 @@ mod tests {
     #[test]
     fn lmove_left_to_right() {
         let mut ks = Keyspace::new();
-        ks.rpush("src", &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")])
-            .unwrap();
+        ks.rpush(
+            "src",
+            &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")],
+        )
+        .unwrap();
         let moved = ks.lmove("src", "dst", true, false).unwrap();
         assert_eq!(moved, Some(Bytes::from("a")));
         // src should now be [b, c]
-        assert_eq!(ks.lrange("src", 0, -1).unwrap(), vec![Bytes::from("b"), Bytes::from("c")]);
+        assert_eq!(
+            ks.lrange("src", 0, -1).unwrap(),
+            vec![Bytes::from("b"), Bytes::from("c")]
+        );
         // dst should be [a]
         assert_eq!(ks.lrange("dst", 0, -1).unwrap(), vec![Bytes::from("a")]);
     }
@@ -1300,7 +1306,10 @@ mod tests {
         let moved = ks.lmove("q", "q", true, false).unwrap();
         assert_eq!(moved, Some(Bytes::from("1")));
         let items = ks.lrange("q", 0, -1).unwrap();
-        assert_eq!(items, vec![Bytes::from("2"), Bytes::from("3"), Bytes::from("1")]);
+        assert_eq!(
+            items,
+            vec![Bytes::from("2"), Bytes::from("3"), Bytes::from("1")]
+        );
     }
 
     #[test]

@@ -49,7 +49,10 @@ async fn run_batch_async(
     let mut conn = match Connection::connect(host, port, tls).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{}", format!("could not connect to {host}:{port}: {e}").red());
+            eprintln!(
+                "{}",
+                format!("could not connect to {host}:{port}: {e}").red()
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -80,10 +83,7 @@ async fn run_batch_async(
             continue;
         }
 
-        let tokens: Vec<String> = trimmed
-            .split_whitespace()
-            .map(|s| s.to_string())
-            .collect();
+        let tokens: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
 
         match conn.send_command(&tokens).await {
             Ok(frame) => println!("{}", format_response(&frame)),
