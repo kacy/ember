@@ -452,7 +452,7 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 - p99 latency: 0.74ms SET, 0.70ms GET (P=1, concurrent mode)
 - vector insert: 5.5k vectors/sec (8-shard), 2.4k vectors/sec (single key); query: 1.8k queries/sec, p99=0.62ms
 - vector memory: 4-6x less than chromadb/pgvector/qdrant (29-31 MB vs 139-178 MB for 100k vectors)
-- memory: 208 bytes/key for strings, 243 bytes/key for hashes (redis: 173/170 bytes/key)
+- memory: 180 bytes/key for strings, 215 bytes/key for hashes (redis: 173/170 bytes/key)
 
 ```bash
 ./bench/bench-quick.sh       # quick sanity check
