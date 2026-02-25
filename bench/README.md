@@ -12,38 +12,39 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 | test | ember | redis | dragonfly |
 |------|-------|-------|-----------|
-| SET (3B, P=16) | **1,891,924** | 1,011,232 | 888,920 |
-| GET (3B, P=16) | **2,096,000** | 1,125,393 | 1,057,515 |
-| SET (64B, P=16) | **1,759,719** | 944,603 | 822,688 |
-| GET (64B, P=16) | **1,825,745** | 1,137,818 | 873,878 |
-| SET (1KB, P=16) | **896,508** | 592,875 | 682,775 |
-| GET (1KB, P=16) | **1,496,298** | 764,442 | 335,160 |
-| SET (64B, P=1) | **199,600** | 99,900 | 200,000 |
+| SET (3B, P=16) | **1,791,142** | 991,366 | 931,259 |
+| GET (3B, P=16) | **2,138,893** | 1,151,632 | 1,081,290 |
+| SET (64B, P=16) | **1,789,428** | 962,615 | 829,487 |
+| GET (64B, P=16) | **2,004,480** | 1,112,355 | 896,857 |
+| SET (1KB, P=16) | **984,009** | 592,514 | 688,438 |
+| GET (1KB, P=16) | **1,699,762** | 695,638 | 339,087 |
+| SET (64B, P=1) | **199,203** | 99,900 | 199,203 |
 | GET (64B, P=1) | **199,600** | 99,900 | 199,600 |
 
-#### memtier_benchmark (4 threads, 12 clients/thread, 50k req/client)
+#### memtier_benchmark (4 threads, 12 clients/thread, 10k req/client)
 
 | test | ember | redis | dragonfly |
 |------|-------|-------|-----------|
-| SET (64B, P=16) | **1,067,894** | 1,057,942 | 965,428 |
-| GET (64B, P=16) | 1,162,416 | **1,287,944** | 1,032,507 |
-| mixed 1:10 (64B, P=16) | 1,135,458 | **1,157,243** | 1,014,338 |
-| mixed 1:1 (64B, P=16) | 1,091,517 | **1,134,781** | 978,452 |
-| SET (1KB, P=16) | 627,021 | **676,346** | 671,458 |
-| SET (64B, P=1) | 121,116 | **139,703** | 117,139 |
-| GET (64B, P=1) | **162,565** | 110,768 | 158,036 |
+| SET (64B, P=16) | **1,071,443** | 1,022,491 | 971,076 |
+| GET (64B, P=16) | **1,154,265** | 350,831 | 327,923 |
+| mixed 1:10 (64B, P=16) | 1,123,225 | **1,149,125** | 325,731 |
+| mixed 1:1 (64B, P=16) | 1,084,817 | **1,152,945** | 970,160 |
+| SET (1KB, P=16) | **813,809** | 733,819 | 279,004 |
+| GET (1KB, P=16) | 472,169 | **655,053** | 190,791 |
+| SET (64B, P=1) | **164,560** | 136,723 | 150,964 |
+| GET (64B, P=1) | **164,395** | 109,042 | 145,118 |
 
 ### vs redis (redis-benchmark, 64B P=16)
 
 | | SET | GET | notes |
 |------|-----|-----|-------|
-| ember | **1.9x** | **1.6x** | beats redis at all value sizes and pipeline depths |
+| ember | **1.9x** | **1.8x** | beats redis at all value sizes and pipeline depths |
 
 ### vs dragonfly (redis-benchmark, 64B P=16)
 
 | | SET | GET | notes |
 |------|-----|-----|-------|
-| ember | **2.1x** | **2.1x** | consistent wins across value sizes |
+| ember | **2.2x** | **2.2x** | consistent wins across value sizes |
 
 **important caveat**: these benchmarks should be taken with a grain of salt. ember is a small indie project built for learning and experimentation. Redis and Dragonfly are production-grade systems developed by large teams over many years, battle-tested at massive scale.
 
@@ -61,17 +62,17 @@ for anything resembling production use, Redis and Dragonfly are the sensible cho
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember | 1.391ms | 1.247ms |
-| redis | 1.223ms | 0.863ms |
-| dragonfly | 1.551ms | 1.431ms |
+| ember | 1.343ms | 1.223ms |
+| redis | 1.295ms | 0.935ms |
+| dragonfly | 1.543ms | 1.431ms |
 
 ### latency (P=1, 48 clients, memtier_benchmark)
 
 | server | p99 SET | p99 GET |
 |--------|---------|---------|
-| ember | 1.255ms | 1.271ms |
-| redis | 0.623ms | 0.607ms |
-| dragonfly | 1.255ms | 1.271ms |
+| ember | 1.247ms | 1.167ms |
+| redis | 0.647ms | 0.623ms |
+| dragonfly | 1.263ms | 1.279ms |
 
 ### memory usage (~1M keys, 64B values)
 
@@ -80,7 +81,7 @@ for anything resembling production use, Redis and Dragonfly are the sensible cho
 | ember | 180 B |
 | redis | 173 B |
 
-sharded mode uses per-entry metadata (expiry, LRU timestamp, cached value size) which accounts for the small overhead relative to redis. concurrent mode achieves 128 B/key by using a flat `Bytes` representation.
+per-entry metadata (expiry, LRU timestamp, cached value size) accounts for the small overhead relative to redis.
 
 ### with persistence enabled
 
@@ -99,8 +100,8 @@ AES-256-GCM encryption at rest (AOF and snapshots). requires building with `--fe
 
 | test | pipeline | plaintext | encrypted | overhead |
 |------|----------|-----------|-----------|----------|
-| SET | P=16 | 1.14M/s | 460k/s | 60% |
-| GET | P=16 | 1.98M/s | 1.98M/s | 0% |
+| SET | P=16 | 1.16M/s | 463k/s | 60% |
+| GET | P=16 | 2.04M/s | 2.00M/s | 1% |
 | SET | P=1 | 160k/s | 160k/s | 0% |
 | GET | P=1 | 200k/s | 200k/s | 0% |
 
@@ -159,6 +160,22 @@ throughput vs pipeline depth, showing how the dispatch-collect pattern scales wi
 | P=256 | 2,431,340 | 4,247,832 |
 
 GET throughput scales monotonically with pipeline depth. SET peaks around P=64 then slightly decreases at P=256 due to write-path contention. the batch dispatch optimization (PR #232) groups commands by target shard and sends one channel message per shard, eliminating head-of-line blocking at high pipeline depths.
+
+### data type throughput
+
+per-command throughput across data types. redis-benchmark, 100k requests, 50 clients, pipeline depth 1.
+
+| command | ops/sec |
+|---------|---------|
+| SET | 455,677 |
+| GET | 501,924 |
+| LPUSH | 465,777 |
+| SADD | 462,665 |
+| ZADD | 450,479 |
+| HSET | 462,443 |
+| HGET | 473,517 |
+
+all data types achieve similar throughput at P=1, showing consistent per-command overhead regardless of the underlying data structure.
 
 ### transaction overhead
 
