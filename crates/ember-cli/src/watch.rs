@@ -9,8 +9,8 @@ use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use colored::Colorize;
+use ember_client::Client;
 
-use crate::connection::Connection;
 use crate::format::format_response;
 use crate::tls::TlsClientConfig;
 
@@ -43,7 +43,11 @@ async fn run_watch_async(
     key: &str,
     interval_ms: u64,
 ) -> ExitCode {
-    let mut conn = match Connection::connect(host, port, tls).await {
+    let conn = match tls {
+        Some(tls) => Client::connect_tls(host, port, tls).await,
+        None => Client::connect(host, port).await,
+    };
+    let mut conn = match conn {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -55,9 +59,9 @@ async fn run_watch_async(
     };
 
     if let Some(pw) = password {
-        if let Err(e) = conn.authenticate(pw).await {
+        if let Err(e) = conn.auth(pw).await {
             eprintln!("{}", format!("authentication failed: {e}").red());
-            conn.shutdown().await;
+            conn.disconnect().await;
             return ExitCode::FAILURE;
         }
     }
@@ -84,7 +88,7 @@ async fn run_watch_async(
             }
 
             _ = tokio::time::sleep(interval) => {
-                match conn.send_command_strs(&["GET", key]).await {
+                match conn.send(&["GET", key]).await {
                     Ok(frame) => {
                         let formatted = format_response(&frame);
                         if Some(&formatted) != last_value.as_ref() {
@@ -102,7 +106,7 @@ async fn run_watch_async(
         }
     }
 
-    conn.shutdown().await;
+    conn.disconnect().await;
     exit_code
 }
 

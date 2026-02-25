@@ -13,8 +13,8 @@ use std::io::{self, BufRead};
 use std::process::ExitCode;
 
 use colored::Colorize;
+use ember_client::Client;
 
-use crate::connection::Connection;
 use crate::format::format_response;
 use crate::tls::TlsClientConfig;
 
@@ -46,7 +46,11 @@ async fn run_batch_async(
     password: Option<&str>,
     tls: Option<&TlsClientConfig>,
 ) -> ExitCode {
-    let mut conn = match Connection::connect(host, port, tls).await {
+    let conn = match tls {
+        Some(tls) => Client::connect_tls(host, port, tls).await,
+        None => Client::connect(host, port).await,
+    };
+    let mut conn = match conn {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -58,9 +62,9 @@ async fn run_batch_async(
     };
 
     if let Some(pw) = password {
-        if let Err(e) = conn.authenticate(pw).await {
+        if let Err(e) = conn.auth(pw).await {
             eprintln!("{}", format!("authentication failed: {e}").red());
-            conn.shutdown().await;
+            conn.disconnect().await;
             return ExitCode::FAILURE;
         }
     }
@@ -71,7 +75,7 @@ async fn run_batch_async(
             Ok(l) => l,
             Err(e) => {
                 eprintln!("{}", format!("read error: {e}").red());
-                conn.shutdown().await;
+                conn.disconnect().await;
                 return ExitCode::FAILURE;
             }
         };
@@ -84,17 +88,18 @@ async fn run_batch_async(
         }
 
         let tokens: Vec<String> = trimmed.split_whitespace().map(|s| s.to_string()).collect();
+        let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
 
-        match conn.send_command(&tokens).await {
+        match conn.send(&refs).await {
             Ok(frame) => println!("{}", format_response(&frame)),
             Err(e) => {
                 eprintln!("{}", format!("error: {e}").red());
-                conn.shutdown().await;
+                conn.disconnect().await;
                 return ExitCode::FAILURE;
             }
         }
     }
 
-    conn.shutdown().await;
+    conn.disconnect().await;
     ExitCode::SUCCESS
 }
