@@ -74,7 +74,7 @@ impl Keyspace {
                         Some(Duration::from_millis(e.expires_at_ms.saturating_sub(now)))
                     };
                     let result = (type_name.clone(), data.clone(), remaining);
-                    e.touch();
+                    e.touch(self.track_access);
                     Ok(Some(result))
                 } else {
                     Err(WrongType)
