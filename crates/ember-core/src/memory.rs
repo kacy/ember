@@ -51,10 +51,10 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 /// per-entry bookkeeping (1 control byte + empty slot waste at ~87.5%
 /// load factor).
 ///
-/// Reduced from 128 to 100 after structural optimizations:
+/// Reduced from 128 to 104 after structural optimizations:
 /// - moved 8-byte `version` field to a lazy side table
 /// - packed `cached_value_size` as u32 (was usize)
-/// - tightened the safety margin based on measured allocator behavior
+/// - bumped from 100 to 104 for CI platforms where Entry is 72 bytes
 ///
 /// This is calibrated from `std::mem::size_of` on 64-bit platforms. The
 /// exact value varies by compiler version, but precision isn't critical —
@@ -64,7 +64,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// The `entry_overhead_not_too_small` test validates this constant against
 /// the actual struct sizes on each platform.
-pub(crate) const ENTRY_OVERHEAD: usize = 100;
+pub(crate) const ENTRY_OVERHEAD: usize = 104;
 
 /// Tracks memory usage for a single keyspace.
 ///
