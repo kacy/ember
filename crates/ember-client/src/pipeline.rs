@@ -210,6 +210,66 @@ impl Pipeline {
         self.push(array3(b"ZSCORE", key.as_bytes(), member.as_bytes()))
     }
 
+    // --- more string commands ---
+
+    /// Queues a `STRLEN key` command.
+    pub fn strlen(self, key: &str) -> Self {
+        self.push(array2(b"STRLEN", key.as_bytes()))
+    }
+
+    /// Queues an `INCRBYFLOAT key delta` command.
+    pub fn incr_by_float(self, key: &str, delta: f64) -> Self {
+        let d = delta.to_string();
+        self.push(array3(b"INCRBYFLOAT", key.as_bytes(), d.as_bytes()))
+    }
+
+    // --- key commands ---
+
+    /// Queues a `TYPE key` command.
+    pub fn key_type(self, key: &str) -> Self {
+        self.push(array2(b"TYPE", key.as_bytes()))
+    }
+
+    /// Queues a `KEYS pattern` command.
+    pub fn keys(self, pattern: &str) -> Self {
+        self.push(array2(b"KEYS", pattern.as_bytes()))
+    }
+
+    /// Queues a `RENAME key newkey` command.
+    pub fn rename(self, key: &str, newkey: &str) -> Self {
+        self.push(array3(b"RENAME", key.as_bytes(), newkey.as_bytes()))
+    }
+
+    /// Queues a `PEXPIRE key millis` command.
+    pub fn pexpire(self, key: &str, millis: u64) -> Self {
+        let ms = millis.to_string();
+        self.push(array3(b"PEXPIRE", key.as_bytes(), ms.as_bytes()))
+    }
+
+    /// Queues an `UNLINK key [key ...]` command.
+    pub fn unlink(self, keys: &[&str]) -> Self {
+        self.push(array_with_keys(b"UNLINK", keys))
+    }
+
+    // --- more hash commands ---
+
+    /// Queues an `HMGET key field [field ...]` command.
+    pub fn hmget(self, key: &str, fields: &[&str]) -> Self {
+        self.push(array_with_key_and_keys(b"HMGET", key, fields))
+    }
+
+    // --- server commands ---
+
+    /// Queues an `ECHO message` command.
+    pub fn echo(self, message: &str) -> Self {
+        self.push(array2(b"ECHO", message.as_bytes()))
+    }
+
+    /// Queues a `PUBLISH channel message` command.
+    pub fn publish(self, channel: &str, message: impl AsRef<[u8]>) -> Self {
+        self.push(array3(b"PUBLISH", channel.as_bytes(), message.as_ref()))
+    }
+
     // --- internal ---
 
     fn push(mut self, frame: Frame) -> Self {
