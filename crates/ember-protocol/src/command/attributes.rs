@@ -95,6 +95,9 @@ impl Command {
             Command::LInsert { .. } => "linsert",
             Command::LRem { .. } => "lrem",
             Command::LPos { .. } => "lpos",
+            Command::LMove { .. } => "lmove",
+            Command::GetDel { .. } => "getdel",
+            Command::GetEx { .. } => "getex",
 
             // sorted set
             Command::ZAdd { .. } => "zadd",
@@ -111,6 +114,9 @@ impl Command {
             Command::ZRevRangeByScore { .. } => "zrevrangebyscore",
             Command::ZPopMin { .. } => "zpopmin",
             Command::ZPopMax { .. } => "zpopmax",
+            Command::ZDiff { .. } => "zdiff",
+            Command::ZInter { .. } => "zinter",
+            Command::ZUnion { .. } => "zunion",
 
             // hash
             Command::HSet { .. } => "hset",
@@ -252,6 +258,10 @@ impl Command {
                 | Command::LTrim { .. }
                 | Command::LInsert { .. }
                 | Command::LRem { .. }
+                | Command::LMove { .. }
+            // string extras
+                | Command::GetDel { .. }
+                | Command::GetEx { .. }
             // sorted set
                 | Command::ZAdd { .. }
                 | Command::ZRem { .. }
@@ -405,6 +415,17 @@ impl Command {
             | Command::ZIncrBy { .. }
             | Command::ZPopMin { .. }
             | Command::ZPopMax { .. } => WRITE | SORTEDSET | SLOW,
+
+            // sorted set — reads (Redis 6.2+)
+            Command::ZDiff { .. } | Command::ZInter { .. } | Command::ZUnion { .. } => {
+                READ | SORTEDSET | SLOW
+            }
+
+            // string extras (Redis 6.2+)
+            Command::GetDel { .. } | Command::GetEx { .. } => WRITE | STRING | FAST,
+
+            // list extras (Redis 6.2+)
+            Command::LMove { .. } => WRITE | LIST | FAST,
 
             // hash — reads
             Command::HGet { .. } | Command::HExists { .. } | Command::HLen { .. } => {
@@ -596,7 +617,10 @@ impl Command {
             | Command::ProtoSetField { key, .. }
             | Command::ProtoDelField { key, .. }
             | Command::Restore { key, .. }
-            | Command::Sort { key, .. } => Some(key),
+            | Command::Sort { key, .. }
+            | Command::GetDel { key }
+            | Command::GetEx { key, .. } => Some(key),
+            Command::LMove { source, .. } => Some(source),
             Command::Copy { source, .. } => Some(source),
             Command::Del { keys }
             | Command::Unlink { keys }
@@ -607,7 +631,10 @@ impl Command {
             | Command::BRPop { keys, .. }
             | Command::SUnion { keys }
             | Command::SInter { keys }
-            | Command::SDiff { keys } => keys.first().map(String::as_str),
+            | Command::SDiff { keys }
+            | Command::ZDiff { keys, .. }
+            | Command::ZInter { keys, .. }
+            | Command::ZUnion { keys, .. } => keys.first().map(String::as_str),
             Command::SUnionStore { dest, .. }
             | Command::SInterStore { dest, .. }
             | Command::SDiffStore { dest, .. } => Some(dest),
