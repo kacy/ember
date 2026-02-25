@@ -16,6 +16,33 @@ use ember_protocol::types::Frame;
 
 use crate::connection::{Client, ClientError};
 use crate::pipeline::Pipeline;
+use crate::subscriber::Subscriber;
+
+// --- public types ---
+
+/// A page of keys returned by [`Client::scan`].
+///
+/// Iterate until `cursor` is `0` to walk the full keyspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanPage {
+    /// Cursor for the next call. `0` means iteration is complete.
+    pub cursor: u64,
+    /// Keys returned in this page.
+    pub keys: Vec<Bytes>,
+}
+
+/// A single entry from [`Client::slowlog_get`].
+#[derive(Debug, Clone)]
+pub struct SlowlogEntry {
+    /// Monotonically increasing log entry ID.
+    pub id: i64,
+    /// Unix timestamp (seconds) when the command was logged.
+    pub timestamp: i64,
+    /// Execution time in microseconds.
+    pub duration_us: i64,
+    /// The command and its arguments as raw bytes.
+    pub command: Vec<Bytes>,
+}
 
 // --- frame construction helpers ---
 
@@ -278,6 +305,213 @@ fn scored_members(frame: Frame) -> Result<Vec<(Bytes, f64)>, ClientError> {
             }
         };
         result.push((member, score));
+    }
+    Ok(result)
+}
+
+/// Decodes a simple string or bulk string response into a `String`.
+///
+/// Used by: TYPE, INFO, ECHO, BGSAVE, BGREWRITEAOF.
+fn string_value(frame: Frame) -> Result<String, ClientError> {
+    match frame {
+        Frame::Simple(s) => Ok(s),
+        Frame::Bulk(b) => String::from_utf8(b.to_vec())
+            .map_err(|_| ClientError::Protocol("response is not valid UTF-8".into())),
+        Frame::Error(e) => Err(ClientError::Server(e)),
+        other => Err(ClientError::Protocol(format!(
+            "expected simple or bulk string, got {other:?}"
+        ))),
+    }
+}
+
+/// Decodes a float returned as a bulk string.
+///
+/// Used by: INCRBYFLOAT.
+fn float_value(frame: Frame) -> Result<f64, ClientError> {
+    match frame {
+        Frame::Bulk(b) => {
+            let s = std::str::from_utf8(&b)
+                .map_err(|_| ClientError::Protocol("float response is not valid UTF-8".into()))?;
+            s.parse::<f64>()
+                .map_err(|_| ClientError::Protocol(format!("not a valid float: {s:?}")))
+        }
+        Frame::Error(e) => Err(ClientError::Server(e)),
+        other => Err(ClientError::Protocol(format!(
+            "expected bulk float, got {other:?}"
+        ))),
+    }
+}
+
+/// Decodes a SCAN response into a `ScanPage`.
+///
+/// RESP3 layout: `Array([Bulk(cursor), Array([Bulk(key), ...])])`.
+fn scan_page(frame: Frame) -> Result<ScanPage, ClientError> {
+    let elems = match frame {
+        Frame::Array(e) => e,
+        Frame::Error(e) => return Err(ClientError::Server(e)),
+        other => {
+            return Err(ClientError::Protocol(format!(
+                "expected array for SCAN, got {other:?}"
+            )))
+        }
+    };
+
+    if elems.len() != 2 {
+        return Err(ClientError::Protocol(format!(
+            "SCAN response must have 2 elements, got {}",
+            elems.len()
+        )));
+    }
+
+    let mut iter = elems.into_iter();
+    let cursor_frame = iter.next().unwrap();
+    let keys_frame = iter.next().unwrap();
+
+    let cursor = match cursor_frame {
+        Frame::Bulk(b) => {
+            let s = std::str::from_utf8(&b)
+                .map_err(|_| ClientError::Protocol("SCAN cursor is not valid UTF-8".into()))?;
+            s.parse::<u64>()
+                .map_err(|_| ClientError::Protocol(format!("SCAN cursor is not a u64: {s:?}")))?
+        }
+        other => {
+            return Err(ClientError::Protocol(format!(
+                "expected bulk cursor in SCAN, got {other:?}"
+            )))
+        }
+    };
+
+    let keys = bytes_vec(keys_frame)?;
+    Ok(ScanPage { cursor, keys })
+}
+
+/// Decodes a SLOWLOG GET response into a list of entries.
+///
+/// Each entry: `Array([Integer(id), Integer(ts), Integer(us), Array([Bulk(cmd), ...])])`.
+fn slowlog_entries(frame: Frame) -> Result<Vec<SlowlogEntry>, ClientError> {
+    let outer = match frame {
+        Frame::Array(e) => e,
+        Frame::Null => return Ok(Vec::new()),
+        Frame::Error(e) => return Err(ClientError::Server(e)),
+        other => {
+            return Err(ClientError::Protocol(format!(
+                "expected array for SLOWLOG, got {other:?}"
+            )))
+        }
+    };
+
+    outer
+        .into_iter()
+        .map(|entry_frame| {
+            let entry = match entry_frame {
+                Frame::Array(e) => e,
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "expected array for slowlog entry, got {other:?}"
+                    )))
+                }
+            };
+
+            if entry.len() < 4 {
+                return Err(ClientError::Protocol(format!(
+                    "slowlog entry too short: {} elements",
+                    entry.len()
+                )));
+            }
+
+            let id = match &entry[0] {
+                Frame::Integer(n) => *n,
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "expected integer id in slowlog, got {other:?}"
+                    )))
+                }
+            };
+            let timestamp = match &entry[1] {
+                Frame::Integer(n) => *n,
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "expected integer timestamp in slowlog, got {other:?}"
+                    )))
+                }
+            };
+            let duration_us = match &entry[2] {
+                Frame::Integer(n) => *n,
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "expected integer duration in slowlog, got {other:?}"
+                    )))
+                }
+            };
+            let command = match entry.into_iter().nth(3).unwrap() {
+                Frame::Array(parts) => parts
+                    .into_iter()
+                    .map(|p| match p {
+                        Frame::Bulk(b) => Ok(b),
+                        other => Err(ClientError::Protocol(format!(
+                            "expected bulk in slowlog command, got {other:?}"
+                        ))),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "expected array for slowlog command, got {other:?}"
+                    )))
+                }
+            };
+
+            Ok(SlowlogEntry {
+                id,
+                timestamp,
+                duration_us,
+                command,
+            })
+        })
+        .collect()
+}
+
+/// Decodes a PUBSUB NUMSUB response into channel/count pairs.
+///
+/// Layout: `Array([Bulk(channel), Integer(count), ...])` — alternating.
+fn numsub_pairs(frame: Frame) -> Result<Vec<(Bytes, i64)>, ClientError> {
+    let elems = match frame {
+        Frame::Array(e) => e,
+        Frame::Null => return Ok(Vec::new()),
+        Frame::Error(e) => return Err(ClientError::Server(e)),
+        other => {
+            return Err(ClientError::Protocol(format!(
+                "expected array for PUBSUB NUMSUB, got {other:?}"
+            )))
+        }
+    };
+
+    if elems.len() % 2 != 0 {
+        return Err(ClientError::Protocol(format!(
+            "PUBSUB NUMSUB array has odd length ({})",
+            elems.len()
+        )));
+    }
+
+    let mut result = Vec::with_capacity(elems.len() / 2);
+    let mut iter = elems.into_iter();
+    while let (Some(ch_frame), Some(cnt_frame)) = (iter.next(), iter.next()) {
+        let channel = match ch_frame {
+            Frame::Bulk(b) => b,
+            other => {
+                return Err(ClientError::Protocol(format!(
+                    "expected bulk channel in PUBSUB NUMSUB, got {other:?}"
+                )))
+            }
+        };
+        let count = match cnt_frame {
+            Frame::Integer(n) => n,
+            other => {
+                return Err(ClientError::Protocol(format!(
+                    "expected integer count in PUBSUB NUMSUB, got {other:?}"
+                )))
+            }
+        };
+        result.push((channel, count));
     }
     Ok(result)
 }
@@ -728,6 +962,321 @@ impl Client {
         ok(frame)
     }
 
+    // --- more string commands ---
+
+    /// Returns the length of the string at `key`. Returns 0 for missing keys.
+    pub async fn strlen(&mut self, key: &str) -> Result<i64, ClientError> {
+        let frame = self.send_frame(cmd2(b"STRLEN", key.as_bytes())).await?;
+        integer(frame)
+    }
+
+    /// Increments the float stored at `key` by `delta`. Returns the new value.
+    pub async fn incr_by_float(&mut self, key: &str, delta: f64) -> Result<f64, ClientError> {
+        let d = delta.to_string();
+        let frame = self
+            .send_frame(cmd3(b"INCRBYFLOAT", key.as_bytes(), d.as_bytes()))
+            .await?;
+        float_value(frame)
+    }
+
+    // --- key commands ---
+
+    /// Returns the type of the value stored at `key` as a string:
+    /// `"string"`, `"list"`, `"set"`, `"zset"`, `"hash"`, or `"none"`.
+    pub async fn key_type(&mut self, key: &str) -> Result<String, ClientError> {
+        let frame = self.send_frame(cmd2(b"TYPE", key.as_bytes())).await?;
+        string_value(frame)
+    }
+
+    /// Returns all keys matching `pattern`.
+    ///
+    /// Use `"*"` to return every key. This is a blocking O(N) scan — prefer
+    /// [`Client::scan`] in production.
+    pub async fn keys(&mut self, pattern: &str) -> Result<Vec<Bytes>, ClientError> {
+        let frame = self.send_frame(cmd2(b"KEYS", pattern.as_bytes())).await?;
+        bytes_vec(frame)
+    }
+
+    /// Renames `key` to `newkey`. Returns an error if `key` does not exist.
+    pub async fn rename(&mut self, key: &str, newkey: &str) -> Result<(), ClientError> {
+        let frame = self
+            .send_frame(cmd3(b"RENAME", key.as_bytes(), newkey.as_bytes()))
+            .await?;
+        ok(frame)
+    }
+
+    /// Incrementally iterates keys in the keyspace.
+    ///
+    /// Pass `cursor: 0` to start a new iteration. Continue calling with the
+    /// returned cursor until the cursor is `0` again. An optional `pattern`
+    /// filters by glob and `count` hints at the page size (server may return
+    /// more or fewer).
+    pub async fn scan(
+        &mut self,
+        cursor: u64,
+        count: Option<u32>,
+        pattern: Option<&str>,
+    ) -> Result<ScanPage, ClientError> {
+        let cur = cursor.to_string();
+        let mut parts = Vec::with_capacity(6);
+        parts.push(Frame::Bulk(Bytes::from_static(b"SCAN")));
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(cur.as_bytes())));
+        if let Some(pat) = pattern {
+            parts.push(Frame::Bulk(Bytes::from_static(b"MATCH")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(pat.as_bytes())));
+        }
+        if let Some(n) = count {
+            let ns = n.to_string();
+            parts.push(Frame::Bulk(Bytes::from_static(b"COUNT")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(ns.as_bytes())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        scan_page(frame)
+    }
+
+    /// Sets a timeout of `millis` milliseconds on `key`. Returns `true` if
+    /// the timeout was set, `false` if the key does not exist.
+    pub async fn pexpire(&mut self, key: &str, millis: u64) -> Result<bool, ClientError> {
+        let ms = millis.to_string();
+        let frame = self
+            .send_frame(cmd3(b"PEXPIRE", key.as_bytes(), ms.as_bytes()))
+            .await?;
+        bool_flag(frame)
+    }
+
+    // --- more hash commands ---
+
+    /// Returns values for multiple `fields` in the hash at `key`. Missing
+    /// fields are `None`.
+    pub async fn hmget(
+        &mut self,
+        key: &str,
+        fields: &[&str],
+    ) -> Result<Vec<Option<Bytes>>, ClientError> {
+        let frame = self
+            .send_frame(cmd_key_and_keys(b"HMGET", key, fields))
+            .await?;
+        optional_bytes_vec(frame)
+    }
+
+    // --- more server commands ---
+
+    /// Echoes `message` back from the server. Useful for round-trip testing.
+    pub async fn echo(&mut self, message: &str) -> Result<Bytes, ClientError> {
+        let frame = self.send_frame(cmd2(b"ECHO", message.as_bytes())).await?;
+        match frame {
+            Frame::Bulk(b) => Ok(b),
+            Frame::Error(e) => Err(ClientError::Server(e)),
+            other => Err(ClientError::Protocol(format!(
+                "expected bulk for ECHO, got {other:?}"
+            ))),
+        }
+    }
+
+    /// Deletes keys asynchronously. Behaves like `del` but frees memory in
+    /// the background for large values. Returns the number of keys removed.
+    pub async fn unlink(&mut self, keys: &[&str]) -> Result<i64, ClientError> {
+        let frame = self.send_frame(cmd_keys_only(b"UNLINK", keys)).await?;
+        integer(frame)
+    }
+
+    /// Returns server information. Pass `Some("keyspace")` for a specific
+    /// section, or `None` for all sections.
+    pub async fn info(&mut self, section: Option<&str>) -> Result<String, ClientError> {
+        let frame = match section {
+            Some(s) => self.send_frame(cmd2(b"INFO", s.as_bytes())).await?,
+            None => {
+                self.send_frame(Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"INFO"))]))
+                    .await?
+            }
+        };
+        match frame {
+            Frame::Bulk(b) => String::from_utf8(b.to_vec())
+                .map_err(|_| ClientError::Protocol("INFO response is not valid UTF-8".into())),
+            Frame::Error(e) => Err(ClientError::Server(e)),
+            other => Err(ClientError::Protocol(format!(
+                "expected bulk for INFO, got {other:?}"
+            ))),
+        }
+    }
+
+    /// Triggers a background snapshot (`BGSAVE`). Returns the server status
+    /// message.
+    pub async fn bgsave(&mut self) -> Result<String, ClientError> {
+        let frame = self
+            .send_frame(Frame::Array(vec![Frame::Bulk(Bytes::from_static(
+                b"BGSAVE",
+            ))]))
+            .await?;
+        string_value(frame)
+    }
+
+    /// Triggers an AOF rewrite in the background (`BGREWRITEAOF`). Returns
+    /// the server status message.
+    pub async fn bgrewriteaof(&mut self) -> Result<String, ClientError> {
+        let frame = self
+            .send_frame(Frame::Array(vec![Frame::Bulk(Bytes::from_static(
+                b"BGREWRITEAOF",
+            ))]))
+            .await?;
+        string_value(frame)
+    }
+
+    // --- slowlog commands ---
+
+    /// Returns up to `count` recent slow-log entries, or all entries if
+    /// `count` is `None`.
+    pub async fn slowlog_get(
+        &mut self,
+        count: Option<u32>,
+    ) -> Result<Vec<SlowlogEntry>, ClientError> {
+        let frame = match count {
+            Some(n) => {
+                let ns = n.to_string();
+                self.send_frame(Frame::Array(vec![
+                    Frame::Bulk(Bytes::from_static(b"SLOWLOG")),
+                    Frame::Bulk(Bytes::from_static(b"GET")),
+                    Frame::Bulk(Bytes::copy_from_slice(ns.as_bytes())),
+                ]))
+                .await?
+            }
+            None => {
+                self.send_frame(Frame::Array(vec![
+                    Frame::Bulk(Bytes::from_static(b"SLOWLOG")),
+                    Frame::Bulk(Bytes::from_static(b"GET")),
+                ]))
+                .await?
+            }
+        };
+        slowlog_entries(frame)
+    }
+
+    /// Returns the number of entries currently in the slow log.
+    pub async fn slowlog_len(&mut self) -> Result<i64, ClientError> {
+        let frame = self
+            .send_frame(Frame::Array(vec![
+                Frame::Bulk(Bytes::from_static(b"SLOWLOG")),
+                Frame::Bulk(Bytes::from_static(b"LEN")),
+            ]))
+            .await?;
+        integer(frame)
+    }
+
+    /// Clears all entries from the slow log.
+    pub async fn slowlog_reset(&mut self) -> Result<(), ClientError> {
+        let frame = self
+            .send_frame(Frame::Array(vec![
+                Frame::Bulk(Bytes::from_static(b"SLOWLOG")),
+                Frame::Bulk(Bytes::from_static(b"RESET")),
+            ]))
+            .await?;
+        ok(frame)
+    }
+
+    // --- pub/sub commands (request-response only) ---
+
+    /// Publishes `message` to `channel`. Returns the number of subscribers
+    /// that received the message.
+    pub async fn publish(
+        &mut self,
+        channel: &str,
+        message: impl AsRef<[u8]>,
+    ) -> Result<i64, ClientError> {
+        let frame = self
+            .send_frame(cmd3(b"PUBLISH", channel.as_bytes(), message.as_ref()))
+            .await?;
+        integer(frame)
+    }
+
+    /// Returns the names of active pub/sub channels. Pass `Some(pattern)` to
+    /// filter by glob, or `None` for all channels.
+    pub async fn pubsub_channels(
+        &mut self,
+        pattern: Option<&str>,
+    ) -> Result<Vec<Bytes>, ClientError> {
+        let frame = match pattern {
+            Some(p) => {
+                self.send_frame(Frame::Array(vec![
+                    Frame::Bulk(Bytes::from_static(b"PUBSUB")),
+                    Frame::Bulk(Bytes::from_static(b"CHANNELS")),
+                    Frame::Bulk(Bytes::copy_from_slice(p.as_bytes())),
+                ]))
+                .await?
+            }
+            None => {
+                self.send_frame(Frame::Array(vec![
+                    Frame::Bulk(Bytes::from_static(b"PUBSUB")),
+                    Frame::Bulk(Bytes::from_static(b"CHANNELS")),
+                ]))
+                .await?
+            }
+        };
+        bytes_vec(frame)
+    }
+
+    /// Returns the subscriber counts for the given channels as
+    /// `(channel, count)` pairs.
+    pub async fn pubsub_numsub(
+        &mut self,
+        channels: &[&str],
+    ) -> Result<Vec<(Bytes, i64)>, ClientError> {
+        let mut parts = Vec::with_capacity(2 + channels.len());
+        parts.push(Frame::Bulk(Bytes::from_static(b"PUBSUB")));
+        parts.push(Frame::Bulk(Bytes::from_static(b"NUMSUB")));
+        for ch in channels {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(ch.as_bytes())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        numsub_pairs(frame)
+    }
+
+    /// Returns the number of active pattern subscriptions across all clients.
+    pub async fn pubsub_numpat(&mut self) -> Result<i64, ClientError> {
+        let frame = self
+            .send_frame(Frame::Array(vec![
+                Frame::Bulk(Bytes::from_static(b"PUBSUB")),
+                Frame::Bulk(Bytes::from_static(b"NUMPAT")),
+            ]))
+            .await?;
+        integer(frame)
+    }
+
+    // --- pub/sub subscriber mode ---
+
+    /// Puts the connection into subscriber mode on `channels`.
+    ///
+    /// The connection is consumed and a [`Subscriber`] is returned. Use a
+    /// separate [`Client`] for regular commands while subscribed.
+    pub async fn subscribe(mut self, channels: &[&str]) -> Result<Subscriber, ClientError> {
+        let mut parts = Vec::with_capacity(1 + channels.len());
+        parts.push(Frame::Bulk(Bytes::from_static(b"SUBSCRIBE")));
+        for ch in channels {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(ch.as_bytes())));
+        }
+        self.write_frame(Frame::Array(parts)).await?;
+        // drain confirmation frames (one per channel)
+        for _ in 0..channels.len() {
+            self.read_response().await?;
+        }
+        Ok(Subscriber::new(self))
+    }
+
+    /// Same as [`subscribe`](Client::subscribe) but subscribes to glob
+    /// patterns with `PSUBSCRIBE`.
+    pub async fn psubscribe(mut self, patterns: &[&str]) -> Result<Subscriber, ClientError> {
+        let mut parts = Vec::with_capacity(1 + patterns.len());
+        parts.push(Frame::Bulk(Bytes::from_static(b"PSUBSCRIBE")));
+        for p in patterns {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(p.as_bytes())));
+        }
+        self.write_frame(Frame::Array(parts)).await?;
+        // drain confirmation frames (one per pattern)
+        for _ in 0..patterns.len() {
+            self.read_response().await?;
+        }
+        Ok(Subscriber::new(self))
+    }
+
     // --- pipeline ---
 
     /// Executes all commands queued in `pipeline` as a single batch.
@@ -768,6 +1317,16 @@ fn cmd_key_values<V: AsRef<[u8]>>(cmd: &'static [u8], key: &str, values: &[V]) -
     parts.push(Frame::Bulk(Bytes::copy_from_slice(key.as_bytes())));
     for v in values {
         parts.push(Frame::Bulk(Bytes::copy_from_slice(v.as_ref())));
+    }
+    Frame::Array(parts)
+}
+
+/// `CMD key1 key2 ...` (no separate leading key argument)
+fn cmd_keys_only(cmd: &'static [u8], keys: &[&str]) -> Frame {
+    let mut parts = Vec::with_capacity(1 + keys.len());
+    parts.push(Frame::Bulk(Bytes::from_static(cmd)));
+    for k in keys {
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(k.as_bytes())));
     }
     Frame::Array(parts)
 }
