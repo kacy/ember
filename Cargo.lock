@@ -886,6 +886,7 @@ name = "ember-integration-tests"
 version = "0.4.8"
 dependencies = [
  "bytes",
+ "ember-client",
  "ember-protocol",
  "ember-server",
  "prost-reflect",

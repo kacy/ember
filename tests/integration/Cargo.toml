@@ -13,6 +13,7 @@ harness = true
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
 bytes = { workspace = true }
+ember-client = { path = "../../crates/ember-client", default-features = false }
 ember-protocol = { workspace = true }
 ember-server = { path = "../../crates/ember-server", default-features = false }
 prost-reflect = { workspace = true }

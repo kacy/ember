@@ -36,6 +36,9 @@ pub enum ClientError {
     #[error("protocol error: {0}")]
     Protocol(String),
 
+    #[error("server error: {0}")]
+    Server(String),
+
     #[error("server disconnected")]
     Disconnected,
 
@@ -169,18 +172,42 @@ impl Client {
     /// # }
     /// ```
     pub async fn send(&mut self, args: &[&str]) -> Result<Frame, ClientError> {
-        let parts: Vec<Frame> = args
+        let parts = args
             .iter()
-            .map(|t| Frame::Bulk(bytes::Bytes::from(t.to_string())))
+            .map(|t| Frame::Bulk(bytes::Bytes::copy_from_slice(t.as_bytes())))
             .collect();
-        let frame = Frame::Array(parts);
+        self.send_frame(Frame::Array(parts)).await
+    }
 
+    /// Sends a single pre-built frame and returns the response.
+    ///
+    /// Used internally by typed command methods to avoid re-encoding
+    /// arguments through `&[&str]`.
+    pub(crate) async fn send_frame(&mut self, frame: Frame) -> Result<Frame, ClientError> {
         self.write_buf.clear();
         frame.serialize(&mut self.write_buf);
         self.transport.write_all(&self.write_buf).await?;
         self.transport.flush().await?;
-
         self.read_response().await
+    }
+
+    /// Writes all frames in a single flush, then reads one response per frame.
+    ///
+    /// This is the core of pipelining: batching multiple commands into one
+    /// syscall and reading responses sequentially afterwards.
+    pub(crate) async fn send_batch(&mut self, frames: &[Frame]) -> Result<Vec<Frame>, ClientError> {
+        self.write_buf.clear();
+        for frame in frames {
+            frame.serialize(&mut self.write_buf);
+        }
+        self.transport.write_all(&self.write_buf).await?;
+        self.transport.flush().await?;
+
+        let mut results = Vec::with_capacity(frames.len());
+        for _ in 0..frames.len() {
+            results.push(self.read_response().await?);
+        }
+        Ok(results)
     }
 
     /// Authenticates with the server using the `AUTH` command.
@@ -190,15 +217,10 @@ impl Client {
     pub async fn auth(&mut self, password: &str) -> Result<(), ClientError> {
         let frame = Frame::Array(vec![
             Frame::Bulk(bytes::Bytes::from_static(b"AUTH")),
-            Frame::Bulk(bytes::Bytes::from(password.to_string())),
+            Frame::Bulk(bytes::Bytes::copy_from_slice(password.as_bytes())),
         ]);
 
-        self.write_buf.clear();
-        frame.serialize(&mut self.write_buf);
-        self.transport.write_all(&self.write_buf).await?;
-        self.transport.flush().await?;
-
-        match self.read_response().await? {
+        match self.send_frame(frame).await? {
             Frame::Simple(s) if s == "OK" => Ok(()),
             Frame::Error(e) => Err(ClientError::AuthFailed(e)),
             _ => Err(ClientError::AuthFailed(
