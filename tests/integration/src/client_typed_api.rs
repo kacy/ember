@@ -147,6 +147,18 @@ async fn hget_missing_field() {
     assert!(client.hget("h", "missing").await.unwrap().is_none());
 }
 
+// --- hincrby ---
+
+#[tokio::test]
+async fn hincrby_increments_and_returns_new_value() {
+    let (_server, mut client) = connect().await;
+    client.hset("counter", &[("hits", "10")]).await.unwrap();
+    assert_eq!(client.hincrby("counter", "hits", 5).await.unwrap(), 15);
+    assert_eq!(client.hincrby("counter", "hits", -3).await.unwrap(), 12);
+    // field created on first call if missing
+    assert_eq!(client.hincrby("counter", "new_field", 1).await.unwrap(), 1);
+}
+
 // --- sorted set commands ---
 
 #[tokio::test]
