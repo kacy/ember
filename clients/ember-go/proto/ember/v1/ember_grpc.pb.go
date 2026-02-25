@@ -19,80 +19,119 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EmberCache_Get_FullMethodName            = "/ember.v1.EmberCache/Get"
-	EmberCache_Set_FullMethodName            = "/ember.v1.EmberCache/Set"
-	EmberCache_Del_FullMethodName            = "/ember.v1.EmberCache/Del"
-	EmberCache_MGet_FullMethodName           = "/ember.v1.EmberCache/MGet"
-	EmberCache_MSet_FullMethodName           = "/ember.v1.EmberCache/MSet"
-	EmberCache_Incr_FullMethodName           = "/ember.v1.EmberCache/Incr"
-	EmberCache_IncrBy_FullMethodName         = "/ember.v1.EmberCache/IncrBy"
-	EmberCache_DecrBy_FullMethodName         = "/ember.v1.EmberCache/DecrBy"
-	EmberCache_IncrByFloat_FullMethodName    = "/ember.v1.EmberCache/IncrByFloat"
-	EmberCache_Append_FullMethodName         = "/ember.v1.EmberCache/Append"
-	EmberCache_Strlen_FullMethodName         = "/ember.v1.EmberCache/Strlen"
-	EmberCache_Exists_FullMethodName         = "/ember.v1.EmberCache/Exists"
-	EmberCache_Expire_FullMethodName         = "/ember.v1.EmberCache/Expire"
-	EmberCache_PExpire_FullMethodName        = "/ember.v1.EmberCache/PExpire"
-	EmberCache_Persist_FullMethodName        = "/ember.v1.EmberCache/Persist"
-	EmberCache_Ttl_FullMethodName            = "/ember.v1.EmberCache/Ttl"
-	EmberCache_PTtl_FullMethodName           = "/ember.v1.EmberCache/PTtl"
-	EmberCache_Type_FullMethodName           = "/ember.v1.EmberCache/Type"
-	EmberCache_Keys_FullMethodName           = "/ember.v1.EmberCache/Keys"
-	EmberCache_Rename_FullMethodName         = "/ember.v1.EmberCache/Rename"
-	EmberCache_Scan_FullMethodName           = "/ember.v1.EmberCache/Scan"
-	EmberCache_LPush_FullMethodName          = "/ember.v1.EmberCache/LPush"
-	EmberCache_RPush_FullMethodName          = "/ember.v1.EmberCache/RPush"
-	EmberCache_LPop_FullMethodName           = "/ember.v1.EmberCache/LPop"
-	EmberCache_RPop_FullMethodName           = "/ember.v1.EmberCache/RPop"
-	EmberCache_LRange_FullMethodName         = "/ember.v1.EmberCache/LRange"
-	EmberCache_LLen_FullMethodName           = "/ember.v1.EmberCache/LLen"
-	EmberCache_HSet_FullMethodName           = "/ember.v1.EmberCache/HSet"
-	EmberCache_HGet_FullMethodName           = "/ember.v1.EmberCache/HGet"
-	EmberCache_HGetAll_FullMethodName        = "/ember.v1.EmberCache/HGetAll"
-	EmberCache_HDel_FullMethodName           = "/ember.v1.EmberCache/HDel"
-	EmberCache_HExists_FullMethodName        = "/ember.v1.EmberCache/HExists"
-	EmberCache_HLen_FullMethodName           = "/ember.v1.EmberCache/HLen"
-	EmberCache_HIncrBy_FullMethodName        = "/ember.v1.EmberCache/HIncrBy"
-	EmberCache_HKeys_FullMethodName          = "/ember.v1.EmberCache/HKeys"
-	EmberCache_HVals_FullMethodName          = "/ember.v1.EmberCache/HVals"
-	EmberCache_HMGet_FullMethodName          = "/ember.v1.EmberCache/HMGet"
-	EmberCache_SAdd_FullMethodName           = "/ember.v1.EmberCache/SAdd"
-	EmberCache_SRem_FullMethodName           = "/ember.v1.EmberCache/SRem"
-	EmberCache_SMembers_FullMethodName       = "/ember.v1.EmberCache/SMembers"
-	EmberCache_SIsMember_FullMethodName      = "/ember.v1.EmberCache/SIsMember"
-	EmberCache_SCard_FullMethodName          = "/ember.v1.EmberCache/SCard"
-	EmberCache_ZAdd_FullMethodName           = "/ember.v1.EmberCache/ZAdd"
-	EmberCache_ZRem_FullMethodName           = "/ember.v1.EmberCache/ZRem"
-	EmberCache_ZScore_FullMethodName         = "/ember.v1.EmberCache/ZScore"
-	EmberCache_ZRank_FullMethodName          = "/ember.v1.EmberCache/ZRank"
-	EmberCache_ZCard_FullMethodName          = "/ember.v1.EmberCache/ZCard"
-	EmberCache_ZRange_FullMethodName         = "/ember.v1.EmberCache/ZRange"
-	EmberCache_VAdd_FullMethodName           = "/ember.v1.EmberCache/VAdd"
-	EmberCache_VAddBatch_FullMethodName      = "/ember.v1.EmberCache/VAddBatch"
-	EmberCache_VSim_FullMethodName           = "/ember.v1.EmberCache/VSim"
-	EmberCache_VRem_FullMethodName           = "/ember.v1.EmberCache/VRem"
-	EmberCache_VGet_FullMethodName           = "/ember.v1.EmberCache/VGet"
-	EmberCache_VCard_FullMethodName          = "/ember.v1.EmberCache/VCard"
-	EmberCache_VDim_FullMethodName           = "/ember.v1.EmberCache/VDim"
-	EmberCache_VInfo_FullMethodName          = "/ember.v1.EmberCache/VInfo"
-	EmberCache_Ping_FullMethodName           = "/ember.v1.EmberCache/Ping"
-	EmberCache_Echo_FullMethodName           = "/ember.v1.EmberCache/Echo"
-	EmberCache_Decr_FullMethodName           = "/ember.v1.EmberCache/Decr"
-	EmberCache_Unlink_FullMethodName         = "/ember.v1.EmberCache/Unlink"
-	EmberCache_FlushDb_FullMethodName        = "/ember.v1.EmberCache/FlushDb"
-	EmberCache_DbSize_FullMethodName         = "/ember.v1.EmberCache/DbSize"
-	EmberCache_Info_FullMethodName           = "/ember.v1.EmberCache/Info"
-	EmberCache_BgSave_FullMethodName         = "/ember.v1.EmberCache/BgSave"
-	EmberCache_BgRewriteAof_FullMethodName   = "/ember.v1.EmberCache/BgRewriteAof"
-	EmberCache_SlowLogGet_FullMethodName     = "/ember.v1.EmberCache/SlowLogGet"
-	EmberCache_SlowLogLen_FullMethodName     = "/ember.v1.EmberCache/SlowLogLen"
-	EmberCache_SlowLogReset_FullMethodName   = "/ember.v1.EmberCache/SlowLogReset"
-	EmberCache_Publish_FullMethodName        = "/ember.v1.EmberCache/Publish"
-	EmberCache_Subscribe_FullMethodName      = "/ember.v1.EmberCache/Subscribe"
-	EmberCache_PubSubChannels_FullMethodName = "/ember.v1.EmberCache/PubSubChannels"
-	EmberCache_PubSubNumSub_FullMethodName   = "/ember.v1.EmberCache/PubSubNumSub"
-	EmberCache_PubSubNumPat_FullMethodName   = "/ember.v1.EmberCache/PubSubNumPat"
-	EmberCache_Pipeline_FullMethodName       = "/ember.v1.EmberCache/Pipeline"
+	EmberCache_Get_FullMethodName              = "/ember.v1.EmberCache/Get"
+	EmberCache_Set_FullMethodName              = "/ember.v1.EmberCache/Set"
+	EmberCache_Del_FullMethodName              = "/ember.v1.EmberCache/Del"
+	EmberCache_MGet_FullMethodName             = "/ember.v1.EmberCache/MGet"
+	EmberCache_MSet_FullMethodName             = "/ember.v1.EmberCache/MSet"
+	EmberCache_Incr_FullMethodName             = "/ember.v1.EmberCache/Incr"
+	EmberCache_IncrBy_FullMethodName           = "/ember.v1.EmberCache/IncrBy"
+	EmberCache_DecrBy_FullMethodName           = "/ember.v1.EmberCache/DecrBy"
+	EmberCache_IncrByFloat_FullMethodName      = "/ember.v1.EmberCache/IncrByFloat"
+	EmberCache_Append_FullMethodName           = "/ember.v1.EmberCache/Append"
+	EmberCache_Strlen_FullMethodName           = "/ember.v1.EmberCache/Strlen"
+	EmberCache_Exists_FullMethodName           = "/ember.v1.EmberCache/Exists"
+	EmberCache_Expire_FullMethodName           = "/ember.v1.EmberCache/Expire"
+	EmberCache_PExpire_FullMethodName          = "/ember.v1.EmberCache/PExpire"
+	EmberCache_Persist_FullMethodName          = "/ember.v1.EmberCache/Persist"
+	EmberCache_Ttl_FullMethodName              = "/ember.v1.EmberCache/Ttl"
+	EmberCache_PTtl_FullMethodName             = "/ember.v1.EmberCache/PTtl"
+	EmberCache_Type_FullMethodName             = "/ember.v1.EmberCache/Type"
+	EmberCache_Keys_FullMethodName             = "/ember.v1.EmberCache/Keys"
+	EmberCache_Rename_FullMethodName           = "/ember.v1.EmberCache/Rename"
+	EmberCache_Scan_FullMethodName             = "/ember.v1.EmberCache/Scan"
+	EmberCache_LPush_FullMethodName            = "/ember.v1.EmberCache/LPush"
+	EmberCache_RPush_FullMethodName            = "/ember.v1.EmberCache/RPush"
+	EmberCache_LPop_FullMethodName             = "/ember.v1.EmberCache/LPop"
+	EmberCache_RPop_FullMethodName             = "/ember.v1.EmberCache/RPop"
+	EmberCache_LRange_FullMethodName           = "/ember.v1.EmberCache/LRange"
+	EmberCache_LLen_FullMethodName             = "/ember.v1.EmberCache/LLen"
+	EmberCache_HSet_FullMethodName             = "/ember.v1.EmberCache/HSet"
+	EmberCache_HGet_FullMethodName             = "/ember.v1.EmberCache/HGet"
+	EmberCache_HGetAll_FullMethodName          = "/ember.v1.EmberCache/HGetAll"
+	EmberCache_HDel_FullMethodName             = "/ember.v1.EmberCache/HDel"
+	EmberCache_HExists_FullMethodName          = "/ember.v1.EmberCache/HExists"
+	EmberCache_HLen_FullMethodName             = "/ember.v1.EmberCache/HLen"
+	EmberCache_HIncrBy_FullMethodName          = "/ember.v1.EmberCache/HIncrBy"
+	EmberCache_HKeys_FullMethodName            = "/ember.v1.EmberCache/HKeys"
+	EmberCache_HVals_FullMethodName            = "/ember.v1.EmberCache/HVals"
+	EmberCache_HMGet_FullMethodName            = "/ember.v1.EmberCache/HMGet"
+	EmberCache_SAdd_FullMethodName             = "/ember.v1.EmberCache/SAdd"
+	EmberCache_SRem_FullMethodName             = "/ember.v1.EmberCache/SRem"
+	EmberCache_SMembers_FullMethodName         = "/ember.v1.EmberCache/SMembers"
+	EmberCache_SIsMember_FullMethodName        = "/ember.v1.EmberCache/SIsMember"
+	EmberCache_SCard_FullMethodName            = "/ember.v1.EmberCache/SCard"
+	EmberCache_ZAdd_FullMethodName             = "/ember.v1.EmberCache/ZAdd"
+	EmberCache_ZRem_FullMethodName             = "/ember.v1.EmberCache/ZRem"
+	EmberCache_ZScore_FullMethodName           = "/ember.v1.EmberCache/ZScore"
+	EmberCache_ZRank_FullMethodName            = "/ember.v1.EmberCache/ZRank"
+	EmberCache_ZCard_FullMethodName            = "/ember.v1.EmberCache/ZCard"
+	EmberCache_ZRange_FullMethodName           = "/ember.v1.EmberCache/ZRange"
+	EmberCache_VAdd_FullMethodName             = "/ember.v1.EmberCache/VAdd"
+	EmberCache_VAddBatch_FullMethodName        = "/ember.v1.EmberCache/VAddBatch"
+	EmberCache_VSim_FullMethodName             = "/ember.v1.EmberCache/VSim"
+	EmberCache_VRem_FullMethodName             = "/ember.v1.EmberCache/VRem"
+	EmberCache_VGet_FullMethodName             = "/ember.v1.EmberCache/VGet"
+	EmberCache_VCard_FullMethodName            = "/ember.v1.EmberCache/VCard"
+	EmberCache_VDim_FullMethodName             = "/ember.v1.EmberCache/VDim"
+	EmberCache_VInfo_FullMethodName            = "/ember.v1.EmberCache/VInfo"
+	EmberCache_Ping_FullMethodName             = "/ember.v1.EmberCache/Ping"
+	EmberCache_Echo_FullMethodName             = "/ember.v1.EmberCache/Echo"
+	EmberCache_Decr_FullMethodName             = "/ember.v1.EmberCache/Decr"
+	EmberCache_Unlink_FullMethodName           = "/ember.v1.EmberCache/Unlink"
+	EmberCache_FlushDb_FullMethodName          = "/ember.v1.EmberCache/FlushDb"
+	EmberCache_DbSize_FullMethodName           = "/ember.v1.EmberCache/DbSize"
+	EmberCache_Info_FullMethodName             = "/ember.v1.EmberCache/Info"
+	EmberCache_BgSave_FullMethodName           = "/ember.v1.EmberCache/BgSave"
+	EmberCache_BgRewriteAof_FullMethodName     = "/ember.v1.EmberCache/BgRewriteAof"
+	EmberCache_SlowLogGet_FullMethodName       = "/ember.v1.EmberCache/SlowLogGet"
+	EmberCache_SlowLogLen_FullMethodName       = "/ember.v1.EmberCache/SlowLogLen"
+	EmberCache_SlowLogReset_FullMethodName     = "/ember.v1.EmberCache/SlowLogReset"
+	EmberCache_Publish_FullMethodName          = "/ember.v1.EmberCache/Publish"
+	EmberCache_Subscribe_FullMethodName        = "/ember.v1.EmberCache/Subscribe"
+	EmberCache_PubSubChannels_FullMethodName   = "/ember.v1.EmberCache/PubSubChannels"
+	EmberCache_PubSubNumSub_FullMethodName     = "/ember.v1.EmberCache/PubSubNumSub"
+	EmberCache_PubSubNumPat_FullMethodName     = "/ember.v1.EmberCache/PubSubNumPat"
+	EmberCache_GetDel_FullMethodName           = "/ember.v1.EmberCache/GetDel"
+	EmberCache_GetEx_FullMethodName            = "/ember.v1.EmberCache/GetEx"
+	EmberCache_GetRange_FullMethodName         = "/ember.v1.EmberCache/GetRange"
+	EmberCache_SetRange_FullMethodName         = "/ember.v1.EmberCache/SetRange"
+	EmberCache_Copy_FullMethodName             = "/ember.v1.EmberCache/Copy"
+	EmberCache_RandomKey_FullMethodName        = "/ember.v1.EmberCache/RandomKey"
+	EmberCache_Touch_FullMethodName            = "/ember.v1.EmberCache/Touch"
+	EmberCache_LIndex_FullMethodName           = "/ember.v1.EmberCache/LIndex"
+	EmberCache_LSet_FullMethodName             = "/ember.v1.EmberCache/LSet"
+	EmberCache_LTrim_FullMethodName            = "/ember.v1.EmberCache/LTrim"
+	EmberCache_LInsert_FullMethodName          = "/ember.v1.EmberCache/LInsert"
+	EmberCache_LRem_FullMethodName             = "/ember.v1.EmberCache/LRem"
+	EmberCache_LPos_FullMethodName             = "/ember.v1.EmberCache/LPos"
+	EmberCache_LMove_FullMethodName            = "/ember.v1.EmberCache/LMove"
+	EmberCache_SUnion_FullMethodName           = "/ember.v1.EmberCache/SUnion"
+	EmberCache_SInter_FullMethodName           = "/ember.v1.EmberCache/SInter"
+	EmberCache_SDiff_FullMethodName            = "/ember.v1.EmberCache/SDiff"
+	EmberCache_SUnionStore_FullMethodName      = "/ember.v1.EmberCache/SUnionStore"
+	EmberCache_SInterStore_FullMethodName      = "/ember.v1.EmberCache/SInterStore"
+	EmberCache_SDiffStore_FullMethodName       = "/ember.v1.EmberCache/SDiffStore"
+	EmberCache_SRandMember_FullMethodName      = "/ember.v1.EmberCache/SRandMember"
+	EmberCache_SPop_FullMethodName             = "/ember.v1.EmberCache/SPop"
+	EmberCache_SMisMember_FullMethodName       = "/ember.v1.EmberCache/SMisMember"
+	EmberCache_HScan_FullMethodName            = "/ember.v1.EmberCache/HScan"
+	EmberCache_ZRevRank_FullMethodName         = "/ember.v1.EmberCache/ZRevRank"
+	EmberCache_ZRevRange_FullMethodName        = "/ember.v1.EmberCache/ZRevRange"
+	EmberCache_ZCount_FullMethodName           = "/ember.v1.EmberCache/ZCount"
+	EmberCache_ZIncrBy_FullMethodName          = "/ember.v1.EmberCache/ZIncrBy"
+	EmberCache_ZRangeByScore_FullMethodName    = "/ember.v1.EmberCache/ZRangeByScore"
+	EmberCache_ZRevRangeByScore_FullMethodName = "/ember.v1.EmberCache/ZRevRangeByScore"
+	EmberCache_ZPopMin_FullMethodName          = "/ember.v1.EmberCache/ZPopMin"
+	EmberCache_ZPopMax_FullMethodName          = "/ember.v1.EmberCache/ZPopMax"
+	EmberCache_ZDiff_FullMethodName            = "/ember.v1.EmberCache/ZDiff"
+	EmberCache_ZInter_FullMethodName           = "/ember.v1.EmberCache/ZInter"
+	EmberCache_ZUnion_FullMethodName           = "/ember.v1.EmberCache/ZUnion"
+	EmberCache_ZScan_FullMethodName            = "/ember.v1.EmberCache/ZScan"
+	EmberCache_SScan_FullMethodName            = "/ember.v1.EmberCache/SScan"
+	EmberCache_Time_FullMethodName             = "/ember.v1.EmberCache/Time"
+	EmberCache_LastSave_FullMethodName         = "/ember.v1.EmberCache/LastSave"
+	EmberCache_Pipeline_FullMethodName         = "/ember.v1.EmberCache/Pipeline"
 )
 
 // EmberCacheClient is the client API for EmberCache service.
@@ -176,6 +215,45 @@ type EmberCacheClient interface {
 	PubSubChannels(ctx context.Context, in *PubSubChannelsRequest, opts ...grpc.CallOption) (*KeysResponse, error)
 	PubSubNumSub(ctx context.Context, in *PubSubNumSubRequest, opts ...grpc.CallOption) (*PubSubNumSubResponse, error)
 	PubSubNumPat(ctx context.Context, in *PubSubNumPatRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	GetDel(ctx context.Context, in *GetDelRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	GetEx(ctx context.Context, in *GetExRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	GetRange(ctx context.Context, in *GetRangeRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	SetRange(ctx context.Context, in *SetRangeRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Copy(ctx context.Context, in *CopyRequest, opts ...grpc.CallOption) (*BoolResponse, error)
+	RandomKey(ctx context.Context, in *RandomKeyRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	Touch(ctx context.Context, in *TouchRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	LIndex(ctx context.Context, in *LIndexRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	LSet(ctx context.Context, in *LSetRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	LTrim(ctx context.Context, in *LTrimRequest, opts ...grpc.CallOption) (*StatusResponse, error)
+	LInsert(ctx context.Context, in *LInsertRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	LRem(ctx context.Context, in *LRemRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	LPos(ctx context.Context, in *LPosRequest, opts ...grpc.CallOption) (*OptionalIntResponse, error)
+	LMove(ctx context.Context, in *LMoveRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	SUnion(ctx context.Context, in *SUnionRequest, opts ...grpc.CallOption) (*KeysResponse, error)
+	SInter(ctx context.Context, in *SInterRequest, opts ...grpc.CallOption) (*KeysResponse, error)
+	SDiff(ctx context.Context, in *SDiffRequest, opts ...grpc.CallOption) (*KeysResponse, error)
+	SUnionStore(ctx context.Context, in *SUnionStoreRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	SInterStore(ctx context.Context, in *SInterStoreRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	SDiffStore(ctx context.Context, in *SDiffStoreRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	SRandMember(ctx context.Context, in *SRandMemberRequest, opts ...grpc.CallOption) (*ArrayResponse, error)
+	SPop(ctx context.Context, in *SPopRequest, opts ...grpc.CallOption) (*ArrayResponse, error)
+	SMisMember(ctx context.Context, in *SMisMemberRequest, opts ...grpc.CallOption) (*BoolArrayResponse, error)
+	HScan(ctx context.Context, in *HScanRequest, opts ...grpc.CallOption) (*HScanResponse, error)
+	ZRevRank(ctx context.Context, in *ZRevRankRequest, opts ...grpc.CallOption) (*OptionalIntResponse, error)
+	ZRevRange(ctx context.Context, in *ZRevRangeRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZCount(ctx context.Context, in *ZCountRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	ZIncrBy(ctx context.Context, in *ZIncrByRequest, opts ...grpc.CallOption) (*FloatResponse, error)
+	ZRangeByScore(ctx context.Context, in *ZRangeByScoreRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZRevRangeByScore(ctx context.Context, in *ZRevRangeByScoreRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZPopMin(ctx context.Context, in *ZPopMinRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZPopMax(ctx context.Context, in *ZPopMaxRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZDiff(ctx context.Context, in *ZDiffRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZInter(ctx context.Context, in *ZInterRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZUnion(ctx context.Context, in *ZUnionRequest, opts ...grpc.CallOption) (*ZRangeResponse, error)
+	ZScan(ctx context.Context, in *ZScanRequest, opts ...grpc.CallOption) (*ZScanResponse, error)
+	SScan(ctx context.Context, in *SScanRequest, opts ...grpc.CallOption) (*SScanResponse, error)
+	Time(ctx context.Context, in *TimeRequest, opts ...grpc.CallOption) (*TimeResponse, error)
+	LastSave(ctx context.Context, in *LastSaveRequest, opts ...grpc.CallOption) (*IntResponse, error)
 	Pipeline(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipelineRequest, PipelineResponse], error)
 }
 
@@ -926,6 +1004,396 @@ func (c *emberCacheClient) PubSubNumPat(ctx context.Context, in *PubSubNumPatReq
 	return out, nil
 }
 
+func (c *emberCacheClient) GetDel(ctx context.Context, in *GetDelRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_GetDel_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) GetEx(ctx context.Context, in *GetExRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_GetEx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) GetRange(ctx context.Context, in *GetRangeRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_GetRange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SetRange(ctx context.Context, in *SetRangeRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SetRange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Copy(ctx context.Context, in *CopyRequest, opts ...grpc.CallOption) (*BoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoolResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Copy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) RandomKey(ctx context.Context, in *RandomKeyRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_RandomKey_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Touch(ctx context.Context, in *TouchRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Touch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LIndex(ctx context.Context, in *LIndexRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LIndex_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LSet(ctx context.Context, in *LSetRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatusResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LSet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LTrim(ctx context.Context, in *LTrimRequest, opts ...grpc.CallOption) (*StatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(StatusResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LTrim_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LInsert(ctx context.Context, in *LInsertRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LInsert_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LRem(ctx context.Context, in *LRemRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LRem_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LPos(ctx context.Context, in *LPosRequest, opts ...grpc.CallOption) (*OptionalIntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OptionalIntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LPos_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LMove(ctx context.Context, in *LMoveRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LMove_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SUnion(ctx context.Context, in *SUnionRequest, opts ...grpc.CallOption) (*KeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(KeysResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SUnion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SInter(ctx context.Context, in *SInterRequest, opts ...grpc.CallOption) (*KeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(KeysResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SInter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SDiff(ctx context.Context, in *SDiffRequest, opts ...grpc.CallOption) (*KeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(KeysResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SDiff_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SUnionStore(ctx context.Context, in *SUnionStoreRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SUnionStore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SInterStore(ctx context.Context, in *SInterStoreRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SInterStore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SDiffStore(ctx context.Context, in *SDiffStoreRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SDiffStore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SRandMember(ctx context.Context, in *SRandMemberRequest, opts ...grpc.CallOption) (*ArrayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArrayResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SRandMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SPop(ctx context.Context, in *SPopRequest, opts ...grpc.CallOption) (*ArrayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArrayResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SPop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SMisMember(ctx context.Context, in *SMisMemberRequest, opts ...grpc.CallOption) (*BoolArrayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoolArrayResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SMisMember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) HScan(ctx context.Context, in *HScanRequest, opts ...grpc.CallOption) (*HScanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HScanResponse)
+	err := c.cc.Invoke(ctx, EmberCache_HScan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZRevRank(ctx context.Context, in *ZRevRankRequest, opts ...grpc.CallOption) (*OptionalIntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OptionalIntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZRevRank_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZRevRange(ctx context.Context, in *ZRevRangeRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZRevRange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZCount(ctx context.Context, in *ZCountRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZCount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZIncrBy(ctx context.Context, in *ZIncrByRequest, opts ...grpc.CallOption) (*FloatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FloatResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZIncrBy_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZRangeByScore(ctx context.Context, in *ZRangeByScoreRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZRangeByScore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZRevRangeByScore(ctx context.Context, in *ZRevRangeByScoreRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZRevRangeByScore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZPopMin(ctx context.Context, in *ZPopMinRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZPopMin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZPopMax(ctx context.Context, in *ZPopMaxRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZPopMax_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZDiff(ctx context.Context, in *ZDiffRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZDiff_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZInter(ctx context.Context, in *ZInterRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZInter_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZUnion(ctx context.Context, in *ZUnionRequest, opts ...grpc.CallOption) (*ZRangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZRangeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZUnion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) ZScan(ctx context.Context, in *ZScanRequest, opts ...grpc.CallOption) (*ZScanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZScanResponse)
+	err := c.cc.Invoke(ctx, EmberCache_ZScan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) SScan(ctx context.Context, in *SScanRequest, opts ...grpc.CallOption) (*SScanResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SScanResponse)
+	err := c.cc.Invoke(ctx, EmberCache_SScan_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Time(ctx context.Context, in *TimeRequest, opts ...grpc.CallOption) (*TimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TimeResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Time_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) LastSave(ctx context.Context, in *LastSaveRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_LastSave_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *emberCacheClient) Pipeline(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipelineRequest, PipelineResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &EmberCache_ServiceDesc.Streams[1], EmberCache_Pipeline_FullMethodName, cOpts...)
@@ -1020,6 +1488,45 @@ type EmberCacheServer interface {
 	PubSubChannels(context.Context, *PubSubChannelsRequest) (*KeysResponse, error)
 	PubSubNumSub(context.Context, *PubSubNumSubRequest) (*PubSubNumSubResponse, error)
 	PubSubNumPat(context.Context, *PubSubNumPatRequest) (*IntResponse, error)
+	GetDel(context.Context, *GetDelRequest) (*GetResponse, error)
+	GetEx(context.Context, *GetExRequest) (*GetResponse, error)
+	GetRange(context.Context, *GetRangeRequest) (*GetResponse, error)
+	SetRange(context.Context, *SetRangeRequest) (*IntResponse, error)
+	Copy(context.Context, *CopyRequest) (*BoolResponse, error)
+	RandomKey(context.Context, *RandomKeyRequest) (*GetResponse, error)
+	Touch(context.Context, *TouchRequest) (*IntResponse, error)
+	LIndex(context.Context, *LIndexRequest) (*GetResponse, error)
+	LSet(context.Context, *LSetRequest) (*StatusResponse, error)
+	LTrim(context.Context, *LTrimRequest) (*StatusResponse, error)
+	LInsert(context.Context, *LInsertRequest) (*IntResponse, error)
+	LRem(context.Context, *LRemRequest) (*IntResponse, error)
+	LPos(context.Context, *LPosRequest) (*OptionalIntResponse, error)
+	LMove(context.Context, *LMoveRequest) (*GetResponse, error)
+	SUnion(context.Context, *SUnionRequest) (*KeysResponse, error)
+	SInter(context.Context, *SInterRequest) (*KeysResponse, error)
+	SDiff(context.Context, *SDiffRequest) (*KeysResponse, error)
+	SUnionStore(context.Context, *SUnionStoreRequest) (*IntResponse, error)
+	SInterStore(context.Context, *SInterStoreRequest) (*IntResponse, error)
+	SDiffStore(context.Context, *SDiffStoreRequest) (*IntResponse, error)
+	SRandMember(context.Context, *SRandMemberRequest) (*ArrayResponse, error)
+	SPop(context.Context, *SPopRequest) (*ArrayResponse, error)
+	SMisMember(context.Context, *SMisMemberRequest) (*BoolArrayResponse, error)
+	HScan(context.Context, *HScanRequest) (*HScanResponse, error)
+	ZRevRank(context.Context, *ZRevRankRequest) (*OptionalIntResponse, error)
+	ZRevRange(context.Context, *ZRevRangeRequest) (*ZRangeResponse, error)
+	ZCount(context.Context, *ZCountRequest) (*IntResponse, error)
+	ZIncrBy(context.Context, *ZIncrByRequest) (*FloatResponse, error)
+	ZRangeByScore(context.Context, *ZRangeByScoreRequest) (*ZRangeResponse, error)
+	ZRevRangeByScore(context.Context, *ZRevRangeByScoreRequest) (*ZRangeResponse, error)
+	ZPopMin(context.Context, *ZPopMinRequest) (*ZRangeResponse, error)
+	ZPopMax(context.Context, *ZPopMaxRequest) (*ZRangeResponse, error)
+	ZDiff(context.Context, *ZDiffRequest) (*ZRangeResponse, error)
+	ZInter(context.Context, *ZInterRequest) (*ZRangeResponse, error)
+	ZUnion(context.Context, *ZUnionRequest) (*ZRangeResponse, error)
+	ZScan(context.Context, *ZScanRequest) (*ZScanResponse, error)
+	SScan(context.Context, *SScanRequest) (*SScanResponse, error)
+	Time(context.Context, *TimeRequest) (*TimeResponse, error)
+	LastSave(context.Context, *LastSaveRequest) (*IntResponse, error)
 	Pipeline(grpc.BidiStreamingServer[PipelineRequest, PipelineResponse]) error
 	mustEmbedUnimplementedEmberCacheServer()
 }
@@ -1249,6 +1756,123 @@ func (UnimplementedEmberCacheServer) PubSubNumSub(context.Context, *PubSubNumSub
 }
 func (UnimplementedEmberCacheServer) PubSubNumPat(context.Context, *PubSubNumPatRequest) (*IntResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method PubSubNumPat not implemented")
+}
+func (UnimplementedEmberCacheServer) GetDel(context.Context, *GetDelRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetDel not implemented")
+}
+func (UnimplementedEmberCacheServer) GetEx(context.Context, *GetExRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetEx not implemented")
+}
+func (UnimplementedEmberCacheServer) GetRange(context.Context, *GetRangeRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetRange not implemented")
+}
+func (UnimplementedEmberCacheServer) SetRange(context.Context, *SetRangeRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetRange not implemented")
+}
+func (UnimplementedEmberCacheServer) Copy(context.Context, *CopyRequest) (*BoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Copy not implemented")
+}
+func (UnimplementedEmberCacheServer) RandomKey(context.Context, *RandomKeyRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RandomKey not implemented")
+}
+func (UnimplementedEmberCacheServer) Touch(context.Context, *TouchRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Touch not implemented")
+}
+func (UnimplementedEmberCacheServer) LIndex(context.Context, *LIndexRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LIndex not implemented")
+}
+func (UnimplementedEmberCacheServer) LSet(context.Context, *LSetRequest) (*StatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LSet not implemented")
+}
+func (UnimplementedEmberCacheServer) LTrim(context.Context, *LTrimRequest) (*StatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LTrim not implemented")
+}
+func (UnimplementedEmberCacheServer) LInsert(context.Context, *LInsertRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LInsert not implemented")
+}
+func (UnimplementedEmberCacheServer) LRem(context.Context, *LRemRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LRem not implemented")
+}
+func (UnimplementedEmberCacheServer) LPos(context.Context, *LPosRequest) (*OptionalIntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LPos not implemented")
+}
+func (UnimplementedEmberCacheServer) LMove(context.Context, *LMoveRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LMove not implemented")
+}
+func (UnimplementedEmberCacheServer) SUnion(context.Context, *SUnionRequest) (*KeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SUnion not implemented")
+}
+func (UnimplementedEmberCacheServer) SInter(context.Context, *SInterRequest) (*KeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SInter not implemented")
+}
+func (UnimplementedEmberCacheServer) SDiff(context.Context, *SDiffRequest) (*KeysResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SDiff not implemented")
+}
+func (UnimplementedEmberCacheServer) SUnionStore(context.Context, *SUnionStoreRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SUnionStore not implemented")
+}
+func (UnimplementedEmberCacheServer) SInterStore(context.Context, *SInterStoreRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SInterStore not implemented")
+}
+func (UnimplementedEmberCacheServer) SDiffStore(context.Context, *SDiffStoreRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SDiffStore not implemented")
+}
+func (UnimplementedEmberCacheServer) SRandMember(context.Context, *SRandMemberRequest) (*ArrayResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SRandMember not implemented")
+}
+func (UnimplementedEmberCacheServer) SPop(context.Context, *SPopRequest) (*ArrayResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SPop not implemented")
+}
+func (UnimplementedEmberCacheServer) SMisMember(context.Context, *SMisMemberRequest) (*BoolArrayResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SMisMember not implemented")
+}
+func (UnimplementedEmberCacheServer) HScan(context.Context, *HScanRequest) (*HScanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HScan not implemented")
+}
+func (UnimplementedEmberCacheServer) ZRevRank(context.Context, *ZRevRankRequest) (*OptionalIntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZRevRank not implemented")
+}
+func (UnimplementedEmberCacheServer) ZRevRange(context.Context, *ZRevRangeRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZRevRange not implemented")
+}
+func (UnimplementedEmberCacheServer) ZCount(context.Context, *ZCountRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZCount not implemented")
+}
+func (UnimplementedEmberCacheServer) ZIncrBy(context.Context, *ZIncrByRequest) (*FloatResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZIncrBy not implemented")
+}
+func (UnimplementedEmberCacheServer) ZRangeByScore(context.Context, *ZRangeByScoreRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZRangeByScore not implemented")
+}
+func (UnimplementedEmberCacheServer) ZRevRangeByScore(context.Context, *ZRevRangeByScoreRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZRevRangeByScore not implemented")
+}
+func (UnimplementedEmberCacheServer) ZPopMin(context.Context, *ZPopMinRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZPopMin not implemented")
+}
+func (UnimplementedEmberCacheServer) ZPopMax(context.Context, *ZPopMaxRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZPopMax not implemented")
+}
+func (UnimplementedEmberCacheServer) ZDiff(context.Context, *ZDiffRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZDiff not implemented")
+}
+func (UnimplementedEmberCacheServer) ZInter(context.Context, *ZInterRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZInter not implemented")
+}
+func (UnimplementedEmberCacheServer) ZUnion(context.Context, *ZUnionRequest) (*ZRangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZUnion not implemented")
+}
+func (UnimplementedEmberCacheServer) ZScan(context.Context, *ZScanRequest) (*ZScanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ZScan not implemented")
+}
+func (UnimplementedEmberCacheServer) SScan(context.Context, *SScanRequest) (*SScanResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SScan not implemented")
+}
+func (UnimplementedEmberCacheServer) Time(context.Context, *TimeRequest) (*TimeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Time not implemented")
+}
+func (UnimplementedEmberCacheServer) LastSave(context.Context, *LastSaveRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LastSave not implemented")
 }
 func (UnimplementedEmberCacheServer) Pipeline(grpc.BidiStreamingServer[PipelineRequest, PipelineResponse]) error {
 	return status.Error(codes.Unimplemented, "method Pipeline not implemented")
@@ -2581,6 +3205,708 @@ func _EmberCache_PubSubNumPat_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EmberCache_GetDel_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetDelRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).GetDel(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_GetDel_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).GetDel(ctx, req.(*GetDelRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_GetEx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetExRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).GetEx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_GetEx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).GetEx(ctx, req.(*GetExRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_GetRange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetRangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).GetRange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_GetRange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).GetRange(ctx, req.(*GetRangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SetRange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetRangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SetRange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SetRange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SetRange(ctx, req.(*SetRangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Copy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CopyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Copy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Copy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Copy(ctx, req.(*CopyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_RandomKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RandomKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).RandomKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_RandomKey_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).RandomKey(ctx, req.(*RandomKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Touch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TouchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Touch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Touch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Touch(ctx, req.(*TouchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LIndex_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LIndexRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LIndex(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LIndex_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LIndex(ctx, req.(*LIndexRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LSet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LSetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LSet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LSet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LSet(ctx, req.(*LSetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LTrim_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LTrimRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LTrim(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LTrim_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LTrim(ctx, req.(*LTrimRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LInsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LInsertRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LInsert(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LInsert_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LInsert(ctx, req.(*LInsertRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LRem_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LRemRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LRem(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LRem_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LRem(ctx, req.(*LRemRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LPos_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LPosRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LPos(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LPos_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LPos(ctx, req.(*LPosRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LMove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LMoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LMove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LMove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LMove(ctx, req.(*LMoveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SUnion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SUnionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SUnion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SUnion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SUnion(ctx, req.(*SUnionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SInter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SInterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SInter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SInter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SInter(ctx, req.(*SInterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SDiff_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SDiffRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SDiff(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SDiff_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SDiff(ctx, req.(*SDiffRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SUnionStore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SUnionStoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SUnionStore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SUnionStore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SUnionStore(ctx, req.(*SUnionStoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SInterStore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SInterStoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SInterStore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SInterStore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SInterStore(ctx, req.(*SInterStoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SDiffStore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SDiffStoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SDiffStore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SDiffStore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SDiffStore(ctx, req.(*SDiffStoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SRandMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SRandMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SRandMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SRandMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SRandMember(ctx, req.(*SRandMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SPop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SPopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SPop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SPop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SPop(ctx, req.(*SPopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SMisMember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SMisMemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SMisMember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SMisMember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SMisMember(ctx, req.(*SMisMemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_HScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).HScan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_HScan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).HScan(ctx, req.(*HScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZRevRank_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZRevRankRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZRevRank(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZRevRank_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZRevRank(ctx, req.(*ZRevRankRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZRevRange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZRevRangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZRevRange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZRevRange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZRevRange(ctx, req.(*ZRevRangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZCount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZCountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZCount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZCount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZCount(ctx, req.(*ZCountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZIncrBy_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZIncrByRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZIncrBy(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZIncrBy_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZIncrBy(ctx, req.(*ZIncrByRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZRangeByScore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZRangeByScoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZRangeByScore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZRangeByScore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZRangeByScore(ctx, req.(*ZRangeByScoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZRevRangeByScore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZRevRangeByScoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZRevRangeByScore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZRevRangeByScore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZRevRangeByScore(ctx, req.(*ZRevRangeByScoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZPopMin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZPopMinRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZPopMin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZPopMin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZPopMin(ctx, req.(*ZPopMinRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZPopMax_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZPopMaxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZPopMax(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZPopMax_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZPopMax(ctx, req.(*ZPopMaxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZDiff_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZDiffRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZDiff(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZDiff_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZDiff(ctx, req.(*ZDiffRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZInter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZInterRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZInter(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZInter_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZInter(ctx, req.(*ZInterRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZUnion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZUnionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZUnion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZUnion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZUnion(ctx, req.(*ZUnionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_ZScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).ZScan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_ZScan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).ZScan(ctx, req.(*ZScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_SScan_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SScanRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).SScan(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_SScan_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).SScan(ctx, req.(*SScanRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Time_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Time(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Time_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Time(ctx, req.(*TimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_LastSave_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LastSaveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).LastSave(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_LastSave_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).LastSave(ctx, req.(*LastSaveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _EmberCache_Pipeline_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(EmberCacheServer).Pipeline(&grpc.GenericServerStream[PipelineRequest, PipelineResponse]{ServerStream: stream})
 }
@@ -2882,6 +4208,162 @@ var EmberCache_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PubSubNumPat",
 			Handler:    _EmberCache_PubSubNumPat_Handler,
+		},
+		{
+			MethodName: "GetDel",
+			Handler:    _EmberCache_GetDel_Handler,
+		},
+		{
+			MethodName: "GetEx",
+			Handler:    _EmberCache_GetEx_Handler,
+		},
+		{
+			MethodName: "GetRange",
+			Handler:    _EmberCache_GetRange_Handler,
+		},
+		{
+			MethodName: "SetRange",
+			Handler:    _EmberCache_SetRange_Handler,
+		},
+		{
+			MethodName: "Copy",
+			Handler:    _EmberCache_Copy_Handler,
+		},
+		{
+			MethodName: "RandomKey",
+			Handler:    _EmberCache_RandomKey_Handler,
+		},
+		{
+			MethodName: "Touch",
+			Handler:    _EmberCache_Touch_Handler,
+		},
+		{
+			MethodName: "LIndex",
+			Handler:    _EmberCache_LIndex_Handler,
+		},
+		{
+			MethodName: "LSet",
+			Handler:    _EmberCache_LSet_Handler,
+		},
+		{
+			MethodName: "LTrim",
+			Handler:    _EmberCache_LTrim_Handler,
+		},
+		{
+			MethodName: "LInsert",
+			Handler:    _EmberCache_LInsert_Handler,
+		},
+		{
+			MethodName: "LRem",
+			Handler:    _EmberCache_LRem_Handler,
+		},
+		{
+			MethodName: "LPos",
+			Handler:    _EmberCache_LPos_Handler,
+		},
+		{
+			MethodName: "LMove",
+			Handler:    _EmberCache_LMove_Handler,
+		},
+		{
+			MethodName: "SUnion",
+			Handler:    _EmberCache_SUnion_Handler,
+		},
+		{
+			MethodName: "SInter",
+			Handler:    _EmberCache_SInter_Handler,
+		},
+		{
+			MethodName: "SDiff",
+			Handler:    _EmberCache_SDiff_Handler,
+		},
+		{
+			MethodName: "SUnionStore",
+			Handler:    _EmberCache_SUnionStore_Handler,
+		},
+		{
+			MethodName: "SInterStore",
+			Handler:    _EmberCache_SInterStore_Handler,
+		},
+		{
+			MethodName: "SDiffStore",
+			Handler:    _EmberCache_SDiffStore_Handler,
+		},
+		{
+			MethodName: "SRandMember",
+			Handler:    _EmberCache_SRandMember_Handler,
+		},
+		{
+			MethodName: "SPop",
+			Handler:    _EmberCache_SPop_Handler,
+		},
+		{
+			MethodName: "SMisMember",
+			Handler:    _EmberCache_SMisMember_Handler,
+		},
+		{
+			MethodName: "HScan",
+			Handler:    _EmberCache_HScan_Handler,
+		},
+		{
+			MethodName: "ZRevRank",
+			Handler:    _EmberCache_ZRevRank_Handler,
+		},
+		{
+			MethodName: "ZRevRange",
+			Handler:    _EmberCache_ZRevRange_Handler,
+		},
+		{
+			MethodName: "ZCount",
+			Handler:    _EmberCache_ZCount_Handler,
+		},
+		{
+			MethodName: "ZIncrBy",
+			Handler:    _EmberCache_ZIncrBy_Handler,
+		},
+		{
+			MethodName: "ZRangeByScore",
+			Handler:    _EmberCache_ZRangeByScore_Handler,
+		},
+		{
+			MethodName: "ZRevRangeByScore",
+			Handler:    _EmberCache_ZRevRangeByScore_Handler,
+		},
+		{
+			MethodName: "ZPopMin",
+			Handler:    _EmberCache_ZPopMin_Handler,
+		},
+		{
+			MethodName: "ZPopMax",
+			Handler:    _EmberCache_ZPopMax_Handler,
+		},
+		{
+			MethodName: "ZDiff",
+			Handler:    _EmberCache_ZDiff_Handler,
+		},
+		{
+			MethodName: "ZInter",
+			Handler:    _EmberCache_ZInter_Handler,
+		},
+		{
+			MethodName: "ZUnion",
+			Handler:    _EmberCache_ZUnion_Handler,
+		},
+		{
+			MethodName: "ZScan",
+			Handler:    _EmberCache_ZScan_Handler,
+		},
+		{
+			MethodName: "SScan",
+			Handler:    _EmberCache_SScan_Handler,
+		},
+		{
+			MethodName: "Time",
+			Handler:    _EmberCache_Time_Handler,
+		},
+		{
+			MethodName: "LastSave",
+			Handler:    _EmberCache_LastSave_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

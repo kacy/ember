@@ -403,6 +403,201 @@ class EmberCacheStub(object):
                 request_serializer=ember_dot_v1_dot_ember__pb2.PubSubNumPatRequest.SerializeToString,
                 response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
                 _registered_method=True)
+        self.GetDel = channel.unary_unary(
+                '/ember.v1.EmberCache/GetDel',
+                request_serializer=ember_dot_v1_dot_ember__pb2.GetDelRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.GetEx = channel.unary_unary(
+                '/ember.v1.EmberCache/GetEx',
+                request_serializer=ember_dot_v1_dot_ember__pb2.GetExRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.GetRange = channel.unary_unary(
+                '/ember.v1.EmberCache/GetRange',
+                request_serializer=ember_dot_v1_dot_ember__pb2.GetRangeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.SetRange = channel.unary_unary(
+                '/ember.v1.EmberCache/SetRange',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SetRangeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Copy = channel.unary_unary(
+                '/ember.v1.EmberCache/Copy',
+                request_serializer=ember_dot_v1_dot_ember__pb2.CopyRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+                _registered_method=True)
+        self.RandomKey = channel.unary_unary(
+                '/ember.v1.EmberCache/RandomKey',
+                request_serializer=ember_dot_v1_dot_ember__pb2.RandomKeyRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.Touch = channel.unary_unary(
+                '/ember.v1.EmberCache/Touch',
+                request_serializer=ember_dot_v1_dot_ember__pb2.TouchRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.LIndex = channel.unary_unary(
+                '/ember.v1.EmberCache/LIndex',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LIndexRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.LSet = channel.unary_unary(
+                '/ember.v1.EmberCache/LSet',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LSetRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+                _registered_method=True)
+        self.LTrim = channel.unary_unary(
+                '/ember.v1.EmberCache/LTrim',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LTrimRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+                _registered_method=True)
+        self.LInsert = channel.unary_unary(
+                '/ember.v1.EmberCache/LInsert',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LInsertRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.LRem = channel.unary_unary(
+                '/ember.v1.EmberCache/LRem',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LRemRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.LPos = channel.unary_unary(
+                '/ember.v1.EmberCache/LPos',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LPosRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.OptionalIntResponse.FromString,
+                _registered_method=True)
+        self.LMove = channel.unary_unary(
+                '/ember.v1.EmberCache/LMove',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LMoveRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.SUnion = channel.unary_unary(
+                '/ember.v1.EmberCache/SUnion',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SUnionRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+                _registered_method=True)
+        self.SInter = channel.unary_unary(
+                '/ember.v1.EmberCache/SInter',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SInterRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+                _registered_method=True)
+        self.SDiff = channel.unary_unary(
+                '/ember.v1.EmberCache/SDiff',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SDiffRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+                _registered_method=True)
+        self.SUnionStore = channel.unary_unary(
+                '/ember.v1.EmberCache/SUnionStore',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SUnionStoreRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.SInterStore = channel.unary_unary(
+                '/ember.v1.EmberCache/SInterStore',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SInterStoreRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.SDiffStore = channel.unary_unary(
+                '/ember.v1.EmberCache/SDiffStore',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SDiffStoreRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.SRandMember = channel.unary_unary(
+                '/ember.v1.EmberCache/SRandMember',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SRandMemberRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+                _registered_method=True)
+        self.SPop = channel.unary_unary(
+                '/ember.v1.EmberCache/SPop',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SPopRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+                _registered_method=True)
+        self.SMisMember = channel.unary_unary(
+                '/ember.v1.EmberCache/SMisMember',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SMisMemberRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.BoolArrayResponse.FromString,
+                _registered_method=True)
+        self.HScan = channel.unary_unary(
+                '/ember.v1.EmberCache/HScan',
+                request_serializer=ember_dot_v1_dot_ember__pb2.HScanRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.HScanResponse.FromString,
+                _registered_method=True)
+        self.ZRevRank = channel.unary_unary(
+                '/ember.v1.EmberCache/ZRevRank',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZRevRankRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.OptionalIntResponse.FromString,
+                _registered_method=True)
+        self.ZRevRange = channel.unary_unary(
+                '/ember.v1.EmberCache/ZRevRange',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZRevRangeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZCount = channel.unary_unary(
+                '/ember.v1.EmberCache/ZCount',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZCountRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.ZIncrBy = channel.unary_unary(
+                '/ember.v1.EmberCache/ZIncrBy',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZIncrByRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.FloatResponse.FromString,
+                _registered_method=True)
+        self.ZRangeByScore = channel.unary_unary(
+                '/ember.v1.EmberCache/ZRangeByScore',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZRangeByScoreRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZRevRangeByScore = channel.unary_unary(
+                '/ember.v1.EmberCache/ZRevRangeByScore',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZRevRangeByScoreRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZPopMin = channel.unary_unary(
+                '/ember.v1.EmberCache/ZPopMin',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZPopMinRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZPopMax = channel.unary_unary(
+                '/ember.v1.EmberCache/ZPopMax',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZPopMaxRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZDiff = channel.unary_unary(
+                '/ember.v1.EmberCache/ZDiff',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZDiffRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZInter = channel.unary_unary(
+                '/ember.v1.EmberCache/ZInter',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZInterRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZUnion = channel.unary_unary(
+                '/ember.v1.EmberCache/ZUnion',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZUnionRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+                _registered_method=True)
+        self.ZScan = channel.unary_unary(
+                '/ember.v1.EmberCache/ZScan',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZScanRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZScanResponse.FromString,
+                _registered_method=True)
+        self.SScan = channel.unary_unary(
+                '/ember.v1.EmberCache/SScan',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SScanRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.SScanResponse.FromString,
+                _registered_method=True)
+        self.Time = channel.unary_unary(
+                '/ember.v1.EmberCache/Time',
+                request_serializer=ember_dot_v1_dot_ember__pb2.TimeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.TimeResponse.FromString,
+                _registered_method=True)
+        self.LastSave = channel.unary_unary(
+                '/ember.v1.EmberCache/LastSave',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LastSaveRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
         self.Pipeline = channel.stream_stream(
                 '/ember.v1.EmberCache/Pipeline',
                 request_serializer=ember_dot_v1_dot_ember__pb2.PipelineRequest.SerializeToString,
@@ -874,6 +1069,256 @@ class EmberCacheServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetDel(self, request, context):
+        """--- strings (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetEx(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetRange(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SetRange(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Copy(self, request, context):
+        """--- keys (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RandomKey(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Touch(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LIndex(self, request, context):
+        """--- lists (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LSet(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LTrim(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LInsert(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LRem(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LPos(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LMove(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SUnion(self, request, context):
+        """--- sets (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SInter(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SDiff(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SUnionStore(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SInterStore(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SDiffStore(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SRandMember(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SPop(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SMisMember(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HScan(self, request, context):
+        """--- hashes (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZRevRank(self, request, context):
+        """--- sorted sets (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZRevRange(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZCount(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZIncrBy(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZRangeByScore(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZRevRangeByScore(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZPopMin(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZPopMax(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZDiff(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZInter(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZUnion(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ZScan(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def SScan(self, request, context):
+        """--- scans ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Time(self, request, context):
+        """--- server (extended) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def LastSave(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Pipeline(self, request_iterator, context):
         """--- streaming ---
         bidirectional streaming for batch operations, matching RESP3 pipelining.
@@ -1249,6 +1694,201 @@ def add_EmberCacheServicer_to_server(servicer, server):
             'PubSubNumPat': grpc.unary_unary_rpc_method_handler(
                     servicer.PubSubNumPat,
                     request_deserializer=ember_dot_v1_dot_ember__pb2.PubSubNumPatRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'GetDel': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetDel,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.GetDelRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'GetEx': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetEx,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.GetExRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'GetRange': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetRange,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.GetRangeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'SetRange': grpc.unary_unary_rpc_method_handler(
+                    servicer.SetRange,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SetRangeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Copy': grpc.unary_unary_rpc_method_handler(
+                    servicer.Copy,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.CopyRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.BoolResponse.SerializeToString,
+            ),
+            'RandomKey': grpc.unary_unary_rpc_method_handler(
+                    servicer.RandomKey,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.RandomKeyRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'Touch': grpc.unary_unary_rpc_method_handler(
+                    servicer.Touch,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.TouchRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'LIndex': grpc.unary_unary_rpc_method_handler(
+                    servicer.LIndex,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LIndexRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'LSet': grpc.unary_unary_rpc_method_handler(
+                    servicer.LSet,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LSetRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.StatusResponse.SerializeToString,
+            ),
+            'LTrim': grpc.unary_unary_rpc_method_handler(
+                    servicer.LTrim,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LTrimRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.StatusResponse.SerializeToString,
+            ),
+            'LInsert': grpc.unary_unary_rpc_method_handler(
+                    servicer.LInsert,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LInsertRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'LRem': grpc.unary_unary_rpc_method_handler(
+                    servicer.LRem,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LRemRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'LPos': grpc.unary_unary_rpc_method_handler(
+                    servicer.LPos,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LPosRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.OptionalIntResponse.SerializeToString,
+            ),
+            'LMove': grpc.unary_unary_rpc_method_handler(
+                    servicer.LMove,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LMoveRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'SUnion': grpc.unary_unary_rpc_method_handler(
+                    servicer.SUnion,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SUnionRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.KeysResponse.SerializeToString,
+            ),
+            'SInter': grpc.unary_unary_rpc_method_handler(
+                    servicer.SInter,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SInterRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.KeysResponse.SerializeToString,
+            ),
+            'SDiff': grpc.unary_unary_rpc_method_handler(
+                    servicer.SDiff,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SDiffRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.KeysResponse.SerializeToString,
+            ),
+            'SUnionStore': grpc.unary_unary_rpc_method_handler(
+                    servicer.SUnionStore,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SUnionStoreRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'SInterStore': grpc.unary_unary_rpc_method_handler(
+                    servicer.SInterStore,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SInterStoreRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'SDiffStore': grpc.unary_unary_rpc_method_handler(
+                    servicer.SDiffStore,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SDiffStoreRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'SRandMember': grpc.unary_unary_rpc_method_handler(
+                    servicer.SRandMember,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SRandMemberRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.SerializeToString,
+            ),
+            'SPop': grpc.unary_unary_rpc_method_handler(
+                    servicer.SPop,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SPopRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.SerializeToString,
+            ),
+            'SMisMember': grpc.unary_unary_rpc_method_handler(
+                    servicer.SMisMember,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SMisMemberRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.BoolArrayResponse.SerializeToString,
+            ),
+            'HScan': grpc.unary_unary_rpc_method_handler(
+                    servicer.HScan,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.HScanRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.HScanResponse.SerializeToString,
+            ),
+            'ZRevRank': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZRevRank,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZRevRankRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.OptionalIntResponse.SerializeToString,
+            ),
+            'ZRevRange': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZRevRange,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZRevRangeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZCount': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZCount,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZCountRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'ZIncrBy': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZIncrBy,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZIncrByRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.FloatResponse.SerializeToString,
+            ),
+            'ZRangeByScore': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZRangeByScore,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZRangeByScoreRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZRevRangeByScore': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZRevRangeByScore,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZRevRangeByScoreRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZPopMin': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZPopMin,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZPopMinRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZPopMax': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZPopMax,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZPopMaxRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZDiff': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZDiff,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZDiffRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZInter': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZInter,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZInterRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZUnion': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZUnion,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZUnionRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZRangeResponse.SerializeToString,
+            ),
+            'ZScan': grpc.unary_unary_rpc_method_handler(
+                    servicer.ZScan,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZScanRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZScanResponse.SerializeToString,
+            ),
+            'SScan': grpc.unary_unary_rpc_method_handler(
+                    servicer.SScan,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SScanRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.SScanResponse.SerializeToString,
+            ),
+            'Time': grpc.unary_unary_rpc_method_handler(
+                    servicer.Time,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.TimeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.TimeResponse.SerializeToString,
+            ),
+            'LastSave': grpc.unary_unary_rpc_method_handler(
+                    servicer.LastSave,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LastSaveRequest.FromString,
                     response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
             ),
             'Pipeline': grpc.stream_stream_rpc_method_handler(
@@ -3231,6 +3871,1059 @@ class EmberCache(object):
             target,
             '/ember.v1.EmberCache/PubSubNumPat',
             ember_dot_v1_dot_ember__pb2.PubSubNumPatRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetDel(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/GetDel',
+            ember_dot_v1_dot_ember__pb2.GetDelRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetEx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/GetEx',
+            ember_dot_v1_dot_ember__pb2.GetExRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetRange(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/GetRange',
+            ember_dot_v1_dot_ember__pb2.GetRangeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SetRange(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SetRange',
+            ember_dot_v1_dot_ember__pb2.SetRangeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Copy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Copy',
+            ember_dot_v1_dot_ember__pb2.CopyRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RandomKey(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/RandomKey',
+            ember_dot_v1_dot_ember__pb2.RandomKeyRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Touch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Touch',
+            ember_dot_v1_dot_ember__pb2.TouchRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LIndex(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LIndex',
+            ember_dot_v1_dot_ember__pb2.LIndexRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LSet(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LSet',
+            ember_dot_v1_dot_ember__pb2.LSetRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LTrim(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LTrim',
+            ember_dot_v1_dot_ember__pb2.LTrimRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.StatusResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LInsert(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LInsert',
+            ember_dot_v1_dot_ember__pb2.LInsertRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LRem(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LRem',
+            ember_dot_v1_dot_ember__pb2.LRemRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LPos(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LPos',
+            ember_dot_v1_dot_ember__pb2.LPosRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.OptionalIntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LMove(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LMove',
+            ember_dot_v1_dot_ember__pb2.LMoveRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SUnion(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SUnion',
+            ember_dot_v1_dot_ember__pb2.SUnionRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SInter(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SInter',
+            ember_dot_v1_dot_ember__pb2.SInterRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SDiff(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SDiff',
+            ember_dot_v1_dot_ember__pb2.SDiffRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.KeysResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SUnionStore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SUnionStore',
+            ember_dot_v1_dot_ember__pb2.SUnionStoreRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SInterStore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SInterStore',
+            ember_dot_v1_dot_ember__pb2.SInterStoreRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SDiffStore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SDiffStore',
+            ember_dot_v1_dot_ember__pb2.SDiffStoreRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SRandMember(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SRandMember',
+            ember_dot_v1_dot_ember__pb2.SRandMemberRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SPop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SPop',
+            ember_dot_v1_dot_ember__pb2.SPopRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SMisMember(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SMisMember',
+            ember_dot_v1_dot_ember__pb2.SMisMemberRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.BoolArrayResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HScan(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/HScan',
+            ember_dot_v1_dot_ember__pb2.HScanRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.HScanResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZRevRank(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZRevRank',
+            ember_dot_v1_dot_ember__pb2.ZRevRankRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.OptionalIntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZRevRange(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZRevRange',
+            ember_dot_v1_dot_ember__pb2.ZRevRangeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZCount(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZCount',
+            ember_dot_v1_dot_ember__pb2.ZCountRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZIncrBy(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZIncrBy',
+            ember_dot_v1_dot_ember__pb2.ZIncrByRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.FloatResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZRangeByScore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZRangeByScore',
+            ember_dot_v1_dot_ember__pb2.ZRangeByScoreRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZRevRangeByScore(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZRevRangeByScore',
+            ember_dot_v1_dot_ember__pb2.ZRevRangeByScoreRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZPopMin(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZPopMin',
+            ember_dot_v1_dot_ember__pb2.ZPopMinRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZPopMax(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZPopMax',
+            ember_dot_v1_dot_ember__pb2.ZPopMaxRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZDiff(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZDiff',
+            ember_dot_v1_dot_ember__pb2.ZDiffRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZInter(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZInter',
+            ember_dot_v1_dot_ember__pb2.ZInterRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZUnion(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZUnion',
+            ember_dot_v1_dot_ember__pb2.ZUnionRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZRangeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ZScan(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/ZScan',
+            ember_dot_v1_dot_ember__pb2.ZScanRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZScanResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SScan(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/SScan',
+            ember_dot_v1_dot_ember__pb2.SScanRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.SScanResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Time(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Time',
+            ember_dot_v1_dot_ember__pb2.TimeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.TimeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def LastSave(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/LastSave',
+            ember_dot_v1_dot_ember__pb2.LastSaveRequest.SerializeToString,
             ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
             options,
             channel_credentials,
