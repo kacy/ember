@@ -562,9 +562,9 @@ metrics-port = 9090
 then scrape `http://your-host:9090/metrics` from Prometheus. key metrics to watch:
 
 - `ember_commands_total` — ops/sec by command
-- `ember_command_duration_seconds` — latency histograms
+- `ember_commands_duration_seconds` — latency histograms
 - `ember_memory_used_bytes` — memory consumption per shard
-- `ember_connected_clients` — active connections
+- `ember_connections_active` — active connections
 - `ember_keyspace_hits_total` / `ember_keyspace_misses_total` — cache hit rate
 
 ### 8. run under traffic

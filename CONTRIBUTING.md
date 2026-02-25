@@ -64,7 +64,7 @@ crates/
 ├── ember-core/       # sharded engine and data structures
 ├── ember-protocol/   # resp3 parsing and commands
 ├── ember-persistence/# aof and snapshots
-├── ember-cluster/    # distributed clustering (wip)
+├── ember-cluster/    # distributed clustering (raft, gossip, slots)
 └── ember-cli/        # command-line client
 ```
 
