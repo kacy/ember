@@ -35,7 +35,6 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **protected mode** — rejects non-loopback connections when no password is set on public binds
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
-- **concurrent mode** — experimental DashMap-backed keyspace for lock-free GET/SET (2x faster than Redis)
 - **cluster mode** — distributed keyspace across multiple nodes: 16384 hash slots, SWIM gossip, Raft-based topology, MOVED/ASK redirects, live slot migration
 - **active expiration** — background sampling cleans up expired keys without client access
 - **memory limits** — per-shard byte-level accounting with configurable limits
@@ -102,9 +101,6 @@ cargo build --release
 # with encryption at rest (requires --features encryption)
 ./target/release/ember-server --data-dir ./data --appendonly \
   --encryption-key-file /path/to/keyfile
-
-# concurrent mode (experimental, 2x faster for GET/SET)
-./target/release/ember-server --concurrent
 
 # with TLS (runs alongside plain TCP)
 ./target/release/ember-server --tls-port 6380 \
@@ -372,7 +368,6 @@ runtime changes via `CONFIG SET` persist in memory. use `CONFIG REWRITE` to flus
 | `--metrics-port` | — | prometheus /metrics and /health HTTP port |
 | `--slowlog-log-slower-than` | 10000 | log commands slower than N microseconds (-1 disables) |
 | `--slowlog-max-len` | 128 | max entries in slow log ring buffer |
-| `--concurrent` | false | use DashMap-backed keyspace (experimental, faster GET/SET) |
 | `--requirepass` | — | require AUTH with this password before running commands |
 | `--tls-port` | — | port for TLS connections (enables TLS when set) |
 | `--tls-cert-file` | — | path to server certificate (PEM) |
@@ -439,17 +434,16 @@ crates/
 
 tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md](bench/README.md) for full results.
 
-| mode | vs redis | vs dragonfly | best for |
-|------|----------|--------------|----------|
-| concurrent | **1.9x faster** | **2.2-2.5x faster**\* | simple GET/SET workloads |
-| sharded | **1.8x faster** | **2.1-2.5x faster**\* | all data types |
+| | vs redis | vs dragonfly |
+|------|----------|--------------|
+| SET | **1.9x faster** | **2.2x faster** |
+| GET | **1.8x faster** | **2.2x faster** |
 
-\*redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grain of salt — ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
+redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grain of salt — ember is a small indie project; Redis and Dragonfly are battle-tested systems built by large teams over many years. see [bench/README.md](bench/README.md) for important caveats.
 
 **highlights**:
-- sharded mode: 1.76M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
-- concurrent mode: 1.79M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
-- p99 latency: 0.74ms SET, 0.70ms GET (P=1, concurrent mode)
+- 1.79M SET/sec, 2.00M GET/sec (redis-benchmark, 64B, P=16)
+- p99 latency: 1.25ms SET, 1.17ms GET (P=1)
 - vector insert: 5.5k vectors/sec (8-shard), 2.4k vectors/sec (single key); query: 1.8k queries/sec, p99=0.62ms
 - vector memory: 4-6x less than chromadb/pgvector/qdrant (29-31 MB vs 139-178 MB for 100k vectors)
 - memory: 180 bytes/key for strings, 215 bytes/key for hashes (redis: 173/170 bytes/key)
@@ -465,13 +459,9 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 
 ## architecture
 
-ember offers two execution modes for the local keyspace:
+ember uses a thread-per-core architecture with channel-based routing. each shard owns a partition of the keyspace with no cross-shard locking on the hot path. supports all data types and enables atomic multi-key operations.
 
-**sharded mode** (default): thread-per-core with channel-based routing. each shard owns a partition of the keyspace with no cross-shard locking on the hot path. supports all data types and enables atomic multi-key operations.
-
-**concurrent mode** (`--concurrent`): lock-free DashMap access. 2-3x faster than Redis for simple GET/SET but limited to string operations.
-
-**cluster mode** (`--cluster-enabled`): multiple ember nodes, each running in sharded or concurrent mode, form a single distributed cache. the keyspace is partitioned into 16384 hash slots using CRC16 — each node owns a non-overlapping range. SWIM gossip propagates membership and health across nodes; topology changes (adding nodes, reassigning slots) go through a Raft consensus group so the cluster view is always consistent. clients are routed via MOVED redirects when a key lands on a different node, and ASK redirects during live slot migration.
+**cluster mode** (`--cluster-enabled`): multiple ember nodes form a single distributed cache. the keyspace is partitioned into 16384 hash slots using CRC16 — each node owns a non-overlapping range. SWIM gossip propagates membership and health across nodes; topology changes (adding nodes, reassigning slots) go through a Raft consensus group so the cluster view is always consistent. clients are routed via MOVED redirects when a key lands on a different node, and ASK redirects during live slot migration.
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -481,7 +471,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 |-------|-------------|
 | [redis compatibility](docs/compatibility.md) | command-by-command support matrix |
 | [migrating from redis](docs/migration-from-redis.md) | config mapping, behavioral differences, step-by-step migration |
-| [performance tuning](docs/performance-tuning.md) | shard count, pipeline depth, mode selection |
+| [performance tuning](docs/performance-tuning.md) | shard count, pipeline depth, memory tuning |
 | [production checklist](docs/production-checklist.md) | OS tuning, memory limits, persistence, monitoring, security |
 | [troubleshooting](docs/troubleshooting.md) | common issues and solutions |
 | [client libraries](docs/clients.md) | using existing Redis clients (ioredis, go-redis, redis-py, etc.) with Ember |

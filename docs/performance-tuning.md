@@ -27,33 +27,6 @@ if you're running ember inside a container with a cgroup cpu limit, set `--shard
 
 ---
 
-## concurrent vs sharded mode
-
-ember has two execution modes:
-
-**sharded (default)**
-
-thread-per-core architecture. each shard owns its keyspace partition and processes requests on a dedicated thread. supports all data types: strings, lists, sets, hashes, and sorted sets. best choice for mixed workloads or any workload that touches non-string types.
-
-**concurrent (`--concurrent` flag)**
-
-uses a DashMap-backed keyspace shared across all threads. string operations only. trades breadth for raw throughput — the absence of cross-thread routing overhead makes simple GET/SET slightly faster at high pipeline depths.
-
-when to use concurrent mode:
-
-- your workload is 95%+ string GET/SET operations
-- you want maximum throughput and don't need other data types
-- you're using ember as a pure string cache
-
-when to use sharded mode (the default):
-
-- you use lists, sets, hashes, or sorted sets
-- you need cross-key operations like MSET, MGET
-- you want the full command set
-- you need TTL-based eviction and blocking commands like BLPOP
-
----
-
 ## pipeline depth
 
 pipelining lets a client send multiple commands without waiting for each response. it is the single most effective lever for throughput.

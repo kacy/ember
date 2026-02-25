@@ -75,7 +75,7 @@ on a 32 GB host, a reasonable starting point is `maxmemory = 25gb`.
 
 **per-key overhead**
 
-in sharded mode, each key consumes roughly 128 bytes of overhead above the value itself. this includes the key string, entry metadata (expiry, access time), hash table bookkeeping, and shard-level tracking.
+each key consumes roughly 128 bytes of overhead above the value itself. this includes the key string, entry metadata (expiry, access time), hash table bookkeeping, and shard-level tracking.
 
 **capacity formula**
 

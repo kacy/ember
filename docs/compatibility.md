@@ -48,7 +48,7 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | PERSIST | ✓ | |
 | PTTL | ✓ | |
 | PEXPIRE | ✓ | |
-| RENAME | ~ | source and destination must hash to the same shard in sharded mode |
+| RENAME | ~ | source and destination must hash to the same shard |
 | TYPE | ✓ | |
 | KEYS | ✓ | glob patterns supported |
 | SCAN | ✓ | cursor encoding is shard-aware but opaque to clients — functionally identical |
