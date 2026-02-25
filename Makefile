@@ -155,8 +155,7 @@ proto-py:
 	cd clients/ember-py && $(MAKE) proto-gen
 
 proto-ts:
-	@echo "TypeScript gRPC client codegen: run the following in clients/ember-ts/"
-	@echo "  npx @grpc/proto-loader-gen-types proto/ember/v1/ember.proto --outDir=src/generated"
+	cd clients/ember-ts && $(MAKE) proto-gen
 
 # --- helm ---
 
