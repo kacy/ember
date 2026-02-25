@@ -15,7 +15,7 @@
 //! | `raft-snapshot` | latest snapshot blob | atomic rewrite |
 //!
 //! Each file starts with a 5-byte header (`[magic:4B][version:1B]`) followed
-//! by length-prefixed, CRC32-checksummed records encoded with bincode.
+//! by length-prefixed, CRC32-checksummed records encoded with postcard.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -61,8 +61,8 @@ pub enum RaftDiskError {
     #[error("crc32 mismatch (expected {expected:#010x}, got {actual:#010x})")]
     ChecksumMismatch { expected: u32, actual: u32 },
 
-    #[error("bincode error: {0}")]
-    Bincode(String),
+    #[error("postcard error: {0}")]
+    Postcard(String),
 
     #[error("record payload too large ({size} bytes, max {MAX_RECORD_SIZE})")]
     RecordTooLarge { size: u32 },
@@ -316,9 +316,10 @@ fn read_header(
     Ok(())
 }
 
-/// Writes a single record: `[payload_len:4B LE][payload:bincode][crc32:4B LE]`
+/// Writes a single record: `[payload_len:4B LE][payload:postcard][crc32:4B LE]`
 fn write_record<T: Serialize>(w: &mut impl Write, value: &T) -> Result<(), RaftDiskError> {
-    let payload = bincode::serialize(value).map_err(|e| RaftDiskError::Bincode(e.to_string()))?;
+    let payload =
+        postcard::to_allocvec(value).map_err(|e| RaftDiskError::Postcard(e.to_string()))?;
     let len = payload.len() as u32;
     w.write_all(&len.to_le_bytes())?;
     w.write_all(&payload)?;
@@ -360,7 +361,7 @@ fn read_record<T: for<'de> Deserialize<'de>>(
     }
 
     let value =
-        bincode::deserialize(&payload).map_err(|e| RaftDiskError::Bincode(e.to_string()))?;
+        postcard::from_bytes(&payload).map_err(|e| RaftDiskError::Postcard(e.to_string()))?;
     Ok(Some(value))
 }
 
@@ -428,8 +429,10 @@ fn recover_log_file(path: &Path) -> Result<(BTreeMap<u64, Entry<TypeConfig>>, u6
 
         match read_record::<Entry<TypeConfig>>(&mut reader) {
             Ok(Some(entry)) => {
-                let payload_bytes = bincode::serialized_size(&entry)
-                    .map_err(|e| RaftDiskError::Bincode(e.to_string()))?;
+                let payload_bytes =
+                    postcard::to_allocvec(&entry)
+                        .map_err(|e| RaftDiskError::Postcard(e.to_string()))?
+                        .len() as u64;
                 // record size: 4 (len) + payload + 4 (crc)
                 valid_pos += 4 + payload_bytes + 4;
                 entries.insert(entry.log_id.index, entry);

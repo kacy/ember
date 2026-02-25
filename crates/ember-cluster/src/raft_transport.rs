@@ -1,9 +1,10 @@
 //! TCP framing for Raft RPC messages.
 //!
 //! Length-prefixed framing: a 4-byte big-endian u32 length field followed by
-//! a bincode payload. Bincode is 2-5× smaller and 5-10× faster to encode than
-//! JSON for the numeric-heavy Raft message types. Used by `RaftNetworkClient`
-//! to send RPCs and by `spawn_raft_listener` to receive them.
+//! a postcard payload. Postcard is compact, no-std friendly, and purpose-built
+//! for serialization — well suited to the numeric-heavy Raft message types.
+//! Used by `RaftNetworkClient` to send RPCs and by `spawn_raft_listener` to
+//! receive them.
 //!
 //! When a [`ClusterSecret`] is configured, an HMAC-SHA256 tag is appended after
 //! the payload (inside the length-delimited frame). The receiver verifies the
@@ -43,21 +44,21 @@ pub(crate) enum RaftRpcResponse {
     InstallSnapshot(InstallSnapshotResponse<u64>),
 }
 
-/// Writes a length-prefixed bincode frame to `w`.
+/// Writes a length-prefixed postcard frame to `w`.
 pub(crate) async fn write_frame<W, T>(w: &mut W, msg: &T) -> io::Result<()>
 where
     W: AsyncWriteExt + Unpin,
     T: Serialize,
 {
     let data =
-        bincode::serialize(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        postcard::to_allocvec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let len = data.len() as u32;
     w.write_all(&len.to_be_bytes()).await?;
     w.write_all(&data).await?;
     Ok(())
 }
 
-/// Reads a length-prefixed bincode frame from `r`, rejecting oversized frames.
+/// Reads a length-prefixed postcard frame from `r`, rejecting oversized frames.
 pub(crate) async fn read_frame<R, T>(r: &mut R) -> io::Result<T>
 where
     R: AsyncReadExt + Unpin,
@@ -74,13 +75,13 @@ where
     }
     let mut data = vec![0u8; len];
     r.read_exact(&mut data).await?;
-    bincode::deserialize(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    postcard::from_bytes(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Writes a length-prefixed frame with an appended HMAC-SHA256 tag.
 ///
-/// Wire format: `[4-byte len][bincode payload][32-byte HMAC tag]`
-/// where `len = bincode_len + 32`.
+/// Wire format: `[4-byte len][postcard payload][32-byte HMAC tag]`
+/// where `len = postcard_len + 32`.
 pub(crate) async fn write_frame_authenticated<W, T>(
     w: &mut W,
     msg: &T,
@@ -91,7 +92,7 @@ where
     T: Serialize,
 {
     let data =
-        bincode::serialize(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        postcard::to_allocvec(msg).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let tag = secret.sign(&data);
     let total_len = (data.len() + TAG_LEN) as u32;
     w.write_all(&total_len.to_be_bytes()).await?;
@@ -134,5 +135,5 @@ where
             "raft auth failed",
         ));
     }
-    bincode::deserialize(payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    postcard::from_bytes(payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
