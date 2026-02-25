@@ -1712,12 +1712,12 @@ mod tests {
 
     #[test]
     fn safety_margin_rejects_near_raw_limit() {
-        // one entry = 1 (key) + 3 (val) + 100 (overhead) = 104 bytes.
-        // configure max_memory = 116. effective limit = 116 * 90 / 100 = 104.
+        // one entry = 1 (key) + 3 (val) + ENTRY_OVERHEAD (104) = 108 bytes.
+        // configure max_memory = 120. effective limit = 120 * 90 / 100 = 108.
         // the entry fills exactly the effective limit, so a second entry should
         // be rejected even though the raw limit has 12 bytes of headroom.
         let config = ShardConfig {
-            max_memory: Some(116),
+            max_memory: Some(120),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
