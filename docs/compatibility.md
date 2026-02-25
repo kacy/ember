@@ -25,14 +25,14 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | INCRBYFLOAT | ✓ | |
 | APPEND | ✓ | |
 | STRLEN | ✓ | |
+| GETRANGE | ✓ | |
+| SETRANGE | ✓ | |
 | GETSET | ✗ | use `SET key value GET` pattern instead |
 | GETDEL | ✗ | not implemented |
 | GETEX | ✗ | not implemented |
 | SETNX | ✗ | use `SET key value NX` instead |
 | MSETNX | ✗ | not implemented |
-| SETRANGE | ✗ | not implemented |
-| GETRANGE | ✗ | not implemented |
-| SUBSTR | ✗ | not implemented |
+| SUBSTR | ✗ | deprecated; use GETRANGE instead |
 
 ---
 
@@ -49,25 +49,26 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | PTTL | ✓ | |
 | PEXPIRE | ✓ | |
 | RENAME | ~ | source and destination must hash to the same shard in sharded mode |
-| RENAMENX | ✗ | not implemented |
 | TYPE | ✓ | |
 | KEYS | ✓ | glob patterns supported |
 | SCAN | ✓ | cursor encoding is shard-aware but opaque to clients — functionally identical |
-| COPY | ✗ | not implemented |
+| COPY | ✓ | |
+| TOUCH | ✓ | |
+| RANDOMKEY | ✓ | |
+| SORT | ✓ | basic sorting with ALPHA, ASC/DESC, LIMIT |
+| OBJECT ENCODING | ✓ | |
+| OBJECT REFCOUNT | ✓ | |
+| RESTORE | ~ | supported for cluster MIGRATE only |
+| RENAMENX | ✗ | not implemented |
 | MOVE | ✗ | single database only |
 | SELECT | ✗ | single database only |
 | SWAPDB | ✗ | single database only |
 | DUMP | ✗ | not implemented |
-| RESTORE | ~ | supported for cluster MIGRATE only |
-| OBJECT | ✗ | not implemented |
 | WAIT | ✗ | not implemented |
-| TOUCH | ✗ | not implemented |
 | EXPIREAT | ✗ | not implemented |
 | PEXPIREAT | ✗ | not implemented |
 | EXPIRETIME | ✗ | not implemented |
 | PEXPIRETIME | ✗ | not implemented |
-| RANDOMKEY | ✗ | not implemented |
-| SORT | ✗ | not implemented |
 
 ---
 
@@ -81,19 +82,19 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | RPOP | ✓ | |
 | LRANGE | ✓ | |
 | LLEN | ✓ | |
-| LINSERT | ✗ | not implemented |
-| LSET | ✗ | not implemented |
-| LINDEX | ✗ | not implemented |
-| LTRIM | ✗ | not implemented |
-| LPOS | ✗ | not implemented |
-| LMOVE | ✗ | not implemented |
-| LMPOP | ✗ | not implemented |
+| LINDEX | ✓ | |
+| LSET | ✓ | |
+| LTRIM | ✓ | |
+| LINSERT | ✓ | BEFORE and AFTER |
+| LREM | ✓ | |
+| LPOS | ✓ | |
 | BLPOP | ✓ | multi-key with timeout, blocks until element available |
 | BRPOP | ✓ | multi-key with timeout, blocks until element available |
-| BLMOVE | ✗ | blocking operations not implemented |
+| LMOVE | ✗ | not implemented |
+| LMPOP | ✗ | not implemented |
+| BLMOVE | ✗ | not implemented |
 | LPUSHX | ✗ | not implemented |
 | RPUSHX | ✗ | not implemented |
-| LREM | ✗ | not implemented |
 
 ---
 
@@ -111,9 +112,9 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | HKEYS | ✓ | |
 | HVALS | ✓ | |
 | HMGET | ✓ | |
-| HMSET | ✗ | use HSET with multiple fields instead |
+| HSCAN | ✓ | |
+| HMSET | ✗ | deprecated; use HSET with multiple fields instead |
 | HINCRBYFLOAT | ✗ | not implemented |
-| HSCAN | ✗ | not implemented |
 | HRANDFIELD | ✗ | not implemented |
 
 ---
@@ -127,18 +128,18 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | SMEMBERS | ✓ | |
 | SISMEMBER | ✓ | |
 | SCARD | ✓ | |
-| SMISMEMBER | ✗ | not implemented |
+| SMISMEMBER | ✓ | |
+| SUNION | ✓ | |
+| SINTER | ✓ | |
+| SDIFF | ✓ | |
+| SUNIONSTORE | ✓ | |
+| SINTERSTORE | ✓ | |
+| SDIFFSTORE | ✓ | |
+| SRANDMEMBER | ✓ | optional count argument |
+| SPOP | ✓ | optional count argument |
+| SSCAN | ✓ | |
 | SMOVE | ✗ | not implemented |
-| SUNION | ✗ | not implemented |
-| SINTER | ✗ | not implemented |
-| SDIFF | ✗ | not implemented |
-| SUNIONSTORE | ✗ | not implemented |
-| SINTERSTORE | ✗ | not implemented |
-| SDIFFSTORE | ✗ | not implemented |
 | SINTERCARD | ✗ | not implemented |
-| SRANDMEMBER | ✗ | not implemented |
-| SPOP | ✗ | not implemented |
-| SSCAN | ✗ | not implemented |
 
 ---
 
@@ -150,19 +151,20 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | ZREM | ✓ | multi-member |
 | ZSCORE | ✓ | |
 | ZRANK | ✓ | |
+| ZREVRANK | ✓ | |
 | ZCARD | ✓ | |
 | ZRANGE | ✓ | rank-based with optional WITHSCORES |
-| ZINCRBY | ✗ | not implemented |
-| ZREVRANK | ✗ | not implemented |
-| ZREVRANGE | ✗ | not implemented |
-| ZRANGEBYSCORE | ✗ | not implemented |
-| ZREVRANGEBYSCORE | ✗ | not implemented |
+| ZREVRANGE | ✓ | with optional WITHSCORES |
+| ZINCRBY | ✓ | |
+| ZRANGEBYSCORE | ✓ | with optional WITHSCORES and LIMIT |
+| ZREVRANGEBYSCORE | ✓ | with optional WITHSCORES and LIMIT |
+| ZCOUNT | ✓ | |
+| ZPOPMIN | ✓ | optional count argument |
+| ZPOPMAX | ✓ | optional count argument |
+| ZSCAN | ✓ | |
 | ZRANGEBYLEX | ✗ | not implemented |
 | ZRANGESTORE | ✗ | not implemented |
-| ZCOUNT | ✗ | not implemented |
 | ZLEXCOUNT | ✗ | not implemented |
-| ZPOPMIN | ✗ | not implemented |
-| ZPOPMAX | ✗ | not implemented |
 | BZPOPMIN | ✗ | not implemented |
 | BZPOPMAX | ✗ | not implemented |
 | ZRANDMEMBER | ✗ | not implemented |
@@ -174,7 +176,6 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | ZDIFF | ✗ | not implemented |
 | ZMPOP | ✗ | not implemented |
 | ZMSCORE | ✗ | not implemented |
-| ZSCAN | ✗ | not implemented |
 
 ---
 
@@ -209,27 +210,31 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | INFO | ✓ | server, keyspace, replication, clients, memory, stats sections |
 | DBSIZE | ✓ | |
 | FLUSHDB | ✓ | ASYNC mode supported |
-| FLUSHALL | ✗ | use FLUSHDB instead |
 | BGSAVE | ✓ | triggers background snapshot |
 | BGREWRITEAOF | ✓ | rewrites AOF from current snapshot |
-| SAVE | ✗ | not implemented |
-| LASTSAVE | ✗ | not implemented |
+| TIME | ✓ | |
+| LASTSAVE | ✓ | unix timestamp of last successful save |
+| ROLE | ✓ | returns master/slave role and replication info |
+| MONITOR | ✓ | real-time command stream |
 | SLOWLOG GET | ✓ | optional count argument |
 | SLOWLOG LEN | ✓ | |
 | SLOWLOG RESET | ✓ | |
-| DEBUG | ✗ | not implemented |
 | CONFIG GET | ✓ | glob pattern matching |
-| CONFIG SET | ✓ | mutable params: slowlog-log-slower-than, slowlog-max-len |
-| CONFIG REWRITE | ✗ | not implemented |
+| CONFIG SET | ✓ | runtime-mutable parameters |
+| CONFIG REWRITE | ✓ | flushes runtime config back to file |
+| CLIENT ID | ✓ | |
+| CLIENT SETNAME | ✓ | |
+| CLIENT GETNAME | ✓ | |
+| CLIENT LIST | ✓ | |
+| FLUSHALL | ✗ | use FLUSHDB instead |
+| SAVE | ✗ | use BGSAVE instead |
+| SHUTDOWN | ✗ | use SIGTERM instead |
+| DEBUG | ✗ | not implemented |
 | CONFIG RESETSTAT | ✗ | not implemented |
 | COMMAND | ✗ | not implemented |
 | COMMAND COUNT | ✗ | not implemented |
 | COMMAND INFO | ✗ | not implemented |
 | COMMAND DOCS | ✗ | not implemented |
-| CLIENT LIST | ✗ | not implemented |
-| CLIENT SETNAME | ✗ | not implemented |
-| CLIENT GETNAME | ✗ | not implemented |
-| CLIENT ID | ✗ | not implemented |
 | CLIENT KILL | ✗ | not implemented |
 | CLIENT PAUSE | ✗ | not implemented |
 | CLIENT UNPAUSE | ✗ | not implemented |
@@ -240,7 +245,6 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | MEMORY STATS | ✗ | not implemented |
 | MEMORY DOCTOR | ✗ | not implemented |
 | RESET | ✗ | not implemented |
-| SHUTDOWN | ✗ | use SIGTERM instead |
 | REPLICAOF | ✗ | use CLUSTER REPLICATE instead |
 | SLAVEOF | ✗ | use CLUSTER REPLICATE instead |
 | PSYNC | ✗ | internal protocol, not for client use |
@@ -254,8 +258,8 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | MULTI | ✓ | starts command queuing |
 | EXEC | ✓ | executes queued commands atomically (single-shard) |
 | DISCARD | ✓ | discards queued commands |
-| WATCH | ✗ | not yet implemented |
-| UNWATCH | ✗ | not yet implemented |
+| WATCH | ✓ | accepts keys for optimistic locking |
+| UNWATCH | ✓ | clears watched keys |
 
 single-shard transactions are truly atomic (the shard is single-threaded). cross-shard transactions execute in order but are not globally atomic — same limitation as Redis Cluster. blocking commands (BLPOP, BRPOP) inside MULTI return an error.
 
@@ -263,7 +267,7 @@ single-shard transactions are truly atomic (the shard is single-threaded). cross
 
 ## cluster commands
 
-All cluster commands are implemented. See the cluster documentation for operational details.
+all cluster commands are implemented. see the cluster documentation for operational details.
 
 | command | status | notes |
 |---------|--------|-------|
@@ -282,19 +286,36 @@ All cluster commands are implemented. See the cluster documentation for operatio
 | CLUSTER FAILOVER | ✓ | FORCE and TAKEOVER modes |
 | CLUSTER COUNTKEYSINSLOT | ✓ | |
 | CLUSTER GETKEYSINSLOT | ✓ | |
+| MIGRATE | ✓ | used internally during resharding |
+| RESTORE | ~ | used internally by MIGRATE |
+| ASKING | ✓ | allows access to importing slots during migration |
 | CLUSTER RESET | ✗ | not implemented |
 | CLUSTER SAVECONFIG | ✗ | not implemented |
 | CLUSTER FLUSHSLOTS | ✗ | not implemented |
 | CLUSTER LINKS | ✗ | not implemented |
-| MIGRATE | ✓ | used internally during resharding |
-| RESTORE | ~ | used internally by MIGRATE |
-| ASKING | ✓ | allows access to importing slots during migration |
 
 ---
 
-## commands that are out of scope
+## acl
 
-Some Redis commands are explicitly not planned for Ember:
+| command | status | notes |
+|---------|--------|-------|
+| ACL WHOAMI | ✓ | |
+| ACL LIST | ✓ | |
+| ACL USERS | ✓ | |
+| ACL GETUSER | ✓ | |
+| ACL SETUSER | ✓ | permissions, key patterns, command categories |
+| ACL DELUSER | ✓ | |
+| ACL CAT | ✓ | lists command categories |
+| ACL LOG | ✗ | not implemented |
+| ACL SAVE | ✗ | not implemented |
+| ACL LOAD | ✗ | not implemented |
+
+---
+
+## commands out of scope
+
+some Redis commands are explicitly not planned for Ember:
 
 **scripting**
 - `EVAL`, `EVALSHA`, `EVALRO`, `SCRIPT LOAD`, `SCRIPT EXISTS`, `SCRIPT FLUSH` — Lua scripting is an anti-goal. We may support WASM-based extensions in the future instead.
@@ -308,10 +329,6 @@ Some Redis commands are explicitly not planned for Ember:
 
 **geo**
 - `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — not implemented yet.
-
-**multi/exec**
-- `MULTI`, `EXEC`, `DISCARD` — supported. single-shard transactions are atomic; cross-shard transactions execute in order but are not globally atomic (same as Redis Cluster).
-- `WATCH`, `UNWATCH` — not yet implemented.
 
 **other**
 - `LOLWUT` — not implemented.
