@@ -230,7 +230,10 @@ impl Keyspace {
             return Ok(vec![]);
         };
         match &entry.value {
-            Value::Hash(hash) => Ok(hash.iter().map(|(_, v)| Bytes::copy_from_slice(v)).collect()),
+            Value::Hash(hash) => Ok(hash
+                .iter()
+                .map(|(_, v)| Bytes::copy_from_slice(v))
+                .collect()),
             _ => Err(WrongType),
         }
     }

@@ -337,7 +337,13 @@ impl<'a> ExactSizeIterator for PackedIter<'a> {}
 /// Rebuilds the packed buffer with a single field updated in-place.
 /// `field_start` is where the old field entry begins, `field_end` is
 /// where the next field starts (or buf.len() if it was the last field).
-fn rebuild_with_update(buf: &mut Vec<u8>, field_start: usize, field_end: usize, name: &str, new_val: &Bytes) {
+fn rebuild_with_update(
+    buf: &mut Vec<u8>,
+    field_start: usize,
+    field_end: usize,
+    name: &str,
+    new_val: &Bytes,
+) {
     let name_bytes = name.as_bytes();
     let name_len = name_bytes.len() as u16;
     let val_len = new_val.len() as u32;
