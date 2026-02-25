@@ -1650,10 +1650,10 @@ mod tests {
 
     #[test]
     fn noeviction_returns_oom_when_full() {
-        // one entry with key "a" + value "val" = 1 + 3 + 96 = 100 bytes
+        // one entry with key "a" + value "val" = 1 + 3 + 100 = 104 bytes
         // set limit so one entry fits but two don't
         let config = ShardConfig {
-            max_memory: Some(150),
+            max_memory: Some(130),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -1676,7 +1676,7 @@ mod tests {
     #[test]
     fn lru_eviction_makes_room() {
         let config = ShardConfig {
-            max_memory: Some(150),
+            max_memory: Some(130),
             eviction_policy: EvictionPolicy::AllKeysLru,
             ..ShardConfig::default()
         };
@@ -1700,12 +1700,12 @@ mod tests {
 
     #[test]
     fn safety_margin_rejects_near_raw_limit() {
-        // one entry = 1 (key) + 3 (val) + 128 (overhead) = 132 bytes.
-        // configure max_memory = 147. effective limit = 147 * 90 / 100 = 132.
+        // one entry = 1 (key) + 3 (val) + 100 (overhead) = 104 bytes.
+        // configure max_memory = 116. effective limit = 116 * 90 / 100 = 104.
         // the entry fills exactly the effective limit, so a second entry should
-        // be rejected even though the raw limit has 15 bytes of headroom.
+        // be rejected even though the raw limit has 12 bytes of headroom.
         let config = ShardConfig {
-            max_memory: Some(147),
+            max_memory: Some(116),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -1723,7 +1723,7 @@ mod tests {
     #[test]
     fn overwrite_same_size_succeeds_at_limit() {
         let config = ShardConfig {
-            max_memory: Some(150),
+            max_memory: Some(130),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -1748,7 +1748,7 @@ mod tests {
     #[test]
     fn overwrite_larger_value_respects_limit() {
         let config = ShardConfig {
-            max_memory: Some(150),
+            max_memory: Some(130),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
