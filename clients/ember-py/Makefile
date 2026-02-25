@@ -1,7 +1,7 @@
 .PHONY: proto-gen test install-dev clean
 
 proto-gen:
-	python -m grpc_tools.protoc \
+	python3 -m grpc_tools.protoc \
 		--python_out=ember/proto \
 		--grpc_python_out=ember/proto \
 		--proto_path=../../proto \

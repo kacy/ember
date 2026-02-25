@@ -350,6 +350,50 @@ func (x *StatusResponse) GetStatus() string {
 	return ""
 }
 
+type BoolArrayResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Values        []bool                 `protobuf:"varint,1,rep,packed,name=values,proto3" json:"values,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BoolArrayResponse) Reset() {
+	*x = BoolArrayResponse{}
+	mi := &file_ember_v1_ember_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BoolArrayResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BoolArrayResponse) ProtoMessage() {}
+
+func (x *BoolArrayResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BoolArrayResponse.ProtoReflect.Descriptor instead.
+func (*BoolArrayResponse) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BoolArrayResponse) GetValues() []bool {
+	if x != nil {
+		return x.Values
+	}
+	return nil
+}
+
 type GetRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -359,7 +403,7 @@ type GetRequest struct {
 
 func (x *GetRequest) Reset() {
 	*x = GetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[4]
+	mi := &file_ember_v1_ember_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -371,7 +415,7 @@ func (x *GetRequest) String() string {
 func (*GetRequest) ProtoMessage() {}
 
 func (x *GetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[4]
+	mi := &file_ember_v1_ember_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -384,7 +428,7 @@ func (x *GetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRequest.ProtoReflect.Descriptor instead.
 func (*GetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{4}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GetRequest) GetKey() string {
@@ -403,7 +447,7 @@ type GetResponse struct {
 
 func (x *GetResponse) Reset() {
 	*x = GetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[5]
+	mi := &file_ember_v1_ember_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +459,7 @@ func (x *GetResponse) String() string {
 func (*GetResponse) ProtoMessage() {}
 
 func (x *GetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[5]
+	mi := &file_ember_v1_ember_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +472,7 @@ func (x *GetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetResponse.ProtoReflect.Descriptor instead.
 func (*GetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{5}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetResponse) GetValue() []byte {
@@ -456,7 +500,7 @@ type SetRequest struct {
 
 func (x *SetRequest) Reset() {
 	*x = SetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[6]
+	mi := &file_ember_v1_ember_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -468,7 +512,7 @@ func (x *SetRequest) String() string {
 func (*SetRequest) ProtoMessage() {}
 
 func (x *SetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[6]
+	mi := &file_ember_v1_ember_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -481,7 +525,7 @@ func (x *SetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetRequest.ProtoReflect.Descriptor instead.
 func (*SetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{6}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SetRequest) GetKey() string {
@@ -536,7 +580,7 @@ type SetResponse struct {
 
 func (x *SetResponse) Reset() {
 	*x = SetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[7]
+	mi := &file_ember_v1_ember_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -548,7 +592,7 @@ func (x *SetResponse) String() string {
 func (*SetResponse) ProtoMessage() {}
 
 func (x *SetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[7]
+	mi := &file_ember_v1_ember_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -561,7 +605,7 @@ func (x *SetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetResponse.ProtoReflect.Descriptor instead.
 func (*SetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{7}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SetResponse) GetOk() bool {
@@ -580,7 +624,7 @@ type DelRequest struct {
 
 func (x *DelRequest) Reset() {
 	*x = DelRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[8]
+	mi := &file_ember_v1_ember_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -592,7 +636,7 @@ func (x *DelRequest) String() string {
 func (*DelRequest) ProtoMessage() {}
 
 func (x *DelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[8]
+	mi := &file_ember_v1_ember_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -605,7 +649,7 @@ func (x *DelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DelRequest.ProtoReflect.Descriptor instead.
 func (*DelRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{8}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DelRequest) GetKeys() []string {
@@ -624,7 +668,7 @@ type DelResponse struct {
 
 func (x *DelResponse) Reset() {
 	*x = DelResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[9]
+	mi := &file_ember_v1_ember_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -636,7 +680,7 @@ func (x *DelResponse) String() string {
 func (*DelResponse) ProtoMessage() {}
 
 func (x *DelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[9]
+	mi := &file_ember_v1_ember_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -649,7 +693,7 @@ func (x *DelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DelResponse.ProtoReflect.Descriptor instead.
 func (*DelResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{9}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DelResponse) GetDeleted() int64 {
@@ -668,7 +712,7 @@ type MGetRequest struct {
 
 func (x *MGetRequest) Reset() {
 	*x = MGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[10]
+	mi := &file_ember_v1_ember_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -680,7 +724,7 @@ func (x *MGetRequest) String() string {
 func (*MGetRequest) ProtoMessage() {}
 
 func (x *MGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[10]
+	mi := &file_ember_v1_ember_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -693,7 +737,7 @@ func (x *MGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MGetRequest.ProtoReflect.Descriptor instead.
 func (*MGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{10}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *MGetRequest) GetKeys() []string {
@@ -713,7 +757,7 @@ type MGetResponse struct {
 
 func (x *MGetResponse) Reset() {
 	*x = MGetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[11]
+	mi := &file_ember_v1_ember_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -725,7 +769,7 @@ func (x *MGetResponse) String() string {
 func (*MGetResponse) ProtoMessage() {}
 
 func (x *MGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[11]
+	mi := &file_ember_v1_ember_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -738,7 +782,7 @@ func (x *MGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MGetResponse.ProtoReflect.Descriptor instead.
 func (*MGetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{11}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *MGetResponse) GetValues() []*OptionalValue {
@@ -757,7 +801,7 @@ type OptionalValue struct {
 
 func (x *OptionalValue) Reset() {
 	*x = OptionalValue{}
-	mi := &file_ember_v1_ember_proto_msgTypes[12]
+	mi := &file_ember_v1_ember_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -769,7 +813,7 @@ func (x *OptionalValue) String() string {
 func (*OptionalValue) ProtoMessage() {}
 
 func (x *OptionalValue) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[12]
+	mi := &file_ember_v1_ember_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -782,7 +826,7 @@ func (x *OptionalValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptionalValue.ProtoReflect.Descriptor instead.
 func (*OptionalValue) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{12}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *OptionalValue) GetValue() []byte {
@@ -801,7 +845,7 @@ type MSetRequest struct {
 
 func (x *MSetRequest) Reset() {
 	*x = MSetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[13]
+	mi := &file_ember_v1_ember_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -813,7 +857,7 @@ func (x *MSetRequest) String() string {
 func (*MSetRequest) ProtoMessage() {}
 
 func (x *MSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[13]
+	mi := &file_ember_v1_ember_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -826,7 +870,7 @@ func (x *MSetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MSetRequest.ProtoReflect.Descriptor instead.
 func (*MSetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{13}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *MSetRequest) GetPairs() []*KeyValue {
@@ -846,7 +890,7 @@ type KeyValue struct {
 
 func (x *KeyValue) Reset() {
 	*x = KeyValue{}
-	mi := &file_ember_v1_ember_proto_msgTypes[14]
+	mi := &file_ember_v1_ember_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -858,7 +902,7 @@ func (x *KeyValue) String() string {
 func (*KeyValue) ProtoMessage() {}
 
 func (x *KeyValue) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[14]
+	mi := &file_ember_v1_ember_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -871,7 +915,7 @@ func (x *KeyValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyValue.ProtoReflect.Descriptor instead.
 func (*KeyValue) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{14}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *KeyValue) GetKey() string {
@@ -896,7 +940,7 @@ type MSetResponse struct {
 
 func (x *MSetResponse) Reset() {
 	*x = MSetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[15]
+	mi := &file_ember_v1_ember_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -908,7 +952,7 @@ func (x *MSetResponse) String() string {
 func (*MSetResponse) ProtoMessage() {}
 
 func (x *MSetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[15]
+	mi := &file_ember_v1_ember_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -921,7 +965,7 @@ func (x *MSetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MSetResponse.ProtoReflect.Descriptor instead.
 func (*MSetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{15}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{16}
 }
 
 type IncrRequest struct {
@@ -933,7 +977,7 @@ type IncrRequest struct {
 
 func (x *IncrRequest) Reset() {
 	*x = IncrRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[16]
+	mi := &file_ember_v1_ember_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -945,7 +989,7 @@ func (x *IncrRequest) String() string {
 func (*IncrRequest) ProtoMessage() {}
 
 func (x *IncrRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[16]
+	mi := &file_ember_v1_ember_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -958,7 +1002,7 @@ func (x *IncrRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IncrRequest.ProtoReflect.Descriptor instead.
 func (*IncrRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{16}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *IncrRequest) GetKey() string {
@@ -978,7 +1022,7 @@ type IncrByRequest struct {
 
 func (x *IncrByRequest) Reset() {
 	*x = IncrByRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[17]
+	mi := &file_ember_v1_ember_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -990,7 +1034,7 @@ func (x *IncrByRequest) String() string {
 func (*IncrByRequest) ProtoMessage() {}
 
 func (x *IncrByRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[17]
+	mi := &file_ember_v1_ember_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1003,7 +1047,7 @@ func (x *IncrByRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IncrByRequest.ProtoReflect.Descriptor instead.
 func (*IncrByRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{17}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *IncrByRequest) GetKey() string {
@@ -1030,7 +1074,7 @@ type DecrByRequest struct {
 
 func (x *DecrByRequest) Reset() {
 	*x = DecrByRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[18]
+	mi := &file_ember_v1_ember_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1042,7 +1086,7 @@ func (x *DecrByRequest) String() string {
 func (*DecrByRequest) ProtoMessage() {}
 
 func (x *DecrByRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[18]
+	mi := &file_ember_v1_ember_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1055,7 +1099,7 @@ func (x *DecrByRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecrByRequest.ProtoReflect.Descriptor instead.
 func (*DecrByRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{18}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *DecrByRequest) GetKey() string {
@@ -1082,7 +1126,7 @@ type IncrByFloatRequest struct {
 
 func (x *IncrByFloatRequest) Reset() {
 	*x = IncrByFloatRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[19]
+	mi := &file_ember_v1_ember_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1094,7 +1138,7 @@ func (x *IncrByFloatRequest) String() string {
 func (*IncrByFloatRequest) ProtoMessage() {}
 
 func (x *IncrByFloatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[19]
+	mi := &file_ember_v1_ember_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1107,7 +1151,7 @@ func (x *IncrByFloatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IncrByFloatRequest.ProtoReflect.Descriptor instead.
 func (*IncrByFloatRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{19}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *IncrByFloatRequest) GetKey() string {
@@ -1134,7 +1178,7 @@ type AppendRequest struct {
 
 func (x *AppendRequest) Reset() {
 	*x = AppendRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[20]
+	mi := &file_ember_v1_ember_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1146,7 +1190,7 @@ func (x *AppendRequest) String() string {
 func (*AppendRequest) ProtoMessage() {}
 
 func (x *AppendRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[20]
+	mi := &file_ember_v1_ember_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1159,7 +1203,7 @@ func (x *AppendRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendRequest.ProtoReflect.Descriptor instead.
 func (*AppendRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{20}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *AppendRequest) GetKey() string {
@@ -1185,7 +1229,7 @@ type StrlenRequest struct {
 
 func (x *StrlenRequest) Reset() {
 	*x = StrlenRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[21]
+	mi := &file_ember_v1_ember_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1197,7 +1241,7 @@ func (x *StrlenRequest) String() string {
 func (*StrlenRequest) ProtoMessage() {}
 
 func (x *StrlenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[21]
+	mi := &file_ember_v1_ember_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1210,7 +1254,7 @@ func (x *StrlenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StrlenRequest.ProtoReflect.Descriptor instead.
 func (*StrlenRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{21}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *StrlenRequest) GetKey() string {
@@ -1218,6 +1262,241 @@ func (x *StrlenRequest) GetKey() string {
 		return x.Key
 	}
 	return ""
+}
+
+type GetDelRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDelRequest) Reset() {
+	*x = GetDelRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDelRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDelRequest) ProtoMessage() {}
+
+func (x *GetDelRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDelRequest.ProtoReflect.Descriptor instead.
+func (*GetDelRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *GetDelRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type GetExRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// set expiry in seconds (ignored if expire_millis > 0).
+	ExpireSeconds uint64 `protobuf:"varint,2,opt,name=expire_seconds,json=expireSeconds,proto3" json:"expire_seconds,omitempty"`
+	// set expiry in milliseconds (takes precedence over expire_seconds).
+	ExpireMillis uint64 `protobuf:"varint,3,opt,name=expire_millis,json=expireMillis,proto3" json:"expire_millis,omitempty"`
+	// remove the existing expiry, making the key persistent.
+	Persist       bool `protobuf:"varint,4,opt,name=persist,proto3" json:"persist,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExRequest) Reset() {
+	*x = GetExRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExRequest) ProtoMessage() {}
+
+func (x *GetExRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExRequest.ProtoReflect.Descriptor instead.
+func (*GetExRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *GetExRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *GetExRequest) GetExpireSeconds() uint64 {
+	if x != nil {
+		return x.ExpireSeconds
+	}
+	return 0
+}
+
+func (x *GetExRequest) GetExpireMillis() uint64 {
+	if x != nil {
+		return x.ExpireMillis
+	}
+	return 0
+}
+
+func (x *GetExRequest) GetPersist() bool {
+	if x != nil {
+		return x.Persist
+	}
+	return false
+}
+
+type GetRangeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Start         int64                  `protobuf:"varint,2,opt,name=start,proto3" json:"start,omitempty"`
+	End           int64                  `protobuf:"varint,3,opt,name=end,proto3" json:"end,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetRangeRequest) Reset() {
+	*x = GetRangeRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetRangeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetRangeRequest) ProtoMessage() {}
+
+func (x *GetRangeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetRangeRequest.ProtoReflect.Descriptor instead.
+func (*GetRangeRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *GetRangeRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *GetRangeRequest) GetStart() int64 {
+	if x != nil {
+		return x.Start
+	}
+	return 0
+}
+
+func (x *GetRangeRequest) GetEnd() int64 {
+	if x != nil {
+		return x.End
+	}
+	return 0
+}
+
+type SetRangeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Offset        int64                  `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetRangeRequest) Reset() {
+	*x = SetRangeRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetRangeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetRangeRequest) ProtoMessage() {}
+
+func (x *SetRangeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetRangeRequest.ProtoReflect.Descriptor instead.
+func (*SetRangeRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *SetRangeRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SetRangeRequest) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *SetRangeRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
 }
 
 type ExistsRequest struct {
@@ -1229,7 +1508,7 @@ type ExistsRequest struct {
 
 func (x *ExistsRequest) Reset() {
 	*x = ExistsRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[22]
+	mi := &file_ember_v1_ember_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1241,7 +1520,7 @@ func (x *ExistsRequest) String() string {
 func (*ExistsRequest) ProtoMessage() {}
 
 func (x *ExistsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[22]
+	mi := &file_ember_v1_ember_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1254,7 +1533,7 @@ func (x *ExistsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExistsRequest.ProtoReflect.Descriptor instead.
 func (*ExistsRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{22}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ExistsRequest) GetKeys() []string {
@@ -1274,7 +1553,7 @@ type ExpireRequest struct {
 
 func (x *ExpireRequest) Reset() {
 	*x = ExpireRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[23]
+	mi := &file_ember_v1_ember_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1286,7 +1565,7 @@ func (x *ExpireRequest) String() string {
 func (*ExpireRequest) ProtoMessage() {}
 
 func (x *ExpireRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[23]
+	mi := &file_ember_v1_ember_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1299,7 +1578,7 @@ func (x *ExpireRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExpireRequest.ProtoReflect.Descriptor instead.
 func (*ExpireRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{23}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ExpireRequest) GetKey() string {
@@ -1326,7 +1605,7 @@ type PExpireRequest struct {
 
 func (x *PExpireRequest) Reset() {
 	*x = PExpireRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[24]
+	mi := &file_ember_v1_ember_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1338,7 +1617,7 @@ func (x *PExpireRequest) String() string {
 func (*PExpireRequest) ProtoMessage() {}
 
 func (x *PExpireRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[24]
+	mi := &file_ember_v1_ember_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1351,7 +1630,7 @@ func (x *PExpireRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PExpireRequest.ProtoReflect.Descriptor instead.
 func (*PExpireRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{24}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *PExpireRequest) GetKey() string {
@@ -1377,7 +1656,7 @@ type PersistRequest struct {
 
 func (x *PersistRequest) Reset() {
 	*x = PersistRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[25]
+	mi := &file_ember_v1_ember_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1389,7 +1668,7 @@ func (x *PersistRequest) String() string {
 func (*PersistRequest) ProtoMessage() {}
 
 func (x *PersistRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[25]
+	mi := &file_ember_v1_ember_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1402,7 +1681,7 @@ func (x *PersistRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PersistRequest.ProtoReflect.Descriptor instead.
 func (*PersistRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{25}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *PersistRequest) GetKey() string {
@@ -1421,7 +1700,7 @@ type TtlRequest struct {
 
 func (x *TtlRequest) Reset() {
 	*x = TtlRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[26]
+	mi := &file_ember_v1_ember_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1433,7 +1712,7 @@ func (x *TtlRequest) String() string {
 func (*TtlRequest) ProtoMessage() {}
 
 func (x *TtlRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[26]
+	mi := &file_ember_v1_ember_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1446,7 +1725,7 @@ func (x *TtlRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TtlRequest.ProtoReflect.Descriptor instead.
 func (*TtlRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{26}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *TtlRequest) GetKey() string {
@@ -1465,7 +1744,7 @@ type PTtlRequest struct {
 
 func (x *PTtlRequest) Reset() {
 	*x = PTtlRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[27]
+	mi := &file_ember_v1_ember_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1477,7 +1756,7 @@ func (x *PTtlRequest) String() string {
 func (*PTtlRequest) ProtoMessage() {}
 
 func (x *PTtlRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[27]
+	mi := &file_ember_v1_ember_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1490,7 +1769,7 @@ func (x *PTtlRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PTtlRequest.ProtoReflect.Descriptor instead.
 func (*PTtlRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{27}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *PTtlRequest) GetKey() string {
@@ -1510,7 +1789,7 @@ type TtlResponse struct {
 
 func (x *TtlResponse) Reset() {
 	*x = TtlResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[28]
+	mi := &file_ember_v1_ember_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1522,7 +1801,7 @@ func (x *TtlResponse) String() string {
 func (*TtlResponse) ProtoMessage() {}
 
 func (x *TtlResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[28]
+	mi := &file_ember_v1_ember_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1535,7 +1814,7 @@ func (x *TtlResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TtlResponse.ProtoReflect.Descriptor instead.
 func (*TtlResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{28}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *TtlResponse) GetValue() int64 {
@@ -1554,7 +1833,7 @@ type TypeRequest struct {
 
 func (x *TypeRequest) Reset() {
 	*x = TypeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[29]
+	mi := &file_ember_v1_ember_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1566,7 +1845,7 @@ func (x *TypeRequest) String() string {
 func (*TypeRequest) ProtoMessage() {}
 
 func (x *TypeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[29]
+	mi := &file_ember_v1_ember_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1579,7 +1858,7 @@ func (x *TypeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypeRequest.ProtoReflect.Descriptor instead.
 func (*TypeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{29}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *TypeRequest) GetKey() string {
@@ -1598,7 +1877,7 @@ type TypeResponse struct {
 
 func (x *TypeResponse) Reset() {
 	*x = TypeResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[30]
+	mi := &file_ember_v1_ember_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1610,7 +1889,7 @@ func (x *TypeResponse) String() string {
 func (*TypeResponse) ProtoMessage() {}
 
 func (x *TypeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[30]
+	mi := &file_ember_v1_ember_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1623,7 +1902,7 @@ func (x *TypeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypeResponse.ProtoReflect.Descriptor instead.
 func (*TypeResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{30}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *TypeResponse) GetTypeName() string {
@@ -1642,7 +1921,7 @@ type KeysRequest struct {
 
 func (x *KeysRequest) Reset() {
 	*x = KeysRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[31]
+	mi := &file_ember_v1_ember_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1654,7 +1933,7 @@ func (x *KeysRequest) String() string {
 func (*KeysRequest) ProtoMessage() {}
 
 func (x *KeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[31]
+	mi := &file_ember_v1_ember_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1667,7 +1946,7 @@ func (x *KeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeysRequest.ProtoReflect.Descriptor instead.
 func (*KeysRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{31}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *KeysRequest) GetPattern() string {
@@ -1686,7 +1965,7 @@ type KeysResponse struct {
 
 func (x *KeysResponse) Reset() {
 	*x = KeysResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[32]
+	mi := &file_ember_v1_ember_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1698,7 +1977,7 @@ func (x *KeysResponse) String() string {
 func (*KeysResponse) ProtoMessage() {}
 
 func (x *KeysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[32]
+	mi := &file_ember_v1_ember_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1711,7 +1990,7 @@ func (x *KeysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeysResponse.ProtoReflect.Descriptor instead.
 func (*KeysResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{32}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *KeysResponse) GetKeys() []string {
@@ -1731,7 +2010,7 @@ type RenameRequest struct {
 
 func (x *RenameRequest) Reset() {
 	*x = RenameRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[33]
+	mi := &file_ember_v1_ember_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1743,7 +2022,7 @@ func (x *RenameRequest) String() string {
 func (*RenameRequest) ProtoMessage() {}
 
 func (x *RenameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[33]
+	mi := &file_ember_v1_ember_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1756,7 +2035,7 @@ func (x *RenameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RenameRequest.ProtoReflect.Descriptor instead.
 func (*RenameRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{33}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RenameRequest) GetKey() string {
@@ -1784,7 +2063,7 @@ type ScanRequest struct {
 
 func (x *ScanRequest) Reset() {
 	*x = ScanRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[34]
+	mi := &file_ember_v1_ember_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1796,7 +2075,7 @@ func (x *ScanRequest) String() string {
 func (*ScanRequest) ProtoMessage() {}
 
 func (x *ScanRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[34]
+	mi := &file_ember_v1_ember_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1809,7 +2088,7 @@ func (x *ScanRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanRequest.ProtoReflect.Descriptor instead.
 func (*ScanRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{34}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ScanRequest) GetCursor() uint64 {
@@ -1843,7 +2122,7 @@ type ScanResponse struct {
 
 func (x *ScanResponse) Reset() {
 	*x = ScanResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[35]
+	mi := &file_ember_v1_ember_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1855,7 +2134,7 @@ func (x *ScanResponse) String() string {
 func (*ScanResponse) ProtoMessage() {}
 
 func (x *ScanResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[35]
+	mi := &file_ember_v1_ember_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1868,7 +2147,7 @@ func (x *ScanResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScanResponse.ProtoReflect.Descriptor instead.
 func (*ScanResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{35}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ScanResponse) GetCursor() uint64 {
@@ -1885,6 +2164,147 @@ func (x *ScanResponse) GetKeys() []string {
 	return nil
 }
 
+type CopyRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Source      string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Destination string                 `protobuf:"bytes,2,opt,name=destination,proto3" json:"destination,omitempty"`
+	// overwrite the destination key if it already exists.
+	Replace       bool `protobuf:"varint,3,opt,name=replace,proto3" json:"replace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CopyRequest) Reset() {
+	*x = CopyRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CopyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CopyRequest) ProtoMessage() {}
+
+func (x *CopyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CopyRequest.ProtoReflect.Descriptor instead.
+func (*CopyRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *CopyRequest) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *CopyRequest) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *CopyRequest) GetReplace() bool {
+	if x != nil {
+		return x.Replace
+	}
+	return false
+}
+
+type RandomKeyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RandomKeyRequest) Reset() {
+	*x = RandomKeyRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RandomKeyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RandomKeyRequest) ProtoMessage() {}
+
+func (x *RandomKeyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RandomKeyRequest.ProtoReflect.Descriptor instead.
+func (*RandomKeyRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{42}
+}
+
+type TouchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TouchRequest) Reset() {
+	*x = TouchRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TouchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TouchRequest) ProtoMessage() {}
+
+func (x *TouchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TouchRequest.ProtoReflect.Descriptor instead.
+func (*TouchRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *TouchRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
 type LPushRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -1895,7 +2315,7 @@ type LPushRequest struct {
 
 func (x *LPushRequest) Reset() {
 	*x = LPushRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[36]
+	mi := &file_ember_v1_ember_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1907,7 +2327,7 @@ func (x *LPushRequest) String() string {
 func (*LPushRequest) ProtoMessage() {}
 
 func (x *LPushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[36]
+	mi := &file_ember_v1_ember_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1920,7 +2340,7 @@ func (x *LPushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LPushRequest.ProtoReflect.Descriptor instead.
 func (*LPushRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{36}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *LPushRequest) GetKey() string {
@@ -1947,7 +2367,7 @@ type RPushRequest struct {
 
 func (x *RPushRequest) Reset() {
 	*x = RPushRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[37]
+	mi := &file_ember_v1_ember_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1959,7 +2379,7 @@ func (x *RPushRequest) String() string {
 func (*RPushRequest) ProtoMessage() {}
 
 func (x *RPushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[37]
+	mi := &file_ember_v1_ember_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1972,7 +2392,7 @@ func (x *RPushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RPushRequest.ProtoReflect.Descriptor instead.
 func (*RPushRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{37}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *RPushRequest) GetKey() string {
@@ -1998,7 +2418,7 @@ type LPopRequest struct {
 
 func (x *LPopRequest) Reset() {
 	*x = LPopRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[38]
+	mi := &file_ember_v1_ember_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2010,7 +2430,7 @@ func (x *LPopRequest) String() string {
 func (*LPopRequest) ProtoMessage() {}
 
 func (x *LPopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[38]
+	mi := &file_ember_v1_ember_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2023,7 +2443,7 @@ func (x *LPopRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LPopRequest.ProtoReflect.Descriptor instead.
 func (*LPopRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{38}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *LPopRequest) GetKey() string {
@@ -2042,7 +2462,7 @@ type RPopRequest struct {
 
 func (x *RPopRequest) Reset() {
 	*x = RPopRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[39]
+	mi := &file_ember_v1_ember_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2054,7 +2474,7 @@ func (x *RPopRequest) String() string {
 func (*RPopRequest) ProtoMessage() {}
 
 func (x *RPopRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[39]
+	mi := &file_ember_v1_ember_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2067,7 +2487,7 @@ func (x *RPopRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RPopRequest.ProtoReflect.Descriptor instead.
 func (*RPopRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{39}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *RPopRequest) GetKey() string {
@@ -2088,7 +2508,7 @@ type LRangeRequest struct {
 
 func (x *LRangeRequest) Reset() {
 	*x = LRangeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[40]
+	mi := &file_ember_v1_ember_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2100,7 +2520,7 @@ func (x *LRangeRequest) String() string {
 func (*LRangeRequest) ProtoMessage() {}
 
 func (x *LRangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[40]
+	mi := &file_ember_v1_ember_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2113,7 +2533,7 @@ func (x *LRangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LRangeRequest.ProtoReflect.Descriptor instead.
 func (*LRangeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{40}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *LRangeRequest) GetKey() string {
@@ -2146,7 +2566,7 @@ type ArrayResponse struct {
 
 func (x *ArrayResponse) Reset() {
 	*x = ArrayResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[41]
+	mi := &file_ember_v1_ember_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2158,7 +2578,7 @@ func (x *ArrayResponse) String() string {
 func (*ArrayResponse) ProtoMessage() {}
 
 func (x *ArrayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[41]
+	mi := &file_ember_v1_ember_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2171,7 +2591,7 @@ func (x *ArrayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArrayResponse.ProtoReflect.Descriptor instead.
 func (*ArrayResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{41}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *ArrayResponse) GetValues() [][]byte {
@@ -2190,7 +2610,7 @@ type LLenRequest struct {
 
 func (x *LLenRequest) Reset() {
 	*x = LLenRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[42]
+	mi := &file_ember_v1_ember_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2202,7 +2622,7 @@ func (x *LLenRequest) String() string {
 func (*LLenRequest) ProtoMessage() {}
 
 func (x *LLenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[42]
+	mi := &file_ember_v1_ember_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2215,7 +2635,7 @@ func (x *LLenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LLenRequest.ProtoReflect.Descriptor instead.
 func (*LLenRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{42}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *LLenRequest) GetKey() string {
@@ -2223,6 +2643,439 @@ func (x *LLenRequest) GetKey() string {
 		return x.Key
 	}
 	return ""
+}
+
+type LIndexRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LIndexRequest) Reset() {
+	*x = LIndexRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LIndexRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LIndexRequest) ProtoMessage() {}
+
+func (x *LIndexRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LIndexRequest.ProtoReflect.Descriptor instead.
+func (*LIndexRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *LIndexRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *LIndexRequest) GetIndex() int64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+type LSetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Index         int64                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`
+	Value         []byte                 `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LSetRequest) Reset() {
+	*x = LSetRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LSetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LSetRequest) ProtoMessage() {}
+
+func (x *LSetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LSetRequest.ProtoReflect.Descriptor instead.
+func (*LSetRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *LSetRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *LSetRequest) GetIndex() int64 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *LSetRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type LTrimRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Start         int64                  `protobuf:"varint,2,opt,name=start,proto3" json:"start,omitempty"`
+	Stop          int64                  `protobuf:"varint,3,opt,name=stop,proto3" json:"stop,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LTrimRequest) Reset() {
+	*x = LTrimRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LTrimRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LTrimRequest) ProtoMessage() {}
+
+func (x *LTrimRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LTrimRequest.ProtoReflect.Descriptor instead.
+func (*LTrimRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *LTrimRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *LTrimRequest) GetStart() int64 {
+	if x != nil {
+		return x.Start
+	}
+	return 0
+}
+
+func (x *LTrimRequest) GetStop() int64 {
+	if x != nil {
+		return x.Stop
+	}
+	return 0
+}
+
+type LInsertRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// insert before (true) or after (false) the pivot.
+	Before        bool   `protobuf:"varint,2,opt,name=before,proto3" json:"before,omitempty"`
+	Pivot         []byte `protobuf:"bytes,3,opt,name=pivot,proto3" json:"pivot,omitempty"`
+	Value         []byte `protobuf:"bytes,4,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LInsertRequest) Reset() {
+	*x = LInsertRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LInsertRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LInsertRequest) ProtoMessage() {}
+
+func (x *LInsertRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LInsertRequest.ProtoReflect.Descriptor instead.
+func (*LInsertRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *LInsertRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *LInsertRequest) GetBefore() bool {
+	if x != nil {
+		return x.Before
+	}
+	return false
+}
+
+func (x *LInsertRequest) GetPivot() []byte {
+	if x != nil {
+		return x.Pivot
+	}
+	return nil
+}
+
+func (x *LInsertRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type LRemRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// count > 0: remove from head; count < 0: remove from tail; 0: remove all.
+	Count         int64  `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	Value         []byte `protobuf:"bytes,3,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LRemRequest) Reset() {
+	*x = LRemRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LRemRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LRemRequest) ProtoMessage() {}
+
+func (x *LRemRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LRemRequest.ProtoReflect.Descriptor instead.
+func (*LRemRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{55}
+}
+
+func (x *LRemRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *LRemRequest) GetCount() int64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *LRemRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+type LPosRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value []byte                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// maximum number of positions to return. absent or 0 returns the first match.
+	Count         *uint32 `protobuf:"varint,3,opt,name=count,proto3,oneof" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LPosRequest) Reset() {
+	*x = LPosRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LPosRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LPosRequest) ProtoMessage() {}
+
+func (x *LPosRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LPosRequest.ProtoReflect.Descriptor instead.
+func (*LPosRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *LPosRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *LPosRequest) GetValue() []byte {
+	if x != nil {
+		return x.Value
+	}
+	return nil
+}
+
+func (x *LPosRequest) GetCount() uint32 {
+	if x != nil && x.Count != nil {
+		return *x.Count
+	}
+	return 0
+}
+
+type LMoveRequest struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Source      string                 `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
+	Destination string                 `protobuf:"bytes,2,opt,name=destination,proto3" json:"destination,omitempty"`
+	// pop from the left (true) or right (false) of source.
+	SrcLeft bool `protobuf:"varint,3,opt,name=src_left,json=srcLeft,proto3" json:"src_left,omitempty"`
+	// push to the left (true) or right (false) of destination.
+	DstLeft       bool `protobuf:"varint,4,opt,name=dst_left,json=dstLeft,proto3" json:"dst_left,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LMoveRequest) Reset() {
+	*x = LMoveRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LMoveRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LMoveRequest) ProtoMessage() {}
+
+func (x *LMoveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LMoveRequest.ProtoReflect.Descriptor instead.
+func (*LMoveRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *LMoveRequest) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *LMoveRequest) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *LMoveRequest) GetSrcLeft() bool {
+	if x != nil {
+		return x.SrcLeft
+	}
+	return false
+}
+
+func (x *LMoveRequest) GetDstLeft() bool {
+	if x != nil {
+		return x.DstLeft
+	}
+	return false
 }
 
 type HSetRequest struct {
@@ -2235,7 +3088,7 @@ type HSetRequest struct {
 
 func (x *HSetRequest) Reset() {
 	*x = HSetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[43]
+	mi := &file_ember_v1_ember_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2247,7 +3100,7 @@ func (x *HSetRequest) String() string {
 func (*HSetRequest) ProtoMessage() {}
 
 func (x *HSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[43]
+	mi := &file_ember_v1_ember_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2260,7 +3113,7 @@ func (x *HSetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HSetRequest.ProtoReflect.Descriptor instead.
 func (*HSetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{43}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *HSetRequest) GetKey() string {
@@ -2287,7 +3140,7 @@ type FieldValue struct {
 
 func (x *FieldValue) Reset() {
 	*x = FieldValue{}
-	mi := &file_ember_v1_ember_proto_msgTypes[44]
+	mi := &file_ember_v1_ember_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2299,7 +3152,7 @@ func (x *FieldValue) String() string {
 func (*FieldValue) ProtoMessage() {}
 
 func (x *FieldValue) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[44]
+	mi := &file_ember_v1_ember_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2312,7 +3165,7 @@ func (x *FieldValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FieldValue.ProtoReflect.Descriptor instead.
 func (*FieldValue) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{44}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *FieldValue) GetField() string {
@@ -2339,7 +3192,7 @@ type HGetRequest struct {
 
 func (x *HGetRequest) Reset() {
 	*x = HGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[45]
+	mi := &file_ember_v1_ember_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2351,7 +3204,7 @@ func (x *HGetRequest) String() string {
 func (*HGetRequest) ProtoMessage() {}
 
 func (x *HGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[45]
+	mi := &file_ember_v1_ember_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2364,7 +3217,7 @@ func (x *HGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HGetRequest.ProtoReflect.Descriptor instead.
 func (*HGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{45}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *HGetRequest) GetKey() string {
@@ -2390,7 +3243,7 @@ type HGetAllRequest struct {
 
 func (x *HGetAllRequest) Reset() {
 	*x = HGetAllRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[46]
+	mi := &file_ember_v1_ember_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2402,7 +3255,7 @@ func (x *HGetAllRequest) String() string {
 func (*HGetAllRequest) ProtoMessage() {}
 
 func (x *HGetAllRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[46]
+	mi := &file_ember_v1_ember_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2415,7 +3268,7 @@ func (x *HGetAllRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HGetAllRequest.ProtoReflect.Descriptor instead.
 func (*HGetAllRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{46}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *HGetAllRequest) GetKey() string {
@@ -2434,7 +3287,7 @@ type HashResponse struct {
 
 func (x *HashResponse) Reset() {
 	*x = HashResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[47]
+	mi := &file_ember_v1_ember_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2446,7 +3299,7 @@ func (x *HashResponse) String() string {
 func (*HashResponse) ProtoMessage() {}
 
 func (x *HashResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[47]
+	mi := &file_ember_v1_ember_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2459,7 +3312,7 @@ func (x *HashResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HashResponse.ProtoReflect.Descriptor instead.
 func (*HashResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{47}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *HashResponse) GetFields() []*FieldValue {
@@ -2479,7 +3332,7 @@ type HDelRequest struct {
 
 func (x *HDelRequest) Reset() {
 	*x = HDelRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[48]
+	mi := &file_ember_v1_ember_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2491,7 +3344,7 @@ func (x *HDelRequest) String() string {
 func (*HDelRequest) ProtoMessage() {}
 
 func (x *HDelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[48]
+	mi := &file_ember_v1_ember_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2504,7 +3357,7 @@ func (x *HDelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HDelRequest.ProtoReflect.Descriptor instead.
 func (*HDelRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{48}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *HDelRequest) GetKey() string {
@@ -2531,7 +3384,7 @@ type HExistsRequest struct {
 
 func (x *HExistsRequest) Reset() {
 	*x = HExistsRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[49]
+	mi := &file_ember_v1_ember_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2543,7 +3396,7 @@ func (x *HExistsRequest) String() string {
 func (*HExistsRequest) ProtoMessage() {}
 
 func (x *HExistsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[49]
+	mi := &file_ember_v1_ember_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2556,7 +3409,7 @@ func (x *HExistsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HExistsRequest.ProtoReflect.Descriptor instead.
 func (*HExistsRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{49}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *HExistsRequest) GetKey() string {
@@ -2582,7 +3435,7 @@ type HLenRequest struct {
 
 func (x *HLenRequest) Reset() {
 	*x = HLenRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[50]
+	mi := &file_ember_v1_ember_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2594,7 +3447,7 @@ func (x *HLenRequest) String() string {
 func (*HLenRequest) ProtoMessage() {}
 
 func (x *HLenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[50]
+	mi := &file_ember_v1_ember_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2607,7 +3460,7 @@ func (x *HLenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HLenRequest.ProtoReflect.Descriptor instead.
 func (*HLenRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{50}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *HLenRequest) GetKey() string {
@@ -2628,7 +3481,7 @@ type HIncrByRequest struct {
 
 func (x *HIncrByRequest) Reset() {
 	*x = HIncrByRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[51]
+	mi := &file_ember_v1_ember_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2640,7 +3493,7 @@ func (x *HIncrByRequest) String() string {
 func (*HIncrByRequest) ProtoMessage() {}
 
 func (x *HIncrByRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[51]
+	mi := &file_ember_v1_ember_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2653,7 +3506,7 @@ func (x *HIncrByRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HIncrByRequest.ProtoReflect.Descriptor instead.
 func (*HIncrByRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{51}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *HIncrByRequest) GetKey() string {
@@ -2686,7 +3539,7 @@ type HKeysRequest struct {
 
 func (x *HKeysRequest) Reset() {
 	*x = HKeysRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[52]
+	mi := &file_ember_v1_ember_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2698,7 +3551,7 @@ func (x *HKeysRequest) String() string {
 func (*HKeysRequest) ProtoMessage() {}
 
 func (x *HKeysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[52]
+	mi := &file_ember_v1_ember_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2711,7 +3564,7 @@ func (x *HKeysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HKeysRequest.ProtoReflect.Descriptor instead.
 func (*HKeysRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{52}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *HKeysRequest) GetKey() string {
@@ -2730,7 +3583,7 @@ type HValsRequest struct {
 
 func (x *HValsRequest) Reset() {
 	*x = HValsRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[53]
+	mi := &file_ember_v1_ember_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2742,7 +3595,7 @@ func (x *HValsRequest) String() string {
 func (*HValsRequest) ProtoMessage() {}
 
 func (x *HValsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[53]
+	mi := &file_ember_v1_ember_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2755,7 +3608,7 @@ func (x *HValsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HValsRequest.ProtoReflect.Descriptor instead.
 func (*HValsRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{53}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *HValsRequest) GetKey() string {
@@ -2775,7 +3628,7 @@ type HMGetRequest struct {
 
 func (x *HMGetRequest) Reset() {
 	*x = HMGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[54]
+	mi := &file_ember_v1_ember_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2787,7 +3640,7 @@ func (x *HMGetRequest) String() string {
 func (*HMGetRequest) ProtoMessage() {}
 
 func (x *HMGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[54]
+	mi := &file_ember_v1_ember_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2800,7 +3653,7 @@ func (x *HMGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HMGetRequest.ProtoReflect.Descriptor instead.
 func (*HMGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{54}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *HMGetRequest) GetKey() string {
@@ -2826,7 +3679,7 @@ type OptionalArrayResponse struct {
 
 func (x *OptionalArrayResponse) Reset() {
 	*x = OptionalArrayResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[55]
+	mi := &file_ember_v1_ember_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2838,7 +3691,7 @@ func (x *OptionalArrayResponse) String() string {
 func (*OptionalArrayResponse) ProtoMessage() {}
 
 func (x *OptionalArrayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[55]
+	mi := &file_ember_v1_ember_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2851,12 +3704,133 @@ func (x *OptionalArrayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptionalArrayResponse.ProtoReflect.Descriptor instead.
 func (*OptionalArrayResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{55}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *OptionalArrayResponse) GetValues() []*OptionalValue {
 	if x != nil {
 		return x.Values
+	}
+	return nil
+}
+
+type HScanRequest struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Key     string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Cursor  uint64                 `protobuf:"varint,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Pattern *string                `protobuf:"bytes,3,opt,name=pattern,proto3,oneof" json:"pattern,omitempty"`
+	// hint for how many fields to return per call. server may return more or fewer.
+	Count         uint32 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HScanRequest) Reset() {
+	*x = HScanRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HScanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HScanRequest) ProtoMessage() {}
+
+func (x *HScanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HScanRequest.ProtoReflect.Descriptor instead.
+func (*HScanRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *HScanRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *HScanRequest) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+func (x *HScanRequest) GetPattern() string {
+	if x != nil && x.Pattern != nil {
+		return *x.Pattern
+	}
+	return ""
+}
+
+func (x *HScanRequest) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type HScanResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cursor        uint64                 `protobuf:"varint,1,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Fields        []*FieldValue          `protobuf:"bytes,2,rep,name=fields,proto3" json:"fields,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HScanResponse) Reset() {
+	*x = HScanResponse{}
+	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HScanResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HScanResponse) ProtoMessage() {}
+
+func (x *HScanResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HScanResponse.ProtoReflect.Descriptor instead.
+func (*HScanResponse) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{72}
+}
+
+func (x *HScanResponse) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+func (x *HScanResponse) GetFields() []*FieldValue {
+	if x != nil {
+		return x.Fields
 	}
 	return nil
 }
@@ -2871,7 +3845,7 @@ type SAddRequest struct {
 
 func (x *SAddRequest) Reset() {
 	*x = SAddRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[56]
+	mi := &file_ember_v1_ember_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2883,7 +3857,7 @@ func (x *SAddRequest) String() string {
 func (*SAddRequest) ProtoMessage() {}
 
 func (x *SAddRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[56]
+	mi := &file_ember_v1_ember_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2896,7 +3870,7 @@ func (x *SAddRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SAddRequest.ProtoReflect.Descriptor instead.
 func (*SAddRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{56}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *SAddRequest) GetKey() string {
@@ -2923,7 +3897,7 @@ type SRemRequest struct {
 
 func (x *SRemRequest) Reset() {
 	*x = SRemRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[57]
+	mi := &file_ember_v1_ember_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2935,7 +3909,7 @@ func (x *SRemRequest) String() string {
 func (*SRemRequest) ProtoMessage() {}
 
 func (x *SRemRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[57]
+	mi := &file_ember_v1_ember_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2948,7 +3922,7 @@ func (x *SRemRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SRemRequest.ProtoReflect.Descriptor instead.
 func (*SRemRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{57}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *SRemRequest) GetKey() string {
@@ -2974,7 +3948,7 @@ type SMembersRequest struct {
 
 func (x *SMembersRequest) Reset() {
 	*x = SMembersRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[58]
+	mi := &file_ember_v1_ember_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2986,7 +3960,7 @@ func (x *SMembersRequest) String() string {
 func (*SMembersRequest) ProtoMessage() {}
 
 func (x *SMembersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[58]
+	mi := &file_ember_v1_ember_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2999,7 +3973,7 @@ func (x *SMembersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SMembersRequest.ProtoReflect.Descriptor instead.
 func (*SMembersRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{58}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *SMembersRequest) GetKey() string {
@@ -3019,7 +3993,7 @@ type SIsMemberRequest struct {
 
 func (x *SIsMemberRequest) Reset() {
 	*x = SIsMemberRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[59]
+	mi := &file_ember_v1_ember_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3031,7 +4005,7 @@ func (x *SIsMemberRequest) String() string {
 func (*SIsMemberRequest) ProtoMessage() {}
 
 func (x *SIsMemberRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[59]
+	mi := &file_ember_v1_ember_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3044,7 +4018,7 @@ func (x *SIsMemberRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SIsMemberRequest.ProtoReflect.Descriptor instead.
 func (*SIsMemberRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{59}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *SIsMemberRequest) GetKey() string {
@@ -3070,7 +4044,7 @@ type SCardRequest struct {
 
 func (x *SCardRequest) Reset() {
 	*x = SCardRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[60]
+	mi := &file_ember_v1_ember_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3082,7 +4056,7 @@ func (x *SCardRequest) String() string {
 func (*SCardRequest) ProtoMessage() {}
 
 func (x *SCardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[60]
+	mi := &file_ember_v1_ember_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3095,7 +4069,7 @@ func (x *SCardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SCardRequest.ProtoReflect.Descriptor instead.
 func (*SCardRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{60}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *SCardRequest) GetKey() string {
@@ -3103,6 +4077,571 @@ func (x *SCardRequest) GetKey() string {
 		return x.Key
 	}
 	return ""
+}
+
+type SUnionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SUnionRequest) Reset() {
+	*x = SUnionRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[78]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SUnionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SUnionRequest) ProtoMessage() {}
+
+func (x *SUnionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[78]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SUnionRequest.ProtoReflect.Descriptor instead.
+func (*SUnionRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{78}
+}
+
+func (x *SUnionRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type SInterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SInterRequest) Reset() {
+	*x = SInterRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[79]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SInterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SInterRequest) ProtoMessage() {}
+
+func (x *SInterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[79]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SInterRequest.ProtoReflect.Descriptor instead.
+func (*SInterRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{79}
+}
+
+func (x *SInterRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type SDiffRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SDiffRequest) Reset() {
+	*x = SDiffRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[80]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SDiffRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SDiffRequest) ProtoMessage() {}
+
+func (x *SDiffRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[80]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SDiffRequest.ProtoReflect.Descriptor instead.
+func (*SDiffRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{80}
+}
+
+func (x *SDiffRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type SUnionStoreRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Destination   string                 `protobuf:"bytes,1,opt,name=destination,proto3" json:"destination,omitempty"`
+	Keys          []string               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SUnionStoreRequest) Reset() {
+	*x = SUnionStoreRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[81]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SUnionStoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SUnionStoreRequest) ProtoMessage() {}
+
+func (x *SUnionStoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[81]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SUnionStoreRequest.ProtoReflect.Descriptor instead.
+func (*SUnionStoreRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{81}
+}
+
+func (x *SUnionStoreRequest) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *SUnionStoreRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type SInterStoreRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Destination   string                 `protobuf:"bytes,1,opt,name=destination,proto3" json:"destination,omitempty"`
+	Keys          []string               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SInterStoreRequest) Reset() {
+	*x = SInterStoreRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[82]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SInterStoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SInterStoreRequest) ProtoMessage() {}
+
+func (x *SInterStoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[82]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SInterStoreRequest.ProtoReflect.Descriptor instead.
+func (*SInterStoreRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{82}
+}
+
+func (x *SInterStoreRequest) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *SInterStoreRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type SDiffStoreRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Destination   string                 `protobuf:"bytes,1,opt,name=destination,proto3" json:"destination,omitempty"`
+	Keys          []string               `protobuf:"bytes,2,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SDiffStoreRequest) Reset() {
+	*x = SDiffStoreRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[83]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SDiffStoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SDiffStoreRequest) ProtoMessage() {}
+
+func (x *SDiffStoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[83]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SDiffStoreRequest.ProtoReflect.Descriptor instead.
+func (*SDiffStoreRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{83}
+}
+
+func (x *SDiffStoreRequest) GetDestination() string {
+	if x != nil {
+		return x.Destination
+	}
+	return ""
+}
+
+func (x *SDiffStoreRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+type SRandMemberRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// positive: return that many unique members; negative: allow repeats.
+	Count         int32 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SRandMemberRequest) Reset() {
+	*x = SRandMemberRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[84]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SRandMemberRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SRandMemberRequest) ProtoMessage() {}
+
+func (x *SRandMemberRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[84]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SRandMemberRequest.ProtoReflect.Descriptor instead.
+func (*SRandMemberRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{84}
+}
+
+func (x *SRandMemberRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SRandMemberRequest) GetCount() int32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type SPopRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Count         uint32                 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SPopRequest) Reset() {
+	*x = SPopRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[85]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SPopRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SPopRequest) ProtoMessage() {}
+
+func (x *SPopRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[85]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SPopRequest.ProtoReflect.Descriptor instead.
+func (*SPopRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{85}
+}
+
+func (x *SPopRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SPopRequest) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type SMisMemberRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Members       []string               `protobuf:"bytes,2,rep,name=members,proto3" json:"members,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SMisMemberRequest) Reset() {
+	*x = SMisMemberRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[86]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SMisMemberRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SMisMemberRequest) ProtoMessage() {}
+
+func (x *SMisMemberRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[86]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SMisMemberRequest.ProtoReflect.Descriptor instead.
+func (*SMisMemberRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{86}
+}
+
+func (x *SMisMemberRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SMisMemberRequest) GetMembers() []string {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
+type SScanRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Cursor        uint64                 `protobuf:"varint,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Pattern       *string                `protobuf:"bytes,3,opt,name=pattern,proto3,oneof" json:"pattern,omitempty"`
+	Count         uint32                 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SScanRequest) Reset() {
+	*x = SScanRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[87]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SScanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SScanRequest) ProtoMessage() {}
+
+func (x *SScanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[87]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SScanRequest.ProtoReflect.Descriptor instead.
+func (*SScanRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{87}
+}
+
+func (x *SScanRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *SScanRequest) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+func (x *SScanRequest) GetPattern() string {
+	if x != nil && x.Pattern != nil {
+		return *x.Pattern
+	}
+	return ""
+}
+
+func (x *SScanRequest) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type SScanResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cursor        uint64                 `protobuf:"varint,1,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Members       []string               `protobuf:"bytes,2,rep,name=members,proto3" json:"members,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SScanResponse) Reset() {
+	*x = SScanResponse{}
+	mi := &file_ember_v1_ember_proto_msgTypes[88]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SScanResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SScanResponse) ProtoMessage() {}
+
+func (x *SScanResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[88]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SScanResponse.ProtoReflect.Descriptor instead.
+func (*SScanResponse) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{88}
+}
+
+func (x *SScanResponse) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+func (x *SScanResponse) GetMembers() []string {
+	if x != nil {
+		return x.Members
+	}
+	return nil
 }
 
 type ZAddRequest struct {
@@ -3120,7 +4659,7 @@ type ZAddRequest struct {
 
 func (x *ZAddRequest) Reset() {
 	*x = ZAddRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[61]
+	mi := &file_ember_v1_ember_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3132,7 +4671,7 @@ func (x *ZAddRequest) String() string {
 func (*ZAddRequest) ProtoMessage() {}
 
 func (x *ZAddRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[61]
+	mi := &file_ember_v1_ember_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3145,7 +4684,7 @@ func (x *ZAddRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZAddRequest.ProtoReflect.Descriptor instead.
 func (*ZAddRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{61}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *ZAddRequest) GetKey() string {
@@ -3207,7 +4746,7 @@ type ScoreMember struct {
 
 func (x *ScoreMember) Reset() {
 	*x = ScoreMember{}
-	mi := &file_ember_v1_ember_proto_msgTypes[62]
+	mi := &file_ember_v1_ember_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3219,7 +4758,7 @@ func (x *ScoreMember) String() string {
 func (*ScoreMember) ProtoMessage() {}
 
 func (x *ScoreMember) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[62]
+	mi := &file_ember_v1_ember_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3232,7 +4771,7 @@ func (x *ScoreMember) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScoreMember.ProtoReflect.Descriptor instead.
 func (*ScoreMember) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{62}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *ScoreMember) GetScore() float64 {
@@ -3259,7 +4798,7 @@ type ZRemRequest struct {
 
 func (x *ZRemRequest) Reset() {
 	*x = ZRemRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[63]
+	mi := &file_ember_v1_ember_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3271,7 +4810,7 @@ func (x *ZRemRequest) String() string {
 func (*ZRemRequest) ProtoMessage() {}
 
 func (x *ZRemRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[63]
+	mi := &file_ember_v1_ember_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3284,7 +4823,7 @@ func (x *ZRemRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZRemRequest.ProtoReflect.Descriptor instead.
 func (*ZRemRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{63}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *ZRemRequest) GetKey() string {
@@ -3311,7 +4850,7 @@ type ZScoreRequest struct {
 
 func (x *ZScoreRequest) Reset() {
 	*x = ZScoreRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[64]
+	mi := &file_ember_v1_ember_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3323,7 +4862,7 @@ func (x *ZScoreRequest) String() string {
 func (*ZScoreRequest) ProtoMessage() {}
 
 func (x *ZScoreRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[64]
+	mi := &file_ember_v1_ember_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3336,7 +4875,7 @@ func (x *ZScoreRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZScoreRequest.ProtoReflect.Descriptor instead.
 func (*ZScoreRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{64}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *ZScoreRequest) GetKey() string {
@@ -3362,7 +4901,7 @@ type OptionalFloatResponse struct {
 
 func (x *OptionalFloatResponse) Reset() {
 	*x = OptionalFloatResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[65]
+	mi := &file_ember_v1_ember_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3374,7 +4913,7 @@ func (x *OptionalFloatResponse) String() string {
 func (*OptionalFloatResponse) ProtoMessage() {}
 
 func (x *OptionalFloatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[65]
+	mi := &file_ember_v1_ember_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3387,7 +4926,7 @@ func (x *OptionalFloatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptionalFloatResponse.ProtoReflect.Descriptor instead.
 func (*OptionalFloatResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{65}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *OptionalFloatResponse) GetValue() float64 {
@@ -3407,7 +4946,7 @@ type ZRankRequest struct {
 
 func (x *ZRankRequest) Reset() {
 	*x = ZRankRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[66]
+	mi := &file_ember_v1_ember_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3419,7 +4958,7 @@ func (x *ZRankRequest) String() string {
 func (*ZRankRequest) ProtoMessage() {}
 
 func (x *ZRankRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[66]
+	mi := &file_ember_v1_ember_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3432,7 +4971,7 @@ func (x *ZRankRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZRankRequest.ProtoReflect.Descriptor instead.
 func (*ZRankRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{66}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *ZRankRequest) GetKey() string {
@@ -3458,7 +4997,7 @@ type OptionalIntResponse struct {
 
 func (x *OptionalIntResponse) Reset() {
 	*x = OptionalIntResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[67]
+	mi := &file_ember_v1_ember_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3470,7 +5009,7 @@ func (x *OptionalIntResponse) String() string {
 func (*OptionalIntResponse) ProtoMessage() {}
 
 func (x *OptionalIntResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[67]
+	mi := &file_ember_v1_ember_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3483,7 +5022,7 @@ func (x *OptionalIntResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptionalIntResponse.ProtoReflect.Descriptor instead.
 func (*OptionalIntResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{67}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *OptionalIntResponse) GetValue() int64 {
@@ -3502,7 +5041,7 @@ type ZCardRequest struct {
 
 func (x *ZCardRequest) Reset() {
 	*x = ZCardRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[68]
+	mi := &file_ember_v1_ember_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3514,7 +5053,7 @@ func (x *ZCardRequest) String() string {
 func (*ZCardRequest) ProtoMessage() {}
 
 func (x *ZCardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[68]
+	mi := &file_ember_v1_ember_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3527,7 +5066,7 @@ func (x *ZCardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZCardRequest.ProtoReflect.Descriptor instead.
 func (*ZCardRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{68}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *ZCardRequest) GetKey() string {
@@ -3549,7 +5088,7 @@ type ZRangeRequest struct {
 
 func (x *ZRangeRequest) Reset() {
 	*x = ZRangeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[69]
+	mi := &file_ember_v1_ember_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3561,7 +5100,7 @@ func (x *ZRangeRequest) String() string {
 func (*ZRangeRequest) ProtoMessage() {}
 
 func (x *ZRangeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[69]
+	mi := &file_ember_v1_ember_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3574,7 +5113,7 @@ func (x *ZRangeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZRangeRequest.ProtoReflect.Descriptor instead.
 func (*ZRangeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{69}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *ZRangeRequest) GetKey() string {
@@ -3615,7 +5154,7 @@ type ZRangeResponse struct {
 
 func (x *ZRangeResponse) Reset() {
 	*x = ZRangeResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[70]
+	mi := &file_ember_v1_ember_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3627,7 +5166,7 @@ func (x *ZRangeResponse) String() string {
 func (*ZRangeResponse) ProtoMessage() {}
 
 func (x *ZRangeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[70]
+	mi := &file_ember_v1_ember_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3640,10 +5179,800 @@ func (x *ZRangeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ZRangeResponse.ProtoReflect.Descriptor instead.
 func (*ZRangeResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{70}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *ZRangeResponse) GetMembers() []*ScoreMember {
+	if x != nil {
+		return x.Members
+	}
+	return nil
+}
+
+type ZRevRankRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Member        string                 `protobuf:"bytes,2,opt,name=member,proto3" json:"member,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZRevRankRequest) Reset() {
+	*x = ZRevRankRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[99]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZRevRankRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZRevRankRequest) ProtoMessage() {}
+
+func (x *ZRevRankRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[99]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZRevRankRequest.ProtoReflect.Descriptor instead.
+func (*ZRevRankRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{99}
+}
+
+func (x *ZRevRankRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZRevRankRequest) GetMember() string {
+	if x != nil {
+		return x.Member
+	}
+	return ""
+}
+
+type ZRevRangeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Start         int64                  `protobuf:"varint,2,opt,name=start,proto3" json:"start,omitempty"`
+	Stop          int64                  `protobuf:"varint,3,opt,name=stop,proto3" json:"stop,omitempty"`
+	WithScores    bool                   `protobuf:"varint,4,opt,name=with_scores,json=withScores,proto3" json:"with_scores,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZRevRangeRequest) Reset() {
+	*x = ZRevRangeRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[100]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZRevRangeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZRevRangeRequest) ProtoMessage() {}
+
+func (x *ZRevRangeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[100]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZRevRangeRequest.ProtoReflect.Descriptor instead.
+func (*ZRevRangeRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{100}
+}
+
+func (x *ZRevRangeRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZRevRangeRequest) GetStart() int64 {
+	if x != nil {
+		return x.Start
+	}
+	return 0
+}
+
+func (x *ZRevRangeRequest) GetStop() int64 {
+	if x != nil {
+		return x.Stop
+	}
+	return 0
+}
+
+func (x *ZRevRangeRequest) GetWithScores() bool {
+	if x != nil {
+		return x.WithScores
+	}
+	return false
+}
+
+type ZCountRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// min/max use redis score range syntax: "-inf", "+inf", "(5", "5".
+	Min           string `protobuf:"bytes,2,opt,name=min,proto3" json:"min,omitempty"`
+	Max           string `protobuf:"bytes,3,opt,name=max,proto3" json:"max,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZCountRequest) Reset() {
+	*x = ZCountRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[101]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZCountRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZCountRequest) ProtoMessage() {}
+
+func (x *ZCountRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[101]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZCountRequest.ProtoReflect.Descriptor instead.
+func (*ZCountRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{101}
+}
+
+func (x *ZCountRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZCountRequest) GetMin() string {
+	if x != nil {
+		return x.Min
+	}
+	return ""
+}
+
+func (x *ZCountRequest) GetMax() string {
+	if x != nil {
+		return x.Max
+	}
+	return ""
+}
+
+type ZIncrByRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Delta         float64                `protobuf:"fixed64,2,opt,name=delta,proto3" json:"delta,omitempty"`
+	Member        string                 `protobuf:"bytes,3,opt,name=member,proto3" json:"member,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZIncrByRequest) Reset() {
+	*x = ZIncrByRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[102]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZIncrByRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZIncrByRequest) ProtoMessage() {}
+
+func (x *ZIncrByRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[102]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZIncrByRequest.ProtoReflect.Descriptor instead.
+func (*ZIncrByRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{102}
+}
+
+func (x *ZIncrByRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZIncrByRequest) GetDelta() float64 {
+	if x != nil {
+		return x.Delta
+	}
+	return 0
+}
+
+func (x *ZIncrByRequest) GetMember() string {
+	if x != nil {
+		return x.Member
+	}
+	return ""
+}
+
+type ZRangeByScoreRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Min           string                 `protobuf:"bytes,2,opt,name=min,proto3" json:"min,omitempty"`
+	Max           string                 `protobuf:"bytes,3,opt,name=max,proto3" json:"max,omitempty"`
+	Offset        *int64                 `protobuf:"varint,4,opt,name=offset,proto3,oneof" json:"offset,omitempty"`
+	Count         *int64                 `protobuf:"varint,5,opt,name=count,proto3,oneof" json:"count,omitempty"`
+	WithScores    bool                   `protobuf:"varint,6,opt,name=with_scores,json=withScores,proto3" json:"with_scores,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZRangeByScoreRequest) Reset() {
+	*x = ZRangeByScoreRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[103]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZRangeByScoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZRangeByScoreRequest) ProtoMessage() {}
+
+func (x *ZRangeByScoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[103]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZRangeByScoreRequest.ProtoReflect.Descriptor instead.
+func (*ZRangeByScoreRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{103}
+}
+
+func (x *ZRangeByScoreRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZRangeByScoreRequest) GetMin() string {
+	if x != nil {
+		return x.Min
+	}
+	return ""
+}
+
+func (x *ZRangeByScoreRequest) GetMax() string {
+	if x != nil {
+		return x.Max
+	}
+	return ""
+}
+
+func (x *ZRangeByScoreRequest) GetOffset() int64 {
+	if x != nil && x.Offset != nil {
+		return *x.Offset
+	}
+	return 0
+}
+
+func (x *ZRangeByScoreRequest) GetCount() int64 {
+	if x != nil && x.Count != nil {
+		return *x.Count
+	}
+	return 0
+}
+
+func (x *ZRangeByScoreRequest) GetWithScores() bool {
+	if x != nil {
+		return x.WithScores
+	}
+	return false
+}
+
+type ZRevRangeByScoreRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// note: max comes before min for reverse range queries.
+	Max           string `protobuf:"bytes,2,opt,name=max,proto3" json:"max,omitempty"`
+	Min           string `protobuf:"bytes,3,opt,name=min,proto3" json:"min,omitempty"`
+	Offset        *int64 `protobuf:"varint,4,opt,name=offset,proto3,oneof" json:"offset,omitempty"`
+	Count         *int64 `protobuf:"varint,5,opt,name=count,proto3,oneof" json:"count,omitempty"`
+	WithScores    bool   `protobuf:"varint,6,opt,name=with_scores,json=withScores,proto3" json:"with_scores,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZRevRangeByScoreRequest) Reset() {
+	*x = ZRevRangeByScoreRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[104]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZRevRangeByScoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZRevRangeByScoreRequest) ProtoMessage() {}
+
+func (x *ZRevRangeByScoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[104]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZRevRangeByScoreRequest.ProtoReflect.Descriptor instead.
+func (*ZRevRangeByScoreRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{104}
+}
+
+func (x *ZRevRangeByScoreRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZRevRangeByScoreRequest) GetMax() string {
+	if x != nil {
+		return x.Max
+	}
+	return ""
+}
+
+func (x *ZRevRangeByScoreRequest) GetMin() string {
+	if x != nil {
+		return x.Min
+	}
+	return ""
+}
+
+func (x *ZRevRangeByScoreRequest) GetOffset() int64 {
+	if x != nil && x.Offset != nil {
+		return *x.Offset
+	}
+	return 0
+}
+
+func (x *ZRevRangeByScoreRequest) GetCount() int64 {
+	if x != nil && x.Count != nil {
+		return *x.Count
+	}
+	return 0
+}
+
+func (x *ZRevRangeByScoreRequest) GetWithScores() bool {
+	if x != nil {
+		return x.WithScores
+	}
+	return false
+}
+
+type ZPopMinRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Count         uint32                 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZPopMinRequest) Reset() {
+	*x = ZPopMinRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[105]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZPopMinRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZPopMinRequest) ProtoMessage() {}
+
+func (x *ZPopMinRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[105]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZPopMinRequest.ProtoReflect.Descriptor instead.
+func (*ZPopMinRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{105}
+}
+
+func (x *ZPopMinRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZPopMinRequest) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type ZPopMaxRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Count         uint32                 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZPopMaxRequest) Reset() {
+	*x = ZPopMaxRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[106]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZPopMaxRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZPopMaxRequest) ProtoMessage() {}
+
+func (x *ZPopMaxRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[106]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZPopMaxRequest.ProtoReflect.Descriptor instead.
+func (*ZPopMaxRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{106}
+}
+
+func (x *ZPopMaxRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZPopMaxRequest) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type ZDiffRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	WithScores    bool                   `protobuf:"varint,2,opt,name=with_scores,json=withScores,proto3" json:"with_scores,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZDiffRequest) Reset() {
+	*x = ZDiffRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[107]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZDiffRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZDiffRequest) ProtoMessage() {}
+
+func (x *ZDiffRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[107]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZDiffRequest.ProtoReflect.Descriptor instead.
+func (*ZDiffRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{107}
+}
+
+func (x *ZDiffRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *ZDiffRequest) GetWithScores() bool {
+	if x != nil {
+		return x.WithScores
+	}
+	return false
+}
+
+type ZInterRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	WithScores    bool                   `protobuf:"varint,2,opt,name=with_scores,json=withScores,proto3" json:"with_scores,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZInterRequest) Reset() {
+	*x = ZInterRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[108]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZInterRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZInterRequest) ProtoMessage() {}
+
+func (x *ZInterRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[108]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZInterRequest.ProtoReflect.Descriptor instead.
+func (*ZInterRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{108}
+}
+
+func (x *ZInterRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *ZInterRequest) GetWithScores() bool {
+	if x != nil {
+		return x.WithScores
+	}
+	return false
+}
+
+type ZUnionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Keys          []string               `protobuf:"bytes,1,rep,name=keys,proto3" json:"keys,omitempty"`
+	WithScores    bool                   `protobuf:"varint,2,opt,name=with_scores,json=withScores,proto3" json:"with_scores,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZUnionRequest) Reset() {
+	*x = ZUnionRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[109]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZUnionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZUnionRequest) ProtoMessage() {}
+
+func (x *ZUnionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[109]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZUnionRequest.ProtoReflect.Descriptor instead.
+func (*ZUnionRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{109}
+}
+
+func (x *ZUnionRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+func (x *ZUnionRequest) GetWithScores() bool {
+	if x != nil {
+		return x.WithScores
+	}
+	return false
+}
+
+type ZScanRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Cursor        uint64                 `protobuf:"varint,2,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Pattern       *string                `protobuf:"bytes,3,opt,name=pattern,proto3,oneof" json:"pattern,omitempty"`
+	Count         uint32                 `protobuf:"varint,4,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZScanRequest) Reset() {
+	*x = ZScanRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[110]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZScanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZScanRequest) ProtoMessage() {}
+
+func (x *ZScanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[110]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZScanRequest.ProtoReflect.Descriptor instead.
+func (*ZScanRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{110}
+}
+
+func (x *ZScanRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ZScanRequest) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+func (x *ZScanRequest) GetPattern() string {
+	if x != nil && x.Pattern != nil {
+		return *x.Pattern
+	}
+	return ""
+}
+
+func (x *ZScanRequest) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+type ZScanResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cursor        uint64                 `protobuf:"varint,1,opt,name=cursor,proto3" json:"cursor,omitempty"`
+	Members       []*ScoreMember         `protobuf:"bytes,2,rep,name=members,proto3" json:"members,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ZScanResponse) Reset() {
+	*x = ZScanResponse{}
+	mi := &file_ember_v1_ember_proto_msgTypes[111]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ZScanResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ZScanResponse) ProtoMessage() {}
+
+func (x *ZScanResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[111]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ZScanResponse.ProtoReflect.Descriptor instead.
+func (*ZScanResponse) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{111}
+}
+
+func (x *ZScanResponse) GetCursor() uint64 {
+	if x != nil {
+		return x.Cursor
+	}
+	return 0
+}
+
+func (x *ZScanResponse) GetMembers() []*ScoreMember {
 	if x != nil {
 		return x.Members
 	}
@@ -3666,7 +5995,7 @@ type VAddRequest struct {
 
 func (x *VAddRequest) Reset() {
 	*x = VAddRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[71]
+	mi := &file_ember_v1_ember_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3678,7 +6007,7 @@ func (x *VAddRequest) String() string {
 func (*VAddRequest) ProtoMessage() {}
 
 func (x *VAddRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[71]
+	mi := &file_ember_v1_ember_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3691,7 +6020,7 @@ func (x *VAddRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VAddRequest.ProtoReflect.Descriptor instead.
 func (*VAddRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{71}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *VAddRequest) GetKey() string {
@@ -3753,7 +6082,7 @@ type VAddBatchEntry struct {
 
 func (x *VAddBatchEntry) Reset() {
 	*x = VAddBatchEntry{}
-	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	mi := &file_ember_v1_ember_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3765,7 +6094,7 @@ func (x *VAddBatchEntry) String() string {
 func (*VAddBatchEntry) ProtoMessage() {}
 
 func (x *VAddBatchEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[72]
+	mi := &file_ember_v1_ember_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3778,7 +6107,7 @@ func (x *VAddBatchEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VAddBatchEntry.ProtoReflect.Descriptor instead.
 func (*VAddBatchEntry) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{72}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *VAddBatchEntry) GetElement() string {
@@ -3809,7 +6138,7 @@ type VAddBatchRequest struct {
 
 func (x *VAddBatchRequest) Reset() {
 	*x = VAddBatchRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[73]
+	mi := &file_ember_v1_ember_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3821,7 +6150,7 @@ func (x *VAddBatchRequest) String() string {
 func (*VAddBatchRequest) ProtoMessage() {}
 
 func (x *VAddBatchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[73]
+	mi := &file_ember_v1_ember_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3834,7 +6163,7 @@ func (x *VAddBatchRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VAddBatchRequest.ProtoReflect.Descriptor instead.
 func (*VAddBatchRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{73}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *VAddBatchRequest) GetKey() string {
@@ -3891,7 +6220,7 @@ type VSimRequest struct {
 
 func (x *VSimRequest) Reset() {
 	*x = VSimRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[74]
+	mi := &file_ember_v1_ember_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3903,7 +6232,7 @@ func (x *VSimRequest) String() string {
 func (*VSimRequest) ProtoMessage() {}
 
 func (x *VSimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[74]
+	mi := &file_ember_v1_ember_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3916,7 +6245,7 @@ func (x *VSimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSimRequest.ProtoReflect.Descriptor instead.
 func (*VSimRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{74}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *VSimRequest) GetKey() string {
@@ -3956,7 +6285,7 @@ type VSimResponse struct {
 
 func (x *VSimResponse) Reset() {
 	*x = VSimResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[75]
+	mi := &file_ember_v1_ember_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3968,7 +6297,7 @@ func (x *VSimResponse) String() string {
 func (*VSimResponse) ProtoMessage() {}
 
 func (x *VSimResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[75]
+	mi := &file_ember_v1_ember_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3981,7 +6310,7 @@ func (x *VSimResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSimResponse.ProtoReflect.Descriptor instead.
 func (*VSimResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{75}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *VSimResponse) GetResults() []*VSimResult {
@@ -4001,7 +6330,7 @@ type VSimResult struct {
 
 func (x *VSimResult) Reset() {
 	*x = VSimResult{}
-	mi := &file_ember_v1_ember_proto_msgTypes[76]
+	mi := &file_ember_v1_ember_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4013,7 +6342,7 @@ func (x *VSimResult) String() string {
 func (*VSimResult) ProtoMessage() {}
 
 func (x *VSimResult) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[76]
+	mi := &file_ember_v1_ember_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4026,7 +6355,7 @@ func (x *VSimResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VSimResult.ProtoReflect.Descriptor instead.
 func (*VSimResult) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{76}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *VSimResult) GetElement() string {
@@ -4053,7 +6382,7 @@ type VRemRequest struct {
 
 func (x *VRemRequest) Reset() {
 	*x = VRemRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[77]
+	mi := &file_ember_v1_ember_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4065,7 +6394,7 @@ func (x *VRemRequest) String() string {
 func (*VRemRequest) ProtoMessage() {}
 
 func (x *VRemRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[77]
+	mi := &file_ember_v1_ember_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4078,7 +6407,7 @@ func (x *VRemRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VRemRequest.ProtoReflect.Descriptor instead.
 func (*VRemRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{77}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *VRemRequest) GetKey() string {
@@ -4105,7 +6434,7 @@ type VGetRequest struct {
 
 func (x *VGetRequest) Reset() {
 	*x = VGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[78]
+	mi := &file_ember_v1_ember_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4117,7 +6446,7 @@ func (x *VGetRequest) String() string {
 func (*VGetRequest) ProtoMessage() {}
 
 func (x *VGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[78]
+	mi := &file_ember_v1_ember_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4130,7 +6459,7 @@ func (x *VGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VGetRequest.ProtoReflect.Descriptor instead.
 func (*VGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{78}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *VGetRequest) GetKey() string {
@@ -4157,7 +6486,7 @@ type VGetResponse struct {
 
 func (x *VGetResponse) Reset() {
 	*x = VGetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[79]
+	mi := &file_ember_v1_ember_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4169,7 +6498,7 @@ func (x *VGetResponse) String() string {
 func (*VGetResponse) ProtoMessage() {}
 
 func (x *VGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[79]
+	mi := &file_ember_v1_ember_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4182,7 +6511,7 @@ func (x *VGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VGetResponse.ProtoReflect.Descriptor instead.
 func (*VGetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{79}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *VGetResponse) GetExists() bool {
@@ -4208,7 +6537,7 @@ type VCardRequest struct {
 
 func (x *VCardRequest) Reset() {
 	*x = VCardRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[80]
+	mi := &file_ember_v1_ember_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4220,7 +6549,7 @@ func (x *VCardRequest) String() string {
 func (*VCardRequest) ProtoMessage() {}
 
 func (x *VCardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[80]
+	mi := &file_ember_v1_ember_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4233,7 +6562,7 @@ func (x *VCardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VCardRequest.ProtoReflect.Descriptor instead.
 func (*VCardRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{80}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *VCardRequest) GetKey() string {
@@ -4252,7 +6581,7 @@ type VDimRequest struct {
 
 func (x *VDimRequest) Reset() {
 	*x = VDimRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[81]
+	mi := &file_ember_v1_ember_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4264,7 +6593,7 @@ func (x *VDimRequest) String() string {
 func (*VDimRequest) ProtoMessage() {}
 
 func (x *VDimRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[81]
+	mi := &file_ember_v1_ember_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4277,7 +6606,7 @@ func (x *VDimRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VDimRequest.ProtoReflect.Descriptor instead.
 func (*VDimRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{81}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *VDimRequest) GetKey() string {
@@ -4296,7 +6625,7 @@ type VInfoRequest struct {
 
 func (x *VInfoRequest) Reset() {
 	*x = VInfoRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[82]
+	mi := &file_ember_v1_ember_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4308,7 +6637,7 @@ func (x *VInfoRequest) String() string {
 func (*VInfoRequest) ProtoMessage() {}
 
 func (x *VInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[82]
+	mi := &file_ember_v1_ember_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4321,7 +6650,7 @@ func (x *VInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VInfoRequest.ProtoReflect.Descriptor instead.
 func (*VInfoRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{82}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *VInfoRequest) GetKey() string {
@@ -4341,7 +6670,7 @@ type VInfoResponse struct {
 
 func (x *VInfoResponse) Reset() {
 	*x = VInfoResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[83]
+	mi := &file_ember_v1_ember_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4353,7 +6682,7 @@ func (x *VInfoResponse) String() string {
 func (*VInfoResponse) ProtoMessage() {}
 
 func (x *VInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[83]
+	mi := &file_ember_v1_ember_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4366,7 +6695,7 @@ func (x *VInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VInfoResponse.ProtoReflect.Descriptor instead.
 func (*VInfoResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{83}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *VInfoResponse) GetExists() bool {
@@ -4392,7 +6721,7 @@ type PingRequest struct {
 
 func (x *PingRequest) Reset() {
 	*x = PingRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[84]
+	mi := &file_ember_v1_ember_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4404,7 +6733,7 @@ func (x *PingRequest) String() string {
 func (*PingRequest) ProtoMessage() {}
 
 func (x *PingRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[84]
+	mi := &file_ember_v1_ember_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4417,7 +6746,7 @@ func (x *PingRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingRequest.ProtoReflect.Descriptor instead.
 func (*PingRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{84}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *PingRequest) GetMessage() string {
@@ -4436,7 +6765,7 @@ type PingResponse struct {
 
 func (x *PingResponse) Reset() {
 	*x = PingResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[85]
+	mi := &file_ember_v1_ember_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4448,7 +6777,7 @@ func (x *PingResponse) String() string {
 func (*PingResponse) ProtoMessage() {}
 
 func (x *PingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[85]
+	mi := &file_ember_v1_ember_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4461,7 +6790,7 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
 func (*PingResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{85}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *PingResponse) GetMessage() string {
@@ -4480,7 +6809,7 @@ type FlushDbRequest struct {
 
 func (x *FlushDbRequest) Reset() {
 	*x = FlushDbRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[86]
+	mi := &file_ember_v1_ember_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4492,7 +6821,7 @@ func (x *FlushDbRequest) String() string {
 func (*FlushDbRequest) ProtoMessage() {}
 
 func (x *FlushDbRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[86]
+	mi := &file_ember_v1_ember_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4505,7 +6834,7 @@ func (x *FlushDbRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FlushDbRequest.ProtoReflect.Descriptor instead.
 func (*FlushDbRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{86}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *FlushDbRequest) GetAsync() bool {
@@ -4523,7 +6852,7 @@ type DbSizeRequest struct {
 
 func (x *DbSizeRequest) Reset() {
 	*x = DbSizeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[87]
+	mi := &file_ember_v1_ember_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4535,7 +6864,7 @@ func (x *DbSizeRequest) String() string {
 func (*DbSizeRequest) ProtoMessage() {}
 
 func (x *DbSizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[87]
+	mi := &file_ember_v1_ember_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4548,7 +6877,7 @@ func (x *DbSizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DbSizeRequest.ProtoReflect.Descriptor instead.
 func (*DbSizeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{87}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{128}
 }
 
 type InfoRequest struct {
@@ -4560,7 +6889,7 @@ type InfoRequest struct {
 
 func (x *InfoRequest) Reset() {
 	*x = InfoRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[88]
+	mi := &file_ember_v1_ember_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4572,7 +6901,7 @@ func (x *InfoRequest) String() string {
 func (*InfoRequest) ProtoMessage() {}
 
 func (x *InfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[88]
+	mi := &file_ember_v1_ember_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4585,7 +6914,7 @@ func (x *InfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
 func (*InfoRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{88}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *InfoRequest) GetSection() string {
@@ -4604,7 +6933,7 @@ type InfoResponse struct {
 
 func (x *InfoResponse) Reset() {
 	*x = InfoResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[89]
+	mi := &file_ember_v1_ember_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4616,7 +6945,7 @@ func (x *InfoResponse) String() string {
 func (*InfoResponse) ProtoMessage() {}
 
 func (x *InfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[89]
+	mi := &file_ember_v1_ember_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4629,7 +6958,7 @@ func (x *InfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
 func (*InfoResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{89}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *InfoResponse) GetInfo() string {
@@ -4648,7 +6977,7 @@ type EchoRequest struct {
 
 func (x *EchoRequest) Reset() {
 	*x = EchoRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[90]
+	mi := &file_ember_v1_ember_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4660,7 +6989,7 @@ func (x *EchoRequest) String() string {
 func (*EchoRequest) ProtoMessage() {}
 
 func (x *EchoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[90]
+	mi := &file_ember_v1_ember_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4673,7 +7002,7 @@ func (x *EchoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EchoRequest.ProtoReflect.Descriptor instead.
 func (*EchoRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{90}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *EchoRequest) GetMessage() string {
@@ -4692,7 +7021,7 @@ type EchoResponse struct {
 
 func (x *EchoResponse) Reset() {
 	*x = EchoResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[91]
+	mi := &file_ember_v1_ember_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4704,7 +7033,7 @@ func (x *EchoResponse) String() string {
 func (*EchoResponse) ProtoMessage() {}
 
 func (x *EchoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[91]
+	mi := &file_ember_v1_ember_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4717,7 +7046,7 @@ func (x *EchoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EchoResponse.ProtoReflect.Descriptor instead.
 func (*EchoResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{91}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{132}
 }
 
 func (x *EchoResponse) GetMessage() string {
@@ -4736,7 +7065,7 @@ type DecrRequest struct {
 
 func (x *DecrRequest) Reset() {
 	*x = DecrRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[92]
+	mi := &file_ember_v1_ember_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4748,7 +7077,7 @@ func (x *DecrRequest) String() string {
 func (*DecrRequest) ProtoMessage() {}
 
 func (x *DecrRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[92]
+	mi := &file_ember_v1_ember_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4761,7 +7090,7 @@ func (x *DecrRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecrRequest.ProtoReflect.Descriptor instead.
 func (*DecrRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{92}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *DecrRequest) GetKey() string {
@@ -4780,7 +7109,7 @@ type UnlinkRequest struct {
 
 func (x *UnlinkRequest) Reset() {
 	*x = UnlinkRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[93]
+	mi := &file_ember_v1_ember_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4792,7 +7121,7 @@ func (x *UnlinkRequest) String() string {
 func (*UnlinkRequest) ProtoMessage() {}
 
 func (x *UnlinkRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[93]
+	mi := &file_ember_v1_ember_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4805,7 +7134,7 @@ func (x *UnlinkRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UnlinkRequest.ProtoReflect.Descriptor instead.
 func (*UnlinkRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{93}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *UnlinkRequest) GetKeys() []string {
@@ -4823,7 +7152,7 @@ type BgSaveRequest struct {
 
 func (x *BgSaveRequest) Reset() {
 	*x = BgSaveRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[94]
+	mi := &file_ember_v1_ember_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4835,7 +7164,7 @@ func (x *BgSaveRequest) String() string {
 func (*BgSaveRequest) ProtoMessage() {}
 
 func (x *BgSaveRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[94]
+	mi := &file_ember_v1_ember_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4848,7 +7177,7 @@ func (x *BgSaveRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BgSaveRequest.ProtoReflect.Descriptor instead.
 func (*BgSaveRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{94}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{135}
 }
 
 type BgRewriteAofRequest struct {
@@ -4859,7 +7188,7 @@ type BgRewriteAofRequest struct {
 
 func (x *BgRewriteAofRequest) Reset() {
 	*x = BgRewriteAofRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[95]
+	mi := &file_ember_v1_ember_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4871,7 +7200,7 @@ func (x *BgRewriteAofRequest) String() string {
 func (*BgRewriteAofRequest) ProtoMessage() {}
 
 func (x *BgRewriteAofRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[95]
+	mi := &file_ember_v1_ember_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4884,7 +7213,131 @@ func (x *BgRewriteAofRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BgRewriteAofRequest.ProtoReflect.Descriptor instead.
 func (*BgRewriteAofRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{95}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{136}
+}
+
+type TimeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TimeRequest) Reset() {
+	*x = TimeRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[137]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimeRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimeRequest) ProtoMessage() {}
+
+func (x *TimeRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[137]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimeRequest.ProtoReflect.Descriptor instead.
+func (*TimeRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{137}
+}
+
+type TimeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seconds       int64                  `protobuf:"varint,1,opt,name=seconds,proto3" json:"seconds,omitempty"`
+	Microseconds  int64                  `protobuf:"varint,2,opt,name=microseconds,proto3" json:"microseconds,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TimeResponse) Reset() {
+	*x = TimeResponse{}
+	mi := &file_ember_v1_ember_proto_msgTypes[138]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TimeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TimeResponse) ProtoMessage() {}
+
+func (x *TimeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[138]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TimeResponse.ProtoReflect.Descriptor instead.
+func (*TimeResponse) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{138}
+}
+
+func (x *TimeResponse) GetSeconds() int64 {
+	if x != nil {
+		return x.Seconds
+	}
+	return 0
+}
+
+func (x *TimeResponse) GetMicroseconds() int64 {
+	if x != nil {
+		return x.Microseconds
+	}
+	return 0
+}
+
+type LastSaveRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LastSaveRequest) Reset() {
+	*x = LastSaveRequest{}
+	mi := &file_ember_v1_ember_proto_msgTypes[139]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LastSaveRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LastSaveRequest) ProtoMessage() {}
+
+func (x *LastSaveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ember_v1_ember_proto_msgTypes[139]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LastSaveRequest.ProtoReflect.Descriptor instead.
+func (*LastSaveRequest) Descriptor() ([]byte, []int) {
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{139}
 }
 
 type SlowLogGetRequest struct {
@@ -4896,7 +7349,7 @@ type SlowLogGetRequest struct {
 
 func (x *SlowLogGetRequest) Reset() {
 	*x = SlowLogGetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[96]
+	mi := &file_ember_v1_ember_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4908,7 +7361,7 @@ func (x *SlowLogGetRequest) String() string {
 func (*SlowLogGetRequest) ProtoMessage() {}
 
 func (x *SlowLogGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[96]
+	mi := &file_ember_v1_ember_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4921,7 +7374,7 @@ func (x *SlowLogGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogGetRequest.ProtoReflect.Descriptor instead.
 func (*SlowLogGetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{96}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *SlowLogGetRequest) GetCount() uint32 {
@@ -4940,7 +7393,7 @@ type SlowLogGetResponse struct {
 
 func (x *SlowLogGetResponse) Reset() {
 	*x = SlowLogGetResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[97]
+	mi := &file_ember_v1_ember_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4952,7 +7405,7 @@ func (x *SlowLogGetResponse) String() string {
 func (*SlowLogGetResponse) ProtoMessage() {}
 
 func (x *SlowLogGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[97]
+	mi := &file_ember_v1_ember_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4965,7 +7418,7 @@ func (x *SlowLogGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogGetResponse.ProtoReflect.Descriptor instead.
 func (*SlowLogGetResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{97}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *SlowLogGetResponse) GetEntries() []*SlowLogEntry {
@@ -4987,7 +7440,7 @@ type SlowLogEntry struct {
 
 func (x *SlowLogEntry) Reset() {
 	*x = SlowLogEntry{}
-	mi := &file_ember_v1_ember_proto_msgTypes[98]
+	mi := &file_ember_v1_ember_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4999,7 +7452,7 @@ func (x *SlowLogEntry) String() string {
 func (*SlowLogEntry) ProtoMessage() {}
 
 func (x *SlowLogEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[98]
+	mi := &file_ember_v1_ember_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5012,7 +7465,7 @@ func (x *SlowLogEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogEntry.ProtoReflect.Descriptor instead.
 func (*SlowLogEntry) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{98}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *SlowLogEntry) GetId() uint64 {
@@ -5051,7 +7504,7 @@ type SlowLogLenRequest struct {
 
 func (x *SlowLogLenRequest) Reset() {
 	*x = SlowLogLenRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[99]
+	mi := &file_ember_v1_ember_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5063,7 +7516,7 @@ func (x *SlowLogLenRequest) String() string {
 func (*SlowLogLenRequest) ProtoMessage() {}
 
 func (x *SlowLogLenRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[99]
+	mi := &file_ember_v1_ember_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5076,7 +7529,7 @@ func (x *SlowLogLenRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogLenRequest.ProtoReflect.Descriptor instead.
 func (*SlowLogLenRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{99}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{143}
 }
 
 type SlowLogResetRequest struct {
@@ -5087,7 +7540,7 @@ type SlowLogResetRequest struct {
 
 func (x *SlowLogResetRequest) Reset() {
 	*x = SlowLogResetRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[100]
+	mi := &file_ember_v1_ember_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5099,7 +7552,7 @@ func (x *SlowLogResetRequest) String() string {
 func (*SlowLogResetRequest) ProtoMessage() {}
 
 func (x *SlowLogResetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[100]
+	mi := &file_ember_v1_ember_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5112,7 +7565,7 @@ func (x *SlowLogResetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlowLogResetRequest.ProtoReflect.Descriptor instead.
 func (*SlowLogResetRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{100}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{144}
 }
 
 type PublishRequest struct {
@@ -5125,7 +7578,7 @@ type PublishRequest struct {
 
 func (x *PublishRequest) Reset() {
 	*x = PublishRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[101]
+	mi := &file_ember_v1_ember_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5137,7 +7590,7 @@ func (x *PublishRequest) String() string {
 func (*PublishRequest) ProtoMessage() {}
 
 func (x *PublishRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[101]
+	mi := &file_ember_v1_ember_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5150,7 +7603,7 @@ func (x *PublishRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishRequest.ProtoReflect.Descriptor instead.
 func (*PublishRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{101}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *PublishRequest) GetChannel() string {
@@ -5177,7 +7630,7 @@ type SubscribeRequest struct {
 
 func (x *SubscribeRequest) Reset() {
 	*x = SubscribeRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[102]
+	mi := &file_ember_v1_ember_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5189,7 +7642,7 @@ func (x *SubscribeRequest) String() string {
 func (*SubscribeRequest) ProtoMessage() {}
 
 func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[102]
+	mi := &file_ember_v1_ember_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5202,7 +7655,7 @@ func (x *SubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{102}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *SubscribeRequest) GetChannels() []string {
@@ -5233,7 +7686,7 @@ type SubscribeEvent struct {
 
 func (x *SubscribeEvent) Reset() {
 	*x = SubscribeEvent{}
-	mi := &file_ember_v1_ember_proto_msgTypes[103]
+	mi := &file_ember_v1_ember_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5245,7 +7698,7 @@ func (x *SubscribeEvent) String() string {
 func (*SubscribeEvent) ProtoMessage() {}
 
 func (x *SubscribeEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[103]
+	mi := &file_ember_v1_ember_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5258,7 +7711,7 @@ func (x *SubscribeEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeEvent.ProtoReflect.Descriptor instead.
 func (*SubscribeEvent) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{103}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *SubscribeEvent) GetKind() string {
@@ -5298,7 +7751,7 @@ type PubSubChannelsRequest struct {
 
 func (x *PubSubChannelsRequest) Reset() {
 	*x = PubSubChannelsRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[104]
+	mi := &file_ember_v1_ember_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5310,7 +7763,7 @@ func (x *PubSubChannelsRequest) String() string {
 func (*PubSubChannelsRequest) ProtoMessage() {}
 
 func (x *PubSubChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[104]
+	mi := &file_ember_v1_ember_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5323,7 +7776,7 @@ func (x *PubSubChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubChannelsRequest.ProtoReflect.Descriptor instead.
 func (*PubSubChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{104}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *PubSubChannelsRequest) GetPattern() string {
@@ -5342,7 +7795,7 @@ type PubSubNumSubRequest struct {
 
 func (x *PubSubNumSubRequest) Reset() {
 	*x = PubSubNumSubRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[105]
+	mi := &file_ember_v1_ember_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5354,7 +7807,7 @@ func (x *PubSubNumSubRequest) String() string {
 func (*PubSubNumSubRequest) ProtoMessage() {}
 
 func (x *PubSubNumSubRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[105]
+	mi := &file_ember_v1_ember_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5367,7 +7820,7 @@ func (x *PubSubNumSubRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubNumSubRequest.ProtoReflect.Descriptor instead.
 func (*PubSubNumSubRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{105}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *PubSubNumSubRequest) GetChannels() []string {
@@ -5386,7 +7839,7 @@ type PubSubNumSubResponse struct {
 
 func (x *PubSubNumSubResponse) Reset() {
 	*x = PubSubNumSubResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[106]
+	mi := &file_ember_v1_ember_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5398,7 +7851,7 @@ func (x *PubSubNumSubResponse) String() string {
 func (*PubSubNumSubResponse) ProtoMessage() {}
 
 func (x *PubSubNumSubResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[106]
+	mi := &file_ember_v1_ember_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5411,7 +7864,7 @@ func (x *PubSubNumSubResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubNumSubResponse.ProtoReflect.Descriptor instead.
 func (*PubSubNumSubResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{106}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *PubSubNumSubResponse) GetCounts() []*ChannelCount {
@@ -5429,7 +7882,7 @@ type PubSubNumPatRequest struct {
 
 func (x *PubSubNumPatRequest) Reset() {
 	*x = PubSubNumPatRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[107]
+	mi := &file_ember_v1_ember_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5441,7 +7894,7 @@ func (x *PubSubNumPatRequest) String() string {
 func (*PubSubNumPatRequest) ProtoMessage() {}
 
 func (x *PubSubNumPatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[107]
+	mi := &file_ember_v1_ember_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5454,7 +7907,7 @@ func (x *PubSubNumPatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PubSubNumPatRequest.ProtoReflect.Descriptor instead.
 func (*PubSubNumPatRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{107}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{151}
 }
 
 type ChannelCount struct {
@@ -5467,7 +7920,7 @@ type ChannelCount struct {
 
 func (x *ChannelCount) Reset() {
 	*x = ChannelCount{}
-	mi := &file_ember_v1_ember_proto_msgTypes[108]
+	mi := &file_ember_v1_ember_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5479,7 +7932,7 @@ func (x *ChannelCount) String() string {
 func (*ChannelCount) ProtoMessage() {}
 
 func (x *ChannelCount) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[108]
+	mi := &file_ember_v1_ember_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5492,7 +7945,7 @@ func (x *ChannelCount) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelCount.ProtoReflect.Descriptor instead.
 func (*ChannelCount) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{108}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *ChannelCount) GetChannel() string {
@@ -5585,6 +8038,45 @@ type PipelineRequest struct {
 	//	*PipelineRequest_PubsubNumsub
 	//	*PipelineRequest_PubsubNumpat
 	//	*PipelineRequest_VaddBatch
+	//	*PipelineRequest_GetDel_
+	//	*PipelineRequest_GetEx
+	//	*PipelineRequest_GetRange
+	//	*PipelineRequest_SetRange
+	//	*PipelineRequest_Copy
+	//	*PipelineRequest_RandomKey
+	//	*PipelineRequest_Touch
+	//	*PipelineRequest_Lindex
+	//	*PipelineRequest_Lset
+	//	*PipelineRequest_Ltrim
+	//	*PipelineRequest_Linsert
+	//	*PipelineRequest_Lrem
+	//	*PipelineRequest_Lpos
+	//	*PipelineRequest_Lmove
+	//	*PipelineRequest_Sunion
+	//	*PipelineRequest_Sinter
+	//	*PipelineRequest_Sdiff
+	//	*PipelineRequest_SunionStore
+	//	*PipelineRequest_SinterStore
+	//	*PipelineRequest_SdiffStore
+	//	*PipelineRequest_SrandMember
+	//	*PipelineRequest_Spop
+	//	*PipelineRequest_Smismember
+	//	*PipelineRequest_Hscan
+	//	*PipelineRequest_ZrevRank
+	//	*PipelineRequest_ZrevRange
+	//	*PipelineRequest_Zcount
+	//	*PipelineRequest_Zincrby
+	//	*PipelineRequest_ZrangeByScore
+	//	*PipelineRequest_ZrevRangeByScore
+	//	*PipelineRequest_Zpopmin
+	//	*PipelineRequest_Zpopmax
+	//	*PipelineRequest_Zdiff
+	//	*PipelineRequest_Zinter
+	//	*PipelineRequest_Zunion
+	//	*PipelineRequest_Zscan
+	//	*PipelineRequest_Sscan
+	//	*PipelineRequest_Time
+	//	*PipelineRequest_LastSave
 	Command       isPipelineRequest_Command `protobuf_oneof:"command"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -5592,7 +8084,7 @@ type PipelineRequest struct {
 
 func (x *PipelineRequest) Reset() {
 	*x = PipelineRequest{}
-	mi := &file_ember_v1_ember_proto_msgTypes[109]
+	mi := &file_ember_v1_ember_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5604,7 +8096,7 @@ func (x *PipelineRequest) String() string {
 func (*PipelineRequest) ProtoMessage() {}
 
 func (x *PipelineRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[109]
+	mi := &file_ember_v1_ember_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5617,7 +8109,7 @@ func (x *PipelineRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineRequest.ProtoReflect.Descriptor instead.
 func (*PipelineRequest) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{109}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *PipelineRequest) GetId() uint64 {
@@ -6273,6 +8765,357 @@ func (x *PipelineRequest) GetVaddBatch() *VAddBatchRequest {
 	return nil
 }
 
+func (x *PipelineRequest) GetGetDel_() *GetDelRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_GetDel_); ok {
+			return x.GetDel_
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetGetEx() *GetExRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_GetEx); ok {
+			return x.GetEx
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetGetRange() *GetRangeRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_GetRange); ok {
+			return x.GetRange
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSetRange() *SetRangeRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_SetRange); ok {
+			return x.SetRange
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetCopy() *CopyRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Copy); ok {
+			return x.Copy
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetRandomKey() *RandomKeyRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_RandomKey); ok {
+			return x.RandomKey
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetTouch() *TouchRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Touch); ok {
+			return x.Touch
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLindex() *LIndexRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Lindex); ok {
+			return x.Lindex
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLset() *LSetRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Lset); ok {
+			return x.Lset
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLtrim() *LTrimRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Ltrim); ok {
+			return x.Ltrim
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLinsert() *LInsertRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Linsert); ok {
+			return x.Linsert
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLrem() *LRemRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Lrem); ok {
+			return x.Lrem
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLpos() *LPosRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Lpos); ok {
+			return x.Lpos
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLmove() *LMoveRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Lmove); ok {
+			return x.Lmove
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSunion() *SUnionRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Sunion); ok {
+			return x.Sunion
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSinter() *SInterRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Sinter); ok {
+			return x.Sinter
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSdiff() *SDiffRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Sdiff); ok {
+			return x.Sdiff
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSunionStore() *SUnionStoreRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_SunionStore); ok {
+			return x.SunionStore
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSinterStore() *SInterStoreRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_SinterStore); ok {
+			return x.SinterStore
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSdiffStore() *SDiffStoreRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_SdiffStore); ok {
+			return x.SdiffStore
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSrandMember() *SRandMemberRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_SrandMember); ok {
+			return x.SrandMember
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSpop() *SPopRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Spop); ok {
+			return x.Spop
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSmismember() *SMisMemberRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Smismember); ok {
+			return x.Smismember
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetHscan() *HScanRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Hscan); ok {
+			return x.Hscan
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZrevRank() *ZRevRankRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_ZrevRank); ok {
+			return x.ZrevRank
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZrevRange() *ZRevRangeRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_ZrevRange); ok {
+			return x.ZrevRange
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZcount() *ZCountRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zcount); ok {
+			return x.Zcount
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZincrby() *ZIncrByRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zincrby); ok {
+			return x.Zincrby
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZrangeByScore() *ZRangeByScoreRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_ZrangeByScore); ok {
+			return x.ZrangeByScore
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZrevRangeByScore() *ZRevRangeByScoreRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_ZrevRangeByScore); ok {
+			return x.ZrevRangeByScore
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZpopmin() *ZPopMinRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zpopmin); ok {
+			return x.Zpopmin
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZpopmax() *ZPopMaxRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zpopmax); ok {
+			return x.Zpopmax
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZdiff() *ZDiffRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zdiff); ok {
+			return x.Zdiff
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZinter() *ZInterRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zinter); ok {
+			return x.Zinter
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZunion() *ZUnionRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zunion); ok {
+			return x.Zunion
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetZscan() *ZScanRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Zscan); ok {
+			return x.Zscan
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetSscan() *SScanRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Sscan); ok {
+			return x.Sscan
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetTime() *TimeRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_Time); ok {
+			return x.Time
+		}
+	}
+	return nil
+}
+
+func (x *PipelineRequest) GetLastSave() *LastSaveRequest {
+	if x != nil {
+		if x, ok := x.Command.(*PipelineRequest_LastSave); ok {
+			return x.LastSave
+		}
+	}
+	return nil
+}
+
 type isPipelineRequest_Command interface {
 	isPipelineRequest_Command()
 }
@@ -6561,6 +9404,170 @@ type PipelineRequest_VaddBatch struct {
 	VaddBatch *VAddBatchRequest `protobuf:"bytes,72,opt,name=vadd_batch,json=vaddBatch,proto3,oneof"`
 }
 
+type PipelineRequest_GetDel_ struct {
+	// extended strings
+	GetDel_ *GetDelRequest `protobuf:"bytes,73,opt,name=get_del,json=getDel,proto3,oneof"`
+}
+
+type PipelineRequest_GetEx struct {
+	GetEx *GetExRequest `protobuf:"bytes,74,opt,name=get_ex,json=getEx,proto3,oneof"`
+}
+
+type PipelineRequest_GetRange struct {
+	GetRange *GetRangeRequest `protobuf:"bytes,75,opt,name=get_range,json=getRange,proto3,oneof"`
+}
+
+type PipelineRequest_SetRange struct {
+	SetRange *SetRangeRequest `protobuf:"bytes,76,opt,name=set_range,json=setRange,proto3,oneof"`
+}
+
+type PipelineRequest_Copy struct {
+	// extended keys
+	Copy *CopyRequest `protobuf:"bytes,77,opt,name=copy,proto3,oneof"`
+}
+
+type PipelineRequest_RandomKey struct {
+	RandomKey *RandomKeyRequest `protobuf:"bytes,78,opt,name=random_key,json=randomKey,proto3,oneof"`
+}
+
+type PipelineRequest_Touch struct {
+	Touch *TouchRequest `protobuf:"bytes,79,opt,name=touch,proto3,oneof"`
+}
+
+type PipelineRequest_Lindex struct {
+	// extended lists
+	Lindex *LIndexRequest `protobuf:"bytes,80,opt,name=lindex,proto3,oneof"`
+}
+
+type PipelineRequest_Lset struct {
+	Lset *LSetRequest `protobuf:"bytes,81,opt,name=lset,proto3,oneof"`
+}
+
+type PipelineRequest_Ltrim struct {
+	Ltrim *LTrimRequest `protobuf:"bytes,82,opt,name=ltrim,proto3,oneof"`
+}
+
+type PipelineRequest_Linsert struct {
+	Linsert *LInsertRequest `protobuf:"bytes,83,opt,name=linsert,proto3,oneof"`
+}
+
+type PipelineRequest_Lrem struct {
+	Lrem *LRemRequest `protobuf:"bytes,84,opt,name=lrem,proto3,oneof"`
+}
+
+type PipelineRequest_Lpos struct {
+	Lpos *LPosRequest `protobuf:"bytes,85,opt,name=lpos,proto3,oneof"`
+}
+
+type PipelineRequest_Lmove struct {
+	Lmove *LMoveRequest `protobuf:"bytes,86,opt,name=lmove,proto3,oneof"`
+}
+
+type PipelineRequest_Sunion struct {
+	// extended sets
+	Sunion *SUnionRequest `protobuf:"bytes,87,opt,name=sunion,proto3,oneof"`
+}
+
+type PipelineRequest_Sinter struct {
+	Sinter *SInterRequest `protobuf:"bytes,88,opt,name=sinter,proto3,oneof"`
+}
+
+type PipelineRequest_Sdiff struct {
+	Sdiff *SDiffRequest `protobuf:"bytes,89,opt,name=sdiff,proto3,oneof"`
+}
+
+type PipelineRequest_SunionStore struct {
+	SunionStore *SUnionStoreRequest `protobuf:"bytes,90,opt,name=sunion_store,json=sunionStore,proto3,oneof"`
+}
+
+type PipelineRequest_SinterStore struct {
+	SinterStore *SInterStoreRequest `protobuf:"bytes,91,opt,name=sinter_store,json=sinterStore,proto3,oneof"`
+}
+
+type PipelineRequest_SdiffStore struct {
+	SdiffStore *SDiffStoreRequest `protobuf:"bytes,92,opt,name=sdiff_store,json=sdiffStore,proto3,oneof"`
+}
+
+type PipelineRequest_SrandMember struct {
+	SrandMember *SRandMemberRequest `protobuf:"bytes,93,opt,name=srand_member,json=srandMember,proto3,oneof"`
+}
+
+type PipelineRequest_Spop struct {
+	Spop *SPopRequest `protobuf:"bytes,94,opt,name=spop,proto3,oneof"`
+}
+
+type PipelineRequest_Smismember struct {
+	Smismember *SMisMemberRequest `protobuf:"bytes,95,opt,name=smismember,proto3,oneof"`
+}
+
+type PipelineRequest_Hscan struct {
+	// extended hashes
+	Hscan *HScanRequest `protobuf:"bytes,96,opt,name=hscan,proto3,oneof"`
+}
+
+type PipelineRequest_ZrevRank struct {
+	// extended sorted sets
+	ZrevRank *ZRevRankRequest `protobuf:"bytes,97,opt,name=zrev_rank,json=zrevRank,proto3,oneof"`
+}
+
+type PipelineRequest_ZrevRange struct {
+	ZrevRange *ZRevRangeRequest `protobuf:"bytes,98,opt,name=zrev_range,json=zrevRange,proto3,oneof"`
+}
+
+type PipelineRequest_Zcount struct {
+	Zcount *ZCountRequest `protobuf:"bytes,99,opt,name=zcount,proto3,oneof"`
+}
+
+type PipelineRequest_Zincrby struct {
+	Zincrby *ZIncrByRequest `protobuf:"bytes,100,opt,name=zincrby,proto3,oneof"`
+}
+
+type PipelineRequest_ZrangeByScore struct {
+	ZrangeByScore *ZRangeByScoreRequest `protobuf:"bytes,101,opt,name=zrange_by_score,json=zrangeByScore,proto3,oneof"`
+}
+
+type PipelineRequest_ZrevRangeByScore struct {
+	ZrevRangeByScore *ZRevRangeByScoreRequest `protobuf:"bytes,102,opt,name=zrev_range_by_score,json=zrevRangeByScore,proto3,oneof"`
+}
+
+type PipelineRequest_Zpopmin struct {
+	Zpopmin *ZPopMinRequest `protobuf:"bytes,103,opt,name=zpopmin,proto3,oneof"`
+}
+
+type PipelineRequest_Zpopmax struct {
+	Zpopmax *ZPopMaxRequest `protobuf:"bytes,104,opt,name=zpopmax,proto3,oneof"`
+}
+
+type PipelineRequest_Zdiff struct {
+	Zdiff *ZDiffRequest `protobuf:"bytes,105,opt,name=zdiff,proto3,oneof"`
+}
+
+type PipelineRequest_Zinter struct {
+	Zinter *ZInterRequest `protobuf:"bytes,106,opt,name=zinter,proto3,oneof"`
+}
+
+type PipelineRequest_Zunion struct {
+	Zunion *ZUnionRequest `protobuf:"bytes,107,opt,name=zunion,proto3,oneof"`
+}
+
+type PipelineRequest_Zscan struct {
+	Zscan *ZScanRequest `protobuf:"bytes,108,opt,name=zscan,proto3,oneof"`
+}
+
+type PipelineRequest_Sscan struct {
+	// scans
+	Sscan *SScanRequest `protobuf:"bytes,109,opt,name=sscan,proto3,oneof"`
+}
+
+type PipelineRequest_Time struct {
+	// extended server
+	Time *TimeRequest `protobuf:"bytes,110,opt,name=time,proto3,oneof"`
+}
+
+type PipelineRequest_LastSave struct {
+	LastSave *LastSaveRequest `protobuf:"bytes,111,opt,name=last_save,json=lastSave,proto3,oneof"`
+}
+
 func (*PipelineRequest_Get) isPipelineRequest_Command() {}
 
 func (*PipelineRequest_Set) isPipelineRequest_Command() {}
@@ -6703,6 +9710,84 @@ func (*PipelineRequest_PubsubNumpat) isPipelineRequest_Command() {}
 
 func (*PipelineRequest_VaddBatch) isPipelineRequest_Command() {}
 
+func (*PipelineRequest_GetDel_) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_GetEx) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_GetRange) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_SetRange) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Copy) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_RandomKey) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Touch) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Lindex) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Lset) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Ltrim) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Linsert) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Lrem) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Lpos) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Lmove) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Sunion) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Sinter) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Sdiff) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_SunionStore) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_SinterStore) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_SdiffStore) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_SrandMember) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Spop) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Smismember) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Hscan) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_ZrevRank) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_ZrevRange) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zcount) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zincrby) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_ZrangeByScore) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_ZrevRangeByScore) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zpopmin) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zpopmax) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zdiff) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zinter) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zunion) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Zscan) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Sscan) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_Time) isPipelineRequest_Command() {}
+
+func (*PipelineRequest_LastSave) isPipelineRequest_Command() {}
+
 type PipelineResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    uint64                 `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -6736,6 +9821,11 @@ type PipelineResponse struct {
 	//	*PipelineResponse_Echo
 	//	*PipelineResponse_SlowlogGet
 	//	*PipelineResponse_PubsubNumsub
+	//	*PipelineResponse_BoolArray
+	//	*PipelineResponse_Hscan
+	//	*PipelineResponse_Zscan
+	//	*PipelineResponse_Sscan
+	//	*PipelineResponse_TimeResp
 	Result        isPipelineResponse_Result `protobuf_oneof:"result"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6743,7 +9833,7 @@ type PipelineResponse struct {
 
 func (x *PipelineResponse) Reset() {
 	*x = PipelineResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[110]
+	mi := &file_ember_v1_ember_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6755,7 +9845,7 @@ func (x *PipelineResponse) String() string {
 func (*PipelineResponse) ProtoMessage() {}
 
 func (x *PipelineResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[110]
+	mi := &file_ember_v1_ember_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6768,7 +9858,7 @@ func (x *PipelineResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PipelineResponse.ProtoReflect.Descriptor instead.
 func (*PipelineResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{110}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *PipelineResponse) GetId() uint64 {
@@ -7037,6 +10127,51 @@ func (x *PipelineResponse) GetPubsubNumsub() *PubSubNumSubResponse {
 	return nil
 }
 
+func (x *PipelineResponse) GetBoolArray() *BoolArrayResponse {
+	if x != nil {
+		if x, ok := x.Result.(*PipelineResponse_BoolArray); ok {
+			return x.BoolArray
+		}
+	}
+	return nil
+}
+
+func (x *PipelineResponse) GetHscan() *HScanResponse {
+	if x != nil {
+		if x, ok := x.Result.(*PipelineResponse_Hscan); ok {
+			return x.Hscan
+		}
+	}
+	return nil
+}
+
+func (x *PipelineResponse) GetZscan() *ZScanResponse {
+	if x != nil {
+		if x, ok := x.Result.(*PipelineResponse_Zscan); ok {
+			return x.Zscan
+		}
+	}
+	return nil
+}
+
+func (x *PipelineResponse) GetSscan() *SScanResponse {
+	if x != nil {
+		if x, ok := x.Result.(*PipelineResponse_Sscan); ok {
+			return x.Sscan
+		}
+	}
+	return nil
+}
+
+func (x *PipelineResponse) GetTimeResp() *TimeResponse {
+	if x != nil {
+		if x, ok := x.Result.(*PipelineResponse_TimeResp); ok {
+			return x.TimeResp
+		}
+	}
+	return nil
+}
+
 type isPipelineResponse_Result interface {
 	isPipelineResponse_Result()
 }
@@ -7153,6 +10288,26 @@ type PipelineResponse_PubsubNumsub struct {
 	PubsubNumsub *PubSubNumSubResponse `protobuf:"bytes,29,opt,name=pubsub_numsub,json=pubsubNumsub,proto3,oneof"`
 }
 
+type PipelineResponse_BoolArray struct {
+	BoolArray *BoolArrayResponse `protobuf:"bytes,30,opt,name=bool_array,json=boolArray,proto3,oneof"`
+}
+
+type PipelineResponse_Hscan struct {
+	Hscan *HScanResponse `protobuf:"bytes,31,opt,name=hscan,proto3,oneof"`
+}
+
+type PipelineResponse_Zscan struct {
+	Zscan *ZScanResponse `protobuf:"bytes,32,opt,name=zscan,proto3,oneof"`
+}
+
+type PipelineResponse_Sscan struct {
+	Sscan *SScanResponse `protobuf:"bytes,33,opt,name=sscan,proto3,oneof"`
+}
+
+type PipelineResponse_TimeResp struct {
+	TimeResp *TimeResponse `protobuf:"bytes,34,opt,name=time_resp,json=timeResp,proto3,oneof"`
+}
+
 func (*PipelineResponse_Get) isPipelineResponse_Result() {}
 
 func (*PipelineResponse_Set) isPipelineResponse_Result() {}
@@ -7209,6 +10364,16 @@ func (*PipelineResponse_SlowlogGet) isPipelineResponse_Result() {}
 
 func (*PipelineResponse_PubsubNumsub) isPipelineResponse_Result() {}
 
+func (*PipelineResponse_BoolArray) isPipelineResponse_Result() {}
+
+func (*PipelineResponse_Hscan) isPipelineResponse_Result() {}
+
+func (*PipelineResponse_Zscan) isPipelineResponse_Result() {}
+
+func (*PipelineResponse_Sscan) isPipelineResponse_Result() {}
+
+func (*PipelineResponse_TimeResp) isPipelineResponse_Result() {}
+
 type ErrorResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Message       string                 `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
@@ -7219,7 +10384,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_ember_v1_ember_proto_msgTypes[111]
+	mi := &file_ember_v1_ember_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7231,7 +10396,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ember_v1_ember_proto_msgTypes[111]
+	mi := &file_ember_v1_ember_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7244,7 +10409,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_ember_v1_ember_proto_rawDescGZIP(), []int{111}
+	return file_ember_v1_ember_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *ErrorResponse) GetMessage() string {
@@ -7273,7 +10438,9 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\rFloatResponse\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\"(\n" +
 	"\x0eStatusResponse\x12\x16\n" +
-	"\x06status\x18\x01 \x01(\tR\x06status\"\x1e\n" +
+	"\x06status\x18\x01 \x01(\tR\x06status\"+\n" +
+	"\x11BoolArrayResponse\x12\x16\n" +
+	"\x06values\x18\x01 \x03(\bR\x06values\"\x1e\n" +
 	"\n" +
 	"GetRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\"2\n" +
@@ -7323,7 +10490,22 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\"!\n" +
 	"\rStrlenRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"#\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"!\n" +
+	"\rGetDelRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"\x86\x01\n" +
+	"\fGetExRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12%\n" +
+	"\x0eexpire_seconds\x18\x02 \x01(\x04R\rexpireSeconds\x12#\n" +
+	"\rexpire_millis\x18\x03 \x01(\x04R\fexpireMillis\x12\x18\n" +
+	"\apersist\x18\x04 \x01(\bR\apersist\"K\n" +
+	"\x0fGetRangeRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05start\x18\x02 \x01(\x03R\x05start\x12\x10\n" +
+	"\x03end\x18\x03 \x01(\x03R\x03end\"Q\n" +
+	"\x0fSetRangeRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\"#\n" +
 	"\rExistsRequest\x12\x12\n" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\";\n" +
 	"\rExpireRequest\x12\x10\n" +
@@ -7360,7 +10542,14 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\b_pattern\":\n" +
 	"\fScanResponse\x12\x16\n" +
 	"\x06cursor\x18\x01 \x01(\x04R\x06cursor\x12\x12\n" +
-	"\x04keys\x18\x02 \x03(\tR\x04keys\"8\n" +
+	"\x04keys\x18\x02 \x03(\tR\x04keys\"a\n" +
+	"\vCopyRequest\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12 \n" +
+	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x18\n" +
+	"\areplace\x18\x03 \x01(\bR\areplace\"\x12\n" +
+	"\x10RandomKeyRequest\"\"\n" +
+	"\fTouchRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"8\n" +
 	"\fLPushRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
 	"\x06values\x18\x02 \x03(\fR\x06values\"8\n" +
@@ -7378,7 +10567,37 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\rArrayResponse\x12\x16\n" +
 	"\x06values\x18\x01 \x03(\fR\x06values\"\x1f\n" +
 	"\vLLenRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"M\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"7\n" +
+	"\rLIndexRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x03R\x05index\"K\n" +
+	"\vLSetRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x03R\x05index\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\"J\n" +
+	"\fLTrimRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05start\x18\x02 \x01(\x03R\x05start\x12\x12\n" +
+	"\x04stop\x18\x03 \x01(\x03R\x04stop\"f\n" +
+	"\x0eLInsertRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06before\x18\x02 \x01(\bR\x06before\x12\x14\n" +
+	"\x05pivot\x18\x03 \x01(\fR\x05pivot\x12\x14\n" +
+	"\x05value\x18\x04 \x01(\fR\x05value\"K\n" +
+	"\vLRemRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x03R\x05count\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\fR\x05value\"Z\n" +
+	"\vLPosRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x19\n" +
+	"\x05count\x18\x03 \x01(\rH\x00R\x05count\x88\x01\x01B\b\n" +
+	"\x06_count\"~\n" +
+	"\fLMoveRequest\x12\x16\n" +
+	"\x06source\x18\x01 \x01(\tR\x06source\x12 \n" +
+	"\vdestination\x18\x02 \x01(\tR\vdestination\x12\x19\n" +
+	"\bsrc_left\x18\x03 \x01(\bR\asrcLeft\x12\x19\n" +
+	"\bdst_left\x18\x04 \x01(\bR\adstLeft\"M\n" +
 	"\vHSetRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
 	"\x06fields\x18\x02 \x03(\v2\x14.ember.v1.FieldValueR\x06fields\"8\n" +
@@ -7413,7 +10632,17 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
 	"\x06fields\x18\x02 \x03(\tR\x06fields\"H\n" +
 	"\x15OptionalArrayResponse\x12/\n" +
-	"\x06values\x18\x01 \x03(\v2\x17.ember.v1.OptionalValueR\x06values\"9\n" +
+	"\x06values\x18\x01 \x03(\v2\x17.ember.v1.OptionalValueR\x06values\"y\n" +
+	"\fHScanRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\x04R\x06cursor\x12\x1d\n" +
+	"\apattern\x18\x03 \x01(\tH\x00R\apattern\x88\x01\x01\x12\x14\n" +
+	"\x05count\x18\x04 \x01(\rR\x05countB\n" +
+	"\n" +
+	"\b_pattern\"U\n" +
+	"\rHScanResponse\x12\x16\n" +
+	"\x06cursor\x18\x01 \x01(\x04R\x06cursor\x12,\n" +
+	"\x06fields\x18\x02 \x03(\v2\x14.ember.v1.FieldValueR\x06fields\"9\n" +
 	"\vSAddRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
 	"\amembers\x18\x02 \x03(\tR\amembers\"9\n" +
@@ -7426,7 +10655,41 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
 	"\x06member\x18\x02 \x01(\tR\x06member\" \n" +
 	"\fSCardRequest\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\"\xa0\x01\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"#\n" +
+	"\rSUnionRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"#\n" +
+	"\rSInterRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"\"\n" +
+	"\fSDiffRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\"J\n" +
+	"\x12SUnionStoreRequest\x12 \n" +
+	"\vdestination\x18\x01 \x01(\tR\vdestination\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\tR\x04keys\"J\n" +
+	"\x12SInterStoreRequest\x12 \n" +
+	"\vdestination\x18\x01 \x01(\tR\vdestination\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\tR\x04keys\"I\n" +
+	"\x11SDiffStoreRequest\x12 \n" +
+	"\vdestination\x18\x01 \x01(\tR\vdestination\x12\x12\n" +
+	"\x04keys\x18\x02 \x03(\tR\x04keys\"<\n" +
+	"\x12SRandMemberRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\x05R\x05count\"5\n" +
+	"\vSPopRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\rR\x05count\"?\n" +
+	"\x11SMisMemberRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
+	"\amembers\x18\x02 \x03(\tR\amembers\"y\n" +
+	"\fSScanRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\x04R\x06cursor\x12\x1d\n" +
+	"\apattern\x18\x03 \x01(\tH\x00R\apattern\x88\x01\x01\x12\x14\n" +
+	"\x05count\x18\x04 \x01(\rR\x05countB\n" +
+	"\n" +
+	"\b_pattern\"A\n" +
+	"\rSScanResponse\x12\x16\n" +
+	"\x06cursor\x18\x01 \x01(\x04R\x06cursor\x12\x18\n" +
+	"\amembers\x18\x02 \x03(\tR\amembers\"\xa0\x01\n" +
 	"\vZAddRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12/\n" +
 	"\amembers\x18\x02 \x03(\v2\x15.ember.v1.ScoreMemberR\amembers\x12\x0e\n" +
@@ -7462,7 +10725,72 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\vwith_scores\x18\x04 \x01(\bR\n" +
 	"withScores\"A\n" +
 	"\x0eZRangeResponse\x12/\n" +
-	"\amembers\x18\x01 \x03(\v2\x15.ember.v1.ScoreMemberR\amembers\"\xc3\x02\n" +
+	"\amembers\x18\x01 \x03(\v2\x15.ember.v1.ScoreMemberR\amembers\";\n" +
+	"\x0fZRevRankRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06member\x18\x02 \x01(\tR\x06member\"o\n" +
+	"\x10ZRevRangeRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05start\x18\x02 \x01(\x03R\x05start\x12\x12\n" +
+	"\x04stop\x18\x03 \x01(\x03R\x04stop\x12\x1f\n" +
+	"\vwith_scores\x18\x04 \x01(\bR\n" +
+	"withScores\"E\n" +
+	"\rZCountRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x10\n" +
+	"\x03min\x18\x02 \x01(\tR\x03min\x12\x10\n" +
+	"\x03max\x18\x03 \x01(\tR\x03max\"P\n" +
+	"\x0eZIncrByRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05delta\x18\x02 \x01(\x01R\x05delta\x12\x16\n" +
+	"\x06member\x18\x03 \x01(\tR\x06member\"\xba\x01\n" +
+	"\x14ZRangeByScoreRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x10\n" +
+	"\x03min\x18\x02 \x01(\tR\x03min\x12\x10\n" +
+	"\x03max\x18\x03 \x01(\tR\x03max\x12\x1b\n" +
+	"\x06offset\x18\x04 \x01(\x03H\x00R\x06offset\x88\x01\x01\x12\x19\n" +
+	"\x05count\x18\x05 \x01(\x03H\x01R\x05count\x88\x01\x01\x12\x1f\n" +
+	"\vwith_scores\x18\x06 \x01(\bR\n" +
+	"withScoresB\t\n" +
+	"\a_offsetB\b\n" +
+	"\x06_count\"\xbd\x01\n" +
+	"\x17ZRevRangeByScoreRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x10\n" +
+	"\x03max\x18\x02 \x01(\tR\x03max\x12\x10\n" +
+	"\x03min\x18\x03 \x01(\tR\x03min\x12\x1b\n" +
+	"\x06offset\x18\x04 \x01(\x03H\x00R\x06offset\x88\x01\x01\x12\x19\n" +
+	"\x05count\x18\x05 \x01(\x03H\x01R\x05count\x88\x01\x01\x12\x1f\n" +
+	"\vwith_scores\x18\x06 \x01(\bR\n" +
+	"withScoresB\t\n" +
+	"\a_offsetB\b\n" +
+	"\x06_count\"8\n" +
+	"\x0eZPopMinRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\rR\x05count\"8\n" +
+	"\x0eZPopMaxRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05count\x18\x02 \x01(\rR\x05count\"C\n" +
+	"\fZDiffRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\x12\x1f\n" +
+	"\vwith_scores\x18\x02 \x01(\bR\n" +
+	"withScores\"D\n" +
+	"\rZInterRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\x12\x1f\n" +
+	"\vwith_scores\x18\x02 \x01(\bR\n" +
+	"withScores\"D\n" +
+	"\rZUnionRequest\x12\x12\n" +
+	"\x04keys\x18\x01 \x03(\tR\x04keys\x12\x1f\n" +
+	"\vwith_scores\x18\x02 \x01(\bR\n" +
+	"withScores\"y\n" +
+	"\fZScanRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x16\n" +
+	"\x06cursor\x18\x02 \x01(\x04R\x06cursor\x12\x1d\n" +
+	"\apattern\x18\x03 \x01(\tH\x00R\apattern\x88\x01\x01\x12\x14\n" +
+	"\x05count\x18\x04 \x01(\rR\x05countB\n" +
+	"\n" +
+	"\b_pattern\"X\n" +
+	"\rZScanResponse\x12\x16\n" +
+	"\x06cursor\x18\x01 \x01(\x04R\x06cursor\x12/\n" +
+	"\amembers\x18\x02 \x03(\v2\x15.ember.v1.ScoreMemberR\amembers\"\xc3\x02\n" +
 	"\vVAddRequest\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x18\n" +
 	"\aelement\x18\x02 \x01(\tR\aelement\x12\x1a\n" +
@@ -7541,7 +10869,12 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\rUnlinkRequest\x12\x12\n" +
 	"\x04keys\x18\x01 \x03(\tR\x04keys\"\x0f\n" +
 	"\rBgSaveRequest\"\x15\n" +
-	"\x13BgRewriteAofRequest\"8\n" +
+	"\x13BgRewriteAofRequest\"\r\n" +
+	"\vTimeRequest\"L\n" +
+	"\fTimeResponse\x12\x18\n" +
+	"\aseconds\x18\x01 \x01(\x03R\aseconds\x12\"\n" +
+	"\fmicroseconds\x18\x02 \x01(\x03R\fmicroseconds\"\x11\n" +
+	"\x0fLastSaveRequest\"8\n" +
 	"\x11SlowLogGetRequest\x12\x19\n" +
 	"\x05count\x18\x01 \x01(\rH\x00R\x05count\x88\x01\x01B\b\n" +
 	"\x06_count\"F\n" +
@@ -7578,7 +10911,7 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x13PubSubNumPatRequest\">\n" +
 	"\fChannelCount\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x14\n" +
-	"\x05count\x18\x02 \x01(\x03R\x05count\"\xb3\x1c\n" +
+	"\x05count\x18\x02 \x01(\x03R\x05count\"\xf8,\n" +
 	"\x0fPipelineRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12(\n" +
 	"\x03get\x18\x02 \x01(\v2\x14.ember.v1.GetRequestH\x00R\x03get\x12(\n" +
@@ -7655,8 +10988,52 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\rpubsub_numsub\x18F \x01(\v2\x1d.ember.v1.PubSubNumSubRequestH\x00R\fpubsubNumsub\x12D\n" +
 	"\rpubsub_numpat\x18G \x01(\v2\x1d.ember.v1.PubSubNumPatRequestH\x00R\fpubsubNumpat\x12;\n" +
 	"\n" +
-	"vadd_batch\x18H \x01(\v2\x1a.ember.v1.VAddBatchRequestH\x00R\tvaddBatchB\t\n" +
-	"\acommand\"\xcc\v\n" +
+	"vadd_batch\x18H \x01(\v2\x1a.ember.v1.VAddBatchRequestH\x00R\tvaddBatch\x122\n" +
+	"\aget_del\x18I \x01(\v2\x17.ember.v1.GetDelRequestH\x00R\x06getDel\x12/\n" +
+	"\x06get_ex\x18J \x01(\v2\x16.ember.v1.GetExRequestH\x00R\x05getEx\x128\n" +
+	"\tget_range\x18K \x01(\v2\x19.ember.v1.GetRangeRequestH\x00R\bgetRange\x128\n" +
+	"\tset_range\x18L \x01(\v2\x19.ember.v1.SetRangeRequestH\x00R\bsetRange\x12+\n" +
+	"\x04copy\x18M \x01(\v2\x15.ember.v1.CopyRequestH\x00R\x04copy\x12;\n" +
+	"\n" +
+	"random_key\x18N \x01(\v2\x1a.ember.v1.RandomKeyRequestH\x00R\trandomKey\x12.\n" +
+	"\x05touch\x18O \x01(\v2\x16.ember.v1.TouchRequestH\x00R\x05touch\x121\n" +
+	"\x06lindex\x18P \x01(\v2\x17.ember.v1.LIndexRequestH\x00R\x06lindex\x12+\n" +
+	"\x04lset\x18Q \x01(\v2\x15.ember.v1.LSetRequestH\x00R\x04lset\x12.\n" +
+	"\x05ltrim\x18R \x01(\v2\x16.ember.v1.LTrimRequestH\x00R\x05ltrim\x124\n" +
+	"\alinsert\x18S \x01(\v2\x18.ember.v1.LInsertRequestH\x00R\alinsert\x12+\n" +
+	"\x04lrem\x18T \x01(\v2\x15.ember.v1.LRemRequestH\x00R\x04lrem\x12+\n" +
+	"\x04lpos\x18U \x01(\v2\x15.ember.v1.LPosRequestH\x00R\x04lpos\x12.\n" +
+	"\x05lmove\x18V \x01(\v2\x16.ember.v1.LMoveRequestH\x00R\x05lmove\x121\n" +
+	"\x06sunion\x18W \x01(\v2\x17.ember.v1.SUnionRequestH\x00R\x06sunion\x121\n" +
+	"\x06sinter\x18X \x01(\v2\x17.ember.v1.SInterRequestH\x00R\x06sinter\x12.\n" +
+	"\x05sdiff\x18Y \x01(\v2\x16.ember.v1.SDiffRequestH\x00R\x05sdiff\x12A\n" +
+	"\fsunion_store\x18Z \x01(\v2\x1c.ember.v1.SUnionStoreRequestH\x00R\vsunionStore\x12A\n" +
+	"\fsinter_store\x18[ \x01(\v2\x1c.ember.v1.SInterStoreRequestH\x00R\vsinterStore\x12>\n" +
+	"\vsdiff_store\x18\\ \x01(\v2\x1b.ember.v1.SDiffStoreRequestH\x00R\n" +
+	"sdiffStore\x12A\n" +
+	"\fsrand_member\x18] \x01(\v2\x1c.ember.v1.SRandMemberRequestH\x00R\vsrandMember\x12+\n" +
+	"\x04spop\x18^ \x01(\v2\x15.ember.v1.SPopRequestH\x00R\x04spop\x12=\n" +
+	"\n" +
+	"smismember\x18_ \x01(\v2\x1b.ember.v1.SMisMemberRequestH\x00R\n" +
+	"smismember\x12.\n" +
+	"\x05hscan\x18` \x01(\v2\x16.ember.v1.HScanRequestH\x00R\x05hscan\x128\n" +
+	"\tzrev_rank\x18a \x01(\v2\x19.ember.v1.ZRevRankRequestH\x00R\bzrevRank\x12;\n" +
+	"\n" +
+	"zrev_range\x18b \x01(\v2\x1a.ember.v1.ZRevRangeRequestH\x00R\tzrevRange\x121\n" +
+	"\x06zcount\x18c \x01(\v2\x17.ember.v1.ZCountRequestH\x00R\x06zcount\x124\n" +
+	"\azincrby\x18d \x01(\v2\x18.ember.v1.ZIncrByRequestH\x00R\azincrby\x12H\n" +
+	"\x0fzrange_by_score\x18e \x01(\v2\x1e.ember.v1.ZRangeByScoreRequestH\x00R\rzrangeByScore\x12R\n" +
+	"\x13zrev_range_by_score\x18f \x01(\v2!.ember.v1.ZRevRangeByScoreRequestH\x00R\x10zrevRangeByScore\x124\n" +
+	"\azpopmin\x18g \x01(\v2\x18.ember.v1.ZPopMinRequestH\x00R\azpopmin\x124\n" +
+	"\azpopmax\x18h \x01(\v2\x18.ember.v1.ZPopMaxRequestH\x00R\azpopmax\x12.\n" +
+	"\x05zdiff\x18i \x01(\v2\x16.ember.v1.ZDiffRequestH\x00R\x05zdiff\x121\n" +
+	"\x06zinter\x18j \x01(\v2\x17.ember.v1.ZInterRequestH\x00R\x06zinter\x121\n" +
+	"\x06zunion\x18k \x01(\v2\x17.ember.v1.ZUnionRequestH\x00R\x06zunion\x12.\n" +
+	"\x05zscan\x18l \x01(\v2\x16.ember.v1.ZScanRequestH\x00R\x05zscan\x12.\n" +
+	"\x05sscan\x18m \x01(\v2\x16.ember.v1.SScanRequestH\x00R\x05sscan\x12+\n" +
+	"\x04time\x18n \x01(\v2\x15.ember.v1.TimeRequestH\x00R\x04time\x128\n" +
+	"\tlast_save\x18o \x01(\v2\x19.ember.v1.LastSaveRequestH\x00R\blastSaveB\t\n" +
+	"\acommand\"\xd4\r\n" +
 	"\x10PipelineResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12)\n" +
 	"\x03get\x18\x02 \x01(\v2\x15.ember.v1.GetResponseH\x00R\x03get\x12)\n" +
@@ -7688,7 +11065,13 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x04echo\x18\x1b \x01(\v2\x16.ember.v1.EchoResponseH\x00R\x04echo\x12?\n" +
 	"\vslowlog_get\x18\x1c \x01(\v2\x1c.ember.v1.SlowLogGetResponseH\x00R\n" +
 	"slowlogGet\x12E\n" +
-	"\rpubsub_numsub\x18\x1d \x01(\v2\x1e.ember.v1.PubSubNumSubResponseH\x00R\fpubsubNumsubB\b\n" +
+	"\rpubsub_numsub\x18\x1d \x01(\v2\x1e.ember.v1.PubSubNumSubResponseH\x00R\fpubsubNumsub\x12<\n" +
+	"\n" +
+	"bool_array\x18\x1e \x01(\v2\x1b.ember.v1.BoolArrayResponseH\x00R\tboolArray\x12/\n" +
+	"\x05hscan\x18\x1f \x01(\v2\x17.ember.v1.HScanResponseH\x00R\x05hscan\x12/\n" +
+	"\x05zscan\x18  \x01(\v2\x17.ember.v1.ZScanResponseH\x00R\x05zscan\x12/\n" +
+	"\x05sscan\x18! \x01(\v2\x17.ember.v1.SScanResponseH\x00R\x05sscan\x125\n" +
+	"\ttime_resp\x18\" \x01(\v2\x16.ember.v1.TimeResponseH\x00R\btimeRespB\b\n" +
 	"\x06result\"R\n" +
 	"\rErrorResponse\x12\x18\n" +
 	"\amessage\x18\x01 \x01(\tR\amessage\x12'\n" +
@@ -7706,7 +11089,7 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\x15ERROR_KIND_WRONG_TYPE\x10\x01\x12\x1c\n" +
 	"\x18ERROR_KIND_OUT_OF_MEMORY\x10\x02\x12\x17\n" +
 	"\x13ERROR_KIND_INTERNAL\x10\x03\x12\x1f\n" +
-	"\x1bERROR_KIND_INVALID_ARGUMENT\x10\x042\xa3\"\n" +
+	"\x1bERROR_KIND_INVALID_ARGUMENT\x10\x042\x885\n" +
 	"\n" +
 	"EmberCache\x122\n" +
 	"\x03Get\x12\x14.ember.v1.GetRequest\x1a\x15.ember.v1.GetResponse\x122\n" +
@@ -7783,7 +11166,48 @@ const file_ember_v1_ember_proto_rawDesc = "" +
 	"\tSubscribe\x12\x1a.ember.v1.SubscribeRequest\x1a\x18.ember.v1.SubscribeEvent0\x01\x12I\n" +
 	"\x0ePubSubChannels\x12\x1f.ember.v1.PubSubChannelsRequest\x1a\x16.ember.v1.KeysResponse\x12M\n" +
 	"\fPubSubNumSub\x12\x1d.ember.v1.PubSubNumSubRequest\x1a\x1e.ember.v1.PubSubNumSubResponse\x12D\n" +
-	"\fPubSubNumPat\x12\x1d.ember.v1.PubSubNumPatRequest\x1a\x15.ember.v1.IntResponse\x12E\n" +
+	"\fPubSubNumPat\x12\x1d.ember.v1.PubSubNumPatRequest\x1a\x15.ember.v1.IntResponse\x128\n" +
+	"\x06GetDel\x12\x17.ember.v1.GetDelRequest\x1a\x15.ember.v1.GetResponse\x126\n" +
+	"\x05GetEx\x12\x16.ember.v1.GetExRequest\x1a\x15.ember.v1.GetResponse\x12<\n" +
+	"\bGetRange\x12\x19.ember.v1.GetRangeRequest\x1a\x15.ember.v1.GetResponse\x12<\n" +
+	"\bSetRange\x12\x19.ember.v1.SetRangeRequest\x1a\x15.ember.v1.IntResponse\x125\n" +
+	"\x04Copy\x12\x15.ember.v1.CopyRequest\x1a\x16.ember.v1.BoolResponse\x12>\n" +
+	"\tRandomKey\x12\x1a.ember.v1.RandomKeyRequest\x1a\x15.ember.v1.GetResponse\x126\n" +
+	"\x05Touch\x12\x16.ember.v1.TouchRequest\x1a\x15.ember.v1.IntResponse\x128\n" +
+	"\x06LIndex\x12\x17.ember.v1.LIndexRequest\x1a\x15.ember.v1.GetResponse\x127\n" +
+	"\x04LSet\x12\x15.ember.v1.LSetRequest\x1a\x18.ember.v1.StatusResponse\x129\n" +
+	"\x05LTrim\x12\x16.ember.v1.LTrimRequest\x1a\x18.ember.v1.StatusResponse\x12:\n" +
+	"\aLInsert\x12\x18.ember.v1.LInsertRequest\x1a\x15.ember.v1.IntResponse\x124\n" +
+	"\x04LRem\x12\x15.ember.v1.LRemRequest\x1a\x15.ember.v1.IntResponse\x12<\n" +
+	"\x04LPos\x12\x15.ember.v1.LPosRequest\x1a\x1d.ember.v1.OptionalIntResponse\x126\n" +
+	"\x05LMove\x12\x16.ember.v1.LMoveRequest\x1a\x15.ember.v1.GetResponse\x129\n" +
+	"\x06SUnion\x12\x17.ember.v1.SUnionRequest\x1a\x16.ember.v1.KeysResponse\x129\n" +
+	"\x06SInter\x12\x17.ember.v1.SInterRequest\x1a\x16.ember.v1.KeysResponse\x127\n" +
+	"\x05SDiff\x12\x16.ember.v1.SDiffRequest\x1a\x16.ember.v1.KeysResponse\x12B\n" +
+	"\vSUnionStore\x12\x1c.ember.v1.SUnionStoreRequest\x1a\x15.ember.v1.IntResponse\x12B\n" +
+	"\vSInterStore\x12\x1c.ember.v1.SInterStoreRequest\x1a\x15.ember.v1.IntResponse\x12@\n" +
+	"\n" +
+	"SDiffStore\x12\x1b.ember.v1.SDiffStoreRequest\x1a\x15.ember.v1.IntResponse\x12D\n" +
+	"\vSRandMember\x12\x1c.ember.v1.SRandMemberRequest\x1a\x17.ember.v1.ArrayResponse\x126\n" +
+	"\x04SPop\x12\x15.ember.v1.SPopRequest\x1a\x17.ember.v1.ArrayResponse\x12F\n" +
+	"\n" +
+	"SMisMember\x12\x1b.ember.v1.SMisMemberRequest\x1a\x1b.ember.v1.BoolArrayResponse\x128\n" +
+	"\x05HScan\x12\x16.ember.v1.HScanRequest\x1a\x17.ember.v1.HScanResponse\x12D\n" +
+	"\bZRevRank\x12\x19.ember.v1.ZRevRankRequest\x1a\x1d.ember.v1.OptionalIntResponse\x12A\n" +
+	"\tZRevRange\x12\x1a.ember.v1.ZRevRangeRequest\x1a\x18.ember.v1.ZRangeResponse\x128\n" +
+	"\x06ZCount\x12\x17.ember.v1.ZCountRequest\x1a\x15.ember.v1.IntResponse\x12<\n" +
+	"\aZIncrBy\x12\x18.ember.v1.ZIncrByRequest\x1a\x17.ember.v1.FloatResponse\x12I\n" +
+	"\rZRangeByScore\x12\x1e.ember.v1.ZRangeByScoreRequest\x1a\x18.ember.v1.ZRangeResponse\x12O\n" +
+	"\x10ZRevRangeByScore\x12!.ember.v1.ZRevRangeByScoreRequest\x1a\x18.ember.v1.ZRangeResponse\x12=\n" +
+	"\aZPopMin\x12\x18.ember.v1.ZPopMinRequest\x1a\x18.ember.v1.ZRangeResponse\x12=\n" +
+	"\aZPopMax\x12\x18.ember.v1.ZPopMaxRequest\x1a\x18.ember.v1.ZRangeResponse\x129\n" +
+	"\x05ZDiff\x12\x16.ember.v1.ZDiffRequest\x1a\x18.ember.v1.ZRangeResponse\x12;\n" +
+	"\x06ZInter\x12\x17.ember.v1.ZInterRequest\x1a\x18.ember.v1.ZRangeResponse\x12;\n" +
+	"\x06ZUnion\x12\x17.ember.v1.ZUnionRequest\x1a\x18.ember.v1.ZRangeResponse\x128\n" +
+	"\x05ZScan\x12\x16.ember.v1.ZScanRequest\x1a\x17.ember.v1.ZScanResponse\x128\n" +
+	"\x05SScan\x12\x16.ember.v1.SScanRequest\x1a\x17.ember.v1.SScanResponse\x125\n" +
+	"\x04Time\x12\x15.ember.v1.TimeRequest\x1a\x16.ember.v1.TimeResponse\x12<\n" +
+	"\bLastSave\x12\x19.ember.v1.LastSaveRequest\x1a\x15.ember.v1.IntResponse\x12E\n" +
 	"\bPipeline\x12\x19.ember.v1.PipelineRequest\x1a\x1a.ember.v1.PipelineResponse(\x010\x01B1Z/github.com/kacy/ember-go/proto/ember/v1;emberv1b\x06proto3"
 
 var (
@@ -7799,394 +11223,562 @@ func file_ember_v1_ember_proto_rawDescGZIP() []byte {
 }
 
 var file_ember_v1_ember_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_ember_v1_ember_proto_msgTypes = make([]protoimpl.MessageInfo, 112)
+var file_ember_v1_ember_proto_msgTypes = make([]protoimpl.MessageInfo, 156)
 var file_ember_v1_ember_proto_goTypes = []any{
-	(VectorMetric)(0),             // 0: ember.v1.VectorMetric
-	(VectorQuantization)(0),       // 1: ember.v1.VectorQuantization
-	(ErrorKind)(0),                // 2: ember.v1.ErrorKind
-	(*IntResponse)(nil),           // 3: ember.v1.IntResponse
-	(*BoolResponse)(nil),          // 4: ember.v1.BoolResponse
-	(*FloatResponse)(nil),         // 5: ember.v1.FloatResponse
-	(*StatusResponse)(nil),        // 6: ember.v1.StatusResponse
-	(*GetRequest)(nil),            // 7: ember.v1.GetRequest
-	(*GetResponse)(nil),           // 8: ember.v1.GetResponse
-	(*SetRequest)(nil),            // 9: ember.v1.SetRequest
-	(*SetResponse)(nil),           // 10: ember.v1.SetResponse
-	(*DelRequest)(nil),            // 11: ember.v1.DelRequest
-	(*DelResponse)(nil),           // 12: ember.v1.DelResponse
-	(*MGetRequest)(nil),           // 13: ember.v1.MGetRequest
-	(*MGetResponse)(nil),          // 14: ember.v1.MGetResponse
-	(*OptionalValue)(nil),         // 15: ember.v1.OptionalValue
-	(*MSetRequest)(nil),           // 16: ember.v1.MSetRequest
-	(*KeyValue)(nil),              // 17: ember.v1.KeyValue
-	(*MSetResponse)(nil),          // 18: ember.v1.MSetResponse
-	(*IncrRequest)(nil),           // 19: ember.v1.IncrRequest
-	(*IncrByRequest)(nil),         // 20: ember.v1.IncrByRequest
-	(*DecrByRequest)(nil),         // 21: ember.v1.DecrByRequest
-	(*IncrByFloatRequest)(nil),    // 22: ember.v1.IncrByFloatRequest
-	(*AppendRequest)(nil),         // 23: ember.v1.AppendRequest
-	(*StrlenRequest)(nil),         // 24: ember.v1.StrlenRequest
-	(*ExistsRequest)(nil),         // 25: ember.v1.ExistsRequest
-	(*ExpireRequest)(nil),         // 26: ember.v1.ExpireRequest
-	(*PExpireRequest)(nil),        // 27: ember.v1.PExpireRequest
-	(*PersistRequest)(nil),        // 28: ember.v1.PersistRequest
-	(*TtlRequest)(nil),            // 29: ember.v1.TtlRequest
-	(*PTtlRequest)(nil),           // 30: ember.v1.PTtlRequest
-	(*TtlResponse)(nil),           // 31: ember.v1.TtlResponse
-	(*TypeRequest)(nil),           // 32: ember.v1.TypeRequest
-	(*TypeResponse)(nil),          // 33: ember.v1.TypeResponse
-	(*KeysRequest)(nil),           // 34: ember.v1.KeysRequest
-	(*KeysResponse)(nil),          // 35: ember.v1.KeysResponse
-	(*RenameRequest)(nil),         // 36: ember.v1.RenameRequest
-	(*ScanRequest)(nil),           // 37: ember.v1.ScanRequest
-	(*ScanResponse)(nil),          // 38: ember.v1.ScanResponse
-	(*LPushRequest)(nil),          // 39: ember.v1.LPushRequest
-	(*RPushRequest)(nil),          // 40: ember.v1.RPushRequest
-	(*LPopRequest)(nil),           // 41: ember.v1.LPopRequest
-	(*RPopRequest)(nil),           // 42: ember.v1.RPopRequest
-	(*LRangeRequest)(nil),         // 43: ember.v1.LRangeRequest
-	(*ArrayResponse)(nil),         // 44: ember.v1.ArrayResponse
-	(*LLenRequest)(nil),           // 45: ember.v1.LLenRequest
-	(*HSetRequest)(nil),           // 46: ember.v1.HSetRequest
-	(*FieldValue)(nil),            // 47: ember.v1.FieldValue
-	(*HGetRequest)(nil),           // 48: ember.v1.HGetRequest
-	(*HGetAllRequest)(nil),        // 49: ember.v1.HGetAllRequest
-	(*HashResponse)(nil),          // 50: ember.v1.HashResponse
-	(*HDelRequest)(nil),           // 51: ember.v1.HDelRequest
-	(*HExistsRequest)(nil),        // 52: ember.v1.HExistsRequest
-	(*HLenRequest)(nil),           // 53: ember.v1.HLenRequest
-	(*HIncrByRequest)(nil),        // 54: ember.v1.HIncrByRequest
-	(*HKeysRequest)(nil),          // 55: ember.v1.HKeysRequest
-	(*HValsRequest)(nil),          // 56: ember.v1.HValsRequest
-	(*HMGetRequest)(nil),          // 57: ember.v1.HMGetRequest
-	(*OptionalArrayResponse)(nil), // 58: ember.v1.OptionalArrayResponse
-	(*SAddRequest)(nil),           // 59: ember.v1.SAddRequest
-	(*SRemRequest)(nil),           // 60: ember.v1.SRemRequest
-	(*SMembersRequest)(nil),       // 61: ember.v1.SMembersRequest
-	(*SIsMemberRequest)(nil),      // 62: ember.v1.SIsMemberRequest
-	(*SCardRequest)(nil),          // 63: ember.v1.SCardRequest
-	(*ZAddRequest)(nil),           // 64: ember.v1.ZAddRequest
-	(*ScoreMember)(nil),           // 65: ember.v1.ScoreMember
-	(*ZRemRequest)(nil),           // 66: ember.v1.ZRemRequest
-	(*ZScoreRequest)(nil),         // 67: ember.v1.ZScoreRequest
-	(*OptionalFloatResponse)(nil), // 68: ember.v1.OptionalFloatResponse
-	(*ZRankRequest)(nil),          // 69: ember.v1.ZRankRequest
-	(*OptionalIntResponse)(nil),   // 70: ember.v1.OptionalIntResponse
-	(*ZCardRequest)(nil),          // 71: ember.v1.ZCardRequest
-	(*ZRangeRequest)(nil),         // 72: ember.v1.ZRangeRequest
-	(*ZRangeResponse)(nil),        // 73: ember.v1.ZRangeResponse
-	(*VAddRequest)(nil),           // 74: ember.v1.VAddRequest
-	(*VAddBatchEntry)(nil),        // 75: ember.v1.VAddBatchEntry
-	(*VAddBatchRequest)(nil),      // 76: ember.v1.VAddBatchRequest
-	(*VSimRequest)(nil),           // 77: ember.v1.VSimRequest
-	(*VSimResponse)(nil),          // 78: ember.v1.VSimResponse
-	(*VSimResult)(nil),            // 79: ember.v1.VSimResult
-	(*VRemRequest)(nil),           // 80: ember.v1.VRemRequest
-	(*VGetRequest)(nil),           // 81: ember.v1.VGetRequest
-	(*VGetResponse)(nil),          // 82: ember.v1.VGetResponse
-	(*VCardRequest)(nil),          // 83: ember.v1.VCardRequest
-	(*VDimRequest)(nil),           // 84: ember.v1.VDimRequest
-	(*VInfoRequest)(nil),          // 85: ember.v1.VInfoRequest
-	(*VInfoResponse)(nil),         // 86: ember.v1.VInfoResponse
-	(*PingRequest)(nil),           // 87: ember.v1.PingRequest
-	(*PingResponse)(nil),          // 88: ember.v1.PingResponse
-	(*FlushDbRequest)(nil),        // 89: ember.v1.FlushDbRequest
-	(*DbSizeRequest)(nil),         // 90: ember.v1.DbSizeRequest
-	(*InfoRequest)(nil),           // 91: ember.v1.InfoRequest
-	(*InfoResponse)(nil),          // 92: ember.v1.InfoResponse
-	(*EchoRequest)(nil),           // 93: ember.v1.EchoRequest
-	(*EchoResponse)(nil),          // 94: ember.v1.EchoResponse
-	(*DecrRequest)(nil),           // 95: ember.v1.DecrRequest
-	(*UnlinkRequest)(nil),         // 96: ember.v1.UnlinkRequest
-	(*BgSaveRequest)(nil),         // 97: ember.v1.BgSaveRequest
-	(*BgRewriteAofRequest)(nil),   // 98: ember.v1.BgRewriteAofRequest
-	(*SlowLogGetRequest)(nil),     // 99: ember.v1.SlowLogGetRequest
-	(*SlowLogGetResponse)(nil),    // 100: ember.v1.SlowLogGetResponse
-	(*SlowLogEntry)(nil),          // 101: ember.v1.SlowLogEntry
-	(*SlowLogLenRequest)(nil),     // 102: ember.v1.SlowLogLenRequest
-	(*SlowLogResetRequest)(nil),   // 103: ember.v1.SlowLogResetRequest
-	(*PublishRequest)(nil),        // 104: ember.v1.PublishRequest
-	(*SubscribeRequest)(nil),      // 105: ember.v1.SubscribeRequest
-	(*SubscribeEvent)(nil),        // 106: ember.v1.SubscribeEvent
-	(*PubSubChannelsRequest)(nil), // 107: ember.v1.PubSubChannelsRequest
-	(*PubSubNumSubRequest)(nil),   // 108: ember.v1.PubSubNumSubRequest
-	(*PubSubNumSubResponse)(nil),  // 109: ember.v1.PubSubNumSubResponse
-	(*PubSubNumPatRequest)(nil),   // 110: ember.v1.PubSubNumPatRequest
-	(*ChannelCount)(nil),          // 111: ember.v1.ChannelCount
-	(*PipelineRequest)(nil),       // 112: ember.v1.PipelineRequest
-	(*PipelineResponse)(nil),      // 113: ember.v1.PipelineResponse
-	(*ErrorResponse)(nil),         // 114: ember.v1.ErrorResponse
+	(VectorMetric)(0),               // 0: ember.v1.VectorMetric
+	(VectorQuantization)(0),         // 1: ember.v1.VectorQuantization
+	(ErrorKind)(0),                  // 2: ember.v1.ErrorKind
+	(*IntResponse)(nil),             // 3: ember.v1.IntResponse
+	(*BoolResponse)(nil),            // 4: ember.v1.BoolResponse
+	(*FloatResponse)(nil),           // 5: ember.v1.FloatResponse
+	(*StatusResponse)(nil),          // 6: ember.v1.StatusResponse
+	(*BoolArrayResponse)(nil),       // 7: ember.v1.BoolArrayResponse
+	(*GetRequest)(nil),              // 8: ember.v1.GetRequest
+	(*GetResponse)(nil),             // 9: ember.v1.GetResponse
+	(*SetRequest)(nil),              // 10: ember.v1.SetRequest
+	(*SetResponse)(nil),             // 11: ember.v1.SetResponse
+	(*DelRequest)(nil),              // 12: ember.v1.DelRequest
+	(*DelResponse)(nil),             // 13: ember.v1.DelResponse
+	(*MGetRequest)(nil),             // 14: ember.v1.MGetRequest
+	(*MGetResponse)(nil),            // 15: ember.v1.MGetResponse
+	(*OptionalValue)(nil),           // 16: ember.v1.OptionalValue
+	(*MSetRequest)(nil),             // 17: ember.v1.MSetRequest
+	(*KeyValue)(nil),                // 18: ember.v1.KeyValue
+	(*MSetResponse)(nil),            // 19: ember.v1.MSetResponse
+	(*IncrRequest)(nil),             // 20: ember.v1.IncrRequest
+	(*IncrByRequest)(nil),           // 21: ember.v1.IncrByRequest
+	(*DecrByRequest)(nil),           // 22: ember.v1.DecrByRequest
+	(*IncrByFloatRequest)(nil),      // 23: ember.v1.IncrByFloatRequest
+	(*AppendRequest)(nil),           // 24: ember.v1.AppendRequest
+	(*StrlenRequest)(nil),           // 25: ember.v1.StrlenRequest
+	(*GetDelRequest)(nil),           // 26: ember.v1.GetDelRequest
+	(*GetExRequest)(nil),            // 27: ember.v1.GetExRequest
+	(*GetRangeRequest)(nil),         // 28: ember.v1.GetRangeRequest
+	(*SetRangeRequest)(nil),         // 29: ember.v1.SetRangeRequest
+	(*ExistsRequest)(nil),           // 30: ember.v1.ExistsRequest
+	(*ExpireRequest)(nil),           // 31: ember.v1.ExpireRequest
+	(*PExpireRequest)(nil),          // 32: ember.v1.PExpireRequest
+	(*PersistRequest)(nil),          // 33: ember.v1.PersistRequest
+	(*TtlRequest)(nil),              // 34: ember.v1.TtlRequest
+	(*PTtlRequest)(nil),             // 35: ember.v1.PTtlRequest
+	(*TtlResponse)(nil),             // 36: ember.v1.TtlResponse
+	(*TypeRequest)(nil),             // 37: ember.v1.TypeRequest
+	(*TypeResponse)(nil),            // 38: ember.v1.TypeResponse
+	(*KeysRequest)(nil),             // 39: ember.v1.KeysRequest
+	(*KeysResponse)(nil),            // 40: ember.v1.KeysResponse
+	(*RenameRequest)(nil),           // 41: ember.v1.RenameRequest
+	(*ScanRequest)(nil),             // 42: ember.v1.ScanRequest
+	(*ScanResponse)(nil),            // 43: ember.v1.ScanResponse
+	(*CopyRequest)(nil),             // 44: ember.v1.CopyRequest
+	(*RandomKeyRequest)(nil),        // 45: ember.v1.RandomKeyRequest
+	(*TouchRequest)(nil),            // 46: ember.v1.TouchRequest
+	(*LPushRequest)(nil),            // 47: ember.v1.LPushRequest
+	(*RPushRequest)(nil),            // 48: ember.v1.RPushRequest
+	(*LPopRequest)(nil),             // 49: ember.v1.LPopRequest
+	(*RPopRequest)(nil),             // 50: ember.v1.RPopRequest
+	(*LRangeRequest)(nil),           // 51: ember.v1.LRangeRequest
+	(*ArrayResponse)(nil),           // 52: ember.v1.ArrayResponse
+	(*LLenRequest)(nil),             // 53: ember.v1.LLenRequest
+	(*LIndexRequest)(nil),           // 54: ember.v1.LIndexRequest
+	(*LSetRequest)(nil),             // 55: ember.v1.LSetRequest
+	(*LTrimRequest)(nil),            // 56: ember.v1.LTrimRequest
+	(*LInsertRequest)(nil),          // 57: ember.v1.LInsertRequest
+	(*LRemRequest)(nil),             // 58: ember.v1.LRemRequest
+	(*LPosRequest)(nil),             // 59: ember.v1.LPosRequest
+	(*LMoveRequest)(nil),            // 60: ember.v1.LMoveRequest
+	(*HSetRequest)(nil),             // 61: ember.v1.HSetRequest
+	(*FieldValue)(nil),              // 62: ember.v1.FieldValue
+	(*HGetRequest)(nil),             // 63: ember.v1.HGetRequest
+	(*HGetAllRequest)(nil),          // 64: ember.v1.HGetAllRequest
+	(*HashResponse)(nil),            // 65: ember.v1.HashResponse
+	(*HDelRequest)(nil),             // 66: ember.v1.HDelRequest
+	(*HExistsRequest)(nil),          // 67: ember.v1.HExistsRequest
+	(*HLenRequest)(nil),             // 68: ember.v1.HLenRequest
+	(*HIncrByRequest)(nil),          // 69: ember.v1.HIncrByRequest
+	(*HKeysRequest)(nil),            // 70: ember.v1.HKeysRequest
+	(*HValsRequest)(nil),            // 71: ember.v1.HValsRequest
+	(*HMGetRequest)(nil),            // 72: ember.v1.HMGetRequest
+	(*OptionalArrayResponse)(nil),   // 73: ember.v1.OptionalArrayResponse
+	(*HScanRequest)(nil),            // 74: ember.v1.HScanRequest
+	(*HScanResponse)(nil),           // 75: ember.v1.HScanResponse
+	(*SAddRequest)(nil),             // 76: ember.v1.SAddRequest
+	(*SRemRequest)(nil),             // 77: ember.v1.SRemRequest
+	(*SMembersRequest)(nil),         // 78: ember.v1.SMembersRequest
+	(*SIsMemberRequest)(nil),        // 79: ember.v1.SIsMemberRequest
+	(*SCardRequest)(nil),            // 80: ember.v1.SCardRequest
+	(*SUnionRequest)(nil),           // 81: ember.v1.SUnionRequest
+	(*SInterRequest)(nil),           // 82: ember.v1.SInterRequest
+	(*SDiffRequest)(nil),            // 83: ember.v1.SDiffRequest
+	(*SUnionStoreRequest)(nil),      // 84: ember.v1.SUnionStoreRequest
+	(*SInterStoreRequest)(nil),      // 85: ember.v1.SInterStoreRequest
+	(*SDiffStoreRequest)(nil),       // 86: ember.v1.SDiffStoreRequest
+	(*SRandMemberRequest)(nil),      // 87: ember.v1.SRandMemberRequest
+	(*SPopRequest)(nil),             // 88: ember.v1.SPopRequest
+	(*SMisMemberRequest)(nil),       // 89: ember.v1.SMisMemberRequest
+	(*SScanRequest)(nil),            // 90: ember.v1.SScanRequest
+	(*SScanResponse)(nil),           // 91: ember.v1.SScanResponse
+	(*ZAddRequest)(nil),             // 92: ember.v1.ZAddRequest
+	(*ScoreMember)(nil),             // 93: ember.v1.ScoreMember
+	(*ZRemRequest)(nil),             // 94: ember.v1.ZRemRequest
+	(*ZScoreRequest)(nil),           // 95: ember.v1.ZScoreRequest
+	(*OptionalFloatResponse)(nil),   // 96: ember.v1.OptionalFloatResponse
+	(*ZRankRequest)(nil),            // 97: ember.v1.ZRankRequest
+	(*OptionalIntResponse)(nil),     // 98: ember.v1.OptionalIntResponse
+	(*ZCardRequest)(nil),            // 99: ember.v1.ZCardRequest
+	(*ZRangeRequest)(nil),           // 100: ember.v1.ZRangeRequest
+	(*ZRangeResponse)(nil),          // 101: ember.v1.ZRangeResponse
+	(*ZRevRankRequest)(nil),         // 102: ember.v1.ZRevRankRequest
+	(*ZRevRangeRequest)(nil),        // 103: ember.v1.ZRevRangeRequest
+	(*ZCountRequest)(nil),           // 104: ember.v1.ZCountRequest
+	(*ZIncrByRequest)(nil),          // 105: ember.v1.ZIncrByRequest
+	(*ZRangeByScoreRequest)(nil),    // 106: ember.v1.ZRangeByScoreRequest
+	(*ZRevRangeByScoreRequest)(nil), // 107: ember.v1.ZRevRangeByScoreRequest
+	(*ZPopMinRequest)(nil),          // 108: ember.v1.ZPopMinRequest
+	(*ZPopMaxRequest)(nil),          // 109: ember.v1.ZPopMaxRequest
+	(*ZDiffRequest)(nil),            // 110: ember.v1.ZDiffRequest
+	(*ZInterRequest)(nil),           // 111: ember.v1.ZInterRequest
+	(*ZUnionRequest)(nil),           // 112: ember.v1.ZUnionRequest
+	(*ZScanRequest)(nil),            // 113: ember.v1.ZScanRequest
+	(*ZScanResponse)(nil),           // 114: ember.v1.ZScanResponse
+	(*VAddRequest)(nil),             // 115: ember.v1.VAddRequest
+	(*VAddBatchEntry)(nil),          // 116: ember.v1.VAddBatchEntry
+	(*VAddBatchRequest)(nil),        // 117: ember.v1.VAddBatchRequest
+	(*VSimRequest)(nil),             // 118: ember.v1.VSimRequest
+	(*VSimResponse)(nil),            // 119: ember.v1.VSimResponse
+	(*VSimResult)(nil),              // 120: ember.v1.VSimResult
+	(*VRemRequest)(nil),             // 121: ember.v1.VRemRequest
+	(*VGetRequest)(nil),             // 122: ember.v1.VGetRequest
+	(*VGetResponse)(nil),            // 123: ember.v1.VGetResponse
+	(*VCardRequest)(nil),            // 124: ember.v1.VCardRequest
+	(*VDimRequest)(nil),             // 125: ember.v1.VDimRequest
+	(*VInfoRequest)(nil),            // 126: ember.v1.VInfoRequest
+	(*VInfoResponse)(nil),           // 127: ember.v1.VInfoResponse
+	(*PingRequest)(nil),             // 128: ember.v1.PingRequest
+	(*PingResponse)(nil),            // 129: ember.v1.PingResponse
+	(*FlushDbRequest)(nil),          // 130: ember.v1.FlushDbRequest
+	(*DbSizeRequest)(nil),           // 131: ember.v1.DbSizeRequest
+	(*InfoRequest)(nil),             // 132: ember.v1.InfoRequest
+	(*InfoResponse)(nil),            // 133: ember.v1.InfoResponse
+	(*EchoRequest)(nil),             // 134: ember.v1.EchoRequest
+	(*EchoResponse)(nil),            // 135: ember.v1.EchoResponse
+	(*DecrRequest)(nil),             // 136: ember.v1.DecrRequest
+	(*UnlinkRequest)(nil),           // 137: ember.v1.UnlinkRequest
+	(*BgSaveRequest)(nil),           // 138: ember.v1.BgSaveRequest
+	(*BgRewriteAofRequest)(nil),     // 139: ember.v1.BgRewriteAofRequest
+	(*TimeRequest)(nil),             // 140: ember.v1.TimeRequest
+	(*TimeResponse)(nil),            // 141: ember.v1.TimeResponse
+	(*LastSaveRequest)(nil),         // 142: ember.v1.LastSaveRequest
+	(*SlowLogGetRequest)(nil),       // 143: ember.v1.SlowLogGetRequest
+	(*SlowLogGetResponse)(nil),      // 144: ember.v1.SlowLogGetResponse
+	(*SlowLogEntry)(nil),            // 145: ember.v1.SlowLogEntry
+	(*SlowLogLenRequest)(nil),       // 146: ember.v1.SlowLogLenRequest
+	(*SlowLogResetRequest)(nil),     // 147: ember.v1.SlowLogResetRequest
+	(*PublishRequest)(nil),          // 148: ember.v1.PublishRequest
+	(*SubscribeRequest)(nil),        // 149: ember.v1.SubscribeRequest
+	(*SubscribeEvent)(nil),          // 150: ember.v1.SubscribeEvent
+	(*PubSubChannelsRequest)(nil),   // 151: ember.v1.PubSubChannelsRequest
+	(*PubSubNumSubRequest)(nil),     // 152: ember.v1.PubSubNumSubRequest
+	(*PubSubNumSubResponse)(nil),    // 153: ember.v1.PubSubNumSubResponse
+	(*PubSubNumPatRequest)(nil),     // 154: ember.v1.PubSubNumPatRequest
+	(*ChannelCount)(nil),            // 155: ember.v1.ChannelCount
+	(*PipelineRequest)(nil),         // 156: ember.v1.PipelineRequest
+	(*PipelineResponse)(nil),        // 157: ember.v1.PipelineResponse
+	(*ErrorResponse)(nil),           // 158: ember.v1.ErrorResponse
 }
 var file_ember_v1_ember_proto_depIdxs = []int32{
-	15,  // 0: ember.v1.MGetResponse.values:type_name -> ember.v1.OptionalValue
-	17,  // 1: ember.v1.MSetRequest.pairs:type_name -> ember.v1.KeyValue
-	47,  // 2: ember.v1.HSetRequest.fields:type_name -> ember.v1.FieldValue
-	47,  // 3: ember.v1.HashResponse.fields:type_name -> ember.v1.FieldValue
-	15,  // 4: ember.v1.OptionalArrayResponse.values:type_name -> ember.v1.OptionalValue
-	65,  // 5: ember.v1.ZAddRequest.members:type_name -> ember.v1.ScoreMember
-	65,  // 6: ember.v1.ZRangeResponse.members:type_name -> ember.v1.ScoreMember
-	0,   // 7: ember.v1.VAddRequest.metric:type_name -> ember.v1.VectorMetric
-	1,   // 8: ember.v1.VAddRequest.quantization:type_name -> ember.v1.VectorQuantization
-	75,  // 9: ember.v1.VAddBatchRequest.entries:type_name -> ember.v1.VAddBatchEntry
-	0,   // 10: ember.v1.VAddBatchRequest.metric:type_name -> ember.v1.VectorMetric
-	1,   // 11: ember.v1.VAddBatchRequest.quantization:type_name -> ember.v1.VectorQuantization
-	79,  // 12: ember.v1.VSimResponse.results:type_name -> ember.v1.VSimResult
-	47,  // 13: ember.v1.VInfoResponse.info:type_name -> ember.v1.FieldValue
-	101, // 14: ember.v1.SlowLogGetResponse.entries:type_name -> ember.v1.SlowLogEntry
-	111, // 15: ember.v1.PubSubNumSubResponse.counts:type_name -> ember.v1.ChannelCount
-	7,   // 16: ember.v1.PipelineRequest.get:type_name -> ember.v1.GetRequest
-	9,   // 17: ember.v1.PipelineRequest.set:type_name -> ember.v1.SetRequest
-	11,  // 18: ember.v1.PipelineRequest.del:type_name -> ember.v1.DelRequest
-	25,  // 19: ember.v1.PipelineRequest.exists:type_name -> ember.v1.ExistsRequest
-	19,  // 20: ember.v1.PipelineRequest.incr:type_name -> ember.v1.IncrRequest
-	20,  // 21: ember.v1.PipelineRequest.incr_by:type_name -> ember.v1.IncrByRequest
-	21,  // 22: ember.v1.PipelineRequest.decr_by:type_name -> ember.v1.DecrByRequest
-	22,  // 23: ember.v1.PipelineRequest.incr_by_float:type_name -> ember.v1.IncrByFloatRequest
-	23,  // 24: ember.v1.PipelineRequest.append:type_name -> ember.v1.AppendRequest
-	24,  // 25: ember.v1.PipelineRequest.strlen:type_name -> ember.v1.StrlenRequest
-	26,  // 26: ember.v1.PipelineRequest.expire:type_name -> ember.v1.ExpireRequest
-	27,  // 27: ember.v1.PipelineRequest.pexpire:type_name -> ember.v1.PExpireRequest
-	28,  // 28: ember.v1.PipelineRequest.persist:type_name -> ember.v1.PersistRequest
-	29,  // 29: ember.v1.PipelineRequest.ttl:type_name -> ember.v1.TtlRequest
-	30,  // 30: ember.v1.PipelineRequest.pttl:type_name -> ember.v1.PTtlRequest
-	32,  // 31: ember.v1.PipelineRequest.type:type_name -> ember.v1.TypeRequest
-	39,  // 32: ember.v1.PipelineRequest.lpush:type_name -> ember.v1.LPushRequest
-	40,  // 33: ember.v1.PipelineRequest.rpush:type_name -> ember.v1.RPushRequest
-	41,  // 34: ember.v1.PipelineRequest.lpop:type_name -> ember.v1.LPopRequest
-	42,  // 35: ember.v1.PipelineRequest.rpop:type_name -> ember.v1.RPopRequest
-	43,  // 36: ember.v1.PipelineRequest.lrange:type_name -> ember.v1.LRangeRequest
-	45,  // 37: ember.v1.PipelineRequest.llen:type_name -> ember.v1.LLenRequest
-	46,  // 38: ember.v1.PipelineRequest.hset:type_name -> ember.v1.HSetRequest
-	48,  // 39: ember.v1.PipelineRequest.hget:type_name -> ember.v1.HGetRequest
-	49,  // 40: ember.v1.PipelineRequest.hgetall:type_name -> ember.v1.HGetAllRequest
-	51,  // 41: ember.v1.PipelineRequest.hdel:type_name -> ember.v1.HDelRequest
-	52,  // 42: ember.v1.PipelineRequest.hexists:type_name -> ember.v1.HExistsRequest
-	53,  // 43: ember.v1.PipelineRequest.hlen:type_name -> ember.v1.HLenRequest
-	54,  // 44: ember.v1.PipelineRequest.hincr_by:type_name -> ember.v1.HIncrByRequest
-	55,  // 45: ember.v1.PipelineRequest.hkeys:type_name -> ember.v1.HKeysRequest
-	56,  // 46: ember.v1.PipelineRequest.hvals:type_name -> ember.v1.HValsRequest
-	57,  // 47: ember.v1.PipelineRequest.hmget:type_name -> ember.v1.HMGetRequest
-	59,  // 48: ember.v1.PipelineRequest.sadd:type_name -> ember.v1.SAddRequest
-	60,  // 49: ember.v1.PipelineRequest.srem:type_name -> ember.v1.SRemRequest
-	61,  // 50: ember.v1.PipelineRequest.smembers:type_name -> ember.v1.SMembersRequest
-	62,  // 51: ember.v1.PipelineRequest.sismember:type_name -> ember.v1.SIsMemberRequest
-	63,  // 52: ember.v1.PipelineRequest.scard:type_name -> ember.v1.SCardRequest
-	64,  // 53: ember.v1.PipelineRequest.zadd:type_name -> ember.v1.ZAddRequest
-	66,  // 54: ember.v1.PipelineRequest.zrem:type_name -> ember.v1.ZRemRequest
-	67,  // 55: ember.v1.PipelineRequest.zscore:type_name -> ember.v1.ZScoreRequest
-	69,  // 56: ember.v1.PipelineRequest.zrank:type_name -> ember.v1.ZRankRequest
-	71,  // 57: ember.v1.PipelineRequest.zcard:type_name -> ember.v1.ZCardRequest
-	72,  // 58: ember.v1.PipelineRequest.zrange:type_name -> ember.v1.ZRangeRequest
-	74,  // 59: ember.v1.PipelineRequest.vadd:type_name -> ember.v1.VAddRequest
-	77,  // 60: ember.v1.PipelineRequest.vsim:type_name -> ember.v1.VSimRequest
-	80,  // 61: ember.v1.PipelineRequest.vrem:type_name -> ember.v1.VRemRequest
-	81,  // 62: ember.v1.PipelineRequest.vget:type_name -> ember.v1.VGetRequest
-	83,  // 63: ember.v1.PipelineRequest.vcard:type_name -> ember.v1.VCardRequest
-	84,  // 64: ember.v1.PipelineRequest.vdim:type_name -> ember.v1.VDimRequest
-	85,  // 65: ember.v1.PipelineRequest.vinfo:type_name -> ember.v1.VInfoRequest
-	87,  // 66: ember.v1.PipelineRequest.ping:type_name -> ember.v1.PingRequest
-	89,  // 67: ember.v1.PipelineRequest.flushdb:type_name -> ember.v1.FlushDbRequest
-	90,  // 68: ember.v1.PipelineRequest.dbsize:type_name -> ember.v1.DbSizeRequest
-	13,  // 69: ember.v1.PipelineRequest.mget:type_name -> ember.v1.MGetRequest
-	16,  // 70: ember.v1.PipelineRequest.mset:type_name -> ember.v1.MSetRequest
-	34,  // 71: ember.v1.PipelineRequest.keys:type_name -> ember.v1.KeysRequest
-	36,  // 72: ember.v1.PipelineRequest.rename:type_name -> ember.v1.RenameRequest
-	37,  // 73: ember.v1.PipelineRequest.scan:type_name -> ember.v1.ScanRequest
-	93,  // 74: ember.v1.PipelineRequest.echo:type_name -> ember.v1.EchoRequest
-	95,  // 75: ember.v1.PipelineRequest.decr:type_name -> ember.v1.DecrRequest
-	96,  // 76: ember.v1.PipelineRequest.unlink:type_name -> ember.v1.UnlinkRequest
-	97,  // 77: ember.v1.PipelineRequest.bgsave:type_name -> ember.v1.BgSaveRequest
-	98,  // 78: ember.v1.PipelineRequest.bgrewriteaof:type_name -> ember.v1.BgRewriteAofRequest
-	99,  // 79: ember.v1.PipelineRequest.slowlog_get:type_name -> ember.v1.SlowLogGetRequest
-	102, // 80: ember.v1.PipelineRequest.slowlog_len:type_name -> ember.v1.SlowLogLenRequest
-	103, // 81: ember.v1.PipelineRequest.slowlog_reset:type_name -> ember.v1.SlowLogResetRequest
-	104, // 82: ember.v1.PipelineRequest.publish:type_name -> ember.v1.PublishRequest
-	107, // 83: ember.v1.PipelineRequest.pubsub_channels:type_name -> ember.v1.PubSubChannelsRequest
-	108, // 84: ember.v1.PipelineRequest.pubsub_numsub:type_name -> ember.v1.PubSubNumSubRequest
-	110, // 85: ember.v1.PipelineRequest.pubsub_numpat:type_name -> ember.v1.PubSubNumPatRequest
-	76,  // 86: ember.v1.PipelineRequest.vadd_batch:type_name -> ember.v1.VAddBatchRequest
-	8,   // 87: ember.v1.PipelineResponse.get:type_name -> ember.v1.GetResponse
-	10,  // 88: ember.v1.PipelineResponse.set:type_name -> ember.v1.SetResponse
-	12,  // 89: ember.v1.PipelineResponse.del:type_name -> ember.v1.DelResponse
-	3,   // 90: ember.v1.PipelineResponse.int_val:type_name -> ember.v1.IntResponse
-	4,   // 91: ember.v1.PipelineResponse.bool_val:type_name -> ember.v1.BoolResponse
-	5,   // 92: ember.v1.PipelineResponse.float_val:type_name -> ember.v1.FloatResponse
-	6,   // 93: ember.v1.PipelineResponse.status:type_name -> ember.v1.StatusResponse
-	31,  // 94: ember.v1.PipelineResponse.ttl:type_name -> ember.v1.TtlResponse
-	33,  // 95: ember.v1.PipelineResponse.type:type_name -> ember.v1.TypeResponse
-	44,  // 96: ember.v1.PipelineResponse.array:type_name -> ember.v1.ArrayResponse
-	50,  // 97: ember.v1.PipelineResponse.hash:type_name -> ember.v1.HashResponse
-	58,  // 98: ember.v1.PipelineResponse.optional_array:type_name -> ember.v1.OptionalArrayResponse
-	35,  // 99: ember.v1.PipelineResponse.keys:type_name -> ember.v1.KeysResponse
-	38,  // 100: ember.v1.PipelineResponse.scan:type_name -> ember.v1.ScanResponse
-	68,  // 101: ember.v1.PipelineResponse.optional_float:type_name -> ember.v1.OptionalFloatResponse
-	70,  // 102: ember.v1.PipelineResponse.optional_int:type_name -> ember.v1.OptionalIntResponse
-	73,  // 103: ember.v1.PipelineResponse.zrange:type_name -> ember.v1.ZRangeResponse
-	78,  // 104: ember.v1.PipelineResponse.vsim:type_name -> ember.v1.VSimResponse
-	82,  // 105: ember.v1.PipelineResponse.vget:type_name -> ember.v1.VGetResponse
-	86,  // 106: ember.v1.PipelineResponse.vinfo:type_name -> ember.v1.VInfoResponse
-	14,  // 107: ember.v1.PipelineResponse.mget:type_name -> ember.v1.MGetResponse
-	18,  // 108: ember.v1.PipelineResponse.mset:type_name -> ember.v1.MSetResponse
-	88,  // 109: ember.v1.PipelineResponse.ping:type_name -> ember.v1.PingResponse
-	114, // 110: ember.v1.PipelineResponse.error:type_name -> ember.v1.ErrorResponse
-	92,  // 111: ember.v1.PipelineResponse.info:type_name -> ember.v1.InfoResponse
-	94,  // 112: ember.v1.PipelineResponse.echo:type_name -> ember.v1.EchoResponse
-	100, // 113: ember.v1.PipelineResponse.slowlog_get:type_name -> ember.v1.SlowLogGetResponse
-	109, // 114: ember.v1.PipelineResponse.pubsub_numsub:type_name -> ember.v1.PubSubNumSubResponse
-	2,   // 115: ember.v1.ErrorResponse.kind:type_name -> ember.v1.ErrorKind
-	7,   // 116: ember.v1.EmberCache.Get:input_type -> ember.v1.GetRequest
-	9,   // 117: ember.v1.EmberCache.Set:input_type -> ember.v1.SetRequest
-	11,  // 118: ember.v1.EmberCache.Del:input_type -> ember.v1.DelRequest
-	13,  // 119: ember.v1.EmberCache.MGet:input_type -> ember.v1.MGetRequest
-	16,  // 120: ember.v1.EmberCache.MSet:input_type -> ember.v1.MSetRequest
-	19,  // 121: ember.v1.EmberCache.Incr:input_type -> ember.v1.IncrRequest
-	20,  // 122: ember.v1.EmberCache.IncrBy:input_type -> ember.v1.IncrByRequest
-	21,  // 123: ember.v1.EmberCache.DecrBy:input_type -> ember.v1.DecrByRequest
-	22,  // 124: ember.v1.EmberCache.IncrByFloat:input_type -> ember.v1.IncrByFloatRequest
-	23,  // 125: ember.v1.EmberCache.Append:input_type -> ember.v1.AppendRequest
-	24,  // 126: ember.v1.EmberCache.Strlen:input_type -> ember.v1.StrlenRequest
-	25,  // 127: ember.v1.EmberCache.Exists:input_type -> ember.v1.ExistsRequest
-	26,  // 128: ember.v1.EmberCache.Expire:input_type -> ember.v1.ExpireRequest
-	27,  // 129: ember.v1.EmberCache.PExpire:input_type -> ember.v1.PExpireRequest
-	28,  // 130: ember.v1.EmberCache.Persist:input_type -> ember.v1.PersistRequest
-	29,  // 131: ember.v1.EmberCache.Ttl:input_type -> ember.v1.TtlRequest
-	30,  // 132: ember.v1.EmberCache.PTtl:input_type -> ember.v1.PTtlRequest
-	32,  // 133: ember.v1.EmberCache.Type:input_type -> ember.v1.TypeRequest
-	34,  // 134: ember.v1.EmberCache.Keys:input_type -> ember.v1.KeysRequest
-	36,  // 135: ember.v1.EmberCache.Rename:input_type -> ember.v1.RenameRequest
-	37,  // 136: ember.v1.EmberCache.Scan:input_type -> ember.v1.ScanRequest
-	39,  // 137: ember.v1.EmberCache.LPush:input_type -> ember.v1.LPushRequest
-	40,  // 138: ember.v1.EmberCache.RPush:input_type -> ember.v1.RPushRequest
-	41,  // 139: ember.v1.EmberCache.LPop:input_type -> ember.v1.LPopRequest
-	42,  // 140: ember.v1.EmberCache.RPop:input_type -> ember.v1.RPopRequest
-	43,  // 141: ember.v1.EmberCache.LRange:input_type -> ember.v1.LRangeRequest
-	45,  // 142: ember.v1.EmberCache.LLen:input_type -> ember.v1.LLenRequest
-	46,  // 143: ember.v1.EmberCache.HSet:input_type -> ember.v1.HSetRequest
-	48,  // 144: ember.v1.EmberCache.HGet:input_type -> ember.v1.HGetRequest
-	49,  // 145: ember.v1.EmberCache.HGetAll:input_type -> ember.v1.HGetAllRequest
-	51,  // 146: ember.v1.EmberCache.HDel:input_type -> ember.v1.HDelRequest
-	52,  // 147: ember.v1.EmberCache.HExists:input_type -> ember.v1.HExistsRequest
-	53,  // 148: ember.v1.EmberCache.HLen:input_type -> ember.v1.HLenRequest
-	54,  // 149: ember.v1.EmberCache.HIncrBy:input_type -> ember.v1.HIncrByRequest
-	55,  // 150: ember.v1.EmberCache.HKeys:input_type -> ember.v1.HKeysRequest
-	56,  // 151: ember.v1.EmberCache.HVals:input_type -> ember.v1.HValsRequest
-	57,  // 152: ember.v1.EmberCache.HMGet:input_type -> ember.v1.HMGetRequest
-	59,  // 153: ember.v1.EmberCache.SAdd:input_type -> ember.v1.SAddRequest
-	60,  // 154: ember.v1.EmberCache.SRem:input_type -> ember.v1.SRemRequest
-	61,  // 155: ember.v1.EmberCache.SMembers:input_type -> ember.v1.SMembersRequest
-	62,  // 156: ember.v1.EmberCache.SIsMember:input_type -> ember.v1.SIsMemberRequest
-	63,  // 157: ember.v1.EmberCache.SCard:input_type -> ember.v1.SCardRequest
-	64,  // 158: ember.v1.EmberCache.ZAdd:input_type -> ember.v1.ZAddRequest
-	66,  // 159: ember.v1.EmberCache.ZRem:input_type -> ember.v1.ZRemRequest
-	67,  // 160: ember.v1.EmberCache.ZScore:input_type -> ember.v1.ZScoreRequest
-	69,  // 161: ember.v1.EmberCache.ZRank:input_type -> ember.v1.ZRankRequest
-	71,  // 162: ember.v1.EmberCache.ZCard:input_type -> ember.v1.ZCardRequest
-	72,  // 163: ember.v1.EmberCache.ZRange:input_type -> ember.v1.ZRangeRequest
-	74,  // 164: ember.v1.EmberCache.VAdd:input_type -> ember.v1.VAddRequest
-	76,  // 165: ember.v1.EmberCache.VAddBatch:input_type -> ember.v1.VAddBatchRequest
-	77,  // 166: ember.v1.EmberCache.VSim:input_type -> ember.v1.VSimRequest
-	80,  // 167: ember.v1.EmberCache.VRem:input_type -> ember.v1.VRemRequest
-	81,  // 168: ember.v1.EmberCache.VGet:input_type -> ember.v1.VGetRequest
-	83,  // 169: ember.v1.EmberCache.VCard:input_type -> ember.v1.VCardRequest
-	84,  // 170: ember.v1.EmberCache.VDim:input_type -> ember.v1.VDimRequest
-	85,  // 171: ember.v1.EmberCache.VInfo:input_type -> ember.v1.VInfoRequest
-	87,  // 172: ember.v1.EmberCache.Ping:input_type -> ember.v1.PingRequest
-	93,  // 173: ember.v1.EmberCache.Echo:input_type -> ember.v1.EchoRequest
-	95,  // 174: ember.v1.EmberCache.Decr:input_type -> ember.v1.DecrRequest
-	96,  // 175: ember.v1.EmberCache.Unlink:input_type -> ember.v1.UnlinkRequest
-	89,  // 176: ember.v1.EmberCache.FlushDb:input_type -> ember.v1.FlushDbRequest
-	90,  // 177: ember.v1.EmberCache.DbSize:input_type -> ember.v1.DbSizeRequest
-	91,  // 178: ember.v1.EmberCache.Info:input_type -> ember.v1.InfoRequest
-	97,  // 179: ember.v1.EmberCache.BgSave:input_type -> ember.v1.BgSaveRequest
-	98,  // 180: ember.v1.EmberCache.BgRewriteAof:input_type -> ember.v1.BgRewriteAofRequest
-	99,  // 181: ember.v1.EmberCache.SlowLogGet:input_type -> ember.v1.SlowLogGetRequest
-	102, // 182: ember.v1.EmberCache.SlowLogLen:input_type -> ember.v1.SlowLogLenRequest
-	103, // 183: ember.v1.EmberCache.SlowLogReset:input_type -> ember.v1.SlowLogResetRequest
-	104, // 184: ember.v1.EmberCache.Publish:input_type -> ember.v1.PublishRequest
-	105, // 185: ember.v1.EmberCache.Subscribe:input_type -> ember.v1.SubscribeRequest
-	107, // 186: ember.v1.EmberCache.PubSubChannels:input_type -> ember.v1.PubSubChannelsRequest
-	108, // 187: ember.v1.EmberCache.PubSubNumSub:input_type -> ember.v1.PubSubNumSubRequest
-	110, // 188: ember.v1.EmberCache.PubSubNumPat:input_type -> ember.v1.PubSubNumPatRequest
-	112, // 189: ember.v1.EmberCache.Pipeline:input_type -> ember.v1.PipelineRequest
-	8,   // 190: ember.v1.EmberCache.Get:output_type -> ember.v1.GetResponse
-	10,  // 191: ember.v1.EmberCache.Set:output_type -> ember.v1.SetResponse
-	12,  // 192: ember.v1.EmberCache.Del:output_type -> ember.v1.DelResponse
-	14,  // 193: ember.v1.EmberCache.MGet:output_type -> ember.v1.MGetResponse
-	18,  // 194: ember.v1.EmberCache.MSet:output_type -> ember.v1.MSetResponse
-	3,   // 195: ember.v1.EmberCache.Incr:output_type -> ember.v1.IntResponse
-	3,   // 196: ember.v1.EmberCache.IncrBy:output_type -> ember.v1.IntResponse
-	3,   // 197: ember.v1.EmberCache.DecrBy:output_type -> ember.v1.IntResponse
-	5,   // 198: ember.v1.EmberCache.IncrByFloat:output_type -> ember.v1.FloatResponse
-	3,   // 199: ember.v1.EmberCache.Append:output_type -> ember.v1.IntResponse
-	3,   // 200: ember.v1.EmberCache.Strlen:output_type -> ember.v1.IntResponse
-	3,   // 201: ember.v1.EmberCache.Exists:output_type -> ember.v1.IntResponse
-	4,   // 202: ember.v1.EmberCache.Expire:output_type -> ember.v1.BoolResponse
-	4,   // 203: ember.v1.EmberCache.PExpire:output_type -> ember.v1.BoolResponse
-	4,   // 204: ember.v1.EmberCache.Persist:output_type -> ember.v1.BoolResponse
-	31,  // 205: ember.v1.EmberCache.Ttl:output_type -> ember.v1.TtlResponse
-	31,  // 206: ember.v1.EmberCache.PTtl:output_type -> ember.v1.TtlResponse
-	33,  // 207: ember.v1.EmberCache.Type:output_type -> ember.v1.TypeResponse
-	35,  // 208: ember.v1.EmberCache.Keys:output_type -> ember.v1.KeysResponse
-	6,   // 209: ember.v1.EmberCache.Rename:output_type -> ember.v1.StatusResponse
-	38,  // 210: ember.v1.EmberCache.Scan:output_type -> ember.v1.ScanResponse
-	3,   // 211: ember.v1.EmberCache.LPush:output_type -> ember.v1.IntResponse
-	3,   // 212: ember.v1.EmberCache.RPush:output_type -> ember.v1.IntResponse
-	8,   // 213: ember.v1.EmberCache.LPop:output_type -> ember.v1.GetResponse
-	8,   // 214: ember.v1.EmberCache.RPop:output_type -> ember.v1.GetResponse
-	44,  // 215: ember.v1.EmberCache.LRange:output_type -> ember.v1.ArrayResponse
-	3,   // 216: ember.v1.EmberCache.LLen:output_type -> ember.v1.IntResponse
-	3,   // 217: ember.v1.EmberCache.HSet:output_type -> ember.v1.IntResponse
-	8,   // 218: ember.v1.EmberCache.HGet:output_type -> ember.v1.GetResponse
-	50,  // 219: ember.v1.EmberCache.HGetAll:output_type -> ember.v1.HashResponse
-	3,   // 220: ember.v1.EmberCache.HDel:output_type -> ember.v1.IntResponse
-	4,   // 221: ember.v1.EmberCache.HExists:output_type -> ember.v1.BoolResponse
-	3,   // 222: ember.v1.EmberCache.HLen:output_type -> ember.v1.IntResponse
-	3,   // 223: ember.v1.EmberCache.HIncrBy:output_type -> ember.v1.IntResponse
-	35,  // 224: ember.v1.EmberCache.HKeys:output_type -> ember.v1.KeysResponse
-	44,  // 225: ember.v1.EmberCache.HVals:output_type -> ember.v1.ArrayResponse
-	58,  // 226: ember.v1.EmberCache.HMGet:output_type -> ember.v1.OptionalArrayResponse
-	3,   // 227: ember.v1.EmberCache.SAdd:output_type -> ember.v1.IntResponse
-	3,   // 228: ember.v1.EmberCache.SRem:output_type -> ember.v1.IntResponse
-	35,  // 229: ember.v1.EmberCache.SMembers:output_type -> ember.v1.KeysResponse
-	4,   // 230: ember.v1.EmberCache.SIsMember:output_type -> ember.v1.BoolResponse
-	3,   // 231: ember.v1.EmberCache.SCard:output_type -> ember.v1.IntResponse
-	3,   // 232: ember.v1.EmberCache.ZAdd:output_type -> ember.v1.IntResponse
-	3,   // 233: ember.v1.EmberCache.ZRem:output_type -> ember.v1.IntResponse
-	68,  // 234: ember.v1.EmberCache.ZScore:output_type -> ember.v1.OptionalFloatResponse
-	70,  // 235: ember.v1.EmberCache.ZRank:output_type -> ember.v1.OptionalIntResponse
-	3,   // 236: ember.v1.EmberCache.ZCard:output_type -> ember.v1.IntResponse
-	73,  // 237: ember.v1.EmberCache.ZRange:output_type -> ember.v1.ZRangeResponse
-	4,   // 238: ember.v1.EmberCache.VAdd:output_type -> ember.v1.BoolResponse
-	3,   // 239: ember.v1.EmberCache.VAddBatch:output_type -> ember.v1.IntResponse
-	78,  // 240: ember.v1.EmberCache.VSim:output_type -> ember.v1.VSimResponse
-	4,   // 241: ember.v1.EmberCache.VRem:output_type -> ember.v1.BoolResponse
-	82,  // 242: ember.v1.EmberCache.VGet:output_type -> ember.v1.VGetResponse
-	3,   // 243: ember.v1.EmberCache.VCard:output_type -> ember.v1.IntResponse
-	3,   // 244: ember.v1.EmberCache.VDim:output_type -> ember.v1.IntResponse
-	86,  // 245: ember.v1.EmberCache.VInfo:output_type -> ember.v1.VInfoResponse
-	88,  // 246: ember.v1.EmberCache.Ping:output_type -> ember.v1.PingResponse
-	94,  // 247: ember.v1.EmberCache.Echo:output_type -> ember.v1.EchoResponse
-	3,   // 248: ember.v1.EmberCache.Decr:output_type -> ember.v1.IntResponse
-	12,  // 249: ember.v1.EmberCache.Unlink:output_type -> ember.v1.DelResponse
-	6,   // 250: ember.v1.EmberCache.FlushDb:output_type -> ember.v1.StatusResponse
-	3,   // 251: ember.v1.EmberCache.DbSize:output_type -> ember.v1.IntResponse
-	92,  // 252: ember.v1.EmberCache.Info:output_type -> ember.v1.InfoResponse
-	6,   // 253: ember.v1.EmberCache.BgSave:output_type -> ember.v1.StatusResponse
-	6,   // 254: ember.v1.EmberCache.BgRewriteAof:output_type -> ember.v1.StatusResponse
-	100, // 255: ember.v1.EmberCache.SlowLogGet:output_type -> ember.v1.SlowLogGetResponse
-	3,   // 256: ember.v1.EmberCache.SlowLogLen:output_type -> ember.v1.IntResponse
-	6,   // 257: ember.v1.EmberCache.SlowLogReset:output_type -> ember.v1.StatusResponse
-	3,   // 258: ember.v1.EmberCache.Publish:output_type -> ember.v1.IntResponse
-	106, // 259: ember.v1.EmberCache.Subscribe:output_type -> ember.v1.SubscribeEvent
-	35,  // 260: ember.v1.EmberCache.PubSubChannels:output_type -> ember.v1.KeysResponse
-	109, // 261: ember.v1.EmberCache.PubSubNumSub:output_type -> ember.v1.PubSubNumSubResponse
-	3,   // 262: ember.v1.EmberCache.PubSubNumPat:output_type -> ember.v1.IntResponse
-	113, // 263: ember.v1.EmberCache.Pipeline:output_type -> ember.v1.PipelineResponse
-	190, // [190:264] is the sub-list for method output_type
-	116, // [116:190] is the sub-list for method input_type
-	116, // [116:116] is the sub-list for extension type_name
-	116, // [116:116] is the sub-list for extension extendee
-	0,   // [0:116] is the sub-list for field type_name
+	16,  // 0: ember.v1.MGetResponse.values:type_name -> ember.v1.OptionalValue
+	18,  // 1: ember.v1.MSetRequest.pairs:type_name -> ember.v1.KeyValue
+	62,  // 2: ember.v1.HSetRequest.fields:type_name -> ember.v1.FieldValue
+	62,  // 3: ember.v1.HashResponse.fields:type_name -> ember.v1.FieldValue
+	16,  // 4: ember.v1.OptionalArrayResponse.values:type_name -> ember.v1.OptionalValue
+	62,  // 5: ember.v1.HScanResponse.fields:type_name -> ember.v1.FieldValue
+	93,  // 6: ember.v1.ZAddRequest.members:type_name -> ember.v1.ScoreMember
+	93,  // 7: ember.v1.ZRangeResponse.members:type_name -> ember.v1.ScoreMember
+	93,  // 8: ember.v1.ZScanResponse.members:type_name -> ember.v1.ScoreMember
+	0,   // 9: ember.v1.VAddRequest.metric:type_name -> ember.v1.VectorMetric
+	1,   // 10: ember.v1.VAddRequest.quantization:type_name -> ember.v1.VectorQuantization
+	116, // 11: ember.v1.VAddBatchRequest.entries:type_name -> ember.v1.VAddBatchEntry
+	0,   // 12: ember.v1.VAddBatchRequest.metric:type_name -> ember.v1.VectorMetric
+	1,   // 13: ember.v1.VAddBatchRequest.quantization:type_name -> ember.v1.VectorQuantization
+	120, // 14: ember.v1.VSimResponse.results:type_name -> ember.v1.VSimResult
+	62,  // 15: ember.v1.VInfoResponse.info:type_name -> ember.v1.FieldValue
+	145, // 16: ember.v1.SlowLogGetResponse.entries:type_name -> ember.v1.SlowLogEntry
+	155, // 17: ember.v1.PubSubNumSubResponse.counts:type_name -> ember.v1.ChannelCount
+	8,   // 18: ember.v1.PipelineRequest.get:type_name -> ember.v1.GetRequest
+	10,  // 19: ember.v1.PipelineRequest.set:type_name -> ember.v1.SetRequest
+	12,  // 20: ember.v1.PipelineRequest.del:type_name -> ember.v1.DelRequest
+	30,  // 21: ember.v1.PipelineRequest.exists:type_name -> ember.v1.ExistsRequest
+	20,  // 22: ember.v1.PipelineRequest.incr:type_name -> ember.v1.IncrRequest
+	21,  // 23: ember.v1.PipelineRequest.incr_by:type_name -> ember.v1.IncrByRequest
+	22,  // 24: ember.v1.PipelineRequest.decr_by:type_name -> ember.v1.DecrByRequest
+	23,  // 25: ember.v1.PipelineRequest.incr_by_float:type_name -> ember.v1.IncrByFloatRequest
+	24,  // 26: ember.v1.PipelineRequest.append:type_name -> ember.v1.AppendRequest
+	25,  // 27: ember.v1.PipelineRequest.strlen:type_name -> ember.v1.StrlenRequest
+	31,  // 28: ember.v1.PipelineRequest.expire:type_name -> ember.v1.ExpireRequest
+	32,  // 29: ember.v1.PipelineRequest.pexpire:type_name -> ember.v1.PExpireRequest
+	33,  // 30: ember.v1.PipelineRequest.persist:type_name -> ember.v1.PersistRequest
+	34,  // 31: ember.v1.PipelineRequest.ttl:type_name -> ember.v1.TtlRequest
+	35,  // 32: ember.v1.PipelineRequest.pttl:type_name -> ember.v1.PTtlRequest
+	37,  // 33: ember.v1.PipelineRequest.type:type_name -> ember.v1.TypeRequest
+	47,  // 34: ember.v1.PipelineRequest.lpush:type_name -> ember.v1.LPushRequest
+	48,  // 35: ember.v1.PipelineRequest.rpush:type_name -> ember.v1.RPushRequest
+	49,  // 36: ember.v1.PipelineRequest.lpop:type_name -> ember.v1.LPopRequest
+	50,  // 37: ember.v1.PipelineRequest.rpop:type_name -> ember.v1.RPopRequest
+	51,  // 38: ember.v1.PipelineRequest.lrange:type_name -> ember.v1.LRangeRequest
+	53,  // 39: ember.v1.PipelineRequest.llen:type_name -> ember.v1.LLenRequest
+	61,  // 40: ember.v1.PipelineRequest.hset:type_name -> ember.v1.HSetRequest
+	63,  // 41: ember.v1.PipelineRequest.hget:type_name -> ember.v1.HGetRequest
+	64,  // 42: ember.v1.PipelineRequest.hgetall:type_name -> ember.v1.HGetAllRequest
+	66,  // 43: ember.v1.PipelineRequest.hdel:type_name -> ember.v1.HDelRequest
+	67,  // 44: ember.v1.PipelineRequest.hexists:type_name -> ember.v1.HExistsRequest
+	68,  // 45: ember.v1.PipelineRequest.hlen:type_name -> ember.v1.HLenRequest
+	69,  // 46: ember.v1.PipelineRequest.hincr_by:type_name -> ember.v1.HIncrByRequest
+	70,  // 47: ember.v1.PipelineRequest.hkeys:type_name -> ember.v1.HKeysRequest
+	71,  // 48: ember.v1.PipelineRequest.hvals:type_name -> ember.v1.HValsRequest
+	72,  // 49: ember.v1.PipelineRequest.hmget:type_name -> ember.v1.HMGetRequest
+	76,  // 50: ember.v1.PipelineRequest.sadd:type_name -> ember.v1.SAddRequest
+	77,  // 51: ember.v1.PipelineRequest.srem:type_name -> ember.v1.SRemRequest
+	78,  // 52: ember.v1.PipelineRequest.smembers:type_name -> ember.v1.SMembersRequest
+	79,  // 53: ember.v1.PipelineRequest.sismember:type_name -> ember.v1.SIsMemberRequest
+	80,  // 54: ember.v1.PipelineRequest.scard:type_name -> ember.v1.SCardRequest
+	92,  // 55: ember.v1.PipelineRequest.zadd:type_name -> ember.v1.ZAddRequest
+	94,  // 56: ember.v1.PipelineRequest.zrem:type_name -> ember.v1.ZRemRequest
+	95,  // 57: ember.v1.PipelineRequest.zscore:type_name -> ember.v1.ZScoreRequest
+	97,  // 58: ember.v1.PipelineRequest.zrank:type_name -> ember.v1.ZRankRequest
+	99,  // 59: ember.v1.PipelineRequest.zcard:type_name -> ember.v1.ZCardRequest
+	100, // 60: ember.v1.PipelineRequest.zrange:type_name -> ember.v1.ZRangeRequest
+	115, // 61: ember.v1.PipelineRequest.vadd:type_name -> ember.v1.VAddRequest
+	118, // 62: ember.v1.PipelineRequest.vsim:type_name -> ember.v1.VSimRequest
+	121, // 63: ember.v1.PipelineRequest.vrem:type_name -> ember.v1.VRemRequest
+	122, // 64: ember.v1.PipelineRequest.vget:type_name -> ember.v1.VGetRequest
+	124, // 65: ember.v1.PipelineRequest.vcard:type_name -> ember.v1.VCardRequest
+	125, // 66: ember.v1.PipelineRequest.vdim:type_name -> ember.v1.VDimRequest
+	126, // 67: ember.v1.PipelineRequest.vinfo:type_name -> ember.v1.VInfoRequest
+	128, // 68: ember.v1.PipelineRequest.ping:type_name -> ember.v1.PingRequest
+	130, // 69: ember.v1.PipelineRequest.flushdb:type_name -> ember.v1.FlushDbRequest
+	131, // 70: ember.v1.PipelineRequest.dbsize:type_name -> ember.v1.DbSizeRequest
+	14,  // 71: ember.v1.PipelineRequest.mget:type_name -> ember.v1.MGetRequest
+	17,  // 72: ember.v1.PipelineRequest.mset:type_name -> ember.v1.MSetRequest
+	39,  // 73: ember.v1.PipelineRequest.keys:type_name -> ember.v1.KeysRequest
+	41,  // 74: ember.v1.PipelineRequest.rename:type_name -> ember.v1.RenameRequest
+	42,  // 75: ember.v1.PipelineRequest.scan:type_name -> ember.v1.ScanRequest
+	134, // 76: ember.v1.PipelineRequest.echo:type_name -> ember.v1.EchoRequest
+	136, // 77: ember.v1.PipelineRequest.decr:type_name -> ember.v1.DecrRequest
+	137, // 78: ember.v1.PipelineRequest.unlink:type_name -> ember.v1.UnlinkRequest
+	138, // 79: ember.v1.PipelineRequest.bgsave:type_name -> ember.v1.BgSaveRequest
+	139, // 80: ember.v1.PipelineRequest.bgrewriteaof:type_name -> ember.v1.BgRewriteAofRequest
+	143, // 81: ember.v1.PipelineRequest.slowlog_get:type_name -> ember.v1.SlowLogGetRequest
+	146, // 82: ember.v1.PipelineRequest.slowlog_len:type_name -> ember.v1.SlowLogLenRequest
+	147, // 83: ember.v1.PipelineRequest.slowlog_reset:type_name -> ember.v1.SlowLogResetRequest
+	148, // 84: ember.v1.PipelineRequest.publish:type_name -> ember.v1.PublishRequest
+	151, // 85: ember.v1.PipelineRequest.pubsub_channels:type_name -> ember.v1.PubSubChannelsRequest
+	152, // 86: ember.v1.PipelineRequest.pubsub_numsub:type_name -> ember.v1.PubSubNumSubRequest
+	154, // 87: ember.v1.PipelineRequest.pubsub_numpat:type_name -> ember.v1.PubSubNumPatRequest
+	117, // 88: ember.v1.PipelineRequest.vadd_batch:type_name -> ember.v1.VAddBatchRequest
+	26,  // 89: ember.v1.PipelineRequest.get_del:type_name -> ember.v1.GetDelRequest
+	27,  // 90: ember.v1.PipelineRequest.get_ex:type_name -> ember.v1.GetExRequest
+	28,  // 91: ember.v1.PipelineRequest.get_range:type_name -> ember.v1.GetRangeRequest
+	29,  // 92: ember.v1.PipelineRequest.set_range:type_name -> ember.v1.SetRangeRequest
+	44,  // 93: ember.v1.PipelineRequest.copy:type_name -> ember.v1.CopyRequest
+	45,  // 94: ember.v1.PipelineRequest.random_key:type_name -> ember.v1.RandomKeyRequest
+	46,  // 95: ember.v1.PipelineRequest.touch:type_name -> ember.v1.TouchRequest
+	54,  // 96: ember.v1.PipelineRequest.lindex:type_name -> ember.v1.LIndexRequest
+	55,  // 97: ember.v1.PipelineRequest.lset:type_name -> ember.v1.LSetRequest
+	56,  // 98: ember.v1.PipelineRequest.ltrim:type_name -> ember.v1.LTrimRequest
+	57,  // 99: ember.v1.PipelineRequest.linsert:type_name -> ember.v1.LInsertRequest
+	58,  // 100: ember.v1.PipelineRequest.lrem:type_name -> ember.v1.LRemRequest
+	59,  // 101: ember.v1.PipelineRequest.lpos:type_name -> ember.v1.LPosRequest
+	60,  // 102: ember.v1.PipelineRequest.lmove:type_name -> ember.v1.LMoveRequest
+	81,  // 103: ember.v1.PipelineRequest.sunion:type_name -> ember.v1.SUnionRequest
+	82,  // 104: ember.v1.PipelineRequest.sinter:type_name -> ember.v1.SInterRequest
+	83,  // 105: ember.v1.PipelineRequest.sdiff:type_name -> ember.v1.SDiffRequest
+	84,  // 106: ember.v1.PipelineRequest.sunion_store:type_name -> ember.v1.SUnionStoreRequest
+	85,  // 107: ember.v1.PipelineRequest.sinter_store:type_name -> ember.v1.SInterStoreRequest
+	86,  // 108: ember.v1.PipelineRequest.sdiff_store:type_name -> ember.v1.SDiffStoreRequest
+	87,  // 109: ember.v1.PipelineRequest.srand_member:type_name -> ember.v1.SRandMemberRequest
+	88,  // 110: ember.v1.PipelineRequest.spop:type_name -> ember.v1.SPopRequest
+	89,  // 111: ember.v1.PipelineRequest.smismember:type_name -> ember.v1.SMisMemberRequest
+	74,  // 112: ember.v1.PipelineRequest.hscan:type_name -> ember.v1.HScanRequest
+	102, // 113: ember.v1.PipelineRequest.zrev_rank:type_name -> ember.v1.ZRevRankRequest
+	103, // 114: ember.v1.PipelineRequest.zrev_range:type_name -> ember.v1.ZRevRangeRequest
+	104, // 115: ember.v1.PipelineRequest.zcount:type_name -> ember.v1.ZCountRequest
+	105, // 116: ember.v1.PipelineRequest.zincrby:type_name -> ember.v1.ZIncrByRequest
+	106, // 117: ember.v1.PipelineRequest.zrange_by_score:type_name -> ember.v1.ZRangeByScoreRequest
+	107, // 118: ember.v1.PipelineRequest.zrev_range_by_score:type_name -> ember.v1.ZRevRangeByScoreRequest
+	108, // 119: ember.v1.PipelineRequest.zpopmin:type_name -> ember.v1.ZPopMinRequest
+	109, // 120: ember.v1.PipelineRequest.zpopmax:type_name -> ember.v1.ZPopMaxRequest
+	110, // 121: ember.v1.PipelineRequest.zdiff:type_name -> ember.v1.ZDiffRequest
+	111, // 122: ember.v1.PipelineRequest.zinter:type_name -> ember.v1.ZInterRequest
+	112, // 123: ember.v1.PipelineRequest.zunion:type_name -> ember.v1.ZUnionRequest
+	113, // 124: ember.v1.PipelineRequest.zscan:type_name -> ember.v1.ZScanRequest
+	90,  // 125: ember.v1.PipelineRequest.sscan:type_name -> ember.v1.SScanRequest
+	140, // 126: ember.v1.PipelineRequest.time:type_name -> ember.v1.TimeRequest
+	142, // 127: ember.v1.PipelineRequest.last_save:type_name -> ember.v1.LastSaveRequest
+	9,   // 128: ember.v1.PipelineResponse.get:type_name -> ember.v1.GetResponse
+	11,  // 129: ember.v1.PipelineResponse.set:type_name -> ember.v1.SetResponse
+	13,  // 130: ember.v1.PipelineResponse.del:type_name -> ember.v1.DelResponse
+	3,   // 131: ember.v1.PipelineResponse.int_val:type_name -> ember.v1.IntResponse
+	4,   // 132: ember.v1.PipelineResponse.bool_val:type_name -> ember.v1.BoolResponse
+	5,   // 133: ember.v1.PipelineResponse.float_val:type_name -> ember.v1.FloatResponse
+	6,   // 134: ember.v1.PipelineResponse.status:type_name -> ember.v1.StatusResponse
+	36,  // 135: ember.v1.PipelineResponse.ttl:type_name -> ember.v1.TtlResponse
+	38,  // 136: ember.v1.PipelineResponse.type:type_name -> ember.v1.TypeResponse
+	52,  // 137: ember.v1.PipelineResponse.array:type_name -> ember.v1.ArrayResponse
+	65,  // 138: ember.v1.PipelineResponse.hash:type_name -> ember.v1.HashResponse
+	73,  // 139: ember.v1.PipelineResponse.optional_array:type_name -> ember.v1.OptionalArrayResponse
+	40,  // 140: ember.v1.PipelineResponse.keys:type_name -> ember.v1.KeysResponse
+	43,  // 141: ember.v1.PipelineResponse.scan:type_name -> ember.v1.ScanResponse
+	96,  // 142: ember.v1.PipelineResponse.optional_float:type_name -> ember.v1.OptionalFloatResponse
+	98,  // 143: ember.v1.PipelineResponse.optional_int:type_name -> ember.v1.OptionalIntResponse
+	101, // 144: ember.v1.PipelineResponse.zrange:type_name -> ember.v1.ZRangeResponse
+	119, // 145: ember.v1.PipelineResponse.vsim:type_name -> ember.v1.VSimResponse
+	123, // 146: ember.v1.PipelineResponse.vget:type_name -> ember.v1.VGetResponse
+	127, // 147: ember.v1.PipelineResponse.vinfo:type_name -> ember.v1.VInfoResponse
+	15,  // 148: ember.v1.PipelineResponse.mget:type_name -> ember.v1.MGetResponse
+	19,  // 149: ember.v1.PipelineResponse.mset:type_name -> ember.v1.MSetResponse
+	129, // 150: ember.v1.PipelineResponse.ping:type_name -> ember.v1.PingResponse
+	158, // 151: ember.v1.PipelineResponse.error:type_name -> ember.v1.ErrorResponse
+	133, // 152: ember.v1.PipelineResponse.info:type_name -> ember.v1.InfoResponse
+	135, // 153: ember.v1.PipelineResponse.echo:type_name -> ember.v1.EchoResponse
+	144, // 154: ember.v1.PipelineResponse.slowlog_get:type_name -> ember.v1.SlowLogGetResponse
+	153, // 155: ember.v1.PipelineResponse.pubsub_numsub:type_name -> ember.v1.PubSubNumSubResponse
+	7,   // 156: ember.v1.PipelineResponse.bool_array:type_name -> ember.v1.BoolArrayResponse
+	75,  // 157: ember.v1.PipelineResponse.hscan:type_name -> ember.v1.HScanResponse
+	114, // 158: ember.v1.PipelineResponse.zscan:type_name -> ember.v1.ZScanResponse
+	91,  // 159: ember.v1.PipelineResponse.sscan:type_name -> ember.v1.SScanResponse
+	141, // 160: ember.v1.PipelineResponse.time_resp:type_name -> ember.v1.TimeResponse
+	2,   // 161: ember.v1.ErrorResponse.kind:type_name -> ember.v1.ErrorKind
+	8,   // 162: ember.v1.EmberCache.Get:input_type -> ember.v1.GetRequest
+	10,  // 163: ember.v1.EmberCache.Set:input_type -> ember.v1.SetRequest
+	12,  // 164: ember.v1.EmberCache.Del:input_type -> ember.v1.DelRequest
+	14,  // 165: ember.v1.EmberCache.MGet:input_type -> ember.v1.MGetRequest
+	17,  // 166: ember.v1.EmberCache.MSet:input_type -> ember.v1.MSetRequest
+	20,  // 167: ember.v1.EmberCache.Incr:input_type -> ember.v1.IncrRequest
+	21,  // 168: ember.v1.EmberCache.IncrBy:input_type -> ember.v1.IncrByRequest
+	22,  // 169: ember.v1.EmberCache.DecrBy:input_type -> ember.v1.DecrByRequest
+	23,  // 170: ember.v1.EmberCache.IncrByFloat:input_type -> ember.v1.IncrByFloatRequest
+	24,  // 171: ember.v1.EmberCache.Append:input_type -> ember.v1.AppendRequest
+	25,  // 172: ember.v1.EmberCache.Strlen:input_type -> ember.v1.StrlenRequest
+	30,  // 173: ember.v1.EmberCache.Exists:input_type -> ember.v1.ExistsRequest
+	31,  // 174: ember.v1.EmberCache.Expire:input_type -> ember.v1.ExpireRequest
+	32,  // 175: ember.v1.EmberCache.PExpire:input_type -> ember.v1.PExpireRequest
+	33,  // 176: ember.v1.EmberCache.Persist:input_type -> ember.v1.PersistRequest
+	34,  // 177: ember.v1.EmberCache.Ttl:input_type -> ember.v1.TtlRequest
+	35,  // 178: ember.v1.EmberCache.PTtl:input_type -> ember.v1.PTtlRequest
+	37,  // 179: ember.v1.EmberCache.Type:input_type -> ember.v1.TypeRequest
+	39,  // 180: ember.v1.EmberCache.Keys:input_type -> ember.v1.KeysRequest
+	41,  // 181: ember.v1.EmberCache.Rename:input_type -> ember.v1.RenameRequest
+	42,  // 182: ember.v1.EmberCache.Scan:input_type -> ember.v1.ScanRequest
+	47,  // 183: ember.v1.EmberCache.LPush:input_type -> ember.v1.LPushRequest
+	48,  // 184: ember.v1.EmberCache.RPush:input_type -> ember.v1.RPushRequest
+	49,  // 185: ember.v1.EmberCache.LPop:input_type -> ember.v1.LPopRequest
+	50,  // 186: ember.v1.EmberCache.RPop:input_type -> ember.v1.RPopRequest
+	51,  // 187: ember.v1.EmberCache.LRange:input_type -> ember.v1.LRangeRequest
+	53,  // 188: ember.v1.EmberCache.LLen:input_type -> ember.v1.LLenRequest
+	61,  // 189: ember.v1.EmberCache.HSet:input_type -> ember.v1.HSetRequest
+	63,  // 190: ember.v1.EmberCache.HGet:input_type -> ember.v1.HGetRequest
+	64,  // 191: ember.v1.EmberCache.HGetAll:input_type -> ember.v1.HGetAllRequest
+	66,  // 192: ember.v1.EmberCache.HDel:input_type -> ember.v1.HDelRequest
+	67,  // 193: ember.v1.EmberCache.HExists:input_type -> ember.v1.HExistsRequest
+	68,  // 194: ember.v1.EmberCache.HLen:input_type -> ember.v1.HLenRequest
+	69,  // 195: ember.v1.EmberCache.HIncrBy:input_type -> ember.v1.HIncrByRequest
+	70,  // 196: ember.v1.EmberCache.HKeys:input_type -> ember.v1.HKeysRequest
+	71,  // 197: ember.v1.EmberCache.HVals:input_type -> ember.v1.HValsRequest
+	72,  // 198: ember.v1.EmberCache.HMGet:input_type -> ember.v1.HMGetRequest
+	76,  // 199: ember.v1.EmberCache.SAdd:input_type -> ember.v1.SAddRequest
+	77,  // 200: ember.v1.EmberCache.SRem:input_type -> ember.v1.SRemRequest
+	78,  // 201: ember.v1.EmberCache.SMembers:input_type -> ember.v1.SMembersRequest
+	79,  // 202: ember.v1.EmberCache.SIsMember:input_type -> ember.v1.SIsMemberRequest
+	80,  // 203: ember.v1.EmberCache.SCard:input_type -> ember.v1.SCardRequest
+	92,  // 204: ember.v1.EmberCache.ZAdd:input_type -> ember.v1.ZAddRequest
+	94,  // 205: ember.v1.EmberCache.ZRem:input_type -> ember.v1.ZRemRequest
+	95,  // 206: ember.v1.EmberCache.ZScore:input_type -> ember.v1.ZScoreRequest
+	97,  // 207: ember.v1.EmberCache.ZRank:input_type -> ember.v1.ZRankRequest
+	99,  // 208: ember.v1.EmberCache.ZCard:input_type -> ember.v1.ZCardRequest
+	100, // 209: ember.v1.EmberCache.ZRange:input_type -> ember.v1.ZRangeRequest
+	115, // 210: ember.v1.EmberCache.VAdd:input_type -> ember.v1.VAddRequest
+	117, // 211: ember.v1.EmberCache.VAddBatch:input_type -> ember.v1.VAddBatchRequest
+	118, // 212: ember.v1.EmberCache.VSim:input_type -> ember.v1.VSimRequest
+	121, // 213: ember.v1.EmberCache.VRem:input_type -> ember.v1.VRemRequest
+	122, // 214: ember.v1.EmberCache.VGet:input_type -> ember.v1.VGetRequest
+	124, // 215: ember.v1.EmberCache.VCard:input_type -> ember.v1.VCardRequest
+	125, // 216: ember.v1.EmberCache.VDim:input_type -> ember.v1.VDimRequest
+	126, // 217: ember.v1.EmberCache.VInfo:input_type -> ember.v1.VInfoRequest
+	128, // 218: ember.v1.EmberCache.Ping:input_type -> ember.v1.PingRequest
+	134, // 219: ember.v1.EmberCache.Echo:input_type -> ember.v1.EchoRequest
+	136, // 220: ember.v1.EmberCache.Decr:input_type -> ember.v1.DecrRequest
+	137, // 221: ember.v1.EmberCache.Unlink:input_type -> ember.v1.UnlinkRequest
+	130, // 222: ember.v1.EmberCache.FlushDb:input_type -> ember.v1.FlushDbRequest
+	131, // 223: ember.v1.EmberCache.DbSize:input_type -> ember.v1.DbSizeRequest
+	132, // 224: ember.v1.EmberCache.Info:input_type -> ember.v1.InfoRequest
+	138, // 225: ember.v1.EmberCache.BgSave:input_type -> ember.v1.BgSaveRequest
+	139, // 226: ember.v1.EmberCache.BgRewriteAof:input_type -> ember.v1.BgRewriteAofRequest
+	143, // 227: ember.v1.EmberCache.SlowLogGet:input_type -> ember.v1.SlowLogGetRequest
+	146, // 228: ember.v1.EmberCache.SlowLogLen:input_type -> ember.v1.SlowLogLenRequest
+	147, // 229: ember.v1.EmberCache.SlowLogReset:input_type -> ember.v1.SlowLogResetRequest
+	148, // 230: ember.v1.EmberCache.Publish:input_type -> ember.v1.PublishRequest
+	149, // 231: ember.v1.EmberCache.Subscribe:input_type -> ember.v1.SubscribeRequest
+	151, // 232: ember.v1.EmberCache.PubSubChannels:input_type -> ember.v1.PubSubChannelsRequest
+	152, // 233: ember.v1.EmberCache.PubSubNumSub:input_type -> ember.v1.PubSubNumSubRequest
+	154, // 234: ember.v1.EmberCache.PubSubNumPat:input_type -> ember.v1.PubSubNumPatRequest
+	26,  // 235: ember.v1.EmberCache.GetDel:input_type -> ember.v1.GetDelRequest
+	27,  // 236: ember.v1.EmberCache.GetEx:input_type -> ember.v1.GetExRequest
+	28,  // 237: ember.v1.EmberCache.GetRange:input_type -> ember.v1.GetRangeRequest
+	29,  // 238: ember.v1.EmberCache.SetRange:input_type -> ember.v1.SetRangeRequest
+	44,  // 239: ember.v1.EmberCache.Copy:input_type -> ember.v1.CopyRequest
+	45,  // 240: ember.v1.EmberCache.RandomKey:input_type -> ember.v1.RandomKeyRequest
+	46,  // 241: ember.v1.EmberCache.Touch:input_type -> ember.v1.TouchRequest
+	54,  // 242: ember.v1.EmberCache.LIndex:input_type -> ember.v1.LIndexRequest
+	55,  // 243: ember.v1.EmberCache.LSet:input_type -> ember.v1.LSetRequest
+	56,  // 244: ember.v1.EmberCache.LTrim:input_type -> ember.v1.LTrimRequest
+	57,  // 245: ember.v1.EmberCache.LInsert:input_type -> ember.v1.LInsertRequest
+	58,  // 246: ember.v1.EmberCache.LRem:input_type -> ember.v1.LRemRequest
+	59,  // 247: ember.v1.EmberCache.LPos:input_type -> ember.v1.LPosRequest
+	60,  // 248: ember.v1.EmberCache.LMove:input_type -> ember.v1.LMoveRequest
+	81,  // 249: ember.v1.EmberCache.SUnion:input_type -> ember.v1.SUnionRequest
+	82,  // 250: ember.v1.EmberCache.SInter:input_type -> ember.v1.SInterRequest
+	83,  // 251: ember.v1.EmberCache.SDiff:input_type -> ember.v1.SDiffRequest
+	84,  // 252: ember.v1.EmberCache.SUnionStore:input_type -> ember.v1.SUnionStoreRequest
+	85,  // 253: ember.v1.EmberCache.SInterStore:input_type -> ember.v1.SInterStoreRequest
+	86,  // 254: ember.v1.EmberCache.SDiffStore:input_type -> ember.v1.SDiffStoreRequest
+	87,  // 255: ember.v1.EmberCache.SRandMember:input_type -> ember.v1.SRandMemberRequest
+	88,  // 256: ember.v1.EmberCache.SPop:input_type -> ember.v1.SPopRequest
+	89,  // 257: ember.v1.EmberCache.SMisMember:input_type -> ember.v1.SMisMemberRequest
+	74,  // 258: ember.v1.EmberCache.HScan:input_type -> ember.v1.HScanRequest
+	102, // 259: ember.v1.EmberCache.ZRevRank:input_type -> ember.v1.ZRevRankRequest
+	103, // 260: ember.v1.EmberCache.ZRevRange:input_type -> ember.v1.ZRevRangeRequest
+	104, // 261: ember.v1.EmberCache.ZCount:input_type -> ember.v1.ZCountRequest
+	105, // 262: ember.v1.EmberCache.ZIncrBy:input_type -> ember.v1.ZIncrByRequest
+	106, // 263: ember.v1.EmberCache.ZRangeByScore:input_type -> ember.v1.ZRangeByScoreRequest
+	107, // 264: ember.v1.EmberCache.ZRevRangeByScore:input_type -> ember.v1.ZRevRangeByScoreRequest
+	108, // 265: ember.v1.EmberCache.ZPopMin:input_type -> ember.v1.ZPopMinRequest
+	109, // 266: ember.v1.EmberCache.ZPopMax:input_type -> ember.v1.ZPopMaxRequest
+	110, // 267: ember.v1.EmberCache.ZDiff:input_type -> ember.v1.ZDiffRequest
+	111, // 268: ember.v1.EmberCache.ZInter:input_type -> ember.v1.ZInterRequest
+	112, // 269: ember.v1.EmberCache.ZUnion:input_type -> ember.v1.ZUnionRequest
+	113, // 270: ember.v1.EmberCache.ZScan:input_type -> ember.v1.ZScanRequest
+	90,  // 271: ember.v1.EmberCache.SScan:input_type -> ember.v1.SScanRequest
+	140, // 272: ember.v1.EmberCache.Time:input_type -> ember.v1.TimeRequest
+	142, // 273: ember.v1.EmberCache.LastSave:input_type -> ember.v1.LastSaveRequest
+	156, // 274: ember.v1.EmberCache.Pipeline:input_type -> ember.v1.PipelineRequest
+	9,   // 275: ember.v1.EmberCache.Get:output_type -> ember.v1.GetResponse
+	11,  // 276: ember.v1.EmberCache.Set:output_type -> ember.v1.SetResponse
+	13,  // 277: ember.v1.EmberCache.Del:output_type -> ember.v1.DelResponse
+	15,  // 278: ember.v1.EmberCache.MGet:output_type -> ember.v1.MGetResponse
+	19,  // 279: ember.v1.EmberCache.MSet:output_type -> ember.v1.MSetResponse
+	3,   // 280: ember.v1.EmberCache.Incr:output_type -> ember.v1.IntResponse
+	3,   // 281: ember.v1.EmberCache.IncrBy:output_type -> ember.v1.IntResponse
+	3,   // 282: ember.v1.EmberCache.DecrBy:output_type -> ember.v1.IntResponse
+	5,   // 283: ember.v1.EmberCache.IncrByFloat:output_type -> ember.v1.FloatResponse
+	3,   // 284: ember.v1.EmberCache.Append:output_type -> ember.v1.IntResponse
+	3,   // 285: ember.v1.EmberCache.Strlen:output_type -> ember.v1.IntResponse
+	3,   // 286: ember.v1.EmberCache.Exists:output_type -> ember.v1.IntResponse
+	4,   // 287: ember.v1.EmberCache.Expire:output_type -> ember.v1.BoolResponse
+	4,   // 288: ember.v1.EmberCache.PExpire:output_type -> ember.v1.BoolResponse
+	4,   // 289: ember.v1.EmberCache.Persist:output_type -> ember.v1.BoolResponse
+	36,  // 290: ember.v1.EmberCache.Ttl:output_type -> ember.v1.TtlResponse
+	36,  // 291: ember.v1.EmberCache.PTtl:output_type -> ember.v1.TtlResponse
+	38,  // 292: ember.v1.EmberCache.Type:output_type -> ember.v1.TypeResponse
+	40,  // 293: ember.v1.EmberCache.Keys:output_type -> ember.v1.KeysResponse
+	6,   // 294: ember.v1.EmberCache.Rename:output_type -> ember.v1.StatusResponse
+	43,  // 295: ember.v1.EmberCache.Scan:output_type -> ember.v1.ScanResponse
+	3,   // 296: ember.v1.EmberCache.LPush:output_type -> ember.v1.IntResponse
+	3,   // 297: ember.v1.EmberCache.RPush:output_type -> ember.v1.IntResponse
+	9,   // 298: ember.v1.EmberCache.LPop:output_type -> ember.v1.GetResponse
+	9,   // 299: ember.v1.EmberCache.RPop:output_type -> ember.v1.GetResponse
+	52,  // 300: ember.v1.EmberCache.LRange:output_type -> ember.v1.ArrayResponse
+	3,   // 301: ember.v1.EmberCache.LLen:output_type -> ember.v1.IntResponse
+	3,   // 302: ember.v1.EmberCache.HSet:output_type -> ember.v1.IntResponse
+	9,   // 303: ember.v1.EmberCache.HGet:output_type -> ember.v1.GetResponse
+	65,  // 304: ember.v1.EmberCache.HGetAll:output_type -> ember.v1.HashResponse
+	3,   // 305: ember.v1.EmberCache.HDel:output_type -> ember.v1.IntResponse
+	4,   // 306: ember.v1.EmberCache.HExists:output_type -> ember.v1.BoolResponse
+	3,   // 307: ember.v1.EmberCache.HLen:output_type -> ember.v1.IntResponse
+	3,   // 308: ember.v1.EmberCache.HIncrBy:output_type -> ember.v1.IntResponse
+	40,  // 309: ember.v1.EmberCache.HKeys:output_type -> ember.v1.KeysResponse
+	52,  // 310: ember.v1.EmberCache.HVals:output_type -> ember.v1.ArrayResponse
+	73,  // 311: ember.v1.EmberCache.HMGet:output_type -> ember.v1.OptionalArrayResponse
+	3,   // 312: ember.v1.EmberCache.SAdd:output_type -> ember.v1.IntResponse
+	3,   // 313: ember.v1.EmberCache.SRem:output_type -> ember.v1.IntResponse
+	40,  // 314: ember.v1.EmberCache.SMembers:output_type -> ember.v1.KeysResponse
+	4,   // 315: ember.v1.EmberCache.SIsMember:output_type -> ember.v1.BoolResponse
+	3,   // 316: ember.v1.EmberCache.SCard:output_type -> ember.v1.IntResponse
+	3,   // 317: ember.v1.EmberCache.ZAdd:output_type -> ember.v1.IntResponse
+	3,   // 318: ember.v1.EmberCache.ZRem:output_type -> ember.v1.IntResponse
+	96,  // 319: ember.v1.EmberCache.ZScore:output_type -> ember.v1.OptionalFloatResponse
+	98,  // 320: ember.v1.EmberCache.ZRank:output_type -> ember.v1.OptionalIntResponse
+	3,   // 321: ember.v1.EmberCache.ZCard:output_type -> ember.v1.IntResponse
+	101, // 322: ember.v1.EmberCache.ZRange:output_type -> ember.v1.ZRangeResponse
+	4,   // 323: ember.v1.EmberCache.VAdd:output_type -> ember.v1.BoolResponse
+	3,   // 324: ember.v1.EmberCache.VAddBatch:output_type -> ember.v1.IntResponse
+	119, // 325: ember.v1.EmberCache.VSim:output_type -> ember.v1.VSimResponse
+	4,   // 326: ember.v1.EmberCache.VRem:output_type -> ember.v1.BoolResponse
+	123, // 327: ember.v1.EmberCache.VGet:output_type -> ember.v1.VGetResponse
+	3,   // 328: ember.v1.EmberCache.VCard:output_type -> ember.v1.IntResponse
+	3,   // 329: ember.v1.EmberCache.VDim:output_type -> ember.v1.IntResponse
+	127, // 330: ember.v1.EmberCache.VInfo:output_type -> ember.v1.VInfoResponse
+	129, // 331: ember.v1.EmberCache.Ping:output_type -> ember.v1.PingResponse
+	135, // 332: ember.v1.EmberCache.Echo:output_type -> ember.v1.EchoResponse
+	3,   // 333: ember.v1.EmberCache.Decr:output_type -> ember.v1.IntResponse
+	13,  // 334: ember.v1.EmberCache.Unlink:output_type -> ember.v1.DelResponse
+	6,   // 335: ember.v1.EmberCache.FlushDb:output_type -> ember.v1.StatusResponse
+	3,   // 336: ember.v1.EmberCache.DbSize:output_type -> ember.v1.IntResponse
+	133, // 337: ember.v1.EmberCache.Info:output_type -> ember.v1.InfoResponse
+	6,   // 338: ember.v1.EmberCache.BgSave:output_type -> ember.v1.StatusResponse
+	6,   // 339: ember.v1.EmberCache.BgRewriteAof:output_type -> ember.v1.StatusResponse
+	144, // 340: ember.v1.EmberCache.SlowLogGet:output_type -> ember.v1.SlowLogGetResponse
+	3,   // 341: ember.v1.EmberCache.SlowLogLen:output_type -> ember.v1.IntResponse
+	6,   // 342: ember.v1.EmberCache.SlowLogReset:output_type -> ember.v1.StatusResponse
+	3,   // 343: ember.v1.EmberCache.Publish:output_type -> ember.v1.IntResponse
+	150, // 344: ember.v1.EmberCache.Subscribe:output_type -> ember.v1.SubscribeEvent
+	40,  // 345: ember.v1.EmberCache.PubSubChannels:output_type -> ember.v1.KeysResponse
+	153, // 346: ember.v1.EmberCache.PubSubNumSub:output_type -> ember.v1.PubSubNumSubResponse
+	3,   // 347: ember.v1.EmberCache.PubSubNumPat:output_type -> ember.v1.IntResponse
+	9,   // 348: ember.v1.EmberCache.GetDel:output_type -> ember.v1.GetResponse
+	9,   // 349: ember.v1.EmberCache.GetEx:output_type -> ember.v1.GetResponse
+	9,   // 350: ember.v1.EmberCache.GetRange:output_type -> ember.v1.GetResponse
+	3,   // 351: ember.v1.EmberCache.SetRange:output_type -> ember.v1.IntResponse
+	4,   // 352: ember.v1.EmberCache.Copy:output_type -> ember.v1.BoolResponse
+	9,   // 353: ember.v1.EmberCache.RandomKey:output_type -> ember.v1.GetResponse
+	3,   // 354: ember.v1.EmberCache.Touch:output_type -> ember.v1.IntResponse
+	9,   // 355: ember.v1.EmberCache.LIndex:output_type -> ember.v1.GetResponse
+	6,   // 356: ember.v1.EmberCache.LSet:output_type -> ember.v1.StatusResponse
+	6,   // 357: ember.v1.EmberCache.LTrim:output_type -> ember.v1.StatusResponse
+	3,   // 358: ember.v1.EmberCache.LInsert:output_type -> ember.v1.IntResponse
+	3,   // 359: ember.v1.EmberCache.LRem:output_type -> ember.v1.IntResponse
+	98,  // 360: ember.v1.EmberCache.LPos:output_type -> ember.v1.OptionalIntResponse
+	9,   // 361: ember.v1.EmberCache.LMove:output_type -> ember.v1.GetResponse
+	40,  // 362: ember.v1.EmberCache.SUnion:output_type -> ember.v1.KeysResponse
+	40,  // 363: ember.v1.EmberCache.SInter:output_type -> ember.v1.KeysResponse
+	40,  // 364: ember.v1.EmberCache.SDiff:output_type -> ember.v1.KeysResponse
+	3,   // 365: ember.v1.EmberCache.SUnionStore:output_type -> ember.v1.IntResponse
+	3,   // 366: ember.v1.EmberCache.SInterStore:output_type -> ember.v1.IntResponse
+	3,   // 367: ember.v1.EmberCache.SDiffStore:output_type -> ember.v1.IntResponse
+	52,  // 368: ember.v1.EmberCache.SRandMember:output_type -> ember.v1.ArrayResponse
+	52,  // 369: ember.v1.EmberCache.SPop:output_type -> ember.v1.ArrayResponse
+	7,   // 370: ember.v1.EmberCache.SMisMember:output_type -> ember.v1.BoolArrayResponse
+	75,  // 371: ember.v1.EmberCache.HScan:output_type -> ember.v1.HScanResponse
+	98,  // 372: ember.v1.EmberCache.ZRevRank:output_type -> ember.v1.OptionalIntResponse
+	101, // 373: ember.v1.EmberCache.ZRevRange:output_type -> ember.v1.ZRangeResponse
+	3,   // 374: ember.v1.EmberCache.ZCount:output_type -> ember.v1.IntResponse
+	5,   // 375: ember.v1.EmberCache.ZIncrBy:output_type -> ember.v1.FloatResponse
+	101, // 376: ember.v1.EmberCache.ZRangeByScore:output_type -> ember.v1.ZRangeResponse
+	101, // 377: ember.v1.EmberCache.ZRevRangeByScore:output_type -> ember.v1.ZRangeResponse
+	101, // 378: ember.v1.EmberCache.ZPopMin:output_type -> ember.v1.ZRangeResponse
+	101, // 379: ember.v1.EmberCache.ZPopMax:output_type -> ember.v1.ZRangeResponse
+	101, // 380: ember.v1.EmberCache.ZDiff:output_type -> ember.v1.ZRangeResponse
+	101, // 381: ember.v1.EmberCache.ZInter:output_type -> ember.v1.ZRangeResponse
+	101, // 382: ember.v1.EmberCache.ZUnion:output_type -> ember.v1.ZRangeResponse
+	114, // 383: ember.v1.EmberCache.ZScan:output_type -> ember.v1.ZScanResponse
+	91,  // 384: ember.v1.EmberCache.SScan:output_type -> ember.v1.SScanResponse
+	141, // 385: ember.v1.EmberCache.Time:output_type -> ember.v1.TimeResponse
+	3,   // 386: ember.v1.EmberCache.LastSave:output_type -> ember.v1.IntResponse
+	157, // 387: ember.v1.EmberCache.Pipeline:output_type -> ember.v1.PipelineResponse
+	275, // [275:388] is the sub-list for method output_type
+	162, // [162:275] is the sub-list for method input_type
+	162, // [162:162] is the sub-list for extension type_name
+	162, // [162:162] is the sub-list for extension extendee
+	0,   // [0:162] is the sub-list for field type_name
 }
 
 func init() { file_ember_v1_ember_proto_init() }
@@ -8194,21 +11786,27 @@ func file_ember_v1_ember_proto_init() {
 	if File_ember_v1_ember_proto != nil {
 		return
 	}
-	file_ember_v1_ember_proto_msgTypes[5].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[12].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[34].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[65].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[67].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[6].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[13].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[39].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[56].OneofWrappers = []any{}
 	file_ember_v1_ember_proto_msgTypes[71].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[73].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[74].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[79].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[84].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[88].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[96].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[87].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[93].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[95].OneofWrappers = []any{}
 	file_ember_v1_ember_proto_msgTypes[103].OneofWrappers = []any{}
 	file_ember_v1_ember_proto_msgTypes[104].OneofWrappers = []any{}
-	file_ember_v1_ember_proto_msgTypes[109].OneofWrappers = []any{
+	file_ember_v1_ember_proto_msgTypes[110].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[112].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[114].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[115].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[120].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[125].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[129].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[140].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[147].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[148].OneofWrappers = []any{}
+	file_ember_v1_ember_proto_msgTypes[153].OneofWrappers = []any{
 		(*PipelineRequest_Get)(nil),
 		(*PipelineRequest_Set)(nil),
 		(*PipelineRequest_Del)(nil),
@@ -8280,8 +11878,47 @@ func file_ember_v1_ember_proto_init() {
 		(*PipelineRequest_PubsubNumsub)(nil),
 		(*PipelineRequest_PubsubNumpat)(nil),
 		(*PipelineRequest_VaddBatch)(nil),
+		(*PipelineRequest_GetDel_)(nil),
+		(*PipelineRequest_GetEx)(nil),
+		(*PipelineRequest_GetRange)(nil),
+		(*PipelineRequest_SetRange)(nil),
+		(*PipelineRequest_Copy)(nil),
+		(*PipelineRequest_RandomKey)(nil),
+		(*PipelineRequest_Touch)(nil),
+		(*PipelineRequest_Lindex)(nil),
+		(*PipelineRequest_Lset)(nil),
+		(*PipelineRequest_Ltrim)(nil),
+		(*PipelineRequest_Linsert)(nil),
+		(*PipelineRequest_Lrem)(nil),
+		(*PipelineRequest_Lpos)(nil),
+		(*PipelineRequest_Lmove)(nil),
+		(*PipelineRequest_Sunion)(nil),
+		(*PipelineRequest_Sinter)(nil),
+		(*PipelineRequest_Sdiff)(nil),
+		(*PipelineRequest_SunionStore)(nil),
+		(*PipelineRequest_SinterStore)(nil),
+		(*PipelineRequest_SdiffStore)(nil),
+		(*PipelineRequest_SrandMember)(nil),
+		(*PipelineRequest_Spop)(nil),
+		(*PipelineRequest_Smismember)(nil),
+		(*PipelineRequest_Hscan)(nil),
+		(*PipelineRequest_ZrevRank)(nil),
+		(*PipelineRequest_ZrevRange)(nil),
+		(*PipelineRequest_Zcount)(nil),
+		(*PipelineRequest_Zincrby)(nil),
+		(*PipelineRequest_ZrangeByScore)(nil),
+		(*PipelineRequest_ZrevRangeByScore)(nil),
+		(*PipelineRequest_Zpopmin)(nil),
+		(*PipelineRequest_Zpopmax)(nil),
+		(*PipelineRequest_Zdiff)(nil),
+		(*PipelineRequest_Zinter)(nil),
+		(*PipelineRequest_Zunion)(nil),
+		(*PipelineRequest_Zscan)(nil),
+		(*PipelineRequest_Sscan)(nil),
+		(*PipelineRequest_Time)(nil),
+		(*PipelineRequest_LastSave)(nil),
 	}
-	file_ember_v1_ember_proto_msgTypes[110].OneofWrappers = []any{
+	file_ember_v1_ember_proto_msgTypes[154].OneofWrappers = []any{
 		(*PipelineResponse_Get)(nil),
 		(*PipelineResponse_Set)(nil),
 		(*PipelineResponse_Del)(nil),
@@ -8310,6 +11947,11 @@ func file_ember_v1_ember_proto_init() {
 		(*PipelineResponse_Echo)(nil),
 		(*PipelineResponse_SlowlogGet)(nil),
 		(*PipelineResponse_PubsubNumsub)(nil),
+		(*PipelineResponse_BoolArray)(nil),
+		(*PipelineResponse_Hscan)(nil),
+		(*PipelineResponse_Zscan)(nil),
+		(*PipelineResponse_Sscan)(nil),
+		(*PipelineResponse_TimeResp)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -8317,7 +11959,7 @@ func file_ember_v1_ember_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ember_v1_ember_proto_rawDesc), len(file_ember_v1_ember_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   112,
+			NumMessages:   156,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
