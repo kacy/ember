@@ -17,7 +17,7 @@ rand = { workspace = true }
 tracing = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = "1"
+postcard = { version = "1", features = ["alloc"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 openraft = { version = "0.9", features = ["serde"] }
 crc32fast = "1"
