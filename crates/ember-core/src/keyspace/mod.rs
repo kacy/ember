@@ -278,8 +278,9 @@ pub(crate) struct Entry {
     pub(crate) expires_at_ms: u64,
     /// Cached result of `memory::value_size(&self.value)`. Updated on
     /// every mutation so that memory accounting is O(1) instead of
-    /// walking entire collections.
-    pub(crate) cached_value_size: usize,
+    /// walking entire collections. Using u32 saves 4 bytes per entry;
+    /// max value size is 512 MB which fits comfortably in u32 (~4 GB).
+    pub(crate) cached_value_size: u32,
     /// Monotonic last access time in seconds since process start (for LRU).
     /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
     pub(crate) last_access_secs: u32,
@@ -287,7 +288,7 @@ pub(crate) struct Entry {
 
 impl Entry {
     fn new(value: Value, ttl: Option<Duration>) -> Self {
-        let cached_value_size = memory::value_size(&value);
+        let cached_value_size = memory::value_size(&value) as u32;
         Self {
             value,
             expires_at_ms: time::expiry_from_duration(ttl),
@@ -309,7 +310,7 @@ impl Entry {
     /// Returns the full estimated memory footprint of this entry
     /// (key + value + overhead) using the cached value size.
     fn entry_size(&self, key: &str) -> usize {
-        key.len() + self.cached_value_size + memory::ENTRY_OVERHEAD
+        key.len() + self.cached_value_size as usize + memory::ENTRY_OVERHEAD
     }
 }
 
@@ -480,7 +481,8 @@ impl Keyspace {
         } else {
             self.memory.shrink_by(removed_bytes);
             if let Some(entry) = self.entries.get_mut(key) {
-                entry.cached_value_size = entry.cached_value_size.saturating_sub(removed_bytes);
+                entry.cached_value_size =
+                    (entry.cached_value_size as usize).saturating_sub(removed_bytes) as u32;
             }
         }
     }
@@ -545,7 +547,7 @@ impl Keyspace {
         // re-lookup after mutation (f consumed the borrow)
         let entry = self.entries.get_mut(key)?;
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size;
+        entry.cached_value_size = new_value_size as u32;
         let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_size, new_size);
         self.bump_version(key);

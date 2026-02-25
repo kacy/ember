@@ -73,7 +73,7 @@ impl Keyspace {
         entry.touch();
 
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size;
+        entry.cached_value_size = new_value_size as u32;
         let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
         self.bump_version(key);
@@ -197,7 +197,8 @@ impl Keyspace {
                     };
 
                     entry.touch();
-                    entry.cached_value_size = entry.cached_value_size.saturating_add(bytes_added);
+                    entry.cached_value_size =
+                        (entry.cached_value_size as usize).saturating_add(bytes_added) as u32;
                     self.memory.grow_by(bytes_added);
 
                     if let Some(err) = result.error {
@@ -284,7 +285,7 @@ impl Keyspace {
             entry.touch();
             let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
             let new_vs = memory::value_size(&entry.value);
-            entry.cached_value_size = new_vs;
+            entry.cached_value_size = new_vs as u32;
             let new_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
             self.memory.adjust(old_size, new_size);
             self.bump_version(key);

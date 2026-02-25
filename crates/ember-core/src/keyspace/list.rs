@@ -146,9 +146,9 @@ impl Keyspace {
             let entry = self.entries.get_mut(key).expect("key confirmed to exist");
             entry.touch();
             if delta > 0 {
-                entry.cached_value_size += delta as usize;
+                entry.cached_value_size += delta as u32;
             } else if delta < 0 {
-                entry.cached_value_size = entry.cached_value_size.saturating_sub((-delta) as usize);
+                entry.cached_value_size = entry.cached_value_size.saturating_sub((-delta) as u32);
             }
         }
         self.bump_version(key);
@@ -200,7 +200,7 @@ impl Keyspace {
             entry.touch();
             let nvs = if !empty {
                 let size = memory::value_size(&entry.value);
-                entry.cached_value_size = size;
+                entry.cached_value_size = size as u32;
                 size
             } else {
                 0
@@ -281,7 +281,7 @@ impl Keyspace {
             deque.insert(insert_pos, value);
             let len = deque.len() as i64;
             entry.touch();
-            entry.cached_value_size += element_cost;
+            entry.cached_value_size += element_cost as u32;
             len
         };
 
@@ -362,7 +362,8 @@ impl Keyspace {
             entry.touch();
 
             if !empty {
-                entry.cached_value_size = entry.cached_value_size.saturating_sub(bytes);
+                entry.cached_value_size =
+                    (entry.cached_value_size as usize).saturating_sub(bytes) as u32;
             }
 
             (n, bytes, empty)
@@ -490,7 +491,7 @@ impl Keyspace {
             }
             let len = deque.len();
             entry.touch();
-            entry.cached_value_size += element_increase;
+            entry.cached_value_size += element_increase as u32;
             len
         };
 

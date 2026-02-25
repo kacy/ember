@@ -203,7 +203,7 @@ impl Keyspace {
         entry.touch();
 
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size;
+        entry.cached_value_size = new_value_size as u32;
         let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
         self.bump_version(key);
