@@ -502,6 +502,45 @@ impl Keyspace {
         Ok(len)
     }
 
+    /// Atomically pops a value from `source` and pushes it to `destination`.
+    ///
+    /// `src_left` controls whether to pop from the head (true) or tail (false)
+    /// of the source. `dst_left` controls whether to push to the head (true)
+    /// or tail (false) of the destination. Source and destination may be the
+    /// same key (rotate). Returns `Ok(None)` if the source list is missing.
+    pub fn lmove(
+        &mut self,
+        source: &str,
+        destination: &str,
+        src_left: bool,
+        dst_left: bool,
+    ) -> Result<Option<Bytes>, WriteError> {
+        if self.remove_if_expired(source) {
+            return Ok(None);
+        }
+        match self.entries.get(source) {
+            None => return Ok(None),
+            Some(e) if !matches!(e.value, Value::List(_)) => return Err(WriteError::WrongType),
+            _ => {}
+        }
+
+        if source != destination {
+            self.remove_if_expired(destination);
+            if let Some(e) = self.entries.get(destination) {
+                if !matches!(e.value, Value::List(_)) {
+                    return Err(WriteError::WrongType);
+                }
+            }
+        }
+
+        let popped = self.list_pop(source, src_left).map_err(WriteError::from)?;
+        let Some(value) = popped else {
+            return Ok(None);
+        };
+        self.list_push(destination, &[value.clone()], dst_left)?;
+        Ok(Some(value))
+    }
+
     /// Internal pop implementation shared by lpop/rpop.
     pub(super) fn list_pop(&mut self, key: &str, left: bool) -> Result<Option<Bytes>, WrongType> {
         if self.remove_if_expired(key) {

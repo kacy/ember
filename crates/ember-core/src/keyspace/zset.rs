@@ -437,6 +437,120 @@ impl Keyspace {
             },
         }
     }
+
+    /// Returns members in the first sorted set that are not in any of the others.
+    ///
+    /// Missing keys are treated as empty sets. Results are ordered by score
+    /// then by member name.
+    pub fn zdiff(&mut self, keys: &[String]) -> Result<Vec<(String, f64)>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        for key in keys {
+            self.remove_if_expired(key);
+        }
+        let first: Vec<(String, f64)> = match self.entries.get(keys[0].as_str()) {
+            None => return Ok(vec![]),
+            Some(e) => match &e.value {
+                Value::SortedSet(ss) => ss.iter().map(|(m, s)| (m.to_owned(), s)).collect(),
+                _ => return Err(WrongType),
+            },
+        };
+        let mut excluded: AHashMap<String, ()> = AHashMap::new();
+        for key in &keys[1..] {
+            match self.entries.get(key.as_str()) {
+                None => {}
+                Some(e) => match &e.value {
+                    Value::SortedSet(ss) => {
+                        for (member, _) in ss.iter() {
+                            excluded.insert(member.to_owned(), ());
+                        }
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        Ok(first
+            .into_iter()
+            .filter(|(m, _)| !excluded.contains_key(m))
+            .collect())
+    }
+
+    /// Returns members present in all of the given sorted sets, with scores summed.
+    ///
+    /// If any key is missing the result is empty. Results are ordered by
+    /// score then member name.
+    pub fn zinter(&mut self, keys: &[String]) -> Result<Vec<(String, f64)>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        for key in keys {
+            self.remove_if_expired(key);
+        }
+        let mut candidates: Vec<(String, f64)> = match self.entries.get(keys[0].as_str()) {
+            None => return Ok(vec![]),
+            Some(e) => match &e.value {
+                Value::SortedSet(ss) => ss.iter().map(|(m, s)| (m.to_owned(), s)).collect(),
+                _ => return Err(WrongType),
+            },
+        };
+        for key in &keys[1..] {
+            match self.entries.get(key.as_str()) {
+                None => return Ok(vec![]),
+                Some(e) => match &e.value {
+                    Value::SortedSet(ss) => {
+                        let lookup: AHashMap<String, f64> =
+                            ss.iter().map(|(m, s)| (m.to_owned(), s)).collect();
+                        candidates = candidates
+                            .into_iter()
+                            .filter_map(|(m, score)| lookup.get(&m).map(|&s| (m, score + s)))
+                            .collect();
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        candidates.sort_by(|(am, as_), (bm, bs)| {
+            as_.partial_cmp(bs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| am.cmp(bm))
+        });
+        Ok(candidates)
+    }
+
+    /// Returns the union of all given sorted sets, with scores summed across keys.
+    ///
+    /// Missing keys contribute no members. Results are ordered by score then
+    /// member name.
+    pub fn zunion(&mut self, keys: &[String]) -> Result<Vec<(String, f64)>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        for key in keys {
+            self.remove_if_expired(key);
+        }
+        let mut totals: AHashMap<String, f64> = AHashMap::new();
+        for key in keys {
+            match self.entries.get(key.as_str()) {
+                None => {}
+                Some(e) => match &e.value {
+                    Value::SortedSet(ss) => {
+                        for (member, score) in ss.iter() {
+                            *totals.entry(member.to_owned()).or_insert(0.0) += score;
+                        }
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        let mut result: Vec<(String, f64)> = totals.into_iter().collect();
+        result.sort_by(|(am, as_), (bm, bs)| {
+            as_.partial_cmp(bs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| am.cmp(bm))
+        });
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
