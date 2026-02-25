@@ -1,7 +1,7 @@
 .PHONY: build release test fmt fmt-check clippy check clean docker-build docker-run \
        release-patch release-minor release-major github-release \
        publish publish-dry-run bench bench-core bench-protocol bench-compare bench-quick \
-       helm-lint helm-template proto-gen proto-go proto-py \
+       helm-lint helm-template proto-gen proto-go proto-py proto-ts \
        cluster cluster-stop cluster-status cluster-clean
 
 # extract the workspace version from the root Cargo.toml
@@ -154,6 +154,10 @@ proto-go:
 proto-py:
 	cd clients/ember-py && $(MAKE) proto-gen
 
+proto-ts:
+	@echo "TypeScript gRPC client codegen: run the following in clients/ember-ts/"
+	@echo "  npx @grpc/proto-loader-gen-types proto/ember/v1/ember.proto --outDir=src/generated"
+
 # --- helm ---
 
 helm-lint:
@@ -161,3 +165,4 @@ helm-lint:
 
 helm-template:
 	helm template ember helm/ember
+

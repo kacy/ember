@@ -2,8 +2,10 @@
 //!
 //! Connects to an ember server over TCP (or TLS), sends commands as RESP3
 //! frames, and pretty-prints responses. Supports one-shot mode, interactive
-//! REPL, and named subcommands for cluster management and benchmarking.
+//! REPL, batch/pipe mode, watch mode, and named subcommands for cluster
+//! management and benchmarking.
 
+mod batch;
 mod bench_conn;
 mod benchmark;
 mod cluster;
@@ -12,6 +14,7 @@ mod connection;
 mod format;
 mod repl;
 mod tls;
+mod watch;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -66,6 +69,17 @@ enum Mode {
     /// Run a built-in benchmark against the server.
     Benchmark(benchmark::BenchmarkArgs),
 
+    /// Watch a key and print its value whenever it changes.
+    ///
+    /// Polls the server at the given interval. Press ctrl-c to stop.
+    Watch {
+        /// Key to monitor.
+        key: String,
+        /// Poll interval in milliseconds.
+        #[arg(default_value_t = 1000)]
+        interval_ms: u64,
+    },
+
     /// One-shot mode: pass a raw command (e.g. `ember-cli SET key value`).
     #[command(external_subcommand)]
     Raw(Vec<OsString>),
@@ -92,15 +106,33 @@ fn main() -> ExitCode {
 
     match args.mode {
         None => {
-            // interactive REPL mode
-            repl::run_repl(
-                &args.host,
-                args.port,
-                args.password.as_deref(),
-                tls.as_ref(),
-            );
-            ExitCode::SUCCESS
+            if is_stdin_tty() {
+                // interactive REPL mode
+                repl::run_repl(
+                    &args.host,
+                    args.port,
+                    args.password.as_deref(),
+                    tls.as_ref(),
+                );
+                ExitCode::SUCCESS
+            } else {
+                // batch mode: stdin is a pipe or redirected file
+                batch::run_batch(
+                    &args.host,
+                    args.port,
+                    args.password.as_deref(),
+                    tls.as_ref(),
+                )
+            }
         }
+        Some(Mode::Watch { key, interval_ms }) => watch::run_watch(
+            &args.host,
+            args.port,
+            args.password.as_deref(),
+            tls.as_ref(),
+            &key,
+            interval_ms,
+        ),
         Some(Mode::Cluster { cmd }) => cluster::run_cluster(
             &cmd,
             &args.host,
@@ -129,6 +161,15 @@ fn main() -> ExitCode {
             )
         }
     }
+}
+
+/// Returns `true` when stdin is connected to an interactive terminal.
+///
+/// When stdin is a pipe or redirected file this returns `false`, which
+/// triggers batch mode.
+fn is_stdin_tty() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 /// Sends a single command and prints the response.
