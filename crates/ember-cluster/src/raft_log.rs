@@ -429,10 +429,9 @@ fn recover_log_file(path: &Path) -> Result<(BTreeMap<u64, Entry<TypeConfig>>, u6
 
         match read_record::<Entry<TypeConfig>>(&mut reader) {
             Ok(Some(entry)) => {
-                let payload_bytes =
-                    postcard::to_allocvec(&entry)
-                        .map_err(|e| RaftDiskError::Postcard(e.to_string()))?
-                        .len() as u64;
+                let payload_bytes = postcard::to_allocvec(&entry)
+                    .map_err(|e| RaftDiskError::Postcard(e.to_string()))?
+                    .len() as u64;
                 // record size: 4 (len) + payload + 4 (crc)
                 valid_pos += 4 + payload_bytes + 4;
                 entries.insert(entry.log_id.index, entry);

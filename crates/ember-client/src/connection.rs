@@ -118,13 +118,10 @@ impl Client {
     ///
     /// Times out after 5 seconds if the server is unreachable.
     pub async fn connect(host: &str, port: u16) -> Result<Self, ClientError> {
-        let tcp = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            TcpStream::connect((host, port)),
-        )
-        .await
-        .map_err(|_| ClientError::Timeout)?
-        .map_err(ClientError::Io)?;
+        let tcp = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((host, port)))
+            .await
+            .map_err(|_| ClientError::Timeout)?
+            .map_err(ClientError::Io)?;
 
         Ok(Self::from_transport(Transport::Tcp(tcp)))
     }
@@ -139,13 +136,10 @@ impl Client {
         port: u16,
         tls: &TlsClientConfig,
     ) -> Result<Self, ClientError> {
-        let stream = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            crate::tls::connect(host, port, tls),
-        )
-        .await
-        .map_err(|_| ClientError::Timeout)?
-        .map_err(ClientError::Io)?;
+        let stream = tokio::time::timeout(CONNECT_TIMEOUT, crate::tls::connect(host, port, tls))
+            .await
+            .map_err(|_| ClientError::Timeout)?
+            .map_err(ClientError::Io)?;
 
         Ok(Self::from_transport(stream))
     }
@@ -248,11 +242,9 @@ impl Client {
                 return Err(ClientError::ResponseTooLarge);
             }
 
-            let read_result = tokio::time::timeout(
-                READ_TIMEOUT,
-                self.transport.read_buf(&mut self.read_buf),
-            )
-            .await;
+            let read_result =
+                tokio::time::timeout(READ_TIMEOUT, self.transport.read_buf(&mut self.read_buf))
+                    .await;
 
             match read_result {
                 Ok(Ok(0)) => return Err(ClientError::Disconnected),

@@ -266,15 +266,24 @@ pub enum Command {
 
     /// ZDIFF `numkeys` `key` \[key ...\] \[WITHSCORES\].
     /// Returns members in the first sorted set not present in the others.
-    ZDiff { keys: Vec<String>, with_scores: bool },
+    ZDiff {
+        keys: Vec<String>,
+        with_scores: bool,
+    },
 
     /// ZINTER `numkeys` `key` \[key ...\] \[WITHSCORES\].
     /// Returns members present in all of the given sorted sets.
-    ZInter { keys: Vec<String>, with_scores: bool },
+    ZInter {
+        keys: Vec<String>,
+        with_scores: bool,
+    },
 
     /// ZUNION `numkeys` `key` \[key ...\] \[WITHSCORES\].
     /// Returns the union of all given sorted sets.
-    ZUnion { keys: Vec<String>, with_scores: bool },
+    ZUnion {
+        keys: Vec<String>,
+        with_scores: bool,
+    },
 
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },

@@ -46,7 +46,10 @@ async fn run_watch_async(
     let mut conn = match Connection::connect(host, port, tls).await {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("{}", format!("could not connect to {host}:{port}: {e}").red());
+            eprintln!(
+                "{}",
+                format!("could not connect to {host}:{port}: {e}").red()
+            );
             return ExitCode::FAILURE;
         }
     };
