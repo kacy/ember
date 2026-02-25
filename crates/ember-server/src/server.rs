@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy};
+use ember_core::{ConcurrentKeyspace, Engine, EngineConfig, EvictionPolicy, ShardRequest};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -266,6 +266,7 @@ pub async fn run_concurrent(
     config_registry: Arc<ConfigRegistry>,
     limits: ConnectionLimits,
     config_path: Option<PathBuf>,
+    save_interval_secs: u64,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let aof_enabled = config
@@ -321,6 +322,30 @@ pub async fn run_concurrent(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
+
+    if save_interval_secs > 0 {
+        let engine_snap = engine.clone();
+        let ctx_snap = Arc::clone(&ctx);
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(save_interval_secs);
+            loop {
+                tokio::time::sleep(interval).await;
+                match engine_snap.broadcast(|| ShardRequest::Snapshot).await {
+                    Ok(_) => {
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        ctx_snap
+                            .last_save_timestamp
+                            .store(ts, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(interval = save_interval_secs, "automatic snapshot completed");
+                    }
+                    Err(e) => tracing::warn!("automatic snapshot failed: {e}"),
+                }
+            }
+        });
+    }
 
     // spawn gRPC listener if configured
     #[cfg(feature = "grpc")]
@@ -501,6 +526,7 @@ pub async fn run_threaded(
     config_registry: Arc<ConfigRegistry>,
     limits: ConnectionLimits,
     config_path: Option<PathBuf>,
+    save_interval_secs: u64,
     #[cfg(feature = "grpc")] grpc_addr: Option<SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // ensure data directory exists if persistence is configured
@@ -566,6 +592,30 @@ pub async fn run_threaded(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
+
+    if save_interval_secs > 0 {
+        let engine_snap = engine.clone();
+        let ctx_snap = Arc::clone(&ctx);
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(save_interval_secs);
+            loop {
+                tokio::time::sleep(interval).await;
+                match engine_snap.broadcast(|| ShardRequest::Snapshot).await {
+                    Ok(_) => {
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        ctx_snap
+                            .last_save_timestamp
+                            .store(ts, std::sync::atomic::Ordering::Relaxed);
+                        tracing::info!(interval = save_interval_secs, "automatic snapshot completed");
+                    }
+                    Err(e) => tracing::warn!("automatic snapshot failed: {e}"),
+                }
+            }
+        });
+    }
 
     #[cfg(feature = "grpc")]
     let _grpc_handle = if let Some(grpc_addr) = grpc_addr {
