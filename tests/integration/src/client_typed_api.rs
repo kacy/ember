@@ -4,7 +4,7 @@
 //! connects with the typed `Client`. These tests exercise the full stack —
 //! TCP, RESP3 framing, command dispatch, and response decoding.
 
-use ember_client::{Client, ClientError, Pipeline};
+use ember_client::{Client, ClientError, Pipeline, ScanPage};
 
 use crate::helpers::TestServer;
 
@@ -224,6 +224,219 @@ async fn pipeline_mixed_commands() {
         .unwrap();
 
     assert_eq!(frames.len(), 3);
+}
+
+// --- strlen ---
+
+#[tokio::test]
+async fn strlen_existing_and_missing() {
+    let (_server, mut client) = connect().await;
+    client.set("slen", "hello").await.unwrap();
+    assert_eq!(client.strlen("slen").await.unwrap(), 5);
+    assert_eq!(client.strlen("nosuchkey").await.unwrap(), 0);
+}
+
+// --- incr_by_float ---
+
+#[tokio::test]
+async fn incr_by_float_positive_and_negative() {
+    let (_server, mut client) = connect().await;
+    client.set("flt", "10.5").await.unwrap();
+    let v = client.incr_by_float("flt", 1.5).await.unwrap();
+    assert!((v - 12.0).abs() < 1e-9);
+    let v2 = client.incr_by_float("flt", -2.0).await.unwrap();
+    assert!((v2 - 10.0).abs() < 1e-9);
+}
+
+// --- pexpire ---
+
+#[tokio::test]
+async fn pexpire_sets_ttl_in_millis() {
+    let (_server, mut client) = connect().await;
+    client.set("px_key", "v").await.unwrap();
+    let set = client.pexpire("px_key", 60_000).await.unwrap();
+    assert!(set);
+    let pttl = client.pttl("px_key").await.unwrap();
+    assert!(pttl > 0 && pttl <= 60_000);
+}
+
+// --- hmget ---
+
+#[tokio::test]
+async fn hmget_subset_and_missing() {
+    let (_server, mut client) = connect().await;
+    client
+        .hset("hm", &[("a", "1"), ("b", "2"), ("c", "3")])
+        .await
+        .unwrap();
+    let vals = client.hmget("hm", &["a", "c", "missing"]).await.unwrap();
+    assert_eq!(vals.len(), 3);
+    assert_eq!(vals[0].as_deref(), Some(b"1" as &[u8]));
+    assert_eq!(vals[1].as_deref(), Some(b"3" as &[u8]));
+    assert!(vals[2].is_none());
+}
+
+// --- key_type ---
+
+#[tokio::test]
+async fn key_type_returns_correct_types() {
+    let (_server, mut client) = connect().await;
+    client.set("str_key", "v").await.unwrap();
+    assert_eq!(client.key_type("str_key").await.unwrap(), "string");
+
+    client.rpush("lst_key", &["item"]).await.unwrap();
+    assert_eq!(client.key_type("lst_key").await.unwrap(), "list");
+
+    assert_eq!(client.key_type("no_such_key").await.unwrap(), "none");
+}
+
+// --- keys ---
+
+#[tokio::test]
+async fn keys_glob_returns_matching_keys() {
+    let (_server, mut client) = connect().await;
+    client.set("pfx:a", "1").await.unwrap();
+    client.set("pfx:b", "2").await.unwrap();
+    client.set("other", "3").await.unwrap();
+    let mut matched = client.keys("pfx:*").await.unwrap();
+    matched.sort();
+    assert_eq!(matched.len(), 2);
+    assert_eq!(matched[0].as_ref(), b"pfx:a");
+    assert_eq!(matched[1].as_ref(), b"pfx:b");
+}
+
+// --- rename ---
+
+#[tokio::test]
+async fn rename_then_old_key_gone() {
+    let (_server, mut client) = connect().await;
+    client.set("old_name", "value").await.unwrap();
+    client.rename("old_name", "new_name").await.unwrap();
+    assert!(client.get("old_name").await.unwrap().is_none());
+    assert_eq!(
+        client.get("new_name").await.unwrap().as_deref(),
+        Some(b"value" as &[u8])
+    );
+}
+
+// --- scan ---
+
+#[tokio::test]
+async fn scan_full_iteration_collects_all_keys() {
+    let (_server, mut client) = connect().await;
+    let expected_keys = ["scan_a", "scan_b", "scan_c"];
+    for k in &expected_keys {
+        client.set(k, "v").await.unwrap();
+    }
+
+    let mut all_keys = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let page = client.scan(cursor, None, Some("scan_*")).await.unwrap();
+        all_keys.extend(page.keys);
+        cursor = page.cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    all_keys.sort();
+    assert_eq!(all_keys.len(), 3);
+    assert_eq!(all_keys[0].as_ref(), b"scan_a");
+    assert_eq!(all_keys[2].as_ref(), b"scan_c");
+}
+
+// --- echo ---
+
+#[tokio::test]
+async fn echo_returns_same_bytes() {
+    let (_server, mut client) = connect().await;
+    let reply = client.echo("hello world").await.unwrap();
+    assert_eq!(reply.as_ref(), b"hello world");
+}
+
+// --- unlink ---
+
+#[tokio::test]
+async fn unlink_returns_count_like_del() {
+    let (_server, mut client) = connect().await;
+    client.set("ul1", "v").await.unwrap();
+    client.set("ul2", "v").await.unwrap();
+    let removed = client.unlink(&["ul1", "ul2", "ul_missing"]).await.unwrap();
+    assert_eq!(removed, 2);
+    assert!(client.get("ul1").await.unwrap().is_none());
+}
+
+// --- info ---
+
+#[tokio::test]
+async fn info_returns_non_empty_string() {
+    let (_server, mut client) = connect().await;
+    let output = client.info(None).await.unwrap();
+    assert!(!output.is_empty());
+}
+
+// --- bgsave ---
+
+#[tokio::test]
+async fn bgsave_returns_status_string() {
+    let (_server, mut client) = connect().await;
+    let status = client.bgsave().await.unwrap();
+    assert!(!status.is_empty());
+}
+
+// --- slowlog ---
+
+#[tokio::test]
+async fn slowlog_len_is_non_negative() {
+    let (_server, mut client) = connect().await;
+    let len = client.slowlog_len().await.unwrap();
+    assert!(len >= 0);
+}
+
+#[tokio::test]
+async fn slowlog_reset_clears_log() {
+    let (_server, mut client) = connect().await;
+    client.slowlog_reset().await.unwrap();
+    assert_eq!(client.slowlog_len().await.unwrap(), 0);
+}
+
+// --- pub/sub (request-response) ---
+
+#[tokio::test]
+async fn publish_to_channel_with_no_subscribers_returns_zero() {
+    let (_server, mut client) = connect().await;
+    let count = client.publish("unsubscribed_channel", "msg").await.unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn pubsub_channels_with_pattern_and_none() {
+    let (_server, mut client) = connect().await;
+    // no subscribers active — both should return empty
+    let with_pat = client.pubsub_channels(Some("*")).await.unwrap();
+    let all = client.pubsub_channels(None).await.unwrap();
+    assert!(with_pat.is_empty());
+    assert!(all.is_empty());
+}
+
+#[tokio::test]
+async fn pubsub_numsub_empty_channels() {
+    let (_server, mut client) = connect().await;
+    let pairs = client
+        .pubsub_numsub(&["no_one_here"])
+        .await
+        .unwrap();
+    assert_eq!(pairs.len(), 1);
+    assert_eq!(pairs[0].0.as_ref(), b"no_one_here");
+    assert_eq!(pairs[0].1, 0);
+}
+
+#[tokio::test]
+async fn pubsub_numpat_is_zero_before_subscriptions() {
+    let (_server, mut client) = connect().await;
+    let n = client.pubsub_numpat().await.unwrap();
+    assert_eq!(n, 0);
 }
 
 // --- error surfacing ---

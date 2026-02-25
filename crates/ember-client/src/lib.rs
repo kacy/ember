@@ -51,6 +51,7 @@ mod pipeline;
 #[cfg(feature = "tls")]
 pub mod tls;
 
+pub use commands::{ScanPage, SlowlogEntry};
 pub use connection::{Client, ClientError};
 pub use ember_protocol::types::Frame;
 pub use pipeline::Pipeline;
