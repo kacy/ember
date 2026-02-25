@@ -4,7 +4,7 @@
 //! connects with the typed `Client`. These tests exercise the full stack —
 //! TCP, RESP3 framing, command dispatch, and response decoding.
 
-use ember_client::{Client, ClientError, Pipeline, ScanPage};
+use ember_client::{Client, ClientError, Pipeline};
 
 use crate::helpers::TestServer;
 
@@ -437,6 +437,64 @@ async fn pubsub_numpat_is_zero_before_subscriptions() {
     let (_server, mut client) = connect().await;
     let n = client.pubsub_numpat().await.unwrap();
     assert_eq!(n, 0);
+}
+
+// --- subscriber ---
+
+#[tokio::test]
+async fn subscriber_recv_message() {
+    let server = crate::helpers::TestServer::start();
+    let sub_conn = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
+    let mut publisher = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
+
+    let mut sub = sub_conn.subscribe(&["typed_events"]).await.unwrap();
+    publisher.publish("typed_events", "hello").await.unwrap();
+
+    let msg = sub.recv().await.unwrap();
+    assert_eq!(msg.channel.as_ref(), b"typed_events");
+    assert_eq!(msg.data.as_ref(), b"hello");
+    assert!(msg.pattern.is_none());
+}
+
+#[tokio::test]
+async fn subscriber_multiple_channels_correct_message() {
+    let server = crate::helpers::TestServer::start();
+    let sub_conn = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
+    let mut publisher = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
+
+    let mut sub = sub_conn.subscribe(&["ch_a", "ch_b"]).await.unwrap();
+    publisher.publish("ch_b", "payload").await.unwrap();
+
+    let msg = sub.recv().await.unwrap();
+    assert_eq!(msg.channel.as_ref(), b"ch_b");
+    assert_eq!(msg.data.as_ref(), b"payload");
+}
+
+#[tokio::test]
+async fn psubscriber_pattern_match() {
+    let server = crate::helpers::TestServer::start();
+    let sub_conn = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
+    let mut publisher = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
+
+    let mut sub = sub_conn.psubscribe(&["typed:*"]).await.unwrap();
+    publisher.publish("typed:update", "data").await.unwrap();
+
+    let msg = sub.recv().await.unwrap();
+    assert_eq!(msg.channel.as_ref(), b"typed:update");
+    assert_eq!(msg.data.as_ref(), b"data");
+    assert_eq!(msg.pattern.as_deref(), Some(b"typed:*" as &[u8]));
 }
 
 // --- error surfacing ---

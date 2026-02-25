@@ -242,8 +242,20 @@ impl Client {
         let _ = self.transport.shutdown().await;
     }
 
+    /// Serializes and writes a single frame without waiting for a response.
+    ///
+    /// Used by [`Subscriber`] to send SUBSCRIBE/UNSUBSCRIBE frames before
+    /// draining the confirmation responses separately.
+    pub(crate) async fn write_frame(&mut self, frame: Frame) -> Result<(), ClientError> {
+        self.write_buf.clear();
+        frame.serialize(&mut self.write_buf);
+        self.transport.write_all(&self.write_buf).await?;
+        self.transport.flush().await?;
+        Ok(())
+    }
+
     /// Reads a complete RESP3 frame from the server.
-    async fn read_response(&mut self) -> Result<Frame, ClientError> {
+    pub(crate) async fn read_response(&mut self) -> Result<Frame, ClientError> {
         loop {
             if !self.read_buf.is_empty() {
                 match parse_frame(&self.read_buf) {
