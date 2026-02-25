@@ -968,4 +968,65 @@ mod tests {
         assert_eq!(super::format_float(2.72), "2.72");
         assert_eq!(super::format_float(10.5), "10.5");
     }
+
+    #[test]
+    fn getdel_returns_value_and_removes_key() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("hello"), None, false, false);
+        let val = ks.getdel("k").unwrap();
+        assert_eq!(val, Some(Bytes::from("hello")));
+        assert!(!ks.exists("k"));
+        assert_eq!(ks.stats().used_bytes, 0);
+    }
+
+    #[test]
+    fn getdel_missing_key_returns_none() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.getdel("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn getdel_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "a".into())], &ZAddFlags::default())
+            .unwrap();
+        assert!(ks.getdel("z").is_err());
+    }
+
+    #[test]
+    fn getex_no_option_leaves_ttl_unchanged() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), Some(Duration::from_secs(60)), false, false);
+        let ttl_before = ks.ttl("k");
+        let val = ks.getex("k", None).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        let ttl_after = ks.ttl("k");
+        // ttl should still be set (both should be positive)
+        assert!(matches!(ttl_before, TtlResult::Seconds(_)));
+        assert!(matches!(ttl_after, TtlResult::Seconds(_)));
+    }
+
+    #[test]
+    fn getex_persist_clears_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), Some(Duration::from_secs(60)), false, false);
+        let val = ks.getex("k", Some(None)).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        assert!(matches!(ks.ttl("k"), TtlResult::NoExpiry));
+    }
+
+    #[test]
+    fn getex_set_new_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        let val = ks.getex("k", Some(Some(Duration::from_secs(30)))).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        assert!(matches!(ks.ttl("k"), TtlResult::Seconds(_)));
+    }
+
+    #[test]
+    fn getex_missing_key_returns_none() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.getex("nope", None).unwrap(), None);
+    }
 }

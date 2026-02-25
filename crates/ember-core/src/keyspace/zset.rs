@@ -955,4 +955,71 @@ mod tests {
         // original key should be untouched
         assert!(ks.exists("a"));
     }
+
+    #[test]
+    fn zdiff_returns_members_unique_to_first() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into()), (3.0, "z".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(1.0, "y".into()), (1.0, "w".into())], &ZAddFlags::default()).unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let diff = ks.zdiff(&keys).unwrap();
+        let members: Vec<&str> = diff.iter().map(|(m, _)| m.as_str()).collect();
+        assert!(members.contains(&"x"));
+        assert!(members.contains(&"z"));
+        assert!(!members.contains(&"y"));
+    }
+
+    #[test]
+    fn zdiff_with_missing_second_key_returns_all() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default()).unwrap();
+        let keys = vec!["a".to_owned(), "missing".to_owned()];
+        let diff = ks.zdiff(&keys).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].0, "x");
+    }
+
+    #[test]
+    fn zinter_returns_common_members_with_summed_scores() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(3.0, "x".into()), (4.0, "z".into())], &ZAddFlags::default()).unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let inter = ks.zinter(&keys).unwrap();
+        assert_eq!(inter.len(), 1);
+        assert_eq!(inter[0].0, "x");
+        assert!((inter[0].1 - 4.0).abs() < f64::EPSILON); // 1.0 + 3.0
+    }
+
+    #[test]
+    fn zinter_empty_when_no_common_members() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(1.0, "y".into())], &ZAddFlags::default()).unwrap();
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        assert!(ks.zinter(&keys).unwrap().is_empty());
+    }
+
+    #[test]
+    fn zunion_combines_all_members_with_summed_scores() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(3.0, "x".into()), (4.0, "z".into())], &ZAddFlags::default()).unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let union = ks.zunion(&keys).unwrap();
+        assert_eq!(union.len(), 3); // x, y, z
+        let x = union.iter().find(|(m, _)| m == "x").unwrap();
+        assert!((x.1 - 4.0).abs() < f64::EPSILON); // 1.0 + 3.0
+    }
+
+    #[test]
+    fn zdiff_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("v"), None, false, false);
+        let keys = vec!["s".to_owned()];
+        assert!(ks.zdiff(&keys).is_err());
+    }
 }
