@@ -77,10 +77,10 @@ for anything resembling production use, Redis and Dragonfly are the sensible cho
 
 | server | per key |
 |--------|---------|
-| ember | 208 B |
+| ember | 180 B |
 | redis | 173 B |
 
-sharded mode uses additional metadata for shard routing, which accounts for the per-key overhead relative to redis.
+sharded mode uses per-entry metadata (expiry, LRU timestamp, cached value size) which accounts for the small overhead relative to redis. concurrent mode achieves 128 B/key by using a flat `Bytes` representation.
 
 ### with persistence enabled
 
@@ -241,12 +241,12 @@ per-key memory overhead across data types. string: 1M keys, 64B values. hash: 10
 
 | data type | ember | redis |
 |-----------|-------|-------|
-| string (64B) | 208 B/key | **173 B/key** |
-| hash (5 fields) | 243 B/key | **170 B/key** |
-| sorted set | 115 B/member | **111 B/member** |
+| string (64B) | 180 B/key | **173 B/key** |
+| hash (5 fields) | 215 B/key | **170 B/key** |
+| sorted set | **115 B/member** | 111 B/member |
 | vector (128-dim) | 853 B/vector | — |
 
-redis is more memory-efficient for most data types thanks to ziplist/listpack compact encodings. ember's sharded architecture uses additional metadata for shard routing, which accounts for the per-key overhead on string keys. hash memory was reduced from 451 to 243 B/key by replacing per-field `(CompactString, Bytes)` tuples (48 bytes overhead each) with a packed byte buffer (6 bytes overhead per field).
+redis is slightly more memory-efficient for string and hash types thanks to ziplist/listpack compact encodings. ember's per-entry metadata (expiry, LRU timestamp, cached value size) accounts for the small overhead. hash memory was reduced from 451 to 215 B/key by replacing per-field `(CompactString, Bytes)` tuples (48 bytes overhead each) with a packed byte buffer and moving version tracking to a lazy side table.
 
 ## running benchmarks
 
