@@ -124,6 +124,9 @@ impl Command {
             "LINSERT" => parse_linsert(&frames[1..]),
             "LREM" => parse_lrem(&frames[1..]),
             "LPOS" => parse_lpos(&frames[1..]),
+            "LMOVE" => parse_lmove(&frames[1..]),
+            "GETDEL" => parse_getdel(&frames[1..]),
+            "GETEX" => parse_getex(&frames[1..]),
             "TYPE" => parse_type(&frames[1..]),
             "ZADD" => parse_zadd(&frames[1..]),
             "ZREM" => parse_zrem(&frames[1..]),
@@ -145,6 +148,9 @@ impl Command {
                 let (key, count) = parse_zpop_args(&frames[1..], "ZPOPMAX")?;
                 Ok(Command::ZPopMax { key, count })
             }
+            "ZDIFF" => parse_zset_multi("ZDIFF", &frames[1..]),
+            "ZINTER" => parse_zset_multi("ZINTER", &frames[1..]),
+            "ZUNION" => parse_zset_multi("ZUNION", &frames[1..]),
             "HSET" => parse_hset(&frames[1..]),
             "HGET" => parse_hget(&frames[1..]),
             "HGETALL" => parse_hgetall(&frames[1..]),
@@ -3045,4 +3051,145 @@ fn parse_sort(args: &[Frame]) -> Result<Command, ProtocolError> {
         limit,
         store,
     })
+}
+
+// --- Redis 6.2+ commands ---
+
+fn parse_lmove(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 4 {
+        return Err(wrong_arity("LMOVE"));
+    }
+    let source = extract_string(&args[0])?;
+    let destination = extract_string(&args[1])?;
+
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let src_left = match uppercase_arg(&args[2], &mut kw)? {
+        "LEFT" => true,
+        "RIGHT" => false,
+        other => {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "LMOVE: invalid wherefrom '{other}', expected LEFT or RIGHT"
+            )));
+        }
+    };
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let dst_left = match uppercase_arg(&args[3], &mut kw)? {
+        "LEFT" => true,
+        "RIGHT" => false,
+        other => {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "LMOVE: invalid whereto '{other}', expected LEFT or RIGHT"
+            )));
+        }
+    };
+
+    Ok(Command::LMove {
+        source,
+        destination,
+        src_left,
+        dst_left,
+    })
+}
+
+fn parse_getdel(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(wrong_arity("GETDEL"));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::GetDel { key })
+}
+
+fn parse_getex(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("GETEX"));
+    }
+    let key = extract_string(&args[0])?;
+    let rest = &args[1..];
+
+    let expire = if rest.is_empty() {
+        // no options — TTL unchanged
+        None
+    } else {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        match uppercase_arg(&rest[0], &mut kw)? {
+            "PERSIST" => Some(None),
+            "EX" => {
+                if rest.len() < 2 {
+                    return Err(wrong_arity("GETEX"));
+                }
+                let n = parse_u64(&rest[1], "GETEX")?;
+                if n == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid expire time in 'GETEX' command".into(),
+                    ));
+                }
+                Some(Some(SetExpire::Ex(n)))
+            }
+            "PX" => {
+                if rest.len() < 2 {
+                    return Err(wrong_arity("GETEX"));
+                }
+                let n = parse_u64(&rest[1], "GETEX")?;
+                if n == 0 {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "invalid expire time in 'GETEX' command".into(),
+                    ));
+                }
+                Some(Some(SetExpire::Px(n)))
+            }
+            "EXAT" => {
+                if rest.len() < 2 {
+                    return Err(wrong_arity("GETEX"));
+                }
+                let n = parse_u64(&rest[1], "GETEX")?;
+                Some(Some(SetExpire::ExAt(n)))
+            }
+            "PXAT" => {
+                if rest.len() < 2 {
+                    return Err(wrong_arity("GETEX"));
+                }
+                let n = parse_u64(&rest[1], "GETEX")?;
+                Some(Some(SetExpire::PxAt(n)))
+            }
+            other => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "GETEX: unsupported option '{other}'"
+                )));
+            }
+        }
+    };
+
+    Ok(Command::GetEx { key, expire })
+}
+
+/// Parses ZDIFF/ZINTER/ZUNION: `numkeys key [key ...] [WITHSCORES]`.
+fn parse_zset_multi(cmd: &'static str, args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity(cmd));
+    }
+    let numkeys = parse_u64(&args[0], cmd)? as usize;
+    if numkeys == 0 {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "{cmd}: numkeys must be positive"
+        )));
+    }
+    if args.len() < 1 + numkeys {
+        return Err(wrong_arity(cmd));
+    }
+    let keys = extract_strings(&args[1..1 + numkeys])?;
+
+    let mut with_scores = false;
+    for frame in &args[1 + numkeys..] {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        if let Ok("WITHSCORES") = uppercase_arg(frame, &mut kw) {
+            with_scores = true;
+        }
+    }
+
+    match cmd {
+        "ZDIFF" => Ok(Command::ZDiff { keys, with_scores }),
+        "ZINTER" => Ok(Command::ZInter { keys, with_scores }),
+        "ZUNION" => Ok(Command::ZUnion { keys, with_scores }),
+        _ => Err(wrong_arity(cmd)),
+    }
 }
