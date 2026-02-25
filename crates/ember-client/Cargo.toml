@@ -1,0 +1,32 @@
+[package]
+name = "ember-client"
+description = "async RESP3 client library for ember"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+bytes = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+ember-protocol = { workspace = true }
+
+# TLS support (optional feature)
+tokio-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+
+[features]
+default = ["tls"]
+tls = [
+    "dep:tokio-rustls",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:rustls-native-certs",
+]
