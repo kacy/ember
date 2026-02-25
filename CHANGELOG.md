@@ -1,6 +1,25 @@
 # changelog
 
-## 0.4.x — launch readiness (february 2026)
+## 0.4.8 (2026-02-25)
+
+### performance
+- entry struct optimizations: version field moved to lazy side table, cached_value_size packed as u32, ENTRY_OVERHEAD tightened from 128 to 104 (#284-287)
+- skip touch() timestamp updates when eviction is disabled (#287)
+- packed hash encoding — hash memory reduced from ~451 to ~240 B/key (#276)
+- vector insert throughput optimization with binary-encoded VADD_BATCH (#271-272)
+
+### fixes
+- ENTRY_OVERHEAD bumped from 100 to 104 for cross-platform CI compatibility (#292-294)
+- rate-limited ENOSPC handling for AOF writes (#249)
+
+### docs
+- removed concurrent mode references — sharded is now the only execution mode (#275, #291)
+- refreshed all benchmark numbers from 2026-02-25 GCP run (#288-290)
+- added documentation section, code of conduct, performance tuning guide, production checklist (#270, #281-282)
+
+---
+
+## 0.4.7 — launch readiness (february 2026)
 
 the final push before a proper release. this milestone focused on correctness, operability, and the kinds of features that turn a cache into something production teams can actually trust. a lot of the work here is about closing gaps — the commands that weren't there yet, the error paths that weren't handled, and the defaults that needed to be locked down.
 
