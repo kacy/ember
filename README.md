@@ -451,7 +451,7 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz). see [bench/README.md]
 - concurrent mode: 1.79M SET/sec, 2.14M GET/sec (redis-benchmark, P=16)
 - p99 latency: 0.74ms SET, 0.70ms GET (P=1, concurrent mode)
 - vector insert: 5.5k vectors/sec (8-shard), 2.4k vectors/sec (single key); query: 1.8k queries/sec, p99=0.62ms
-- vector memory: 4-6x less than chromadb/pgvector/qdrant (29 MB vs 139-178 MB for 100k vectors)
+- vector memory: 4-6x less than chromadb/pgvector/qdrant (29-31 MB vs 139-178 MB for 100k vectors)
 - memory: 208 bytes/key for strings, 243 bytes/key for hashes (redis: 173/170 bytes/key)
 
 ```bash
@@ -484,7 +484,7 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | [performance tuning](docs/performance-tuning.md) | shard count, pipeline depth, mode selection |
 | [production checklist](docs/production-checklist.md) | OS tuning, memory limits, persistence, monitoring, security |
 | [troubleshooting](docs/troubleshooting.md) | common issues and solutions |
-| [client libraries](docs/clients.md) | official Go, Python, Rust, and TypeScript clients |
+| [client libraries](docs/clients.md) | using existing Redis clients (ioredis, go-redis, redis-py, etc.) with Ember |
 | [architecture deep dive](ARCHITECTURE.md) | execution model, protocol layer, data model, persistence, clustering |
 | [changelog](CHANGELOG.md) | release history and phase summaries |
 | [security policy](SECURITY.md) | vulnerability reporting, deployment hardening |

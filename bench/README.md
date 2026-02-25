@@ -49,7 +49,7 @@ tested on GCP c2-standard-8 (8 vCPU Intel Xeon @ 3.10GHz), Ubuntu 22.04.
 
 dragonfly in particular offers features ember simply doesn't have:
 
-- full Redis API compatibility (200+ commands vs ember's ~114)
+- full Redis API compatibility (200+ commands vs ember's ~135)
 - sophisticated memory management (dashtable for ~25% of Redis memory usage)
 - Lua scripting
 - fork-free snapshotting
