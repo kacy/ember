@@ -1,8 +1,8 @@
 //! TLS client support for ember-cli.
 //!
 //! Provides a `MaybeTlsStream` wrapper that implements `AsyncRead` and
-//! `AsyncWrite`, allowing the rest of the codebase to work with either
-//! plain TCP or TLS connections transparently.
+//! `AsyncWrite`, allowing `bench_conn` to work directly with either plain
+//! TCP or TLS streams. Interactive commands use `ember_client::Client` instead.
 
 use std::io;
 use std::pin::Pin;
@@ -16,17 +16,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
-/// TLS configuration for client connections.
-#[derive(Clone, Debug)]
-pub struct TlsClientConfig {
-    /// Optional path to a CA certificate (PEM) for verifying the server.
-    /// When `None`, the system trust store is used.
-    pub ca_cert: Option<String>,
-
-    /// Skip server certificate verification entirely. Prints a warning
-    /// to stderr when enabled — useful for development with self-signed certs.
-    pub insecure: bool,
-}
+/// TLS client configuration — re-exported from `ember-client` so all of the
+/// CLI uses one canonical type.
+pub use ember_client::TlsClientConfig;
 
 /// A TCP stream that may or may not be wrapped in TLS.
 pub enum MaybeTlsStream {

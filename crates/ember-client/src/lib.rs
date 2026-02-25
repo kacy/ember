@@ -23,3 +23,5 @@ pub mod tls;
 
 pub use connection::{Client, ClientError};
 pub use ember_protocol::types::Frame;
+#[cfg(feature = "tls")]
+pub use tls::TlsClientConfig;

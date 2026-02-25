@@ -10,7 +10,6 @@ mod bench_conn;
 mod benchmark;
 mod cluster;
 mod commands;
-mod connection;
 mod format;
 mod repl;
 mod tls;
@@ -21,6 +20,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use ember_client::Client;
 
 use crate::tls::TlsClientConfig;
 
@@ -189,7 +189,10 @@ fn run_oneshot(
     };
 
     rt.block_on(async {
-        let mut conn = match connection::Connection::connect(host, port, tls).await {
+        let mut conn = match match tls {
+            Some(tls) => Client::connect_tls(host, port, tls).await,
+            None => Client::connect(host, port).await,
+        } {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
@@ -201,14 +204,15 @@ fn run_oneshot(
         };
 
         if let Some(pw) = password {
-            if let Err(e) = conn.authenticate(pw).await {
+            if let Err(e) = conn.auth(pw).await {
                 eprintln!("{}", format!("authentication failed: {e}").red());
-                conn.shutdown().await;
+                conn.disconnect().await;
                 return ExitCode::FAILURE;
             }
         }
 
-        let exit_code = match conn.send_command(command).await {
+        let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+        let exit_code = match conn.send(&refs).await {
             Ok(frame) => {
                 println!("{}", format::format_response(&frame));
                 ExitCode::SUCCESS
@@ -219,7 +223,7 @@ fn run_oneshot(
             }
         };
 
-        conn.shutdown().await;
+        conn.disconnect().await;
         exit_code
     })
 }

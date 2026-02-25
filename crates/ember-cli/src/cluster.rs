@@ -8,8 +8,8 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 use colored::Colorize;
+use ember_client::Client;
 
-use crate::connection::Connection;
 use crate::format::format_response;
 use crate::tls::TlsClientConfig;
 
@@ -401,7 +401,10 @@ pub fn run_cluster(
     }
 
     rt.block_on(async {
-        let mut conn = match Connection::connect(host, port, tls).await {
+        let mut conn = match match tls {
+            Some(tls) => Client::connect_tls(host, port, tls).await,
+            None => Client::connect(host, port).await,
+        } {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
@@ -413,15 +416,16 @@ pub fn run_cluster(
         };
 
         if let Some(pw) = password {
-            if let Err(e) = conn.authenticate(pw).await {
+            if let Err(e) = conn.auth(pw).await {
                 eprintln!("{}", format!("authentication failed: {e}").red());
-                conn.shutdown().await;
+                conn.disconnect().await;
                 return ExitCode::FAILURE;
             }
         }
 
         let tokens = cmd.to_tokens();
-        let exit_code = match conn.send_command(&tokens).await {
+        let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+        let exit_code = match conn.send(&refs).await {
             Ok(frame) => {
                 println!("{}", format_response(&frame));
                 ExitCode::SUCCESS
@@ -432,7 +436,7 @@ pub fn run_cluster(
             }
         };
 
-        conn.shutdown().await;
+        conn.disconnect().await;
         exit_code
     })
 }
@@ -462,7 +466,7 @@ async fn run_cluster_create(
     println!(">>> creating cluster with {primary_count} primaries and {replica_count} replicas");
 
     // connect to all nodes and collect their IDs
-    let mut connections: Vec<(String, Connection, String)> = Vec::new(); // (addr, conn, node_id)
+    let mut connections: Vec<(String, Client, String)> = Vec::new(); // (addr, conn, node_id)
 
     for addr in addrs {
         let (host, port) = match parse_host_port(addr) {
@@ -473,7 +477,10 @@ async fn run_cluster_create(
             }
         };
 
-        let mut conn = match Connection::connect(&host, port, tls).await {
+        let mut conn = match match tls {
+            Some(tls) => Client::connect_tls(&host, port, tls).await,
+            None => Client::connect(&host, port).await,
+        } {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("{}", format!("could not connect to {addr}: {e}").red());
@@ -482,14 +489,14 @@ async fn run_cluster_create(
         };
 
         if let Some(pw) = password {
-            if let Err(e) = conn.authenticate(pw).await {
+            if let Err(e) = conn.auth(pw).await {
                 eprintln!("{}", format!("auth failed on {addr}: {e}").red());
                 return ExitCode::FAILURE;
             }
         }
 
         // verify node is in cluster mode and has no slots assigned
-        match conn.send_command_strs(&["CLUSTER", "INFO"]).await {
+        match conn.send(&["CLUSTER", "INFO"]).await {
             Ok(frame) => {
                 let info = frame_to_string(&frame);
                 if !info.contains("cluster_state:") {
@@ -520,7 +527,7 @@ async fn run_cluster_create(
         }
 
         // get node ID
-        let node_id = match conn.send_command_strs(&["CLUSTER", "MYID"]).await {
+        let node_id = match conn.send(&["CLUSTER", "MYID"]).await {
             Ok(frame) => frame_to_string(&frame),
             Err(e) => {
                 eprintln!("{}", format!("CLUSTER MYID failed on {addr}: {e}").red());
@@ -547,7 +554,7 @@ async fn run_cluster_create(
         let start_s = start.to_string();
         let end_s = end.to_string();
         match conn
-            .send_command_strs(&["CLUSTER", "ADDSLOTSRANGE", &start_s, &end_s])
+            .send(&["CLUSTER", "ADDSLOTSRANGE", &start_s, &end_s])
             .await
         {
             Ok(frame) if is_ok(&frame) => {
@@ -598,7 +605,7 @@ async fn run_cluster_create(
 
         match connections[0]
             .1
-            .send_command_strs(&["CLUSTER", "MEET", &host, &port.to_string()])
+            .send(&["CLUSTER", "MEET", &host, &port.to_string()])
             .await
         {
             Ok(frame) if is_ok(&frame) => {
@@ -625,7 +632,7 @@ async fn run_cluster_create(
     // also meet from other nodes back to the first node to speed convergence
     for (_, conn, _) in connections.iter_mut().skip(1) {
         let _ = conn
-            .send_command_strs(&["CLUSTER", "MEET", first_host, &first_port.to_string()])
+            .send(&["CLUSTER", "MEET", first_host, &first_port.to_string()])
             .await;
     }
 
@@ -638,7 +645,7 @@ async fn run_cluster_create(
 
         let mut converged = true;
         for (addr, conn, _) in &mut connections {
-            match conn.send_command_strs(&["CLUSTER", "INFO"]).await {
+            match conn.send(&["CLUSTER", "INFO"]).await {
                 Ok(frame) => {
                     let info = frame_to_string(&frame);
                     let known = parse_cluster_info_field(&info, "cluster_known_nodes")
@@ -685,7 +692,7 @@ async fn run_cluster_create(
 
             match connections[replica_idx]
                 .1
-                .send_command_strs(&["CLUSTER", "REPLICATE", &primary_id])
+                .send(&["CLUSTER", "REPLICATE", &primary_id])
                 .await
             {
                 Ok(frame) if is_ok(&frame) => {
@@ -720,7 +727,7 @@ async fn run_cluster_create(
 
     // clean up connections
     for (_, mut conn, _) in connections {
-        conn.shutdown().await;
+        conn.disconnect().await;
     }
 
     println!("{}", ">>> cluster created successfully".green());
@@ -748,7 +755,10 @@ async fn run_cluster_check(
         }
     };
 
-    let mut conn = match Connection::connect(&host, port, tls).await {
+    let mut conn = match match tls {
+        Some(tls) => Client::connect_tls(&host, port, tls).await,
+        None => Client::connect(&host, port).await,
+    } {
         Ok(c) => c,
         Err(e) => {
             eprintln!("{}", format!("could not connect to {addr}: {e}").red());
@@ -757,33 +767,33 @@ async fn run_cluster_check(
     };
 
     if let Some(pw) = password {
-        if let Err(e) = conn.authenticate(pw).await {
+        if let Err(e) = conn.auth(pw).await {
             eprintln!("{}", format!("auth failed: {e}").red());
             return ExitCode::FAILURE;
         }
     }
 
     // get cluster info
-    let cluster_info = match conn.send_command_strs(&["CLUSTER", "INFO"]).await {
+    let cluster_info = match conn.send(&["CLUSTER", "INFO"]).await {
         Ok(frame) => frame_to_string(&frame),
         Err(e) => {
             eprintln!("{}", format!("CLUSTER INFO failed: {e}").red());
-            conn.shutdown().await;
+            conn.disconnect().await;
             return ExitCode::FAILURE;
         }
     };
 
     // get cluster nodes
-    let nodes_output = match conn.send_command_strs(&["CLUSTER", "NODES"]).await {
+    let nodes_output = match conn.send(&["CLUSTER", "NODES"]).await {
         Ok(frame) => frame_to_string(&frame),
         Err(e) => {
             eprintln!("{}", format!("CLUSTER NODES failed: {e}").red());
-            conn.shutdown().await;
+            conn.disconnect().await;
             return ExitCode::FAILURE;
         }
     };
 
-    conn.shutdown().await;
+    conn.disconnect().await;
 
     // parse nodes
     let mut errors: Vec<String> = Vec::new();
@@ -934,7 +944,7 @@ async fn run_cluster_reshard(
     };
 
     // get cluster nodes to find addresses and slot ownership
-    let nodes_output = match conn.send_command_strs(&["CLUSTER", "NODES"]).await {
+    let nodes_output = match conn.send(&["CLUSTER", "NODES"]).await {
         Ok(frame) => frame_to_string(&frame),
         Err(e) => {
             eprintln!("{}", format!("CLUSTER NODES failed: {e}").red());
@@ -1031,7 +1041,7 @@ async fn run_cluster_reshard(
     for &slot in &slots_to_move {
         // 1. SETSLOT IMPORTING on target
         let r = target_conn
-            .send_command_strs(&[
+            .send(&[
                 "CLUSTER",
                 "SETSLOT",
                 &slot.to_string(),
@@ -1053,7 +1063,7 @@ async fn run_cluster_reshard(
 
         // 2. SETSLOT MIGRATING on source
         let r = source_conn
-            .send_command_strs(&[
+            .send(&[
                 "CLUSTER",
                 "SETSLOT",
                 &slot.to_string(),
@@ -1076,7 +1086,7 @@ async fn run_cluster_reshard(
         // 3. migrate keys
         loop {
             let keys_frame = match source_conn
-                .send_command_strs(&["CLUSTER", "GETKEYSINSLOT", &slot.to_string(), "100"])
+                .send(&["CLUSTER", "GETKEYSINSLOT", &slot.to_string(), "100"])
                 .await
             {
                 Ok(f) => f,
@@ -1096,7 +1106,7 @@ async fn run_cluster_reshard(
 
             for key in &keys {
                 let r = source_conn
-                    .send_command_strs(&[
+                    .send(&[
                         "MIGRATE",
                         &target_host,
                         &target_port.to_string(),
@@ -1124,7 +1134,7 @@ async fn run_cluster_reshard(
         let slot_s = slot.to_string();
         for c in [&mut source_conn, &mut target_conn, &mut conn] {
             let _ = c
-                .send_command_strs(&["CLUSTER", "SETSLOT", &slot_s, "NODE", &target.id])
+                .send(&["CLUSTER", "SETSLOT", &slot_s, "NODE", &target.id])
                 .await;
         }
 
@@ -1134,9 +1144,9 @@ async fn run_cluster_reshard(
         }
     }
 
-    source_conn.shutdown().await;
-    target_conn.shutdown().await;
-    conn.shutdown().await;
+    source_conn.disconnect().await;
+    target_conn.disconnect().await;
+    conn.disconnect().await;
 
     if moved == slots_to_move.len() as u16 {
         println!(
@@ -1183,14 +1193,14 @@ async fn run_cluster_rebalance(
         Err(code) => return code,
     };
 
-    let nodes_output = match conn.send_command_strs(&["CLUSTER", "NODES"]).await {
+    let nodes_output = match conn.send(&["CLUSTER", "NODES"]).await {
         Ok(frame) => frame_to_string(&frame),
         Err(e) => {
             eprintln!("{}", format!("CLUSTER NODES failed: {e}").red());
             return ExitCode::FAILURE;
         }
     };
-    conn.shutdown().await;
+    conn.disconnect().await;
 
     let all_nodes = parse_nodes_output(&nodes_output);
     let primaries: Vec<&NodeInfo> = all_nodes.iter().filter(|n| n.is_primary).collect();
@@ -1302,14 +1312,18 @@ async fn run_cluster_rebalance(
 // helpers
 // ---------------------------------------------------------------------------
 
-/// Connects to a node and authenticates. Returns the connection or an error exit code.
+/// Connects to a node and authenticates. Returns the client or an error exit code.
 async fn connect_and_auth(
     host: &str,
     port: u16,
     password: Option<&str>,
     tls: Option<&TlsClientConfig>,
-) -> Result<Connection, ExitCode> {
-    let mut conn = Connection::connect(host, port, tls).await.map_err(|e| {
+) -> Result<Client, ExitCode> {
+    let mut conn = match tls {
+        Some(tls) => Client::connect_tls(host, port, tls).await,
+        None => Client::connect(host, port).await,
+    }
+    .map_err(|e| {
         eprintln!(
             "{}",
             format!("could not connect to {host}:{port}: {e}").red()
@@ -1318,7 +1332,7 @@ async fn connect_and_auth(
     })?;
 
     if let Some(pw) = password {
-        conn.authenticate(pw).await.map_err(|e| {
+        conn.auth(pw).await.map_err(|e| {
             eprintln!("{}", format!("auth failed on {host}:{port}: {e}").red());
             ExitCode::FAILURE
         })?;
@@ -1402,9 +1416,7 @@ fn frame_to_string_list(frame: &ember_protocol::types::Frame) -> Vec<String> {
 }
 
 /// Extracts a human-readable message from a connection result.
-fn result_msg(
-    r: &Result<ember_protocol::types::Frame, crate::connection::ConnectionError>,
-) -> String {
+fn result_msg(r: &Result<ember_protocol::types::Frame, ember_client::ClientError>) -> String {
     match r {
         Ok(f) => frame_to_string(f),
         Err(e) => e.to_string(),

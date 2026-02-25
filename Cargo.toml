@@ -95,3 +95,4 @@ emberkv-core = { version = "0.4.8", path = "crates/ember-core" }
 ember-protocol = { version = "0.4.8", path = "crates/ember-protocol" }
 ember-persistence = { version = "0.4.8", path = "crates/ember-persistence" }
 ember-cluster = { version = "0.4.8", path = "crates/ember-cluster" }
+ember-client = { version = "0.4.8", path = "crates/ember-client" }

@@ -16,10 +16,11 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
 
+use ember_client::{Client, ClientError};
+
 use crate::commands::{
     command_names, commands_by_group, find_command, has_subcommands, subcommands,
 };
-use crate::connection::{Connection, ConnectionError};
 use crate::format::format_response;
 use crate::tls::TlsClientConfig;
 
@@ -45,7 +46,12 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
     };
 
     // connect to server
-    let mut conn = match rt.block_on(Connection::connect(host, port, tls)) {
+    let mut conn = match rt.block_on(async {
+        match tls {
+            Some(tls) => Client::connect_tls(host, port, tls).await,
+            None => Client::connect(host, port).await,
+        }
+    }) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -58,9 +64,9 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
 
     // authenticate if needed
     if let Some(pw) = password {
-        if let Err(e) = rt.block_on(conn.authenticate(pw)) {
+        if let Err(e) = rt.block_on(conn.auth(pw)) {
             eprintln!("{}", format!("authentication failed: {e}").red());
-            rt.block_on(conn.shutdown());
+            rt.block_on(conn.disconnect());
             return;
         }
     }
@@ -74,7 +80,7 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
         Ok(editor) => editor,
         Err(e) => {
             eprintln!("{}", format!("failed to create editor: {e}").red());
-            rt.block_on(conn.shutdown());
+            rt.block_on(conn.disconnect());
             return;
         }
     };
@@ -133,11 +139,12 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
                     continue;
                 }
 
-                match rt.block_on(conn.send_command(&tokens)) {
+                let refs: Vec<&str> = tokens.iter().map(String::as_str).collect();
+                match rt.block_on(conn.send(&refs)) {
                     Ok(frame) => {
                         println!("{}", format_response(&frame));
                     }
-                    Err(ConnectionError::Disconnected) => {
+                    Err(ClientError::Disconnected) => {
                         eprintln!("{}", "server disconnected, reconnecting...".yellow());
                         match rt.block_on(reconnect(host, port, password, tls)) {
                             Ok(new_conn) => {
@@ -182,7 +189,7 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
     }
 
     // graceful shutdown — send QUIT and close the TCP stream
-    rt.block_on(conn.shutdown());
+    rt.block_on(conn.disconnect());
 }
 
 /// Establishes a new connection, authenticating if a password is provided.
@@ -191,10 +198,13 @@ async fn reconnect(
     port: u16,
     password: Option<&str>,
     tls: Option<&TlsClientConfig>,
-) -> Result<Connection, ConnectionError> {
-    let mut conn = Connection::connect(host, port, tls).await?;
+) -> Result<Client, ClientError> {
+    let mut conn = match tls {
+        Some(tls) => Client::connect_tls(host, port, tls).await?,
+        None => Client::connect(host, port).await?,
+    };
     if let Some(pw) = password {
-        conn.authenticate(pw).await?;
+        conn.auth(pw).await?;
     }
     Ok(conn)
 }
