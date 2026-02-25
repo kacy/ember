@@ -468,9 +468,26 @@ async fn execute_concurrent(
                 return Frame::Null;
             }
 
-            let ttl = expire.map(|e| match e {
-                SetExpire::Ex(secs) => Duration::from_secs(secs),
-                SetExpire::Px(millis) => Duration::from_millis(millis),
+            let ttl = expire.map(|e| {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                match e {
+                    SetExpire::Ex(secs) => Duration::from_secs(secs),
+                    SetExpire::Px(millis) => Duration::from_millis(millis),
+                    SetExpire::ExAt(ts) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        Duration::from_secs(ts.saturating_sub(now))
+                    }
+                    SetExpire::PxAt(ts_ms) => {
+                        let now_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        Duration::from_millis(ts_ms.saturating_sub(now_ms))
+                    }
+                }
             });
 
             if keyspace.set(key, value, ttl) {
