@@ -168,6 +168,17 @@ impl Pipeline {
         self.push(array_with_key_and_keys(b"HDEL", key, fields))
     }
 
+    /// Queues an `HINCRBY key field delta` command.
+    pub fn hincrby(self, key: &str, field: &str, delta: i64) -> Self {
+        let d = delta.to_string();
+        self.push(Frame::Array(vec![
+            Frame::Bulk(Bytes::from_static(b"HINCRBY")),
+            Frame::Bulk(Bytes::copy_from_slice(key.as_bytes())),
+            Frame::Bulk(Bytes::copy_from_slice(field.as_bytes())),
+            Frame::Bulk(Bytes::copy_from_slice(d.as_bytes())),
+        ]))
+    }
+
     // --- set commands ---
 
     /// Queues an `SADD key member [member ...]` command.
