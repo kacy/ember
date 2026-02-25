@@ -423,10 +423,7 @@ async fn pubsub_channels_with_pattern_and_none() {
 #[tokio::test]
 async fn pubsub_numsub_empty_channels() {
     let (_server, mut client) = connect().await;
-    let pairs = client
-        .pubsub_numsub(&["no_one_here"])
-        .await
-        .unwrap();
+    let pairs = client.pubsub_numsub(&["no_one_here"]).await.unwrap();
     assert_eq!(pairs.len(), 1);
     assert_eq!(pairs[0].0.as_ref(), b"no_one_here");
     assert_eq!(pairs[0].1, 0);

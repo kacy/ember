@@ -1076,9 +1076,7 @@ impl Client {
     /// Deletes keys asynchronously. Behaves like `del` but frees memory in
     /// the background for large values. Returns the number of keys removed.
     pub async fn unlink(&mut self, keys: &[&str]) -> Result<i64, ClientError> {
-        let frame = self
-            .send_frame(cmd_keys_only(b"UNLINK", keys))
-            .await?;
+        let frame = self.send_frame(cmd_keys_only(b"UNLINK", keys)).await?;
         integer(frame)
     }
 
@@ -1106,7 +1104,9 @@ impl Client {
     /// message.
     pub async fn bgsave(&mut self) -> Result<String, ClientError> {
         let frame = self
-            .send_frame(Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"BGSAVE"))]))
+            .send_frame(Frame::Array(vec![Frame::Bulk(Bytes::from_static(
+                b"BGSAVE",
+            ))]))
             .await?;
         string_value(frame)
     }
