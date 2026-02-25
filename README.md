@@ -475,6 +475,20 @@ ember offers two execution modes for the local keyspace:
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## documentation
+
+| guide | description |
+|-------|-------------|
+| [redis compatibility](docs/compatibility.md) | command-by-command support matrix |
+| [migrating from redis](docs/migration-from-redis.md) | config mapping, behavioral differences, step-by-step migration |
+| [performance tuning](docs/performance-tuning.md) | shard count, pipeline depth, mode selection |
+| [production checklist](docs/production-checklist.md) | OS tuning, memory limits, persistence, monitoring, security |
+| [troubleshooting](docs/troubleshooting.md) | common issues and solutions |
+| [client libraries](docs/clients.md) | official Go, Python, Rust, and TypeScript clients |
+| [architecture deep dive](ARCHITECTURE.md) | execution model, protocol layer, data model, persistence, clustering |
+| [changelog](CHANGELOG.md) | release history and phase summaries |
+| [security policy](SECURITY.md) | vulnerability reporting, deployment hardening |
+
 ## status
 
 | phase | description | status |
