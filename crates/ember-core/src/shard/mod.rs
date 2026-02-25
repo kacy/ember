@@ -445,6 +445,36 @@ pub enum ShardRequest {
         key: String,
         members: Vec<String>,
     },
+    /// LMOVE: atomically pops from source and pushes to destination.
+    LMove {
+        source: String,
+        destination: String,
+        src_left: bool,
+        dst_left: bool,
+    },
+    /// GETDEL: returns the value at key and deletes it.
+    GetDel {
+        key: String,
+    },
+    /// GETEX: returns the value at key and optionally updates its TTL.
+    ///
+    /// `expire`: `None` = no change, `Some(None)` = persist, `Some(Some(ms))` = new TTL in ms.
+    GetEx {
+        key: String,
+        expire: Option<Option<u64>>,
+    },
+    /// ZDIFF: returns members in the first sorted set not in the others.
+    ZDiff {
+        keys: Vec<String>,
+    },
+    /// ZINTER: returns members present in all sorted sets, scores summed.
+    ZInter {
+        keys: Vec<String>,
+    },
+    /// ZUNION: returns the union of all sorted sets, scores summed.
+    ZUnion {
+        keys: Vec<String>,
+    },
     /// Returns the key count for this shard.
     DbSize,
     /// Returns keyspace stats for this shard.
@@ -661,6 +691,9 @@ impl ShardRequest {
             | ShardRequest::SUnionStore { .. }
             | ShardRequest::SInterStore { .. }
             | ShardRequest::SDiffStore { .. }
+            | ShardRequest::LMove { .. }
+            | ShardRequest::GetDel { .. }
+            | ShardRequest::GetEx { .. }
             | ShardRequest::FlushDb
             | ShardRequest::FlushDbAsync
             | ShardRequest::RestoreKey { .. } => true,
@@ -1821,6 +1854,44 @@ fn dispatch(
         },
         ShardRequest::SMisMember { key, members } => match ks.smismember(key, members) {
             Ok(results) => ShardResponse::BoolArray(results),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LMove {
+            source,
+            destination,
+            src_left,
+            dst_left,
+        } => match ks.lmove(source, destination, *src_left, *dst_left) {
+            Ok(Some(v)) => ShardResponse::Value(Some(Value::String(v))),
+            Ok(None) => ShardResponse::Value(None),
+            Err(e) => match e {
+                WriteError::WrongType => ShardResponse::WrongType,
+                WriteError::OutOfMemory => ShardResponse::OutOfMemory,
+            },
+        },
+        ShardRequest::GetDel { key } => match ks.getdel(key) {
+            Ok(Some(v)) => ShardResponse::Value(Some(Value::String(v))),
+            Ok(None) => ShardResponse::Value(None),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::GetEx { key, expire } => {
+            let dur = expire.map(|opt| opt.map(Duration::from_millis));
+            match ks.getex(key, dur) {
+                Ok(Some(v)) => ShardResponse::Value(Some(Value::String(v))),
+                Ok(None) => ShardResponse::Value(None),
+                Err(_) => ShardResponse::WrongType,
+            }
+        }
+        ShardRequest::ZDiff { keys } => match ks.zdiff(keys) {
+            Ok(pairs) => ShardResponse::ScoredArray(pairs),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZInter { keys } => match ks.zinter(keys) {
+            Ok(pairs) => ShardResponse::ScoredArray(pairs),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZUnion { keys } => match ks.zunion(keys) {
+            Ok(pairs) => ShardResponse::ScoredArray(pairs),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::SScan {

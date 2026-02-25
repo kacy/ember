@@ -15,6 +15,33 @@ use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Converts a [`SetExpire`] option to a [`Duration`] relative to now.
+///
+/// EX/PX are relative; EXAT/PXAT are unix timestamps that are converted to
+/// a duration by subtracting the current wall time. A past timestamp results
+/// in a zero duration (the key expires immediately).
+fn set_expire_to_duration(expire: SetExpire) -> Duration {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    match expire {
+        SetExpire::Ex(secs) => Duration::from_secs(secs),
+        SetExpire::Px(ms) => Duration::from_millis(ms),
+        SetExpire::ExAt(ts) => {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            Duration::from_secs(ts.saturating_sub(now))
+        }
+        SetExpire::PxAt(ts_ms) => {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            Duration::from_millis(ts_ms.saturating_sub(now_ms))
+        }
+    }
+}
+
 /// Executes a parsed command and returns the response frame.
 ///
 /// Ping and Echo are handled inline (no shard routing needed).
@@ -108,10 +135,7 @@ pub(super) async fn execute(
             nx,
             xx,
         } => {
-            let duration = expire.map(|e| match e {
-                SetExpire::Ex(secs) => Duration::from_secs(secs),
-                SetExpire::Px(millis) => Duration::from_millis(millis),
-            });
+            let duration = expire.map(|e| set_expire_to_duration(e));
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::Set {
                 key,
@@ -1529,6 +1553,140 @@ pub(super) async fn execute(
                         .map(|b| Frame::Integer(i64::from(b)))
                         .collect(),
                 ),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::LMove {
+            source,
+            destination,
+            src_left,
+            dst_left,
+        } => {
+            // route to the source key's shard
+            let idx = engine.shard_for_key(&source);
+            let req = ShardRequest::LMove {
+                source,
+                destination,
+                src_left,
+                dst_left,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::GetDel { key } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::GetDel { key };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::GetEx { key, expire } => {
+            let idx = engine.shard_for_key(&key);
+            // convert SetExpire into an Option<Option<u64>> (milliseconds from now)
+            let expire_ms: Option<Option<u64>> = expire.map(|opt| {
+                opt.map(|se| match se {
+                    SetExpire::Ex(s) => Duration::from_secs(s).as_millis() as u64,
+                    SetExpire::Px(ms) => ms,
+                    SetExpire::ExAt(ts) => {
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let now_s = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        Duration::from_secs(ts.saturating_sub(now_s)).as_millis() as u64
+                    }
+                    SetExpire::PxAt(ts_ms) => {
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let now_ms = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        ts_ms.saturating_sub(now_ms)
+                    }
+                })
+            });
+            let req = ShardRequest::GetEx { key, expire: expire_ms };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZDiff { keys, with_scores } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZDiff { keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZInter { keys, with_scores } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZInter { keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZUnion { keys, with_scores } => {
+            let key = keys.first().cloned().unwrap_or_default();
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZUnion { keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ScoredArray(items)) => {
+                    let mut frames = Vec::new();
+                    for (member, score) in items {
+                        frames.push(Frame::Bulk(Bytes::from(member)));
+                        if with_scores {
+                            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+                        }
+                    }
+                    Frame::Array(frames)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),

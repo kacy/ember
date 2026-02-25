@@ -502,6 +502,45 @@ impl Keyspace {
         Ok(len)
     }
 
+    /// Atomically pops a value from `source` and pushes it to `destination`.
+    ///
+    /// `src_left` controls whether to pop from the head (true) or tail (false)
+    /// of the source. `dst_left` controls whether to push to the head (true)
+    /// or tail (false) of the destination. Source and destination may be the
+    /// same key (rotate). Returns `Ok(None)` if the source list is missing.
+    pub fn lmove(
+        &mut self,
+        source: &str,
+        destination: &str,
+        src_left: bool,
+        dst_left: bool,
+    ) -> Result<Option<Bytes>, WriteError> {
+        if self.remove_if_expired(source) {
+            return Ok(None);
+        }
+        match self.entries.get(source) {
+            None => return Ok(None),
+            Some(e) if !matches!(e.value, Value::List(_)) => return Err(WriteError::WrongType),
+            _ => {}
+        }
+
+        if source != destination {
+            self.remove_if_expired(destination);
+            if let Some(e) = self.entries.get(destination) {
+                if !matches!(e.value, Value::List(_)) {
+                    return Err(WriteError::WrongType);
+                }
+            }
+        }
+
+        let popped = self.list_pop(source, src_left).map_err(WriteError::from)?;
+        let Some(value) = popped else {
+            return Ok(None);
+        };
+        self.list_push(destination, &[value.clone()], dst_left)?;
+        Ok(Some(value))
+    }
+
     /// Internal pop implementation shared by lpop/rpop.
     pub(super) fn list_pop(&mut self, key: &str, left: bool) -> Result<Option<Bytes>, WrongType> {
         if self.remove_if_expired(key) {
@@ -1237,5 +1276,45 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.lpos("s", b"a", 1, 1, 0).is_err());
+    }
+
+    #[test]
+    fn lmove_left_to_right() {
+        let mut ks = Keyspace::new();
+        ks.rpush("src", &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")])
+            .unwrap();
+        let moved = ks.lmove("src", "dst", true, false).unwrap();
+        assert_eq!(moved, Some(Bytes::from("a")));
+        // src should now be [b, c]
+        assert_eq!(ks.lrange("src", 0, -1).unwrap(), vec![Bytes::from("b"), Bytes::from("c")]);
+        // dst should be [a]
+        assert_eq!(ks.lrange("dst", 0, -1).unwrap(), vec![Bytes::from("a")]);
+    }
+
+    #[test]
+    fn lmove_rotate_same_key() {
+        let mut ks = Keyspace::new();
+        ks.rpush("q", &[Bytes::from("1"), Bytes::from("2"), Bytes::from("3")])
+            .unwrap();
+        // rotate: pop from left, push to right
+        let moved = ks.lmove("q", "q", true, false).unwrap();
+        assert_eq!(moved, Some(Bytes::from("1")));
+        let items = ks.lrange("q", 0, -1).unwrap();
+        assert_eq!(items, vec![Bytes::from("2"), Bytes::from("3"), Bytes::from("1")]);
+    }
+
+    #[test]
+    fn lmove_missing_source() {
+        let mut ks = Keyspace::new();
+        let moved = ks.lmove("missing", "dst", true, true).unwrap();
+        assert_eq!(moved, None);
+        assert!(!ks.exists("dst"));
+    }
+
+    #[test]
+    fn lmove_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("hello"), None, false, false);
+        assert!(ks.lmove("s", "dst", true, true).is_err());
     }
 }

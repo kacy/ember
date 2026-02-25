@@ -231,6 +231,81 @@ impl Keyspace {
         }
     }
 
+    /// Returns the value of a key and deletes it atomically.
+    ///
+    /// Returns `Ok(None)` if the key does not exist or has expired.
+    /// Returns `Err(WrongType)` if the key holds a non-string value.
+    pub fn getdel(&mut self, key: &str) -> Result<Option<Bytes>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+        match self.entries.get(key) {
+            None => return Ok(None),
+            Some(e) if !matches!(e.value, Value::String(_)) => return Err(WrongType),
+            _ => {}
+        }
+        let entry = self.entries.remove(key).expect("verified above");
+        let bytes = match entry.value {
+            Value::String(ref b) => b.clone(),
+            _ => unreachable!("type checked above"),
+        };
+        self.memory
+            .remove_with_size(entry.cached_value_size as usize + key.len() + memory::ENTRY_OVERHEAD);
+        self.decrement_expiry_if_set(&entry);
+        self.remove_version(key);
+        Ok(Some(bytes))
+    }
+
+    /// Returns the value of a key and optionally updates its expiry.
+    ///
+    /// `expire` controls what happens to the TTL:
+    /// - `None` — leave the TTL unchanged (plain GET semantics)
+    /// - `Some(None)` — remove the TTL (PERSIST semantics)
+    /// - `Some(Some(duration))` — set a new TTL from now
+    ///
+    /// Returns `Ok(None)` if the key does not exist or has expired.
+    /// Returns `Err(WrongType)` if the key holds a non-string value.
+    pub fn getex(
+        &mut self,
+        key: &str,
+        expire: Option<Option<Duration>>,
+    ) -> Result<Option<Bytes>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+
+        let (bytes, had_expiry) = match self.entries.get(key) {
+            None => return Ok(None),
+            Some(e) => match &e.value {
+                Value::String(b) => (b.clone(), e.expires_at_ms != 0),
+                _ => return Err(WrongType),
+            },
+        };
+
+        if let Some(new_expire) = expire {
+            let entry = self.entries.get_mut(key).expect("verified above");
+            match new_expire {
+                Some(duration) => {
+                    entry.expires_at_ms =
+                        time::now_ms().saturating_add(duration.as_millis() as u64);
+                    if !had_expiry {
+                        self.expiry_count += 1;
+                    }
+                }
+                None => {
+                    entry.expires_at_ms = 0;
+                    if had_expiry {
+                        self.expiry_count = self.expiry_count.saturating_sub(1);
+                    }
+                }
+            }
+            entry.touch(self.track_access);
+            self.bump_version(key);
+        }
+
+        Ok(Some(bytes))
+    }
+
     /// Appends a value to an existing string key, or creates a new key if
     /// it doesn't exist. Returns the new string length.
     pub fn append(&mut self, key: &str, value: &[u8]) -> Result<usize, WriteError> {
@@ -892,5 +967,66 @@ mod tests {
     fn format_float_decimals() {
         assert_eq!(super::format_float(2.72), "2.72");
         assert_eq!(super::format_float(10.5), "10.5");
+    }
+
+    #[test]
+    fn getdel_returns_value_and_removes_key() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("hello"), None, false, false);
+        let val = ks.getdel("k").unwrap();
+        assert_eq!(val, Some(Bytes::from("hello")));
+        assert!(!ks.exists("k"));
+        assert_eq!(ks.stats().used_bytes, 0);
+    }
+
+    #[test]
+    fn getdel_missing_key_returns_none() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.getdel("nope").unwrap(), None);
+    }
+
+    #[test]
+    fn getdel_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "a".into())], &ZAddFlags::default())
+            .unwrap();
+        assert!(ks.getdel("z").is_err());
+    }
+
+    #[test]
+    fn getex_no_option_leaves_ttl_unchanged() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), Some(Duration::from_secs(60)), false, false);
+        let ttl_before = ks.ttl("k");
+        let val = ks.getex("k", None).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        let ttl_after = ks.ttl("k");
+        // ttl should still be set (both should be positive)
+        assert!(matches!(ttl_before, TtlResult::Seconds(_)));
+        assert!(matches!(ttl_after, TtlResult::Seconds(_)));
+    }
+
+    #[test]
+    fn getex_persist_clears_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), Some(Duration::from_secs(60)), false, false);
+        let val = ks.getex("k", Some(None)).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        assert!(matches!(ks.ttl("k"), TtlResult::NoExpiry));
+    }
+
+    #[test]
+    fn getex_set_new_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        let val = ks.getex("k", Some(Some(Duration::from_secs(30)))).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        assert!(matches!(ks.ttl("k"), TtlResult::Seconds(_)));
+    }
+
+    #[test]
+    fn getex_missing_key_returns_none() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.getex("nope", None).unwrap(), None);
     }
 }

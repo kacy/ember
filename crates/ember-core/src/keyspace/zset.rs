@@ -437,6 +437,120 @@ impl Keyspace {
             },
         }
     }
+
+    /// Returns members in the first sorted set that are not in any of the others.
+    ///
+    /// Missing keys are treated as empty sets. Results are ordered by score
+    /// then by member name.
+    pub fn zdiff(&mut self, keys: &[String]) -> Result<Vec<(String, f64)>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        for key in keys {
+            self.remove_if_expired(key);
+        }
+        let first: Vec<(String, f64)> = match self.entries.get(keys[0].as_str()) {
+            None => return Ok(vec![]),
+            Some(e) => match &e.value {
+                Value::SortedSet(ss) => ss.iter().map(|(m, s)| (m.to_owned(), s)).collect(),
+                _ => return Err(WrongType),
+            },
+        };
+        let mut excluded: AHashMap<String, ()> = AHashMap::new();
+        for key in &keys[1..] {
+            match self.entries.get(key.as_str()) {
+                None => {}
+                Some(e) => match &e.value {
+                    Value::SortedSet(ss) => {
+                        for (member, _) in ss.iter() {
+                            excluded.insert(member.to_owned(), ());
+                        }
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        Ok(first
+            .into_iter()
+            .filter(|(m, _)| !excluded.contains_key(m))
+            .collect())
+    }
+
+    /// Returns members present in all of the given sorted sets, with scores summed.
+    ///
+    /// If any key is missing the result is empty. Results are ordered by
+    /// score then member name.
+    pub fn zinter(&mut self, keys: &[String]) -> Result<Vec<(String, f64)>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        for key in keys {
+            self.remove_if_expired(key);
+        }
+        let mut candidates: Vec<(String, f64)> = match self.entries.get(keys[0].as_str()) {
+            None => return Ok(vec![]),
+            Some(e) => match &e.value {
+                Value::SortedSet(ss) => ss.iter().map(|(m, s)| (m.to_owned(), s)).collect(),
+                _ => return Err(WrongType),
+            },
+        };
+        for key in &keys[1..] {
+            match self.entries.get(key.as_str()) {
+                None => return Ok(vec![]),
+                Some(e) => match &e.value {
+                    Value::SortedSet(ss) => {
+                        let lookup: AHashMap<String, f64> =
+                            ss.iter().map(|(m, s)| (m.to_owned(), s)).collect();
+                        candidates = candidates
+                            .into_iter()
+                            .filter_map(|(m, score)| lookup.get(&m).map(|&s| (m, score + s)))
+                            .collect();
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        candidates.sort_by(|(am, as_), (bm, bs)| {
+            as_.partial_cmp(bs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| am.cmp(bm))
+        });
+        Ok(candidates)
+    }
+
+    /// Returns the union of all given sorted sets, with scores summed across keys.
+    ///
+    /// Missing keys contribute no members. Results are ordered by score then
+    /// member name.
+    pub fn zunion(&mut self, keys: &[String]) -> Result<Vec<(String, f64)>, WrongType> {
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+        for key in keys {
+            self.remove_if_expired(key);
+        }
+        let mut totals: AHashMap<String, f64> = AHashMap::new();
+        for key in keys {
+            match self.entries.get(key.as_str()) {
+                None => {}
+                Some(e) => match &e.value {
+                    Value::SortedSet(ss) => {
+                        for (member, score) in ss.iter() {
+                            *totals.entry(member.to_owned()).or_insert(0.0) += score;
+                        }
+                    }
+                    _ => return Err(WrongType),
+                },
+            }
+        }
+        let mut result: Vec<(String, f64)> = totals.into_iter().collect();
+        result.sort_by(|(am, as_), (bm, bs)| {
+            as_.partial_cmp(bs)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| am.cmp(bm))
+        });
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -840,5 +954,72 @@ mod tests {
 
         // original key should be untouched
         assert!(ks.exists("a"));
+    }
+
+    #[test]
+    fn zdiff_returns_members_unique_to_first() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into()), (3.0, "z".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(1.0, "y".into()), (1.0, "w".into())], &ZAddFlags::default()).unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let diff = ks.zdiff(&keys).unwrap();
+        let members: Vec<&str> = diff.iter().map(|(m, _)| m.as_str()).collect();
+        assert!(members.contains(&"x"));
+        assert!(members.contains(&"z"));
+        assert!(!members.contains(&"y"));
+    }
+
+    #[test]
+    fn zdiff_with_missing_second_key_returns_all() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default()).unwrap();
+        let keys = vec!["a".to_owned(), "missing".to_owned()];
+        let diff = ks.zdiff(&keys).unwrap();
+        assert_eq!(diff.len(), 1);
+        assert_eq!(diff[0].0, "x");
+    }
+
+    #[test]
+    fn zinter_returns_common_members_with_summed_scores() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(3.0, "x".into()), (4.0, "z".into())], &ZAddFlags::default()).unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let inter = ks.zinter(&keys).unwrap();
+        assert_eq!(inter.len(), 1);
+        assert_eq!(inter[0].0, "x");
+        assert!((inter[0].1 - 4.0).abs() < f64::EPSILON); // 1.0 + 3.0
+    }
+
+    #[test]
+    fn zinter_empty_when_no_common_members() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(1.0, "y".into())], &ZAddFlags::default()).unwrap();
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        assert!(ks.zinter(&keys).unwrap().is_empty());
+    }
+
+    #[test]
+    fn zunion_combines_all_members_with_summed_scores() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into()), (2.0, "y".into())], &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &[(3.0, "x".into()), (4.0, "z".into())], &ZAddFlags::default()).unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let union = ks.zunion(&keys).unwrap();
+        assert_eq!(union.len(), 3); // x, y, z
+        let x = union.iter().find(|(m, _)| m == "x").unwrap();
+        assert!((x.1 - 4.0).abs() < f64::EPSILON); // 1.0 + 3.0
+    }
+
+    #[test]
+    fn zdiff_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("v"), None, false, false);
+        let keys = vec!["s".to_owned()];
+        assert!(ks.zdiff(&keys).is_err());
     }
 }

@@ -6,13 +6,17 @@
 
 use bytes::Bytes;
 
-/// Expiration option for the SET command.
+/// Expiration option for the SET and GETEX commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetExpire {
     /// EX seconds — expire after N seconds.
     Ex(u64),
     /// PX milliseconds — expire after N milliseconds.
     Px(u64),
+    /// EXAT unix-seconds — expire at an absolute unix timestamp (seconds).
+    ExAt(u64),
+    /// PXAT unix-milliseconds — expire at an absolute unix timestamp (milliseconds).
+    PxAt(u64),
 }
 
 /// A parsed client command, ready for execution.
@@ -237,6 +241,40 @@ pub enum Command {
         count: Option<usize>,
         maxlen: usize,
     },
+
+    /// LMOVE `source` `destination` LEFT|RIGHT LEFT|RIGHT.
+    /// Atomically pops from the source list and pushes to the destination list.
+    LMove {
+        source: String,
+        destination: String,
+        /// Pop from the left (head) if true, right (tail) if false.
+        src_left: bool,
+        /// Push to the left (head) if true, right (tail) if false.
+        dst_left: bool,
+    },
+
+    /// GETDEL `key`. Returns the value of a key and deletes it atomically.
+    GetDel { key: String },
+
+    /// GETEX `key` \[EX seconds | PX ms | EXAT timestamp | PXAT timestamp-ms | PERSIST\].
+    /// Returns the value of a key and optionally updates its expiry.
+    GetEx {
+        key: String,
+        /// `None` — no change; `Some(None)` — remove TTL (PERSIST); `Some(Some(_))` — set TTL.
+        expire: Option<Option<SetExpire>>,
+    },
+
+    /// ZDIFF `numkeys` `key` \[key ...\] \[WITHSCORES\].
+    /// Returns members in the first sorted set not present in the others.
+    ZDiff { keys: Vec<String>, with_scores: bool },
+
+    /// ZINTER `numkeys` `key` \[key ...\] \[WITHSCORES\].
+    /// Returns members present in all of the given sorted sets.
+    ZInter { keys: Vec<String>, with_scores: bool },
+
+    /// ZUNION `numkeys` `key` \[key ...\] \[WITHSCORES\].
+    /// Returns the union of all given sorted sets.
+    ZUnion { keys: Vec<String>, with_scores: bool },
 
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },

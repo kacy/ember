@@ -311,6 +311,61 @@ pub(super) fn to_aof_records(
         (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => {
             smallvec![AofRecord::VRem { key, element }]
         }
+        // LMOVE: persist as lpop from source + lpush to destination.
+        // Only written when a value was actually moved (Value is Some).
+        (
+            ShardRequest::LMove {
+                source,
+                destination,
+                src_left,
+                dst_left,
+            },
+            ShardResponse::Value(Some(v)),
+        ) => {
+            let val = match v {
+                Value::String(b) => b.clone(),
+                _ => return SmallVec::new(),
+            };
+            let pop_record = if src_left {
+                AofRecord::LPop { key: source }
+            } else {
+                AofRecord::RPop { key: source }
+            };
+            let push_record = if dst_left {
+                AofRecord::LPush {
+                    key: destination,
+                    values: vec![val],
+                }
+            } else {
+                AofRecord::RPush {
+                    key: destination,
+                    values: vec![val],
+                }
+            };
+            smallvec![pop_record, push_record]
+        }
+        // GETDEL: persist as DEL when the key actually existed.
+        (ShardRequest::GetDel { key }, ShardResponse::Value(Some(_))) => {
+            smallvec![AofRecord::Del { key }]
+        }
+        // GETEX with a new TTL: persist as Expire (seconds) or Pexpire (ms).
+        // PERSIST (expire = Some(None)) is represented as Pexpire with 0.
+        // No TTL change (expire = None): nothing to persist.
+        (
+            ShardRequest::GetEx {
+                key,
+                expire: Some(new_expire),
+            },
+            ShardResponse::Value(Some(_)),
+        ) => match new_expire {
+            Some(ms) if ms > 0 => {
+                smallvec![AofRecord::Pexpire { key, milliseconds: ms }]
+            }
+            // PERSIST — expire set to 0 in the keyspace; record as pexpire 0
+            // so replay calls persist. We use a negative sentinel to signal
+            // PERSIST on replay: store as Expire with seconds = 0.
+            _ => smallvec![AofRecord::Persist { key }],
+        },
         _ => SmallVec::new(),
     }
 }
