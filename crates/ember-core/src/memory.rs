@@ -46,9 +46,13 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 /// Estimated overhead per entry in the HashMap.
 ///
 /// Accounts for: the CompactString key (24 bytes inline on 64-bit),
-/// Entry struct fields (Value enum tag + Bytes/collection inline storage
-/// + expires_at_ms + cached_value_size + last_access_secs), plus hashbrown per-entry bookkeeping
-///   (1 control byte + empty slot waste at ~87.5% load factor).
+/// Entry struct fields (Value enum tag + Bytes/collection inline storage,
+/// expires_at_ms, cached_value_size, last_access_secs), plus hashbrown
+/// per-entry bookkeeping (1 control byte + empty slot waste at ~87.5%
+/// load factor).
+///
+/// Reduced from 128 to 120 after moving the 8-byte `version` field out of
+/// Entry and into a lazily-populated side table on Keyspace.
 ///
 /// This is calibrated from `std::mem::size_of` on 64-bit platforms. The
 /// exact value varies by compiler version, but precision isn't critical —
@@ -58,7 +62,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// The `entry_overhead_not_too_small` test validates this constant against
 /// the actual struct sizes on each platform.
-pub(crate) const ENTRY_OVERHEAD: usize = 128;
+pub(crate) const ENTRY_OVERHEAD: usize = 120;
 
 /// Tracks memory usage for a single keyspace.
 ///

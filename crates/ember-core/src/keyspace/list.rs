@@ -141,18 +141,17 @@ impl Keyspace {
             (old_len, new_len)
         };
 
-        let ver = self.next_ver();
         let delta = new_len as isize - old_len as isize;
         {
             let entry = self.entries.get_mut(key).expect("key confirmed to exist");
             entry.touch();
-            entry.version = ver;
             if delta > 0 {
                 entry.cached_value_size += delta as usize;
             } else if delta < 0 {
                 entry.cached_value_size = entry.cached_value_size.saturating_sub((-delta) as usize);
             }
         }
+        self.bump_version(key);
         if delta > 0 {
             self.memory.grow_by(delta as usize);
         } else if delta < 0 {
@@ -182,7 +181,6 @@ impl Keyspace {
         let (s, e) = normalize_range(start, stop, len as i64);
 
         let (is_empty, new_value_size) = {
-            let ver = self.next_ver();
             let entry = self.entries.get_mut(key).expect("verified above");
             {
                 let Value::List(ref mut deque) = entry.value else {
@@ -200,7 +198,6 @@ impl Keyspace {
 
             let empty = matches!(&entry.value, Value::List(d) if d.is_empty());
             entry.touch();
-            entry.version = ver;
             let nvs = if !empty {
                 let size = memory::value_size(&entry.value);
                 entry.cached_value_size = size;
@@ -211,6 +208,8 @@ impl Keyspace {
 
             (empty, nvs)
         };
+
+        self.bump_version(key);
 
         if is_empty {
             if let Some(removed) = self.entries.remove(key) {
@@ -265,7 +264,6 @@ impl Keyspace {
             return Err(WriteError::OutOfMemory);
         }
 
-        let ver = self.next_ver();
         let new_len = {
             let entry = match self.entries.get_mut(key) {
                 Some(e) => e,
@@ -283,11 +281,11 @@ impl Keyspace {
             deque.insert(insert_pos, value);
             let len = deque.len() as i64;
             entry.touch();
-            entry.version = ver;
             entry.cached_value_size += element_cost;
             len
         };
 
+        self.bump_version(key);
         self.memory.grow_by(element_cost);
         Ok(new_len)
     }
@@ -311,7 +309,6 @@ impl Keyspace {
         }
 
         let old_entry_size = self.entries.get(key).expect("exists").entry_size(key);
-        let ver = self.next_ver();
 
         let (removed_count, removed_bytes, is_empty) = {
             let entry = self.entries.get_mut(key).expect("exists");
@@ -363,7 +360,6 @@ impl Keyspace {
 
             let empty = deque.is_empty();
             entry.touch();
-            entry.version = ver;
 
             if !empty {
                 entry.cached_value_size = entry.cached_value_size.saturating_sub(bytes);
@@ -371,6 +367,8 @@ impl Keyspace {
 
             (n, bytes, empty)
         };
+
+        self.bump_version(key);
 
         if is_empty {
             if let Some(removed) = self.entries.remove(key) {
@@ -478,23 +476,25 @@ impl Keyspace {
         }
 
         // safe: key was just inserted or confirmed to exist
-        let ver = self.next_ver();
-        let entry = self.entries.get_mut(key).unwrap();
-        let Value::List(ref mut deque) = entry.value else {
-            unreachable!("type verified by ensure_collection_type");
-        };
-        for val in values {
-            if left {
-                deque.push_front(val.clone());
-            } else {
-                deque.push_back(val.clone());
+        let len = {
+            let entry = self.entries.get_mut(key).unwrap();
+            let Value::List(ref mut deque) = entry.value else {
+                unreachable!("type verified by ensure_collection_type");
+            };
+            for val in values {
+                if left {
+                    deque.push_front(val.clone());
+                } else {
+                    deque.push_back(val.clone());
+                }
             }
-        }
-        let len = deque.len();
-        entry.touch();
-        entry.version = ver;
-        entry.cached_value_size += element_increase;
+            let len = deque.len();
+            entry.touch();
+            entry.cached_value_size += element_increase;
+            len
+        };
 
+        self.bump_version(key);
         // apply the known delta — no need to rescan the entire list
         self.memory.grow_by(element_increase);
 
@@ -507,27 +507,30 @@ impl Keyspace {
             return Ok(None);
         }
 
-        let ver = self.next_ver();
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(None);
-        };
-        if !matches!(entry.value, Value::List(_)) {
-            return Err(WrongType);
-        }
+        let (popped, is_empty) = {
+            let Some(entry) = self.entries.get_mut(key) else {
+                return Ok(None);
+            };
+            if !matches!(entry.value, Value::List(_)) {
+                return Err(WrongType);
+            }
 
-        let Value::List(ref mut deque) = entry.value else {
-            // checked above
-            return Err(WrongType);
-        };
-        let popped = if left {
-            deque.pop_front()
-        } else {
-            deque.pop_back()
-        };
-        entry.touch();
-        entry.version = ver;
+            let Value::List(ref mut deque) = entry.value else {
+                // checked above
+                return Err(WrongType);
+            };
+            let popped = if left {
+                deque.pop_front()
+            } else {
+                deque.pop_back()
+            };
+            entry.touch();
 
-        let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
+            let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
+            (popped, is_empty)
+        };
+
+        self.bump_version(key);
         if let Some(ref elem) = popped {
             let element_size = elem.len() + memory::VECDEQUE_ELEMENT_OVERHEAD;
             let old_size = if is_empty {

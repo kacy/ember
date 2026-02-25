@@ -82,7 +82,6 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
@@ -98,12 +97,13 @@ impl Keyspace {
             }
         }
         entry.touch();
-        if !removed.is_empty() {
-            entry.version = ver;
-        }
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
+
+        if !removed.is_empty() {
+            self.bump_version(key);
+        }
 
         Ok(removed)
     }
@@ -346,7 +346,6 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
@@ -363,12 +362,15 @@ impl Keyspace {
         };
 
         if !popped.is_empty() {
-            entry.version = ver;
             entry.touch();
         }
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
+
+        if !popped.is_empty() {
+            self.bump_version(key);
+        }
 
         Ok(popped)
     }
@@ -386,7 +388,6 @@ impl Keyspace {
             return Err(WrongType);
         }
 
-        let ver = self.next_ver();
         let Some(entry) = self.entries.get_mut(key) else {
             return Ok(vec![]);
         };
@@ -403,12 +404,15 @@ impl Keyspace {
         };
 
         if !popped.is_empty() {
-            entry.version = ver;
             entry.touch();
         }
 
         let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
         self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
+
+        if !popped.is_empty() {
+            self.bump_version(key);
+        }
 
         Ok(popped)
     }

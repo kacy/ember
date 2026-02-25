@@ -138,9 +138,9 @@ impl Keyspace {
             }
         }
 
-        let mut entry = Entry::new(new_value, expire);
-        entry.version = self.next_ver();
-        self.entries.insert(CompactString::from(key), entry);
+        let entry = Entry::new(new_value, expire);
+        self.entries.insert(CompactString::from(key.clone()), entry);
+        self.bump_version(&key);
         SetResult::Ok
     }
 
