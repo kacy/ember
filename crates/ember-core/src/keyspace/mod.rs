@@ -1662,7 +1662,7 @@ mod tests {
 
     #[test]
     fn noeviction_returns_oom_when_full() {
-        // one entry with key "a" + value "val" = 1 + 3 + 100 = 104 bytes
+        // one entry with key "a" + value "val" = 1 + 3 + 104 = 108 bytes
         // set limit so one entry fits but two don't
         let config = ShardConfig {
             max_memory: Some(130),
