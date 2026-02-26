@@ -476,6 +476,15 @@ pub enum Command {
     /// HMGET `key` `field` \[field ...\]. Gets multiple field values from a hash.
     HMGet { key: String, fields: Vec<String> },
 
+    /// HRANDFIELD `key` \[count \[WITHVALUES\]\].
+    /// Returns random field(s) from a hash. Positive count returns distinct fields;
+    /// negative allows duplicates. With WITHVALUES, returns interleaved field-value pairs.
+    HRandField {
+        key: String,
+        count: Option<i64>,
+        with_values: bool,
+    },
+
     /// SADD `key` `member` \[member ...\]. Adds members to a set.
     SAdd { key: String, members: Vec<String> },
 
@@ -511,6 +520,15 @@ pub enum Command {
 
     /// SRANDMEMBER `key` \[count\]. Returns random members without removing them.
     SRandMember { key: String, count: Option<i64> },
+
+    /// ZRANDMEMBER `key` \[count \[WITHSCORES\]\].
+    /// Returns random member(s) from a sorted set. Positive count returns distinct members;
+    /// negative allows duplicates. With WITHSCORES, returns interleaved member-score pairs.
+    ZRandMember {
+        key: String,
+        count: Option<i64>,
+        with_scores: bool,
+    },
 
     /// SPOP `key` \[count\]. Removes and returns random members.
     SPop { key: String, count: usize },

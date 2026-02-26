@@ -299,6 +299,84 @@ impl Keyspace {
             _ => Err(WrongType),
         }
     }
+
+    /// Returns random field(s) from a hash.
+    ///
+    /// - `count = None`: return one random field (no value, even if `with_values` is set)
+    /// - `count > 0`: return up to count distinct fields
+    /// - `count < 0`: return |count| fields, allowing duplicates
+    ///
+    /// If `with_values` is true and count is `Some`, returns interleaved `(field, Some(value))`
+    /// pairs. When `count` is `None`, only the field name is returned as `(field, None)`.
+    pub fn hrandfield(
+        &mut self,
+        key: &str,
+        count: Option<i64>,
+        with_values: bool,
+    ) -> Result<Vec<(String, Option<Bytes>)>, WrongType> {
+        let Some(entry) = self.get_live_entry(key) else {
+            return Ok(vec![]);
+        };
+        let Value::Hash(ref hash) = entry.value else {
+            return Err(WrongType);
+        };
+        if hash.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // collect into a vec for indexed random access
+        let fields: Vec<(&str, &[u8])> = hash.iter().collect();
+        let mut rng = rand::rng();
+
+        let result = match count {
+            None => {
+                // single random field — no value even with with_values
+                use rand::seq::IteratorRandom;
+                fields
+                    .iter()
+                    .choose(&mut rng)
+                    .map(|(f, _)| ((*f).to_owned(), None))
+                    .into_iter()
+                    .collect()
+            }
+            Some(n) if n > 0 => {
+                use rand::seq::IteratorRandom;
+                let n = (n as usize).min(fields.len());
+                fields
+                    .iter()
+                    .choose_multiple(&mut rng, n)
+                    .into_iter()
+                    .map(|(f, v)| {
+                        let val = if with_values {
+                            Some(Bytes::copy_from_slice(v))
+                        } else {
+                            None
+                        };
+                        ((*f).to_owned(), val)
+                    })
+                    .collect()
+            }
+            Some(n) => {
+                // negative count: allow duplicates, return |n| entries
+                use rand::Rng;
+                let n = n.unsigned_abs() as usize;
+                (0..n)
+                    .map(|_| {
+                        let idx = rng.random_range(0..fields.len());
+                        let (f, v) = fields[idx];
+                        let val = if with_values {
+                            Some(Bytes::copy_from_slice(v))
+                        } else {
+                            None
+                        };
+                        (f.to_owned(), val)
+                    })
+                    .collect()
+            }
+        };
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -663,5 +741,107 @@ mod tests {
         // hash should be auto-deleted
         assert_eq!(ks.len(), 0);
         assert!(!ks.exists("h"));
+    }
+
+    // --- hrandfield ---
+
+    #[test]
+    fn hrandfield_no_count_returns_single_field() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("a".into(), Bytes::from("1")),
+                ("b".into(), Bytes::from("2")),
+                ("c".into(), Bytes::from("3")),
+            ],
+        )
+        .unwrap();
+        let result = ks.hrandfield("h", None, false).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(["a", "b", "c"].contains(&result[0].0.as_str()));
+        // no count means no value, even with_values would be ignored
+        assert!(result[0].1.is_none());
+    }
+
+    #[test]
+    fn hrandfield_positive_count_distinct() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("a".into(), Bytes::from("1")),
+                ("b".into(), Bytes::from("2")),
+                ("c".into(), Bytes::from("3")),
+            ],
+        )
+        .unwrap();
+        let result = ks.hrandfield("h", Some(2), false).unwrap();
+        assert_eq!(result.len(), 2);
+        // all returned should be valid fields
+        for (f, v) in &result {
+            assert!(["a", "b", "c"].contains(&f.as_str()));
+            assert!(v.is_none());
+        }
+        // distinct
+        let unique: std::collections::HashSet<_> = result.iter().map(|(f, _)| f).collect();
+        assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn hrandfield_positive_count_capped_at_hash_size() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("a".into(), Bytes::from("1")),
+                ("b".into(), Bytes::from("2")),
+            ],
+        )
+        .unwrap();
+        let result = ks.hrandfield("h", Some(10), false).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn hrandfield_negative_count_allows_duplicates() {
+        let mut ks = Keyspace::new();
+        ks.hset("h", &[("only".into(), Bytes::from("v"))]).unwrap();
+        let result = ks.hrandfield("h", Some(-5), false).unwrap();
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|(f, _)| f == "only"));
+    }
+
+    #[test]
+    fn hrandfield_with_values() {
+        let mut ks = Keyspace::new();
+        ks.hset(
+            "h",
+            &[
+                ("field".into(), Bytes::from("value")),
+                ("other".into(), Bytes::from("data")),
+            ],
+        )
+        .unwrap();
+        let result = ks.hrandfield("h", Some(2), true).unwrap();
+        assert_eq!(result.len(), 2);
+        for (f, v) in &result {
+            assert!(["field", "other"].contains(&f.as_str()));
+            assert!(v.is_some());
+        }
+    }
+
+    #[test]
+    fn hrandfield_missing_key_returns_empty() {
+        let mut ks = Keyspace::new();
+        assert!(ks.hrandfield("missing", None, false).unwrap().is_empty());
+        assert!(ks.hrandfield("missing", Some(5), true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn hrandfield_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.hrandfield("s", None, false).is_err());
     }
 }

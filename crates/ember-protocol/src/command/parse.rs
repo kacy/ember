@@ -162,6 +162,7 @@ impl Command {
             "ZDIFF" => parse_zset_multi("ZDIFF", &frames[1..]),
             "ZINTER" => parse_zset_multi("ZINTER", &frames[1..]),
             "ZUNION" => parse_zset_multi("ZUNION", &frames[1..]),
+            "ZRANDMEMBER" => parse_zrandmember(&frames[1..]),
             "HSET" => parse_hset(&frames[1..]),
             "HGET" => parse_hget(&frames[1..]),
             "HGETALL" => parse_hgetall(&frames[1..]),
@@ -172,6 +173,7 @@ impl Command {
             "HKEYS" => parse_hkeys(&frames[1..]),
             "HVALS" => parse_hvals(&frames[1..]),
             "HMGET" => parse_hmget(&frames[1..]),
+            "HRANDFIELD" => parse_hrandfield(&frames[1..]),
             "SADD" => parse_sadd(&frames[1..]),
             "SREM" => parse_srem(&frames[1..]),
             "SMEMBERS" => parse_smembers(&frames[1..]),
@@ -2005,6 +2007,33 @@ fn parse_hmget(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::HMGet { key, fields })
 }
 
+fn parse_hrandfield(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("HRANDFIELD"));
+    }
+    let key = extract_string(&args[0])?;
+    let (count, with_values) = match args.len() {
+        1 => (None, false),
+        2 => (Some(parse_i64(&args[1], "HRANDFIELD")?), false),
+        3 => {
+            let count = parse_i64(&args[1], "HRANDFIELD")?;
+            let flag = extract_string(&args[2])?.to_ascii_uppercase();
+            if flag != "WITHVALUES" {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "HRANDFIELD: expected WITHVALUES".into(),
+                ));
+            }
+            (Some(count), true)
+        }
+        _ => return Err(wrong_arity("HRANDFIELD")),
+    };
+    Ok(Command::HRandField {
+        key,
+        count,
+        with_values,
+    })
+}
+
 // --- set commands ---
 
 fn parse_sadd(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -3555,6 +3584,33 @@ fn parse_zset_multi(cmd: &'static str, args: &[Frame]) -> Result<Command, Protoc
         "ZUNION" => Ok(Command::ZUnion { keys, with_scores }),
         _ => Err(wrong_arity(cmd)),
     }
+}
+
+fn parse_zrandmember(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("ZRANDMEMBER"));
+    }
+    let key = extract_string(&args[0])?;
+    let (count, with_scores) = match args.len() {
+        1 => (None, false),
+        2 => (Some(parse_i64(&args[1], "ZRANDMEMBER")?), false),
+        3 => {
+            let count = parse_i64(&args[1], "ZRANDMEMBER")?;
+            let flag = extract_string(&args[2])?.to_ascii_uppercase();
+            if flag != "WITHSCORES" {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "ZRANDMEMBER: expected WITHSCORES".into(),
+                ));
+            }
+            (Some(count), true)
+        }
+        _ => return Err(wrong_arity("ZRANDMEMBER")),
+    };
+    Ok(Command::ZRandMember {
+        key,
+        count,
+        with_scores,
+    })
 }
 
 fn parse_wait(args: &[Frame]) -> Result<Command, ProtocolError> {

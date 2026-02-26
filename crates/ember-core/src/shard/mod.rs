@@ -455,6 +455,12 @@ pub enum ShardRequest {
         key: String,
         fields: Vec<String>,
     },
+    /// HRANDFIELD — returns random field(s) from a hash; read-only, no AOF.
+    HRandField {
+        key: String,
+        count: Option<i64>,
+        with_values: bool,
+    },
     SAdd {
         key: String,
         members: Vec<String>,
@@ -563,6 +569,12 @@ pub enum ShardRequest {
     /// ZUNION: returns the union of all sorted sets, scores summed.
     ZUnion {
         keys: Vec<String>,
+    },
+    /// ZRANDMEMBER — returns random member(s) from a sorted set; read-only, no AOF.
+    ZRandMember {
+        key: String,
+        count: Option<i64>,
+        with_scores: bool,
     },
     /// Returns the key count for this shard.
     DbSize,
@@ -875,6 +887,10 @@ pub enum ShardResponse {
     CollectionScan { cursor: u64, items: Vec<Bytes> },
     /// HGETALL result: all field-value pairs.
     HashFields(Vec<(String, Bytes)>),
+    /// HRANDFIELD result: field names with optional values.
+    HRandFieldResult(Vec<(String, Option<Bytes>)>),
+    /// ZRANDMEMBER result: member names with optional scores.
+    ZRandMemberResult(Vec<(String, Option<f64>)>),
     /// HDEL result: removed count + field names for AOF.
     HDelLen { count: usize, removed: Vec<String> },
     /// Array of strings (e.g. HKEYS).
@@ -2017,6 +2033,14 @@ fn dispatch(
             Ok(vals) => ShardResponse::OptionalArray(vals),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::HRandField {
+            key,
+            count,
+            with_values,
+        } => match ks.hrandfield(key, *count, *with_values) {
+            Ok(pairs) => ShardResponse::HRandFieldResult(pairs),
+            Err(_) => ShardResponse::WrongType,
+        },
         ShardRequest::SAdd { key, members } => write_result_len(ks.sadd(key, members)),
         ShardRequest::SRem { key, members } => match ks.srem(key, members) {
             Ok(count) => ShardResponse::Len(count),
@@ -2120,6 +2144,14 @@ fn dispatch(
         },
         ShardRequest::ZUnion { keys } => match ks.zunion(keys) {
             Ok(pairs) => ShardResponse::ScoredArray(pairs),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZRandMember {
+            key,
+            count,
+            with_scores,
+        } => match ks.zrandmember(key, *count, *with_scores) {
+            Ok(pairs) => ShardResponse::ZRandMemberResult(pairs),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::SScan {

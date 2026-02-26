@@ -133,6 +133,7 @@ impl Command {
             Command::ZDiff { .. } => "zdiff",
             Command::ZInter { .. } => "zinter",
             Command::ZUnion { .. } => "zunion",
+            Command::ZRandMember { .. } => "zrandmember",
 
             // hash
             Command::HSet { .. } => "hset",
@@ -145,6 +146,7 @@ impl Command {
             Command::HKeys { .. } => "hkeys",
             Command::HVals { .. } => "hvals",
             Command::HMGet { .. } => "hmget",
+            Command::HRandField { .. } => "hrandfield",
 
             // set
             Command::SAdd { .. } => "sadd",
@@ -459,9 +461,10 @@ impl Command {
             Command::Lmpop { .. } => WRITE | LIST | SLOW,
 
             // sorted set — reads (Redis 6.2+)
-            Command::ZDiff { .. } | Command::ZInter { .. } | Command::ZUnion { .. } => {
-                READ | SORTEDSET | SLOW
-            }
+            Command::ZDiff { .. }
+            | Command::ZInter { .. }
+            | Command::ZUnion { .. }
+            | Command::ZRandMember { .. } => READ | SORTEDSET | SLOW,
 
             // string extras (Redis 6.2+)
             Command::GetDel { .. } | Command::GetEx { .. } => WRITE | STRING | FAST,
@@ -476,7 +479,8 @@ impl Command {
             Command::HGetAll { .. }
             | Command::HKeys { .. }
             | Command::HVals { .. }
-            | Command::HMGet { .. } => READ | HASH | SLOW,
+            | Command::HMGet { .. }
+            | Command::HRandField { .. } => READ | HASH | SLOW,
 
             // hash — writes
             Command::HSet { .. } | Command::HDel { .. } | Command::HIncrBy { .. } => {
@@ -642,6 +646,8 @@ impl Command {
             | Command::HKeys { key }
             | Command::HVals { key }
             | Command::HMGet { key, .. }
+            | Command::HRandField { key, .. }
+            | Command::ZRandMember { key, .. }
             | Command::SAdd { key, .. }
             | Command::SRem { key, .. }
             | Command::SMembers { key }

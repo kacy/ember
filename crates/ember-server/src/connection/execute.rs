@@ -1765,6 +1765,46 @@ pub(super) async fn execute(
             }
         }
 
+        Command::HRandField {
+            key,
+            count,
+            with_values,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HRandField {
+                key,
+                count,
+                with_values,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::HRandFieldResult(pairs)) => {
+                    if count.is_none() {
+                        // no count: return a single bulk string (or nil if empty)
+                        match pairs.into_iter().next() {
+                            Some((field, _)) => Frame::Bulk(Bytes::from(field)),
+                            None => Frame::Null,
+                        }
+                    } else {
+                        // with count: return array, interleaved with values if requested
+                        let frames: Vec<Frame> = pairs
+                            .into_iter()
+                            .flat_map(|(f, v)| {
+                                let mut items = vec![Frame::Bulk(Bytes::from(f))];
+                                if let Some(val) = v {
+                                    items.push(Frame::Bulk(val));
+                                }
+                                items
+                            })
+                            .collect();
+                        Frame::Array(frames)
+                    }
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         // --- set commands ---
         Command::SAdd { key, members } => {
             let idx = engine.shard_for_key(&key);
@@ -2208,6 +2248,46 @@ pub(super) async fn execute(
                         }
                     }
                     Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZRandMember {
+            key,
+            count,
+            with_scores,
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::ZRandMember {
+                key,
+                count,
+                with_scores,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZRandMemberResult(pairs)) => {
+                    if count.is_none() {
+                        // no count: return a single bulk string (or nil if empty)
+                        match pairs.into_iter().next() {
+                            Some((member, _)) => Frame::Bulk(Bytes::from(member)),
+                            None => Frame::Null,
+                        }
+                    } else {
+                        // with count: return array, interleaved with scores if requested
+                        let frames: Vec<Frame> = pairs
+                            .into_iter()
+                            .flat_map(|(m, s)| {
+                                let mut items = vec![Frame::Bulk(Bytes::from(m))];
+                                if let Some(score) = s {
+                                    items.push(Frame::Bulk(Bytes::from(score.to_string())));
+                                }
+                                items
+                            })
+                            .collect();
+                        Frame::Array(frames)
+                    }
                 }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
