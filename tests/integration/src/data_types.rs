@@ -408,3 +408,130 @@ async fn sintercard_missing_key_returns_zero() {
 
     assert_eq!(c.get_int(&["SINTERCARD", "2", "s", "missing"]).await, 0);
 }
+
+// --- LMPOP ---
+
+#[tokio::test]
+async fn lmpop_returns_first_nonempty_list() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    // first key is empty, second has data
+    c.cmd(&["RPUSH", "b", "x", "y", "z"]).await;
+
+    let resp = c.cmd(&["LMPOP", "2", "a", "b", "LEFT"]).await;
+    match resp {
+        Frame::Array(outer) => {
+            assert_eq!(outer.len(), 2);
+            // first element is the key name
+            assert!(matches!(&outer[0], Frame::Bulk(k) if k == &b"b"[..]));
+            // second is an array of popped elements (default count=1)
+            match &outer[1] {
+                Frame::Array(items) => {
+                    assert_eq!(items.len(), 1);
+                    assert!(matches!(&items[0], Frame::Bulk(v) if v == &b"x"[..]));
+                }
+                other => panic!("expected inner Array, got {other:?}"),
+            }
+        }
+        other => panic!("expected outer Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn lmpop_count_pops_multiple() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["RPUSH", "lst", "1", "2", "3", "4"]).await;
+
+    let resp = c.cmd(&["LMPOP", "1", "lst", "RIGHT", "COUNT", "3"]).await;
+    match resp {
+        Frame::Array(outer) => {
+            assert_eq!(outer.len(), 2);
+            match &outer[1] {
+                Frame::Array(items) => {
+                    // pops 3 from the right: 4, 3, 2
+                    assert_eq!(items.len(), 3);
+                    assert!(matches!(&items[0], Frame::Bulk(v) if v == &b"4"[..]));
+                    assert!(matches!(&items[1], Frame::Bulk(v) if v == &b"3"[..]));
+                    assert!(matches!(&items[2], Frame::Bulk(v) if v == &b"2"[..]));
+                }
+                other => panic!("expected inner Array, got {other:?}"),
+            }
+        }
+        other => panic!("expected outer Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn lmpop_all_empty_returns_nil() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["LMPOP", "2", "empty1", "empty2", "LEFT"]).await;
+    assert!(matches!(resp, Frame::Null));
+}
+
+// --- ZMPOP ---
+
+#[tokio::test]
+async fn zmpop_min_pops_lowest_score() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    // first key missing, second has data
+    c.cmd(&["ZADD", "scores", "1", "alice", "2", "bob", "3", "carol"])
+        .await;
+
+    let resp = c.cmd(&["ZMPOP", "2", "missing", "scores", "MIN"]).await;
+    match resp {
+        Frame::Array(outer) => {
+            assert_eq!(outer.len(), 2);
+            assert!(matches!(&outer[0], Frame::Bulk(k) if k == &b"scores"[..]));
+            match &outer[1] {
+                Frame::Array(pairs) => {
+                    // one (member, score) pair flattened
+                    assert_eq!(pairs.len(), 2);
+                    assert!(matches!(&pairs[0], Frame::Bulk(m) if m == &b"alice"[..]));
+                    assert!(matches!(&pairs[1], Frame::Bulk(s) if s == &b"1"[..]));
+                }
+                other => panic!("expected pairs Array, got {other:?}"),
+            }
+        }
+        other => panic!("expected outer Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn zmpop_count_pops_multiple() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["ZADD", "z", "10", "a", "20", "b", "30", "c"]).await;
+
+    let resp = c.cmd(&["ZMPOP", "1", "z", "MAX", "COUNT", "2"]).await;
+    match resp {
+        Frame::Array(outer) => {
+            match &outer[1] {
+                Frame::Array(pairs) => {
+                    // 2 members popped from MAX: c(30) then b(20), flattened
+                    assert_eq!(pairs.len(), 4);
+                    assert!(matches!(&pairs[0], Frame::Bulk(m) if m == &b"c"[..]));
+                    assert!(matches!(&pairs[2], Frame::Bulk(m) if m == &b"b"[..]));
+                }
+                other => panic!("expected pairs Array, got {other:?}"),
+            }
+        }
+        other => panic!("expected outer Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn zmpop_all_empty_returns_nil() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["ZMPOP", "2", "nope1", "nope2", "MIN"]).await;
+    assert!(matches!(resp, Frame::Null));
+}

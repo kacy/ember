@@ -124,6 +124,8 @@ impl Command {
             Command::ZRevRangeByScore { .. } => "zrevrangebyscore",
             Command::ZPopMin { .. } => "zpopmin",
             Command::ZPopMax { .. } => "zpopmax",
+            Command::Lmpop { .. } => "lmpop",
+            Command::Zmpop { .. } => "zmpop",
             Command::ZDiff { .. } => "zdiff",
             Command::ZInter { .. } => "zinter",
             Command::ZUnion { .. } => "zunion",
@@ -282,6 +284,8 @@ impl Command {
                 | Command::ZIncrBy { .. }
                 | Command::ZPopMin { .. }
                 | Command::ZPopMax { .. }
+                | Command::Lmpop { .. }
+                | Command::Zmpop { .. }
             // hash
                 | Command::HSet { .. }
                 | Command::HDel { .. }
@@ -436,7 +440,11 @@ impl Command {
             | Command::ZRem { .. }
             | Command::ZIncrBy { .. }
             | Command::ZPopMin { .. }
-            | Command::ZPopMax { .. } => WRITE | SORTEDSET | SLOW,
+            | Command::ZPopMax { .. }
+            | Command::Zmpop { .. } => WRITE | SORTEDSET | SLOW,
+
+            // list — multi-key pop (Redis 7.0+)
+            Command::Lmpop { .. } => WRITE | LIST | SLOW,
 
             // sorted set — reads (Redis 6.2+)
             Command::ZDiff { .. } | Command::ZInter { .. } | Command::ZUnion { .. } => {
@@ -664,7 +672,9 @@ impl Command {
             | Command::SInterCard { keys, .. }
             | Command::ZDiff { keys, .. }
             | Command::ZInter { keys, .. }
-            | Command::ZUnion { keys, .. } => keys.first().map(String::as_str),
+            | Command::ZUnion { keys, .. }
+            | Command::Lmpop { keys, .. }
+            | Command::Zmpop { keys, .. } => keys.first().map(String::as_str),
             Command::SUnionStore { dest, .. }
             | Command::SInterStore { dest, .. }
             | Command::SDiffStore { dest, .. } => Some(dest),

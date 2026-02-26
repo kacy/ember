@@ -153,6 +153,8 @@ impl Command {
                 let (key, count) = parse_zpop_args(&frames[1..], "ZPOPMAX")?;
                 Ok(Command::ZPopMax { key, count })
             }
+            "LMPOP" => parse_lmpop(&frames[1..]),
+            "ZMPOP" => parse_zmpop(&frames[1..]),
             "ZDIFF" => parse_zset_multi("ZDIFF", &frames[1..]),
             "ZINTER" => parse_zset_multi("ZINTER", &frames[1..]),
             "ZUNION" => parse_zset_multi("ZUNION", &frames[1..]),
@@ -1745,6 +1747,100 @@ fn parse_zpop_args(args: &[Frame], cmd: &'static str) -> Result<(String, usize),
         1
     };
     Ok((key, count))
+}
+
+// LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT n]
+fn parse_lmpop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 {
+        return Err(wrong_arity("LMPOP"));
+    }
+    let numkeys = parse_u64(&args[0], "LMPOP")? as usize;
+    if numkeys == 0 || args.len() < 1 + numkeys + 1 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "LMPOP numkeys must match key count".into(),
+        ));
+    }
+    let keys: Vec<String> = args[1..=numkeys]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    let dir = extract_string(&args[numkeys + 1])?.to_ascii_uppercase();
+    let left = match dir.as_str() {
+        "LEFT" => true,
+        "RIGHT" => false,
+        _ => {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "LMPOP: direction must be LEFT or RIGHT".into(),
+            ))
+        }
+    };
+    let count = if args.len() == numkeys + 4 {
+        let tag = extract_string(&args[numkeys + 2])?.to_ascii_uppercase();
+        if tag != "COUNT" {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "LMPOP: expected COUNT".into(),
+            ));
+        }
+        let n = parse_u64(&args[numkeys + 3], "LMPOP")? as usize;
+        if n == 0 {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "LMPOP: COUNT must be positive".into(),
+            ));
+        }
+        n
+    } else if args.len() == numkeys + 2 {
+        1
+    } else {
+        return Err(wrong_arity("LMPOP"));
+    };
+    Ok(Command::Lmpop { keys, left, count })
+}
+
+// ZMPOP numkeys key [key ...] MIN|MAX [COUNT n]
+fn parse_zmpop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 {
+        return Err(wrong_arity("ZMPOP"));
+    }
+    let numkeys = parse_u64(&args[0], "ZMPOP")? as usize;
+    if numkeys == 0 || args.len() < 1 + numkeys + 1 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "ZMPOP numkeys must match key count".into(),
+        ));
+    }
+    let keys: Vec<String> = args[1..=numkeys]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    let order = extract_string(&args[numkeys + 1])?.to_ascii_uppercase();
+    let min = match order.as_str() {
+        "MIN" => true,
+        "MAX" => false,
+        _ => {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "ZMPOP: order must be MIN or MAX".into(),
+            ))
+        }
+    };
+    let count = if args.len() == numkeys + 4 {
+        let tag = extract_string(&args[numkeys + 2])?.to_ascii_uppercase();
+        if tag != "COUNT" {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "ZMPOP: expected COUNT".into(),
+            ));
+        }
+        let n = parse_u64(&args[numkeys + 3], "ZMPOP")? as usize;
+        if n == 0 {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "ZMPOP: COUNT must be positive".into(),
+            ));
+        }
+        n
+    } else if args.len() == numkeys + 2 {
+        1
+    } else {
+        return Err(wrong_arity("ZMPOP"));
+    };
+    Ok(Command::Zmpop { keys, min, count })
 }
 
 // --- hash commands ---

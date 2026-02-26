@@ -401,6 +401,24 @@ pub enum Command {
     /// ZPOPMAX `key` \[count\]. Removes and returns the highest scored members.
     ZPopMax { key: String, count: usize },
 
+    /// LMPOP `numkeys` `key` \[key ...\] LEFT|RIGHT \[COUNT n\].
+    /// Tries keys left-to-right, popping up to `count` elements from the first
+    /// non-empty list. Returns `[key_name, [elem, ...]]` or nil if all empty.
+    Lmpop {
+        keys: Vec<String>,
+        left: bool,
+        count: usize,
+    },
+
+    /// ZMPOP `numkeys` `key` \[key ...\] MIN|MAX \[COUNT n\].
+    /// Tries keys left-to-right, popping up to `count` elements from the first
+    /// non-empty sorted set. Returns `[key_name, [[member, score], ...]]` or nil.
+    Zmpop {
+        keys: Vec<String>,
+        min: bool,
+        count: usize,
+    },
+
     /// HSET `key` `field` `value` \[field value ...\]. Sets field-value pairs in a hash.
     HSet {
         key: String,

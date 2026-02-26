@@ -1406,6 +1406,65 @@ pub(super) async fn execute(
             }
         }
 
+        Command::Lmpop { keys, left, count } => {
+            for key in &keys {
+                let idx = engine.shard_for_key(key);
+                let req = ShardRequest::LmpopSingle {
+                    key: key.clone(),
+                    left,
+                    count,
+                };
+                match engine.send_to_shard(idx, req).await {
+                    Ok(ShardResponse::Array(items)) if !items.is_empty() => {
+                        let elems = Frame::Array(items.into_iter().map(Frame::Bulk).collect());
+                        return Frame::Array(vec![Frame::Bulk(Bytes::from(key.clone())), elems]);
+                    }
+                    Ok(ShardResponse::Array(_)) | Ok(ShardResponse::Value(None)) => continue,
+                    Ok(ShardResponse::WrongType) => return wrongtype_error(),
+                    Ok(other) => {
+                        return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                    }
+                    Err(e) => return Frame::Error(format!("ERR {e}")),
+                }
+            }
+            Frame::Null
+        }
+
+        Command::Zmpop { keys, min, count } => {
+            for key in &keys {
+                let idx = engine.shard_for_key(key);
+                let req = ShardRequest::ZmpopSingle {
+                    key: key.clone(),
+                    min,
+                    count,
+                };
+                match engine.send_to_shard(idx, req).await {
+                    Ok(ShardResponse::ZPopResult(members)) if !members.is_empty() => {
+                        let pairs: Vec<Frame> = members
+                            .into_iter()
+                            .flat_map(|(m, s)| {
+                                vec![
+                                    Frame::Bulk(Bytes::from(m)),
+                                    Frame::Bulk(Bytes::from(format!("{s}"))),
+                                ]
+                            })
+                            .collect();
+                        return Frame::Array(vec![
+                            Frame::Bulk(Bytes::from(key.clone())),
+                            Frame::Array(pairs),
+                        ]);
+                    }
+                    Ok(ShardResponse::ZPopResult(_)) | Ok(ShardResponse::Value(None)) => continue,
+                    Ok(ShardResponse::WrongType) => return wrongtype_error(),
+                    Ok(other) => {
+                        return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                    }
+                    Err(e) => return Frame::Error(format!("ERR {e}")),
+                }
+            }
+            Frame::Null
+        }
+
         // --- hash commands ---
         Command::HSet { key, fields } => {
             let idx = engine.shard_for_key(&key);
