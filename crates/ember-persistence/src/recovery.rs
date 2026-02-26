@@ -553,6 +553,87 @@ fn replay_aof(
                     *data = Bytes::from(buf);
                 }
             }
+            AofRecord::SetBit { key, offset, value } => {
+                let entry = map
+                    .entry(key)
+                    .or_insert_with(|| (RecoveredValue::String(Bytes::new()), -1));
+                if let RecoveredValue::String(ref mut data) = entry.0 {
+                    let byte_idx = (offset / 8) as usize;
+                    let bit_pos = 7 - (offset % 8) as u32;
+                    let mask = 1u8 << bit_pos;
+                    let new_len = data.len().max(byte_idx + 1);
+                    let mut buf = data.to_vec();
+                    buf.resize(new_len, 0);
+                    if value == 1 {
+                        buf[byte_idx] |= mask;
+                    } else {
+                        buf[byte_idx] &= !mask;
+                    }
+                    *data = Bytes::from(buf);
+                }
+            }
+            AofRecord::BitOp { op, dest, keys } => {
+                // op byte: 0=AND, 1=OR, 2=XOR, 3=NOT (matches aof.rs encoding)
+                let sources: Vec<Bytes> = keys
+                    .iter()
+                    .map(|k| {
+                        map.get(k)
+                            .and_then(|(v, _)| {
+                                if let RecoveredValue::String(b) = v {
+                                    Some(b.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let result_len = sources.iter().map(|s| s.len()).max().unwrap_or(0);
+                let mut result = vec![0u8; result_len];
+                match op {
+                    3 => {
+                        // NOT
+                        let src = sources.first().map(|b| b.as_ref()).unwrap_or(&[]);
+                        for (i, b) in result.iter_mut().enumerate() {
+                            *b = if i < src.len() { !src[i] } else { 0xFF };
+                        }
+                    }
+                    0 => {
+                        // AND
+                        if let Some(first) = sources.first() {
+                            for (i, b) in result.iter_mut().enumerate() {
+                                *b = if i < first.len() { first[i] } else { 0 };
+                            }
+                        }
+                        for src in sources.iter().skip(1) {
+                            for (i, b) in result.iter_mut().enumerate() {
+                                *b &= if i < src.len() { src[i] } else { 0 };
+                            }
+                        }
+                    }
+                    1 => {
+                        // OR
+                        for src in &sources {
+                            for (i, b) in result.iter_mut().enumerate() {
+                                if i < src.len() {
+                                    *b |= src[i];
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        // XOR (op == 2)
+                        for src in &sources {
+                            for (i, b) in result.iter_mut().enumerate() {
+                                if i < src.len() {
+                                    *b ^= src[i];
+                                }
+                            }
+                        }
+                    }
+                }
+                map.insert(dest, (RecoveredValue::String(Bytes::from(result)), -1));
+            }
             AofRecord::Rename { key, newkey } => {
                 if let Some(entry) = map.remove(&key) {
                     map.insert(newkey, entry);

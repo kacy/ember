@@ -8,7 +8,7 @@ use bytes::Bytes;
 use crate::error::ProtocolError;
 use crate::types::Frame;
 
-use super::{Command, ScoreBound, SetExpire, ZAddFlags};
+use super::{BitOpKind, BitRange, BitRangeUnit, Command, ScoreBound, SetExpire, ZAddFlags};
 
 /// Maximum number of dimensions in a vector. 65,536 is generous for any
 /// real-world embedding model (OpenAI: 1536, Cohere: 4096) while preventing
@@ -89,6 +89,11 @@ impl Command {
             "PSETEX" => parse_psetex(&frames[1..]),
             "GETRANGE" | "SUBSTR" => parse_getrange(&frames[1..]),
             "SETRANGE" => parse_setrange(&frames[1..]),
+            "GETBIT" => parse_getbit(&frames[1..]),
+            "SETBIT" => parse_setbit(&frames[1..]),
+            "BITCOUNT" => parse_bitcount(&frames[1..]),
+            "BITPOS" => parse_bitpos(&frames[1..]),
+            "BITOP" => parse_bitop(&frames[1..]),
             "KEYS" => parse_keys(&frames[1..]),
             "RENAME" => parse_rename(&frames[1..]),
             "DEL" => parse_del(&frames[1..]),
@@ -606,6 +611,140 @@ fn parse_setrange(args: &[Frame]) -> Result<Command, ProtocolError> {
     let offset = parse_u64(&args[1], "SETRANGE")? as usize;
     let value = extract_bytes(&args[2])?;
     Ok(Command::SetRange { key, offset, value })
+}
+
+/// GETBIT key offset.
+fn parse_getbit(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("GETBIT"));
+    }
+    let key = extract_string(&args[0])?;
+    let offset = parse_u64(&args[1], "GETBIT")?;
+    Ok(Command::GetBit { key, offset })
+}
+
+/// SETBIT key offset value.
+fn parse_setbit(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("SETBIT"));
+    }
+    let key = extract_string(&args[0])?;
+    let offset = parse_u64(&args[1], "SETBIT")?;
+    let raw = parse_u64(&args[2], "SETBIT")?;
+    if raw > 1 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "SETBIT: bit value must be 0 or 1".into(),
+        ));
+    }
+    Ok(Command::SetBit {
+        key,
+        offset,
+        value: raw as u8,
+    })
+}
+
+/// Parses an optional `[start end [BYTE|BIT]]` suffix for BITCOUNT / BITPOS.
+///
+/// Accepts 0, 2, or 3 trailing arguments. Returns `None` when there are none.
+fn parse_bit_range(args: &[Frame], cmd: &str) -> Result<Option<BitRange>, ProtocolError> {
+    match args.len() {
+        0 => Ok(None),
+        2 | 3 => {
+            let start = parse_i64(&args[0], cmd)?;
+            let end = parse_i64(&args[1], cmd)?;
+            let unit = if args.len() == 3 {
+                let mut kw = [0u8; MAX_KEYWORD_LEN];
+                match uppercase_arg(&args[2], &mut kw)? {
+                    "BYTE" => BitRangeUnit::Byte,
+                    "BIT" => BitRangeUnit::Bit,
+                    other => {
+                        return Err(ProtocolError::InvalidCommandFrame(format!(
+                            "{cmd}: invalid unit '{other}', expected BYTE or BIT"
+                        )));
+                    }
+                }
+            } else {
+                BitRangeUnit::Byte
+            };
+            Ok(Some(BitRange { start, end, unit }))
+        }
+        _ => Err(ProtocolError::InvalidCommandFrame(format!(
+            "{cmd}: wrong number of arguments"
+        ))),
+    }
+}
+
+/// BITCOUNT key [start end [BYTE|BIT]].
+fn parse_bitcount(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("BITCOUNT"));
+    }
+    let key = extract_string(&args[0])?;
+    let range = parse_bit_range(&args[1..], "BITCOUNT")?;
+    Ok(Command::BitCount { key, range })
+}
+
+/// BITPOS key bit [start [end [BYTE|BIT]]].
+///
+/// Redis allows 1, 2, or 3 trailing args (start, start+end, start+end+unit).
+/// No trailing args means "search the whole string".
+fn parse_bitpos(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("BITPOS"));
+    }
+    let key = extract_string(&args[0])?;
+    let raw = parse_u64(&args[1], "BITPOS")?;
+    if raw > 1 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "BITPOS: bit value must be 0 or 1".into(),
+        ));
+    }
+    let bit = raw as u8;
+    let range = match args.len() - 2 {
+        0 => None,
+        1 => {
+            let start = parse_i64(&args[2], "BITPOS")?;
+            Some(BitRange {
+                start,
+                end: -1,
+                unit: BitRangeUnit::Byte,
+            })
+        }
+        2 | 3 => parse_bit_range(&args[2..], "BITPOS")?,
+        _ => {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "BITPOS: wrong number of arguments".into(),
+            ))
+        }
+    };
+    Ok(Command::BitPos { key, bit, range })
+}
+
+/// BITOP AND|OR|XOR|NOT destkey key [key ...].
+fn parse_bitop(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 3 {
+        return Err(wrong_arity("BITOP"));
+    }
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    let op = match uppercase_arg(&args[0], &mut kw)? {
+        "AND" => BitOpKind::And,
+        "OR" => BitOpKind::Or,
+        "XOR" => BitOpKind::Xor,
+        "NOT" => BitOpKind::Not,
+        other => {
+            return Err(ProtocolError::InvalidCommandFrame(format!(
+                "BITOP: unknown operation '{other}'"
+            )));
+        }
+    };
+    let dest = extract_string(&args[1])?;
+    let keys = extract_strings(&args[2..])?;
+    if op == BitOpKind::Not && keys.len() != 1 {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "BITOP NOT must be called with a single source key".into(),
+        ));
+    }
+    Ok(Command::BitOp { op, dest, keys })
 }
 
 fn parse_keys(args: &[Frame]) -> Result<Command, ProtocolError> {

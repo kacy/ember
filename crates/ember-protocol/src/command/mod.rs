@@ -73,6 +73,41 @@ pub enum Command {
         value: Bytes,
     },
 
+    /// GETBIT `key` `offset`. Returns the bit at `offset` in the string stored at key.
+    ///
+    /// Bit ordering is big-endian (Redis compatible): byte 0 holds bits 0–7, MSB first.
+    /// Returns 0 if the key does not exist.
+    GetBit { key: String, offset: u64 },
+
+    /// SETBIT `key` `offset` `value`. Sets or clears the bit at `offset`.
+    ///
+    /// The string is automatically grown to accommodate the offset.
+    /// Returns the original bit value.
+    SetBit { key: String, offset: u64, value: u8 },
+
+    /// BITCOUNT `key` \[start end \[BYTE\|BIT\]\]. Counts set bits in the string,
+    /// optionally restricted to a byte or bit range.
+    BitCount {
+        key: String,
+        range: Option<BitRange>,
+    },
+
+    /// BITPOS `key` `bit` \[start \[end \[BYTE\|BIT\]\]\]. Returns the position of the
+    /// first set (`bit=1`) or clear (`bit=0`) bit in the string.
+    BitPos {
+        key: String,
+        bit: u8,
+        range: Option<BitRange>,
+    },
+
+    /// BITOP `operation` `destkey` `key` \[key ...\]. Performs a bitwise operation
+    /// across source strings and stores the result in `destkey`.
+    BitOp {
+        op: BitOpKind,
+        dest: String,
+        keys: Vec<String>,
+    },
+
     /// KEYS `pattern`. Returns all keys matching a glob pattern.
     Keys { pattern: String },
 
@@ -788,6 +823,32 @@ pub enum Command {
 
     /// A command we don't recognize (yet).
     Unknown(String),
+}
+
+/// Unit for BITCOUNT and BITPOS range arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitRangeUnit {
+    /// Byte-granularity range (default for Redis).
+    Byte,
+    /// Bit-granularity range (Redis 7.0+).
+    Bit,
+}
+
+/// Range argument for BITCOUNT and BITPOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitRange {
+    pub start: i64,
+    pub end: i64,
+    pub unit: BitRangeUnit,
+}
+
+/// Operation kind for BITOP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitOpKind {
+    And,
+    Or,
+    Xor,
+    Not,
 }
 
 /// A score bound for sorted set range queries (ZRANGEBYSCORE, ZCOUNT, etc.).

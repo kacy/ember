@@ -105,6 +105,10 @@ const TAG_LINSERT: u8 = 30;
 const TAG_LREM: u8 = 31;
 const TAG_SETRANGE: u8 = 32;
 
+// bitmap
+const TAG_SETBIT: u8 = 33;
+const TAG_BITOP: u8 = 34;
+
 // vector
 #[cfg(feature = "vector")]
 const TAG_VADD: u8 = 25;
@@ -203,6 +207,16 @@ pub enum AofRecord {
         offset: usize,
         value: Bytes,
     },
+    /// SETBIT key offset value. Replays the bit mutation verbatim.
+    SetBit { key: String, offset: u64, value: u8 },
+    /// BITOP op destkey key [key ...]. Replays the bitwise operation.
+    ///
+    /// `op` is stored as a raw byte: 0=AND, 1=OR, 2=XOR, 3=NOT.
+    BitOp {
+        op: u8,
+        dest: String,
+        keys: Vec<String>,
+    },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
     /// COPY source destination [REPLACE].
@@ -279,6 +293,8 @@ impl AofRecord {
             AofRecord::DecrBy { .. } => TAG_DECRBY,
             AofRecord::Append { .. } => TAG_APPEND,
             AofRecord::SetRange { .. } => TAG_SETRANGE,
+            AofRecord::SetBit { .. } => TAG_SETBIT,
+            AofRecord::BitOp { .. } => TAG_BITOP,
             AofRecord::Rename { .. } => TAG_RENAME,
             AofRecord::Copy { .. } => TAG_COPY,
             #[cfg(feature = "vector")]
@@ -373,6 +389,13 @@ impl AofRecord {
             }
             AofRecord::SetRange { key, value, .. } => {
                 1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + value.len()
+            }
+            // 1 tag + 4 key-len + key + 8 offset + 1 value
+            AofRecord::SetBit { key, .. } => 1 + LEN_PREFIX + key.len() + 8 + 1,
+            // 1 tag + 1 op + 4 dest-len + dest + 4 count + (4 key-len + key) * n
+            AofRecord::BitOp { dest, keys, .. } => {
+                let keys_size: usize = keys.iter().map(|k| LEN_PREFIX + k.len()).sum();
+                1 + 1 + LEN_PREFIX + dest.len() + 4 + keys_size
             }
             AofRecord::Rename { key, newkey } => {
                 1 + LEN_PREFIX + key.len() + LEN_PREFIX + newkey.len()
@@ -558,6 +581,24 @@ impl AofRecord {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_i64(&mut buf, *offset as i64)?;
                 format::write_bytes(&mut buf, value)?;
+            }
+
+            // key + offset (as i64) + bit value (u8)
+            AofRecord::SetBit { key, offset, value } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                // offset is u64 but fits in i64 in practice (max bit offset < 2^32)
+                format::write_i64(&mut buf, *offset as i64)?;
+                format::write_u8(&mut buf, *value)?;
+            }
+
+            // op byte + dest + key list
+            AofRecord::BitOp { op, dest, keys } => {
+                format::write_u8(&mut buf, *op)?;
+                format::write_bytes(&mut buf, dest.as_bytes())?;
+                format::write_len(&mut buf, keys.len())?;
+                for key in keys {
+                    format::write_bytes(&mut buf, key.as_bytes())?;
+                }
             }
 
             // key + newkey
@@ -812,6 +853,23 @@ impl AofRecord {
                     destination,
                     replace,
                 })
+            }
+            TAG_SETBIT => {
+                let key = read_string(&mut cursor, "key")?;
+                let offset = format::read_i64(&mut cursor)? as u64;
+                let value = format::read_u8(&mut cursor)?;
+                Ok(AofRecord::SetBit { key, offset, value })
+            }
+            TAG_BITOP => {
+                let op = format::read_u8(&mut cursor)?;
+                if op > 3 {
+                    return Err(FormatError::InvalidData(format!(
+                        "BITOP: unknown op byte {op} in AOF record"
+                    )));
+                }
+                let dest = read_string(&mut cursor, "dest")?;
+                let keys = read_string_list(&mut cursor, "key")?;
+                Ok(AofRecord::BitOp { op, dest, keys })
             }
             #[cfg(feature = "vector")]
             TAG_VADD => {

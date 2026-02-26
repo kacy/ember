@@ -317,6 +317,63 @@ pub(super) async fn execute(
             }
         }
 
+        Command::GetBit { key, offset } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::GetBit { key, offset };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(bit)) => Frame::Integer(bit),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::SetBit { key, offset, value } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::SetBit { key, offset, value };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(old_bit)) => Frame::Integer(old_bit),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::BitCount { key, range } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::BitCount { key, range };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::BitPos { key, bit, range } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::BitPos { key, bit, range };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(pos)) => Frame::Integer(pos),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::BitOp { op, dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::BitOp { op, dest, keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(len)) => Frame::Integer(len),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::IncrByFloat { key, delta } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::IncrByFloat { key, delta };
