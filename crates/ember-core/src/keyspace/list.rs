@@ -53,6 +53,46 @@ impl Keyspace {
         self.list_pop(key, false)
     }
 
+    /// Pops up to `count` values from the head of a list.
+    ///
+    /// Returns `Ok(None)` if the key doesn't exist or is empty. Returns
+    /// `Ok(Some(items))` with 1–count elements otherwise. Removes the key
+    /// when the list becomes empty. Returns `Err(WrongType)` on type mismatch.
+    pub fn lpop_count(&mut self, key: &str, count: usize) -> Result<Option<Vec<Bytes>>, WrongType> {
+        let mut items = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.lpop(key)? {
+                Some(v) => items.push(v),
+                None => break,
+            }
+        }
+        if items.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(items))
+        }
+    }
+
+    /// Pops up to `count` values from the tail of a list.
+    ///
+    /// Returns `Ok(None)` if the key doesn't exist or is empty. Returns
+    /// `Ok(Some(items))` with 1–count elements otherwise. Removes the key
+    /// when the list becomes empty. Returns `Err(WrongType)` on type mismatch.
+    pub fn rpop_count(&mut self, key: &str, count: usize) -> Result<Option<Vec<Bytes>>, WrongType> {
+        let mut items = Vec::with_capacity(count);
+        for _ in 0..count {
+            match self.rpop(key)? {
+                Some(v) => items.push(v),
+                None => break,
+            }
+        }
+        if items.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(items))
+        }
+    }
+
     /// Returns a range of elements from a list by index.
     ///
     /// Supports negative indices (e.g. -1 = last element). Out-of-bounds
@@ -1325,5 +1365,62 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("hello"), None, false, false);
         assert!(ks.lmove("s", "dst", true, true).is_err());
+    }
+
+    #[test]
+    fn lpop_count_pops_multiple_from_head() {
+        let mut ks = Keyspace::new();
+        ks.rpush(
+            "l",
+            &[
+                Bytes::from("a"),
+                Bytes::from("b"),
+                Bytes::from("c"),
+                Bytes::from("d"),
+            ],
+        )
+        .unwrap();
+        let result = ks.lpop_count("l", 3).unwrap();
+        assert_eq!(
+            result,
+            Some(vec![Bytes::from("a"), Bytes::from("b"), Bytes::from("c")])
+        );
+        // one item left
+        assert_eq!(ks.llen("l").unwrap(), 1);
+    }
+
+    #[test]
+    fn rpop_count_pops_multiple_from_tail() {
+        let mut ks = Keyspace::new();
+        ks.rpush("l", &[Bytes::from("a"), Bytes::from("b"), Bytes::from("c")])
+            .unwrap();
+        let result = ks.rpop_count("l", 2).unwrap();
+        assert_eq!(result, Some(vec![Bytes::from("c"), Bytes::from("b")]));
+        assert_eq!(ks.llen("l").unwrap(), 1);
+    }
+
+    #[test]
+    fn lpop_count_missing_key_returns_none() {
+        let mut ks = Keyspace::new();
+        assert_eq!(ks.lpop_count("missing", 5).unwrap(), None);
+    }
+
+    #[test]
+    fn lpop_count_capped_at_list_size() {
+        let mut ks = Keyspace::new();
+        ks.rpush("l", &[Bytes::from("x"), Bytes::from("y")])
+            .unwrap();
+        // request more than available
+        let result = ks.lpop_count("l", 10).unwrap();
+        assert_eq!(result, Some(vec![Bytes::from("x"), Bytes::from("y")]));
+        // key deleted after emptied
+        assert!(!ks.exists("l"));
+    }
+
+    #[test]
+    fn lpop_count_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("hello"), None, false, false);
+        assert!(ks.lpop_count("s", 1).is_err());
     }
 }

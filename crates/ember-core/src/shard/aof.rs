@@ -114,6 +114,30 @@ pub(super) fn to_aof_records(
                 members: items.iter().map(|(m, _)| m.clone()).collect(),
             }]
         }
+        // LMPOP single-key: persist as individual lpop/rpop records
+        (ShardRequest::LmpopSingle { key, left, .. }, ShardResponse::Array(items))
+            if !items.is_empty() =>
+        {
+            let n = items.len();
+            let mut records = SmallVec::with_capacity(n);
+            for _ in 0..n {
+                if left {
+                    records.push(AofRecord::LPop { key: key.clone() });
+                } else {
+                    records.push(AofRecord::RPop { key: key.clone() });
+                }
+            }
+            records
+        }
+        // ZMPOP single-key: persist as ZREM of the popped members
+        (ShardRequest::ZmpopSingle { key, .. }, ShardResponse::ZPopResult(items))
+            if !items.is_empty() =>
+        {
+            smallvec![AofRecord::ZRem {
+                key,
+                members: items.iter().map(|(m, _)| m.clone()).collect(),
+            }]
+        }
         (ShardRequest::Incr { key }, ShardResponse::Integer(_)) => {
             smallvec![AofRecord::Incr { key }]
         }

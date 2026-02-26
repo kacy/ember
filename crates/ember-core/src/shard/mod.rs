@@ -386,6 +386,18 @@ pub enum ShardRequest {
         key: String,
         count: usize,
     },
+    /// LMPOP single-key sub-request: pop up to `count` items from one list.
+    LmpopSingle {
+        key: String,
+        left: bool,
+        count: usize,
+    },
+    /// ZMPOP single-key sub-request: pop up to `count` items from one sorted set.
+    ZmpopSingle {
+        key: String,
+        min: bool,
+        count: usize,
+    },
     HSet {
         key: String,
         fields: Vec<(String, Bytes)>,
@@ -740,6 +752,8 @@ impl ShardRequest {
             | ShardRequest::ZIncrBy { .. }
             | ShardRequest::ZPopMin { .. }
             | ShardRequest::ZPopMax { .. }
+            | ShardRequest::LmpopSingle { .. }
+            | ShardRequest::ZmpopSingle { .. }
             | ShardRequest::HSet { .. }
             | ShardRequest::HDel { .. }
             | ShardRequest::HIncrBy { .. }
@@ -1873,6 +1887,30 @@ fn dispatch(
             Ok(items) => ShardResponse::ZPopResult(items),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::LmpopSingle { key, left, count } => {
+            let result = if *left {
+                ks.lpop_count(key, *count)
+            } else {
+                ks.rpop_count(key, *count)
+            };
+            match result {
+                Ok(Some(items)) => ShardResponse::Array(items),
+                Ok(None) => ShardResponse::Value(None),
+                Err(_) => ShardResponse::WrongType,
+            }
+        }
+        ShardRequest::ZmpopSingle { key, min, count } => {
+            let result = if *min {
+                ks.zpopmin(key, *count)
+            } else {
+                ks.zpopmax(key, *count)
+            };
+            match result {
+                Ok(items) if !items.is_empty() => ShardResponse::ZPopResult(items),
+                Ok(_) => ShardResponse::Value(None),
+                Err(_) => ShardResponse::WrongType,
+            }
+        }
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
         ShardRequest::KeyVersion { ref key } => ShardResponse::Version(ks.key_version(key)),
