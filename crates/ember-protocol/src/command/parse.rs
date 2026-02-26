@@ -212,6 +212,7 @@ impl Command {
             "TIME" => parse_no_args("TIME", &frames[1..], Command::Time),
             "LASTSAVE" => parse_no_args("LASTSAVE", &frames[1..], Command::LastSave),
             "ROLE" => parse_no_args("ROLE", &frames[1..], Command::Role),
+            "WAIT" => parse_wait(&frames[1..]),
             "OBJECT" => parse_object(&frames[1..]),
             "COPY" => parse_copy(&frames[1..]),
             "CLIENT" => parse_client(&frames[1..]),
@@ -3192,4 +3193,22 @@ fn parse_zset_multi(cmd: &'static str, args: &[Frame]) -> Result<Command, Protoc
         "ZUNION" => Ok(Command::ZUnion { keys, with_scores }),
         _ => Err(wrong_arity(cmd)),
     }
+}
+
+fn parse_wait(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("WAIT"));
+    }
+    let numreplicas_str = extract_string(&args[0])?;
+    let timeout_ms_str = extract_string(&args[1])?;
+    let numreplicas = numreplicas_str.parse::<u64>().map_err(|_| {
+        ProtocolError::InvalidCommandFrame("WAIT numreplicas must be an integer".into())
+    })?;
+    let timeout_ms = timeout_ms_str.parse::<u64>().map_err(|_| {
+        ProtocolError::InvalidCommandFrame("WAIT timeout must be an integer".into())
+    })?;
+    Ok(Command::Wait {
+        numreplicas,
+        timeout_ms,
+    })
 }

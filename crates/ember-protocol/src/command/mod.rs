@@ -723,6 +723,14 @@ pub enum Command {
     /// ROLE. Returns the replication role of the server.
     Role,
 
+    /// WAIT numreplicas timeout-ms
+    ///
+    /// Blocks until `numreplicas` replicas have acknowledged all write
+    /// commands processed before this WAIT, or until `timeout_ms`
+    /// milliseconds elapse. Returns the count of replicas that
+    /// acknowledged in time.
+    Wait { numreplicas: u64, timeout_ms: u64 },
+
     /// OBJECT ENCODING `key`. Returns the internal encoding of the value.
     ObjectEncoding { key: String },
 

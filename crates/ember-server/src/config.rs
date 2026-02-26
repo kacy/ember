@@ -59,6 +59,14 @@ pub fn parse_byte_size(input: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("byte size overflow: '{input}'"))
 }
 
+/// Parses a memory size string. Accepts all formats from `parse_byte_size`
+/// plus "0" as a special value meaning "unlimited".
+///
+/// This is the right function for maxmemory values.
+pub fn parse_memory_size(input: &str) -> Result<usize, String> {
+    parse_byte_size(input)
+}
+
 /// Parses an eviction policy name from a CLI string.
 pub fn parse_eviction_policy(input: &str) -> Result<EvictionPolicy, String> {
     match input.to_ascii_lowercase().as_str() {
@@ -575,13 +583,16 @@ impl std::fmt::Debug for ConfigRegistry {
 ///
 /// Slowlog params take effect immediately. Connection-related params
 /// (maxclients, idle-timeout-secs, max-pipeline-depth) are stored in the
-/// registry and take effect for new connections.
+/// registry and take effect for new connections. Memory params are validated
+/// here and broadcast to shards by the server layer.
 const MUTABLE_PARAMS: &[&str] = &[
     "slowlog-log-slower-than",
     "slowlog-max-len",
     "maxclients",
     "idle-timeout-secs",
     "max-pipeline-depth",
+    "maxmemory",
+    "maxmemory-policy",
 ];
 
 impl ConfigRegistry {
@@ -661,12 +672,48 @@ impl ConfigRegistry {
                     format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
                 })?;
             }
+            "maxmemory" => {
+                // Allow "0" (unlimited) or a memory string like "100M", "1G".
+                parse_memory_size(value).map_err(|_| {
+                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
+                })?;
+            }
+            "maxmemory-policy" => match value.to_ascii_lowercase().as_str() {
+                "noeviction" | "allkeys-lru" => {}
+                _ => {
+                    return Err(format!(
+                        "ERR Invalid argument '{value}' for CONFIG SET '{key}': \
+                             supported policies are noeviction and allkeys-lru"
+                    ));
+                }
+            },
             _ => {}
         }
 
         let mut params = self.params.write().unwrap_or_else(|e| e.into_inner());
         params.insert(key, value.to_string());
         Ok(())
+    }
+
+    /// Returns the current effective memory limit in bytes, or `None` for unlimited.
+    pub fn memory_limit(&self) -> Option<usize> {
+        let params = self.params.read().unwrap_or_else(|e| e.into_inner());
+        params
+            .get("maxmemory")
+            .and_then(|v| parse_memory_size(v).ok())
+            .filter(|&n| n > 0)
+    }
+
+    /// Returns the current eviction policy.
+    pub fn eviction_policy(&self) -> EvictionPolicy {
+        let params = self.params.read().unwrap_or_else(|e| e.into_inner());
+        params
+            .get("maxmemory-policy")
+            .map(|v| match v.to_ascii_lowercase().as_str() {
+                "allkeys-lru" => EvictionPolicy::AllKeysLru,
+                _ => EvictionPolicy::NoEviction,
+            })
+            .unwrap_or(EvictionPolicy::NoEviction)
     }
 
     /// Writes the current configuration to a TOML file.
@@ -953,12 +1000,25 @@ mod tests {
     }
 
     #[test]
-    fn config_registry_set_immutable_rejected() {
+    fn config_registry_set_maxmemory_accepted() {
         let mut params = HashMap::new();
-        params.insert("maxmemory".into(), "100".into());
+        params.insert("maxmemory".into(), "100M".into());
         let registry = ConfigRegistry::new(params);
 
-        assert!(registry.set("maxmemory", "200").is_err());
+        // maxmemory is mutable at runtime
+        assert!(registry.set("maxmemory", "200M").is_ok());
+        assert!(registry.set("maxmemory", "0").is_ok()); // 0 = unlimited
+        assert!(registry.set("maxmemory", "not-a-size").is_err());
+    }
+
+    #[test]
+    fn config_registry_set_immutable_rejected() {
+        let params = HashMap::new();
+        let registry = ConfigRegistry::new(params);
+
+        // truly immutable params are still rejected
+        assert!(registry.set("bind", "0.0.0.0").is_err());
+        assert!(registry.set("port", "6380").is_err());
     }
 
     // -- EmberConfig tests --

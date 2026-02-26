@@ -28,9 +28,11 @@
 //! [MSG_RESYNC: 1B]    primary closes the connection; replica reconnects
 //! ```
 
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -52,6 +54,75 @@ const MSG_SHARD_SYNC: u8 = 2;
 const MSG_SHARD_OFFSET: u8 = 3;
 const MSG_RECORD: u8 = 4;
 const MSG_RESYNC: u8 = 5;
+const MSG_ACK: u8 = 6;
+
+/// Tracks per-replica acknowledged write offsets for the WAIT command.
+///
+/// The primary increments `write_offset` for each record forwarded to
+/// replicas. Each replica sends back MSG_ACK frames reporting its
+/// current offset. WAIT polls `count_at_or_above(target)` with a
+/// deadline to determine when enough replicas are in sync.
+#[derive(Debug)]
+pub struct ReplicaTracker {
+    /// Monotonically increasing counter of records forwarded by this primary.
+    pub write_offset: AtomicU64,
+    /// Per-replica last acknowledged offset. Keyed by a u64 replica ID
+    /// assigned sequentially at connection time.
+    offsets: Mutex<HashMap<u64, u64>>,
+    /// Next replica ID to assign.
+    next_id: AtomicU64,
+}
+
+impl ReplicaTracker {
+    pub fn new() -> Self {
+        Self {
+            write_offset: AtomicU64::new(0),
+            offsets: Mutex::new(HashMap::new()),
+            next_id: AtomicU64::new(0),
+        }
+    }
+
+    /// Registers a new replica connection. Returns its unique ID.
+    pub fn register(&self) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut map) = self.offsets.lock() {
+            map.insert(id, 0);
+        }
+        id
+    }
+
+    /// Removes a replica connection from tracking.
+    pub fn remove(&self, replica_id: u64) {
+        if let Ok(mut map) = self.offsets.lock() {
+            map.remove(&replica_id);
+        }
+    }
+
+    /// Updates the acknowledged offset for a replica.
+    ///
+    /// Only advances forward — never decrements.
+    pub fn update(&self, replica_id: u64, offset: u64) {
+        if let Ok(mut map) = self.offsets.lock() {
+            let entry = map.entry(replica_id).or_insert(0);
+            if offset > *entry {
+                *entry = offset;
+            }
+        }
+    }
+
+    /// Returns the number of replicas whose acked offset is >= `target`.
+    pub fn count_at_or_above(&self, target: u64) -> usize {
+        self.offsets
+            .lock()
+            .map(|map| map.values().filter(|&&v| v >= target).count())
+            .unwrap_or(0)
+    }
+
+    /// Returns the total number of currently connected replicas.
+    pub fn connected_count(&self) -> usize {
+        self.offsets.lock().map(|map| map.len()).unwrap_or(0)
+    }
+}
 
 // -- framed I/O primitives --
 //
@@ -129,6 +200,7 @@ async fn expect_tag(
 pub struct ReplicationServer {
     engine: Arc<Engine>,
     primary_id: String,
+    tracker: Arc<ReplicaTracker>,
 }
 
 impl ReplicationServer {
@@ -136,12 +208,21 @@ impl ReplicationServer {
     ///
     /// Runs indefinitely in the background; returns immediately after
     /// spawning the accept loop task.
-    pub async fn start(engine: Arc<Engine>, primary_id: String, port: u16) -> std::io::Result<()> {
+    pub async fn start(
+        engine: Arc<Engine>,
+        primary_id: String,
+        port: u16,
+        tracker: Arc<ReplicaTracker>,
+    ) -> std::io::Result<()> {
         let bind_addr = format!("0.0.0.0:{port}");
         let listener = TcpListener::bind(&bind_addr).await?;
         info!(port, "replication server listening");
 
-        let server = Arc::new(Self { engine, primary_id });
+        let server = Arc::new(Self {
+            engine,
+            primary_id,
+            tracker,
+        });
 
         tokio::spawn(async move {
             loop {
@@ -173,7 +254,7 @@ impl ReplicationServer {
         // a single syscall. reads are delegated to the inner TcpStream.
         let mut stream = BufWriter::with_capacity(65536, stream);
 
-        // read replica handshake
+        // --- handshake ---
         let replica_version = read_u8(&mut stream).await?;
         if replica_version != REPL_VERSION {
             return Err(std::io::Error::new(
@@ -184,7 +265,6 @@ impl ReplicationServer {
         let replica_shards = read_u16_le(&mut stream).await?;
         let our_shards = self.engine.shard_count() as u16;
 
-        // send primary handshake response
         write_u8(&mut stream, REPL_VERSION).await?;
         write_u16_le(&mut stream, our_shards).await?;
         let id_bytes = self.primary_id.as_bytes();
@@ -200,8 +280,8 @@ impl ReplicationServer {
         }
         write_u8(&mut stream, STATUS_OK).await?;
 
-        // subscribe to the broadcast channel before snapshotting so we don't
-        // miss events that happen between snapshot and stream start
+        // subscribe before snapshotting so we don't miss events that
+        // happen between snapshot and incremental stream start
         let mut rx = match self.engine.subscribe_replication() {
             Some(rx) => rx,
             None => {
@@ -211,7 +291,7 @@ impl ReplicationServer {
             }
         };
 
-        // full sync: snapshot each shard and send
+        // --- full sync ---
         for shard_idx in 0..self.engine.shard_count() {
             let resp = self
                 .engine
@@ -239,8 +319,6 @@ impl ReplicationServer {
             write_u32_le(&mut stream, data_len).await?;
             stream.write_all(&data).await?;
 
-            // send the current replication offset for this shard (0 until we
-            // track per-shard offsets; good enough for gap detection)
             write_u8(&mut stream, MSG_SHARD_OFFSET).await?;
             write_u16_le(&mut stream, shard_id).await?;
             write_u64_le(&mut stream, 0u64).await?;
@@ -249,7 +327,47 @@ impl ReplicationServer {
         stream.flush().await?;
         info!("full sync complete, starting incremental stream");
 
-        // incremental stream: relay events from the broadcast channel
+        // --- split stream for concurrent read (ACKs) and write (records) ---
+        // Take the inner TcpStream back from BufWriter, then split.
+        let inner = stream.into_inner();
+        let (read_half, write_inner) = tokio::io::split(inner);
+        let mut writer = BufWriter::with_capacity(65536, write_inner);
+
+        // Register this replica and spawn an ACK reader task.
+        let replica_id = self.tracker.register();
+        let tracker = Arc::clone(&self.tracker);
+        let mut ack_reader = read_half;
+
+        let ack_task = tokio::spawn(async move {
+            loop {
+                match read_u8(&mut ack_reader).await {
+                    Ok(MSG_ACK) => match read_u64_le(&mut ack_reader).await {
+                        Ok(offset) => tracker.update(replica_id, offset),
+                        Err(_) => break,
+                    },
+                    Ok(_) => {} // unknown or future message types — ignore
+                    Err(_) => break,
+                }
+            }
+        });
+
+        // --- incremental stream ---
+        let result = self.stream_records(&mut writer, &mut rx).await;
+
+        // clean up regardless of result
+        ack_task.abort();
+        self.tracker.remove(replica_id);
+
+        result
+    }
+
+    /// Streams replication records to the replica until the connection closes
+    /// or the broadcast channel is exhausted.
+    async fn stream_records(
+        &self,
+        writer: &mut BufWriter<tokio::io::WriteHalf<TcpStream>>,
+        rx: &mut broadcast::Receiver<ember_core::ReplicationEvent>,
+    ) -> std::io::Result<()> {
         loop {
             match rx.recv().await {
                 Ok(event) => {
@@ -260,19 +378,21 @@ impl ReplicationServer {
                         std::io::Error::new(std::io::ErrorKind::InvalidData, "record too large")
                     })?;
 
-                    write_u8(&mut stream, MSG_RECORD).await?;
-                    write_u16_le(&mut stream, event.shard_id).await?;
-                    write_u64_le(&mut stream, event.offset).await?;
-                    write_u32_le(&mut stream, record_len).await?;
-                    stream.write_all(&record_bytes).await?;
-                    // flush so the replica receives the record without waiting
-                    // for the 64 KiB buffer to fill (reduces replication lag)
-                    stream.flush().await?;
+                    write_u8(writer, MSG_RECORD).await?;
+                    write_u16_le(writer, event.shard_id).await?;
+                    write_u64_le(writer, event.offset).await?;
+                    write_u32_le(writer, record_len).await?;
+                    writer.write_all(&record_bytes).await?;
+                    writer.flush().await?;
+
+                    // advance the primary's write offset AFTER successfully
+                    // flushing to the replica's TCP buffer
+                    self.tracker.write_offset.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(broadcast::error::RecvError::Lagged(count)) => {
                     warn!("replication stream lagged by {count} events; triggering resync");
-                    let _ = write_u8(&mut stream, MSG_RESYNC).await;
-                    let _ = stream.flush().await;
+                    let _ = write_u8(writer, MSG_RESYNC).await;
+                    let _ = writer.flush().await;
                     return Ok(());
                 }
                 Err(broadcast::error::RecvError::Closed) => {
@@ -394,6 +514,7 @@ impl ReplicationClient {
         info!("full sync applied, starting incremental replay");
 
         // incremental stream
+        let mut local_offset: u64 = 0;
         loop {
             let msg = read_u8(&mut stream).await?;
             match msg {
@@ -418,6 +539,11 @@ impl ReplicationClient {
                             }
                         }
                     }
+
+                    // acknowledge this record to the primary so WAIT can count us
+                    local_offset += 1;
+                    write_u8(&mut stream, MSG_ACK).await?;
+                    write_u64_le(&mut stream, local_offset).await?;
                 }
                 MSG_RESYNC => {
                     info!("primary requested resync; reconnecting");

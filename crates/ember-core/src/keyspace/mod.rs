@@ -1105,6 +1105,21 @@ impl Keyspace {
         Ok(true)
     }
 
+    /// Updates the memory limit and eviction policy in-place.
+    ///
+    /// Takes effect immediately for all subsequent write commands.
+    /// `track_access` is synchronized with the new policy so LRU
+    /// sampling stays consistent.
+    pub fn update_memory_config(
+        &mut self,
+        max_memory: Option<usize>,
+        eviction_policy: EvictionPolicy,
+    ) {
+        self.config.max_memory = max_memory;
+        self.config.eviction_policy = eviction_policy;
+        self.track_access = matches!(eviction_policy, EvictionPolicy::AllKeysLru);
+    }
+
     /// Returns aggregated stats for this keyspace.
     ///
     /// All fields are tracked incrementally — this is O(1).
