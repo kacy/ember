@@ -494,6 +494,21 @@ pub(super) async fn execute(
                     if let Ok(len) = value.parse::<usize>() {
                         slow_log.update_max_len(len);
                     }
+                } else if key == "maxmemory" || key == "maxmemory-policy" {
+                    let limit = ctx.config.memory_limit();
+                    let policy = ctx.config.eviction_policy();
+                    // broadcast is fallible but config is already stored — log and continue
+                    let _ = engine
+                        .broadcast(move || ShardRequest::UpdateMemoryConfig {
+                            max_memory: limit,
+                            eviction_policy: policy,
+                        })
+                        .await;
+                    // keep the INFO-visible limit in sync
+                    ctx.max_memory_limit.store(
+                        limit.unwrap_or(0) as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
                 Frame::Simple("OK".into())
             }
@@ -576,6 +591,11 @@ pub(super) async fn execute(
                 ])
             }
         }
+
+        Command::Wait {
+            numreplicas,
+            timeout_ms,
+        } => handle_wait(ctx, numreplicas, timeout_ms).await,
 
         Command::FlushDb { async_mode } => {
             let req = if async_mode {
@@ -2781,10 +2801,13 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                 out.push_str(&format!("used_memory_rss:{rss}\r\n"));
                 out.push_str(&format!("used_memory_rss_human:{}\r\n", human_bytes(rss)));
             }
-            if let Some(max) = ctx.max_memory {
-                let effective = ember_core::memory::effective_limit(max);
-                out.push_str(&format!("max_memory:{max}\r\n"));
-                out.push_str(&format!("max_memory_human:{}\r\n", human_bytes(max)));
+            let max_bytes = ctx
+                .max_memory_limit
+                .load(std::sync::atomic::Ordering::Relaxed) as usize;
+            if max_bytes > 0 {
+                let effective = ember_core::memory::effective_limit(max_bytes);
+                out.push_str(&format!("max_memory:{max_bytes}\r\n"));
+                out.push_str(&format!("max_memory_human:{}\r\n", human_bytes(max_bytes)));
                 out.push_str(&format!("max_memory_effective:{effective}\r\n"));
                 out.push_str(&format!(
                     "max_memory_effective_human:{}\r\n",
@@ -2901,4 +2924,42 @@ pub(super) fn resolve_collection_scan(
 /// Returns the standard OOM error frame.
 pub(super) fn oom_error() -> Frame {
     Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
+}
+
+/// Implements the WAIT command: blocks until `needed` replicas have
+/// acknowledged all writes at or before the current primary offset,
+/// or until `timeout_ms` milliseconds elapse.
+///
+/// Returns the count of replicas that acknowledged in time as a
+/// RESP integer. When there are no replicas or no writes, returns
+/// immediately without sleeping.
+async fn handle_wait(ctx: &Arc<ServerContext>, numreplicas: u64, timeout_ms: u64) -> Frame {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let needed = numreplicas as usize;
+    let tracker = &ctx.replica_tracker;
+
+    // fast path: no replicas connected
+    if tracker.connected_count() == 0 {
+        return Frame::Integer(0);
+    }
+
+    let target = tracker.write_offset.load(Ordering::Relaxed);
+
+    // fast path: already satisfied or no timeout needed
+    let count = tracker.count_at_or_above(target);
+    if count >= needed || timeout_ms == 0 {
+        return Frame::Integer(count as i64);
+    }
+
+    // poll until enough replicas have caught up or the deadline passes
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let c = tracker.count_at_or_above(target);
+        if c >= needed || tokio::time::Instant::now() >= deadline {
+            return Frame::Integer(c as i64);
+        }
+    }
 }

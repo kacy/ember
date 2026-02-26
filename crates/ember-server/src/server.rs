@@ -80,6 +80,16 @@ pub struct ServerContext {
     pub monitor_tx: tokio::sync::broadcast::Sender<MonitorEvent>,
     /// ACL state. `None` = legacy mode (no ACL, zero overhead).
     pub acl: crate::acl::SharedAclState,
+    /// Live memory limit in bytes. Updated atomically by CONFIG SET maxmemory.
+    /// 0 means unlimited. Used by INFO to display the current effective limit.
+    pub max_memory_limit: AtomicU64,
+    /// Tracks WAIT-command state: how many records this primary has forwarded
+    /// to replicas, and each replica's current acknowledged offset.
+    ///
+    /// Always present (even without cluster mode) but only meaningful when
+    /// there are active replica connections. The write_offset advances inside
+    /// the replication background task — zero overhead on the GET/SET path.
+    pub replica_tracker: Arc<crate::replication::ReplicaTracker>,
     /// Unix timestamp of the last successful save (BGSAVE/snapshot).
     pub last_save_timestamp: AtomicU64,
     /// Monotonically increasing client ID generator.
@@ -290,6 +300,7 @@ pub async fn run_concurrent(
     let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
     let clients: ClientRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let replica_tracker = Arc::new(crate::replication::ReplicaTracker::new());
     let ctx = Arc::new(ServerContext {
         start_time: Instant::now(),
         version: env!("CARGO_PKG_VERSION"),
@@ -310,6 +321,8 @@ pub async fn run_concurrent(
         memory_used_bytes: MemoryUsedBytes::new(),
         acl: None,
         monitor_tx: tokio::sync::broadcast::channel(256).0,
+        max_memory_limit: AtomicU64::new(max_memory.unwrap_or(0) as u64),
+        replica_tracker: Arc::clone(&replica_tracker),
         last_save_timestamp: AtomicU64::new(0),
         next_client_id: AtomicU64::new(1),
         clients,
@@ -552,11 +565,15 @@ pub async fn run_threaded(
 
     let (engine, prepared_shards) = Engine::prepare(shard_count, config);
 
+    let replica_tracker = Arc::new(crate::replication::ReplicaTracker::new());
+
     // wire replication: give the cluster coordinator access to the engine
     // and start the replication server so replicas can connect
     if let Some(ref coordinator) = cluster {
         coordinator.set_engine(Arc::new(engine.clone()));
-        coordinator.start_replication_server().await;
+        coordinator
+            .start_replication_server(Arc::clone(&replica_tracker))
+            .await;
     }
 
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
@@ -585,6 +602,8 @@ pub async fn run_threaded(
         memory_used_bytes: MemoryUsedBytes::new(),
         acl: None,
         monitor_tx: tokio::sync::broadcast::channel(256).0,
+        max_memory_limit: AtomicU64::new(max_memory.unwrap_or(0) as u64),
+        replica_tracker: Arc::clone(&replica_tracker),
         last_save_timestamp: AtomicU64::new(0),
         next_client_id: AtomicU64::new(1),
         clients,

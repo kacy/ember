@@ -63,8 +63,8 @@ use crate::dropper::DropHandle;
 use crate::error::ShardError;
 use crate::expiry;
 use crate::keyspace::{
-    IncrError, IncrFloatError, Keyspace, KeyspaceStats, LsetError, SetResult, ShardConfig,
-    TtlResult, WriteError,
+    EvictionPolicy, IncrError, IncrFloatError, Keyspace, KeyspaceStats, LsetError, SetResult,
+    ShardConfig, TtlResult, WriteError,
 };
 use crate::types::sorted_set::{ScoreBound, ZAddFlags};
 use crate::types::Value;
@@ -483,6 +483,14 @@ pub enum ShardRequest {
     /// Read-only, no AOF, no replication — cold path only.
     KeyVersion {
         key: String,
+    },
+    /// Applies a live memory configuration update to this shard.
+    ///
+    /// Sent by the server when CONFIG SET maxmemory or maxmemory-policy
+    /// is changed at runtime. Takes effect on the next write check.
+    UpdateMemoryConfig {
+        max_memory: Option<usize>,
+        eviction_policy: EvictionPolicy,
     },
     /// Triggers a snapshot write.
     Snapshot,
@@ -1444,6 +1452,15 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             reply.send(ShardResponse::Ok);
             return;
         }
+        RequestKind::UpdateMemoryConfig {
+            max_memory,
+            eviction_policy,
+        } => {
+            ctx.keyspace
+                .update_memory_config(max_memory, eviction_policy);
+            reply.send(ShardResponse::Ok);
+            return;
+        }
         RequestKind::Other => {}
     }
 
@@ -1457,6 +1474,10 @@ enum RequestKind {
     SerializeSnapshot,
     RewriteAof,
     FlushDbAsync,
+    UpdateMemoryConfig {
+        max_memory: Option<usize>,
+        eviction_policy: EvictionPolicy,
+    },
     Other,
 }
 
@@ -1466,6 +1487,13 @@ fn describe_request(req: &ShardRequest) -> RequestKind {
         ShardRequest::SerializeSnapshot => RequestKind::SerializeSnapshot,
         ShardRequest::RewriteAof => RequestKind::RewriteAof,
         ShardRequest::FlushDbAsync => RequestKind::FlushDbAsync,
+        ShardRequest::UpdateMemoryConfig {
+            max_memory,
+            eviction_policy,
+        } => RequestKind::UpdateMemoryConfig {
+            max_memory: *max_memory,
+            eviction_policy: *eviction_policy,
+        },
         _ => RequestKind::Other,
     }
 }
@@ -2175,6 +2203,7 @@ fn dispatch(
         | ShardRequest::SerializeSnapshot
         | ShardRequest::RewriteAof
         | ShardRequest::FlushDbAsync
+        | ShardRequest::UpdateMemoryConfig { .. }
         | ShardRequest::BLPop { .. }
         | ShardRequest::BRPop { .. } => ShardResponse::Ok,
     }
