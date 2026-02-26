@@ -1211,7 +1211,10 @@ impl ClusterCoordinator {
     /// Binds a TCP listener on `bind_addr.port() + gossip_port_offset + 2`
     /// and accepts replica connections indefinitely. This is a no-op if
     /// no engine has been attached via `set_engine`.
-    pub async fn start_replication_server(self: &Arc<Self>) {
+    pub async fn start_replication_server(
+        self: &Arc<Self>,
+        tracker: Arc<crate::replication::ReplicaTracker>,
+    ) {
         let Some(engine) = self.engine.get() else {
             warn!("start_replication_server called before set_engine; skipping");
             return;
@@ -1226,9 +1229,13 @@ impl ClusterCoordinator {
         };
 
         let local_id = self.local_id.to_string();
-        if let Err(e) =
-            crate::replication::ReplicationServer::start(Arc::clone(engine), local_id, repl_port)
-                .await
+        if let Err(e) = crate::replication::ReplicationServer::start(
+            Arc::clone(engine),
+            local_id,
+            repl_port,
+            tracker,
+        )
+        .await
         {
             error!("failed to start replication server on port {repl_port}: {e}");
         }

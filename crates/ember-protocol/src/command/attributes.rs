@@ -68,6 +68,7 @@ impl Command {
             Command::Time => "time",
             Command::LastSave => "lastsave",
             Command::Role => "role",
+            Command::Wait { .. } => "wait",
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
             Command::FlushDb { .. } => "flushdb",
@@ -461,7 +462,9 @@ impl Command {
             // server
             Command::DbSize => SERVER | KEYSPACE | READ | FAST,
             Command::Info { .. } => SERVER | SLOW,
-            Command::Time | Command::LastSave | Command::Role => SERVER | FAST,
+            Command::Time | Command::LastSave | Command::Role | Command::Wait { .. } => {
+                SERVER | FAST
+            }
             Command::BgSave | Command::BgRewriteAof => SERVER | ADMIN | SLOW,
             Command::FlushDb { .. } => KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW,
             Command::ConfigGet { .. } => SERVER | ADMIN | SLOW,
