@@ -143,6 +143,24 @@ pub(super) fn to_aof_records(
         (ShardRequest::SetRange { key, offset, value }, ShardResponse::Len(_)) => {
             smallvec![AofRecord::SetRange { key, offset, value }]
         }
+        // SETBIT: record the offset + bit value for replay
+        (ShardRequest::SetBit { key, offset, value }, ShardResponse::Integer(_)) => {
+            smallvec![AofRecord::SetBit { key, offset, value }]
+        }
+        // BITOP: record the operation + dest + source keys for replay
+        (ShardRequest::BitOp { op, dest, keys }, ShardResponse::Integer(_)) => {
+            let op_byte: u8 = match op {
+                BitOpKind::And => 0,
+                BitOpKind::Or => 1,
+                BitOpKind::Xor => 2,
+                BitOpKind::Not => 3,
+            };
+            smallvec![AofRecord::BitOp {
+                op: op_byte,
+                dest,
+                keys,
+            }]
+        }
         (ShardRequest::Rename { key, newkey }, ShardResponse::Ok) => {
             smallvec![AofRecord::Rename { key, newkey }]
         }

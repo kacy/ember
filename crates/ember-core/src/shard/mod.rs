@@ -68,6 +68,7 @@ use crate::keyspace::{
 };
 use crate::types::sorted_set::{ScoreBound, ZAddFlags};
 use crate::types::Value;
+use ember_protocol::command::{BitOpKind, BitRange};
 
 /// How often the shard runs active expiration. 100ms matches
 /// Redis's hz=10 default and keeps CPU overhead negligible.
@@ -155,6 +156,34 @@ pub enum ShardRequest {
         key: String,
         offset: usize,
         value: Bytes,
+    },
+    /// GETBIT key offset. Returns the bit at `offset` (0 or 1). Big-endian ordering.
+    GetBit {
+        key: String,
+        offset: u64,
+    },
+    /// SETBIT key offset value. Sets the bit at `offset` to 0 or 1. Returns old bit.
+    SetBit {
+        key: String,
+        offset: u64,
+        value: u8,
+    },
+    /// BITCOUNT key [range]. Counts set bits, optionally restricted to a range.
+    BitCount {
+        key: String,
+        range: Option<BitRange>,
+    },
+    /// BITPOS key bit [range]. Finds first set or clear bit position.
+    BitPos {
+        key: String,
+        bit: u8,
+        range: Option<BitRange>,
+    },
+    /// BITOP op destkey key [key ...]. Bitwise operation across strings.
+    BitOp {
+        op: BitOpKind,
+        dest: String,
+        keys: Vec<String>,
     },
     /// Returns all keys matching a glob pattern in this shard.
     Keys {
@@ -687,6 +716,8 @@ impl ShardRequest {
             | ShardRequest::DecrBy { .. }
             | ShardRequest::IncrByFloat { .. }
             | ShardRequest::Append { .. }
+            | ShardRequest::SetBit { .. }
+            | ShardRequest::BitOp { .. }
             | ShardRequest::Del { .. }
             | ShardRequest::Unlink { .. }
             | ShardRequest::Rename { .. }
@@ -1609,6 +1640,28 @@ fn dispatch(
         ShardRequest::SetRange { key, offset, value } => {
             write_result_len(ks.setrange(key, *offset, value))
         }
+        ShardRequest::GetBit { key, offset } => match ks.getbit(key, *offset) {
+            Ok(bit) => ShardResponse::Integer(bit as i64),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::SetBit { key, offset, value } => match ks.setbit(key, *offset, *value) {
+            Ok(old_bit) => ShardResponse::Integer(old_bit as i64),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::BitCount { key, range } => match ks.bitcount(key, *range) {
+            Ok(count) => ShardResponse::Integer(count as i64),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::BitPos { key, bit, range } => match ks.bitpos(key, *bit, *range) {
+            Ok(pos) => ShardResponse::Integer(pos),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::BitOp { op, dest, keys } => match ks.bitop(*op, dest.clone(), keys) {
+            Ok(len) => ShardResponse::Integer(len as i64),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
         ShardRequest::Keys { pattern } => {
             let keys = ks.keys(pattern);
             ShardResponse::StringArray(keys)

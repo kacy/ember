@@ -154,6 +154,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             #[cfg(feature = "protobuf")]
             None,
         );
@@ -192,6 +193,7 @@ mod tests {
         let handle = spawn_shard(
             16,
             ShardConfig::default(),
+            None,
             None,
             None,
             None,
@@ -240,6 +242,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             #[cfg(feature = "protobuf")]
             None,
         );
@@ -273,6 +276,7 @@ mod tests {
         let handle = spawn_shard(
             16,
             ShardConfig::default(),
+            None,
             None,
             None,
             None,
@@ -310,6 +314,7 @@ mod tests {
         let handle = spawn_shard(
             16,
             ShardConfig::default(),
+            None,
             None,
             None,
             None,

@@ -21,6 +21,7 @@ use crate::time;
 use crate::types::sorted_set::{ScoreBound, SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
+mod bitmap;
 mod hash;
 mod list;
 #[cfg(feature = "protobuf")]

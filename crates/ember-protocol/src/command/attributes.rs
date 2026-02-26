@@ -42,6 +42,13 @@ impl Command {
             Command::GetRange { .. } => "getrange",
             Command::SetRange { .. } => "setrange",
 
+            // bitmaps
+            Command::GetBit { .. } => "getbit",
+            Command::SetBit { .. } => "setbit",
+            Command::BitCount { .. } => "bitcount",
+            Command::BitPos { .. } => "bitpos",
+            Command::BitOp { .. } => "bitop",
+
             // key lifecycle
             Command::Del { .. } => "del",
             Command::Unlink { .. } => "unlink",
@@ -244,6 +251,8 @@ impl Command {
                 | Command::IncrBy { .. }
                 | Command::DecrBy { .. }
                 | Command::IncrByFloat { .. }
+                | Command::SetBit { .. }
+                | Command::BitOp { .. }
             // key lifecycle
                 | Command::Del { .. }
                 | Command::Unlink { .. }
@@ -352,13 +361,18 @@ impl Command {
             Command::Get { .. }
             | Command::MGet { .. }
             | Command::Strlen { .. }
-            | Command::GetRange { .. } => READ | STRING | FAST,
+            | Command::GetRange { .. }
+            | Command::GetBit { .. }
+            | Command::BitCount { .. }
+            | Command::BitPos { .. } => READ | STRING | FAST,
 
             // string — writes
             Command::Set { .. }
             | Command::MSet { .. }
             | Command::Append { .. }
-            | Command::SetRange { .. } => WRITE | STRING | SLOW,
+            | Command::SetRange { .. }
+            | Command::SetBit { .. }
+            | Command::BitOp { .. } => WRITE | STRING | SLOW,
             Command::Incr { .. }
             | Command::Decr { .. }
             | Command::IncrBy { .. }

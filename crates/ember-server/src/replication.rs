@@ -822,6 +822,25 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             offset: *offset,
             value: value.clone(),
         }),
+        AofRecord::SetBit { key, offset, value } => Some(ShardRequest::SetBit {
+            key: key.clone(),
+            offset: *offset,
+            value: *value,
+        }),
+        AofRecord::BitOp { op, dest, keys } => {
+            use ember_protocol::command::BitOpKind;
+            let op_kind = match op {
+                0 => BitOpKind::And,
+                1 => BitOpKind::Or,
+                2 => BitOpKind::Xor,
+                _ => BitOpKind::Not,
+            };
+            Some(ShardRequest::BitOp {
+                op: op_kind,
+                dest: dest.clone(),
+                keys: keys.clone(),
+            })
+        }
         AofRecord::Rename { key, newkey } => Some(ShardRequest::Rename {
             key: key.clone(),
             newkey: newkey.clone(),
@@ -907,7 +926,12 @@ fn primary_key_for_request(req: &ShardRequest) -> Option<&str> {
         | ShardRequest::HIncrBy { key, .. }
         | ShardRequest::SAdd { key, .. }
         | ShardRequest::SRem { key, .. }
-        | ShardRequest::Rename { key, .. } => Some(key),
+        | ShardRequest::Rename { key, .. }
+        | ShardRequest::SetBit { key, .. }
+        | ShardRequest::GetBit { key, .. }
+        | ShardRequest::BitCount { key, .. }
+        | ShardRequest::BitPos { key, .. } => Some(key),
+        ShardRequest::BitOp { dest, .. } => Some(dest),
         _ => None,
     }
 }
