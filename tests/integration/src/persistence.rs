@@ -27,7 +27,8 @@ async fn sigkill_crash_recovery() {
         for i in 0..KEY_COUNT {
             // appendfsync=always means each OK guarantees a fsync — all
             // of these must survive even a SIGKILL immediately after.
-            c.ok(&["SET", &format!("crash:{i}"), &format!("v{i}")]).await;
+            c.ok(&["SET", &format!("crash:{i}"), &format!("v{i}")])
+                .await;
         }
 
         // drop immediately — no sleep, no graceful shutdown. Child::kill()

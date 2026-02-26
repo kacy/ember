@@ -966,6 +966,38 @@ impl Keyspace {
         }
     }
 
+    /// Returns the absolute Unix timestamp (seconds) when the key expires.
+    ///
+    /// Returns `-2` if the key doesn't exist, `-1` if it has no expiry.
+    pub fn expiretime(&mut self, key: &str) -> i64 {
+        if self.remove_if_expired(key) {
+            return -2;
+        }
+        match self.entries.get(key) {
+            None => -2,
+            Some(entry) => match time::monotonic_to_unix_ms(entry.expires_at_ms) {
+                None => -1,
+                Some(unix_ms) => (unix_ms / 1000) as i64,
+            },
+        }
+    }
+
+    /// Returns the absolute Unix timestamp (milliseconds) when the key expires.
+    ///
+    /// Returns `-2` if the key doesn't exist, `-1` if it has no expiry.
+    pub fn pexpiretime(&mut self, key: &str) -> i64 {
+        if self.remove_if_expired(key) {
+            return -2;
+        }
+        match self.entries.get(key) {
+            None => -2,
+            Some(entry) => match time::monotonic_to_unix_ms(entry.expires_at_ms) {
+                None => -1,
+                Some(unix_ms) => unix_ms as i64,
+            },
+        }
+    }
+
     /// Returns all keys matching a glob pattern.
     ///
     /// Warning: O(n) scan of the entire keyspace. Use SCAN for production

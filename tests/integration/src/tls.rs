@@ -17,9 +17,7 @@ use crate::helpers::{ServerOptions, TestServer};
 /// Generates a self-signed cert/key pair for `localhost` and writes PEM files
 /// into the given directory. Returns the cert path, key path, and the raw DER
 /// bytes needed to build a client-side trust store.
-fn generate_test_cert(
-    dir: &std::path::Path,
-) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+fn generate_test_cert(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
     let rcgen::CertifiedKey { cert, key_pair } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("rcgen cert generation failed");
@@ -67,7 +65,10 @@ async fn tls_cmd(
     let mut buf = BytesMut::with_capacity(1024);
     loop {
         let n = stream.read_buf(&mut buf).await.expect("read failed");
-        assert!(n > 0 || !buf.is_empty(), "server closed connection unexpectedly");
+        assert!(
+            n > 0 || !buf.is_empty(),
+            "server closed connection unexpectedly"
+        );
         match parse_frame(&buf) {
             Ok(Some((frame, consumed))) => {
                 let _ = buf.split_to(consumed);

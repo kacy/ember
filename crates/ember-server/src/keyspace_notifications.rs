@@ -74,14 +74,7 @@ pub fn parse_keyspace_event_flags(s: &str) -> u32 {
             'x' => flags |= FLAG_X,
             'd' => flags |= FLAG_D,
             'A' => {
-                flags |= FLAG_G
-                    | FLAG_DOLLAR
-                    | FLAG_L
-                    | FLAG_Z
-                    | FLAG_X
-                    | FLAG_H
-                    | FLAG_S
-                    | FLAG_D
+                flags |= FLAG_G | FLAG_DOLLAR | FLAG_L | FLAG_Z | FLAG_X | FLAG_H | FLAG_S | FLAG_D
             }
             _ => {} // unknown flags silently ignored
         }

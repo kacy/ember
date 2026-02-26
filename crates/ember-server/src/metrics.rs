@@ -267,8 +267,8 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
 
                     // expired and evicted are cumulative totals from shards —
                     // publish the delta so prometheus sees a proper counter.
-                    let expired = total.keys_expired as u64;
-                    let evicted = total.keys_evicted as u64;
+                    let expired = total.keys_expired;
+                    let evicted = total.keys_evicted;
                     let delta_expired = expired.saturating_sub(last_expired);
                     let delta_evicted = evicted.saturating_sub(last_evicted);
                     if delta_expired > 0 {

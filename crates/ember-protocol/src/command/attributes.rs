@@ -61,6 +61,8 @@ impl Command {
             Command::Persist { .. } => "persist",
             Command::Pttl { .. } => "pttl",
             Command::Pexpire { .. } => "pexpire",
+            Command::Expiretime { .. } => "expiretime",
+            Command::Pexpiretime { .. } => "pexpiretime",
 
             // server
             Command::DbSize => "dbsize",
@@ -146,6 +148,8 @@ impl Command {
             Command::SRandMember { .. } => "srandmember",
             Command::SPop { .. } => "spop",
             Command::SMisMember { .. } => "smismember",
+            Command::SMove { .. } => "smove",
+            Command::SInterCard { .. } => "sintercard",
 
             // cluster
             Command::ClusterInfo => "cluster_info",
@@ -280,6 +284,7 @@ impl Command {
                 | Command::SInterStore { .. }
                 | Command::SDiffStore { .. }
                 | Command::SPop { .. }
+                | Command::SMove { .. }
             // server / persistence
                 | Command::FlushDb { .. }
                 | Command::ConfigSet { .. }
@@ -373,6 +378,8 @@ impl Command {
             | Command::ZScan { .. } => READ | KEYSPACE | SLOW,
             Command::Ttl { .. }
             | Command::Pttl { .. }
+            | Command::Expiretime { .. }
+            | Command::Pexpiretime { .. }
             | Command::ObjectEncoding { .. }
             | Command::ObjectRefcount { .. } => READ | KEYSPACE | FAST,
 
@@ -450,11 +457,13 @@ impl Command {
             Command::SUnion { .. } | Command::SInter { .. } | Command::SDiff { .. } => {
                 READ | SET | SLOW
             }
+            Command::SInterCard { .. } => READ | SET | SLOW,
 
             // set — writes
             Command::SAdd { .. } | Command::SRem { .. } | Command::SPop { .. } => {
                 WRITE | SET | FAST
             }
+            Command::SMove { .. } => WRITE | SET | FAST,
             Command::SUnionStore { .. }
             | Command::SInterStore { .. }
             | Command::SDiffStore { .. } => WRITE | SET | SLOW,
@@ -562,6 +571,8 @@ impl Command {
             | Command::Pexpire { key, .. }
             | Command::Ttl { key }
             | Command::Pttl { key }
+            | Command::Expiretime { key }
+            | Command::Pexpiretime { key }
             | Command::Type { key }
             | Command::Rename { key, .. }
             | Command::ObjectEncoding { key }
@@ -625,6 +636,7 @@ impl Command {
             | Command::GetEx { key, .. } => Some(key),
             Command::LMove { source, .. } => Some(source),
             Command::Copy { source, .. } => Some(source),
+            Command::SMove { source, .. } => Some(source),
             Command::Del { keys }
             | Command::Unlink { keys }
             | Command::Exists { keys }
@@ -635,6 +647,7 @@ impl Command {
             | Command::SUnion { keys }
             | Command::SInter { keys }
             | Command::SDiff { keys }
+            | Command::SInterCard { keys, .. }
             | Command::ZDiff { keys, .. }
             | Command::ZInter { keys, .. }
             | Command::ZUnion { keys, .. } => keys.first().map(String::as_str),

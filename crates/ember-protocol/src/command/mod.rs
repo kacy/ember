@@ -445,6 +445,26 @@ pub enum Command {
     /// SMISMEMBER `key` `member` \[member ...\]. Checks multiple members at once.
     SMisMember { key: String, members: Vec<String> },
 
+    /// SMOVE `source` `destination` `member`. Atomically moves a member from one set to another.
+    /// Returns 1 if moved, 0 if the member was not in the source set.
+    SMove {
+        source: String,
+        destination: String,
+        member: String,
+    },
+
+    /// SINTERCARD `numkeys` `key` \[key ...\] \[LIMIT count\]. Returns the cardinality of the set
+    /// intersection. If LIMIT is given and nonzero, the result is capped at that value.
+    SInterCard { keys: Vec<String>, limit: usize },
+
+    /// EXPIRETIME `key`. Returns the absolute Unix timestamp (seconds) when the key expires.
+    /// Returns -1 if the key has no expiry, -2 if the key does not exist.
+    Expiretime { key: String },
+
+    /// PEXPIRETIME `key`. Returns the absolute Unix timestamp (milliseconds) when the key expires.
+    /// Returns -1 if the key has no expiry, -2 if the key does not exist.
+    Pexpiretime { key: String },
+
     // --- cluster commands ---
     /// CLUSTER INFO. Returns cluster state and configuration information.
     ClusterInfo,

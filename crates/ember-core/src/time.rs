@@ -2,9 +2,13 @@
 //!
 //! Uses a process-local monotonic clock for timestamps that are smaller
 //! than std::time::Instant (8 bytes vs 16 bytes for Option<Instant>).
+//!
+//! All internal expiry values are stored as monotonic milliseconds since
+//! process start. Use `monotonic_to_unix_ms` to convert to wall-clock Unix
+//! timestamps for commands like EXPIRETIME and PEXPIRETIME.
 
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Returns current monotonic time in milliseconds since process start.
 #[inline]
@@ -24,6 +28,48 @@ pub fn now_secs() -> u32 {
     static START: OnceLock<Instant> = OnceLock::new();
     let start = START.get_or_init(Instant::now);
     start.elapsed().as_secs() as u32
+}
+
+/// Converts a monotonic expiry timestamp (ms since process start) to a Unix
+/// epoch timestamp in milliseconds.
+///
+/// The conversion anchors the monotonic clock to wall time on first call using
+/// a single `SystemTime::now()` sample. Subsequent calls use only the fast
+/// monotonic clock and arithmetic — no system call.
+///
+/// Returns `None` if the system clock predates the Unix epoch (shouldn't
+/// happen on any real machine) or if `expires_at_ms` is `NO_EXPIRY`.
+#[inline]
+pub fn monotonic_to_unix_ms(expires_at_ms: u64) -> Option<u64> {
+    if expires_at_ms == NO_EXPIRY {
+        return None;
+    }
+
+    // Capture the relationship between monotonic and wall-clock time once.
+    struct Anchor {
+        /// Unix epoch ms at the moment we captured the anchor.
+        unix_ms_at_capture: u64,
+        /// Monotonic ms at the moment we captured the anchor.
+        mono_ms_at_capture: u64,
+    }
+
+    static ANCHOR: OnceLock<Anchor> = OnceLock::new();
+    let anchor = ANCHOR.get_or_init(|| {
+        let unix_ms_at_capture = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let mono_ms_at_capture = now_ms();
+        Anchor {
+            unix_ms_at_capture,
+            mono_ms_at_capture,
+        }
+    });
+
+    // unix_ms = unix_at_capture + (mono_expiry - mono_at_capture)
+    let offset = expires_at_ms.saturating_sub(anchor.mono_ms_at_capture);
+    Some(anchor.unix_ms_at_capture.saturating_add(offset))
 }
 
 /// Sentinel value meaning "no expiry".

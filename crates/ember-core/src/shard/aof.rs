@@ -197,6 +197,24 @@ pub(super) fn to_aof_records(
                 members: members.clone(),
             }]
         }
+        // SMOVE: persist as SREM from source + SADD to destination
+        (
+            ShardRequest::SMove {
+                source,
+                destination,
+                member,
+            },
+            ShardResponse::Bool(true),
+        ) => smallvec![
+            AofRecord::SRem {
+                key: source,
+                members: vec![member.clone()],
+            },
+            AofRecord::SAdd {
+                key: destination,
+                members: vec![member],
+            },
+        ],
         // STORE commands: persist as DEL + SADD with the resulting members
         (
             ShardRequest::SUnionStore { dest, .. }

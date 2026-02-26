@@ -175,6 +175,10 @@ impl Command {
             "SRANDMEMBER" => parse_srandmember(&frames[1..]),
             "SPOP" => parse_spop(&frames[1..]),
             "SMISMEMBER" => parse_smismember(&frames[1..]),
+            "SMOVE" => parse_smove(&frames[1..]),
+            "SINTERCARD" => parse_sintercard(&frames[1..]),
+            "EXPIRETIME" => parse_expiretime(&frames[1..]),
+            "PEXPIRETIME" => parse_pexpiretime(&frames[1..]),
             "CLUSTER" => parse_cluster(&frames[1..]),
             "ASKING" => parse_asking(&frames[1..]),
             "MIGRATE" => parse_migrate(&frames[1..]),
@@ -712,6 +716,67 @@ fn parse_pexpire(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     Ok(Command::Pexpire { key, milliseconds })
+}
+
+fn parse_expiretime(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(wrong_arity("EXPIRETIME"));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Expiretime { key })
+}
+
+fn parse_pexpiretime(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 1 {
+        return Err(wrong_arity("PEXPIRETIME"));
+    }
+    let key = extract_string(&args[0])?;
+    Ok(Command::Pexpiretime { key })
+}
+
+fn parse_smove(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("SMOVE"));
+    }
+    let source = extract_string(&args[0])?;
+    let destination = extract_string(&args[1])?;
+    let member = extract_string(&args[2])?;
+    Ok(Command::SMove {
+        source,
+        destination,
+        member,
+    })
+}
+
+fn parse_sintercard(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() < 2 {
+        return Err(wrong_arity("SINTERCARD"));
+    }
+    let numkeys = parse_u64(&args[0], "SINTERCARD")? as usize;
+    if numkeys == 0 || args.len() < 1 + numkeys {
+        return Err(ProtocolError::InvalidCommandFrame(
+            "SINTERCARD numkeys must be positive and match the number of keys provided".into(),
+        ));
+    }
+    let keys: Vec<String> = args[1..=numkeys]
+        .iter()
+        .map(extract_string)
+        .collect::<Result<_, _>>()?;
+    // optional LIMIT n
+    let limit = if args.len() == numkeys + 3 {
+        let tag = extract_string(&args[numkeys + 1])?.to_ascii_uppercase();
+        if tag != "LIMIT" {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "SINTERCARD: expected LIMIT keyword".into(),
+            ));
+        }
+        parse_u64(&args[numkeys + 2], "SINTERCARD")? as usize
+    } else if args.len() == numkeys + 1 {
+        0
+    } else {
+        return Err(wrong_arity("SINTERCARD"));
+    };
+    Ok(Command::SInterCard { keys, limit })
 }
 
 fn parse_dbsize(args: &[Frame]) -> Result<Command, ProtocolError> {
