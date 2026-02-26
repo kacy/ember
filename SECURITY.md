@@ -29,7 +29,13 @@ ember binds to `127.0.0.1` by default. if you expose it to a network:
 
 - use a firewall to restrict access to trusted clients
 - consider running behind a reverse proxy with TLS termination
-- ember does not currently support authentication (planned for future releases)
+- use `--requirepass` for password authentication (redis-compatible AUTH command)
+- enable ACL for per-user access control with `ACL SETUSER` commands
+- TLS is available via `--tls-port`, with optional mTLS for client certificates
+
+### per-ip rate limiting
+
+ember does not implement per-ip brute-force protection natively. when exposing the server to untrusted networks, use a reverse proxy (nginx, caddy, haproxy) or firewall rules to rate-limit connection attempts.
 
 ### memory limits
 

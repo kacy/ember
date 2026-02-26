@@ -16,16 +16,21 @@ impl Keyspace {
                 return match &e.value {
                     Value::String(_) => {
                         e.touch(self.track_access);
+                        self.keyspace_hits += 1;
                         Ok(Some(e.value.clone()))
                     }
                     _ => Err(WrongType),
                 };
             }
-            None => return Ok(None),
+            None => {
+                self.keyspace_misses += 1;
+                return Ok(None);
+            }
         };
         if expired {
             self.remove_expired_entry(key);
         }
+        self.keyspace_misses += 1;
         Ok(None)
     }
 

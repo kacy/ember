@@ -347,6 +347,10 @@ pub struct KeyspaceStats {
     pub keys_evicted: u64,
     /// Cumulative count of write commands rejected due to memory limits.
     pub oom_rejections: u64,
+    /// Cumulative count of successful key lookups.
+    pub keyspace_hits: u64,
+    /// Cumulative count of key lookups that found no key (expired or absent).
+    pub keyspace_misses: u64,
 }
 
 /// Number of random keys to sample when looking for an eviction candidate.
@@ -377,6 +381,10 @@ pub struct Keyspace {
     evicted_total: u64,
     /// Cumulative count of write rejections due to memory limits.
     oom_rejections: u64,
+    /// Cumulative count of successful key lookups.
+    keyspace_hits: u64,
+    /// Cumulative count of key lookups that found no key (expired or absent).
+    keyspace_misses: u64,
     /// When set, large values are dropped on a background thread instead
     /// of inline on the shard thread. See [`crate::dropper`].
     drop_handle: Option<DropHandle>,
@@ -412,6 +420,8 @@ impl Keyspace {
             expired_total: 0,
             evicted_total: 0,
             oom_rejections: 0,
+            keyspace_hits: 0,
+            keyspace_misses: 0,
             drop_handle: None,
             next_version: 0,
             versions: AHashMap::new(),
@@ -1106,6 +1116,8 @@ impl Keyspace {
             keys_expired: self.expired_total,
             keys_evicted: self.evicted_total,
             oom_rejections: self.oom_rejections,
+            keyspace_hits: self.keyspace_hits,
+            keyspace_misses: self.keyspace_misses,
         }
     }
 
