@@ -64,10 +64,12 @@ impl Command {
             Command::ZScan { .. } => "zscan",
             Command::Type { .. } => "type",
             Command::Expire { .. } => "expire",
+            Command::Expireat { .. } => "expireat",
             Command::Ttl { .. } => "ttl",
             Command::Persist { .. } => "persist",
             Command::Pttl { .. } => "pttl",
             Command::Pexpire { .. } => "pexpire",
+            Command::Pexpireat { .. } => "pexpireat",
             Command::Expiretime { .. } => "expiretime",
             Command::Pexpiretime { .. } => "pexpiretime",
 
@@ -108,6 +110,8 @@ impl Command {
             Command::LMove { .. } => "lmove",
             Command::GetDel { .. } => "getdel",
             Command::GetEx { .. } => "getex",
+            Command::GetSet { .. } => "getset",
+            Command::MSetNx { .. } => "msetnx",
 
             // sorted set
             Command::ZAdd { .. } => "zadd",
@@ -247,6 +251,8 @@ impl Command {
             // string mutations
             Command::Set { .. }
                 | Command::MSet { .. }
+                | Command::MSetNx { .. }
+                | Command::GetSet { .. }
                 | Command::Append { .. }
                 | Command::Incr { .. }
                 | Command::Decr { .. }
@@ -261,7 +267,9 @@ impl Command {
                 | Command::Rename { .. }
                 | Command::Copy { .. }
                 | Command::Expire { .. }
+                | Command::Expireat { .. }
                 | Command::Pexpire { .. }
+                | Command::Pexpireat { .. }
                 | Command::Persist { .. }
             // list
                 | Command::LPush { .. }
@@ -373,6 +381,8 @@ impl Command {
             // string — writes
             Command::Set { .. }
             | Command::MSet { .. }
+            | Command::MSetNx { .. }
+            | Command::GetSet { .. }
             | Command::Append { .. }
             | Command::SetRange { .. }
             | Command::SetBit { .. }
@@ -404,9 +414,11 @@ impl Command {
             // keyspace — writes
             Command::Del { .. } | Command::Unlink { .. } => WRITE | KEYSPACE | FAST,
             Command::Rename { .. } | Command::Copy { .. } => WRITE | KEYSPACE | SLOW,
-            Command::Expire { .. } | Command::Pexpire { .. } | Command::Persist { .. } => {
-                WRITE | KEYSPACE | FAST
-            }
+            Command::Expire { .. }
+            | Command::Expireat { .. }
+            | Command::Pexpire { .. }
+            | Command::Pexpireat { .. }
+            | Command::Persist { .. } => WRITE | KEYSPACE | FAST,
 
             // list — reads
             Command::LRange { .. } | Command::LLen { .. } => READ | LIST | SLOW,
@@ -590,7 +602,9 @@ impl Command {
             | Command::SetRange { key, .. }
             | Command::Persist { key }
             | Command::Expire { key, .. }
+            | Command::Expireat { key, .. }
             | Command::Pexpire { key, .. }
+            | Command::Pexpireat { key, .. }
             | Command::Ttl { key }
             | Command::Pttl { key }
             | Command::Expiretime { key }
@@ -599,10 +613,11 @@ impl Command {
             | Command::Rename { key, .. }
             | Command::ObjectEncoding { key }
             | Command::ObjectRefcount { key }
+            | Command::GetSet { key, .. }
             | Command::LPush { key, .. }
             | Command::RPush { key, .. }
-            | Command::LPop { key }
-            | Command::RPop { key }
+            | Command::LPop { key, .. }
+            | Command::RPop { key, .. }
             | Command::LRange { key, .. }
             | Command::LLen { key }
             | Command::LIndex { key, .. }
@@ -678,7 +693,9 @@ impl Command {
             Command::SUnionStore { dest, .. }
             | Command::SInterStore { dest, .. }
             | Command::SDiffStore { dest, .. } => Some(dest),
-            Command::MSet { pairs } => pairs.first().map(|(k, _)| k.as_str()),
+            Command::MSet { pairs } | Command::MSetNx { pairs } => {
+                pairs.first().map(|(k, _)| k.as_str())
+            }
             _ => None,
         }
     }

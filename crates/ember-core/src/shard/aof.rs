@@ -44,6 +44,19 @@ pub(super) fn to_aof_records(
         (ShardRequest::Expire { key, seconds }, ShardResponse::Bool(true)) => {
             smallvec![AofRecord::Expire { key, seconds }]
         }
+        // EXPIREAT: convert the absolute unix timestamp to a pexpire record (ms).
+        // On replay, pexpire will recompute the monotonic deadline from the stored ms.
+        // We store as Pexpireat so replay sets the same absolute deadline regardless
+        // of when recovery runs.
+        (ShardRequest::Expireat { key, timestamp }, ShardResponse::Bool(true)) => {
+            smallvec![AofRecord::Pexpireat {
+                key,
+                timestamp_ms: timestamp.saturating_mul(1000),
+            }]
+        }
+        (ShardRequest::Pexpireat { key, timestamp_ms }, ShardResponse::Bool(true)) => {
+            smallvec![AofRecord::Pexpireat { key, timestamp_ms }]
+        }
         (ShardRequest::LPush { key, values }, ShardResponse::Len(_)) => {
             smallvec![AofRecord::LPush { key, values }]
         }
@@ -55,6 +68,23 @@ pub(super) fn to_aof_records(
         }
         (ShardRequest::RPop { key }, ShardResponse::Value(Some(_))) => {
             smallvec![AofRecord::RPop { key }]
+        }
+        // LPopCount/RPopCount: emit one pop record per element removed.
+        (ShardRequest::LPopCount { key, .. }, ShardResponse::Array(items)) if !items.is_empty() => {
+            let n = items.len();
+            let mut records = SmallVec::with_capacity(n);
+            for _ in 0..n {
+                records.push(AofRecord::LPop { key: key.clone() });
+            }
+            records
+        }
+        (ShardRequest::RPopCount { key, .. }, ShardResponse::Array(items)) if !items.is_empty() => {
+            let n = items.len();
+            let mut records = SmallVec::with_capacity(n);
+            for _ in 0..n {
+                records.push(AofRecord::RPop { key: key.clone() });
+            }
+            records
         }
         (ShardRequest::LSet { key, index, value }, ShardResponse::Ok) => {
             smallvec![AofRecord::LSet { key, index, value }]
@@ -408,6 +438,23 @@ pub(super) fn to_aof_records(
         (ShardRequest::GetDel { key }, ShardResponse::Value(Some(_))) => {
             smallvec![AofRecord::Del { key }]
         }
+        // GETSET: persist as SET with the new value and no expiry.
+        (ShardRequest::GetSet { key, value }, ShardResponse::Value(_)) => {
+            smallvec![AofRecord::Set {
+                key,
+                value,
+                expire_ms: -1,
+            }]
+        }
+        // MSETNX: when all keys were new (Bool(true)), persist as individual SET records.
+        (ShardRequest::MSetNx { pairs }, ShardResponse::Bool(true)) => pairs
+            .into_iter()
+            .map(|(key, value)| AofRecord::Set {
+                key,
+                value,
+                expire_ms: -1,
+            })
+            .collect(),
         // GETEX with a new TTL: persist as Expire (seconds) or Pexpire (ms).
         // PERSIST (expire = Some(None)) is represented as Pexpire with 0.
         // No TTL change (expire = None): nothing to persist.

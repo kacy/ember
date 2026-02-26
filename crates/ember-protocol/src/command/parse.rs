@@ -101,11 +101,15 @@ impl Command {
             "EXISTS" => parse_exists(&frames[1..]),
             "MGET" => parse_mget(&frames[1..]),
             "MSET" => parse_mset(&frames[1..]),
+            "MSETNX" => parse_msetnx(&frames[1..]),
+            "GETSET" => parse_getset(&frames[1..]),
             "EXPIRE" => parse_expire(&frames[1..]),
+            "EXPIREAT" => parse_expireat(&frames[1..]),
             "TTL" => parse_ttl(&frames[1..]),
             "PERSIST" => parse_persist(&frames[1..]),
             "PTTL" => parse_pttl(&frames[1..]),
             "PEXPIRE" => parse_pexpire(&frames[1..]),
+            "PEXPIREAT" => parse_pexpireat_cmd(&frames[1..]),
             "DBSIZE" => parse_dbsize(&frames[1..]),
             "INFO" => parse_info(&frames[1..]),
             "BGSAVE" => parse_bgsave(&frames[1..]),
@@ -325,6 +329,14 @@ fn parse_u64(frame: &Frame, cmd: &str) -> Result<u64, ProtocolError> {
     let bytes = extract_raw_bytes(frame)?;
     parse_u64_bytes(bytes).ok_or_else(|| {
         ProtocolError::InvalidCommandFrame(format!("value is not a valid integer for '{cmd}'"))
+    })
+}
+
+/// Parses a frame's bytes as a `usize`. Used for optional count arguments.
+fn parse_usize(frame: &Frame, cmd: &str) -> Result<usize, ProtocolError> {
+    let n = parse_u64(frame, cmd)?;
+    usize::try_from(n).map_err(|_| {
+        ProtocolError::InvalidCommandFrame(format!("count is out of range for '{cmd}'"))
     })
 }
 
@@ -803,6 +815,28 @@ fn parse_mset(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::MSet { pairs })
 }
 
+fn parse_msetnx(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() || !args.len().is_multiple_of(2) {
+        return Err(wrong_arity("MSETNX"));
+    }
+    let mut pairs = Vec::with_capacity(args.len() / 2);
+    for chunk in args.chunks(2) {
+        let key = extract_string(&chunk[0])?;
+        let value = extract_bytes(&chunk[1])?;
+        pairs.push((key, value));
+    }
+    Ok(Command::MSetNx { pairs })
+}
+
+fn parse_getset(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("GETSET"));
+    }
+    let key = extract_string(&args[0])?;
+    let value = extract_bytes(&args[1])?;
+    Ok(Command::GetSet { key, value })
+}
+
 fn parse_expire(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 2 {
         return Err(wrong_arity("EXPIRE"));
@@ -857,6 +891,24 @@ fn parse_pexpire(args: &[Frame]) -> Result<Command, ProtocolError> {
     }
 
     Ok(Command::Pexpire { key, milliseconds })
+}
+
+fn parse_expireat(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("EXPIREAT"));
+    }
+    let key = extract_string(&args[0])?;
+    let timestamp = parse_u64(&args[1], "EXPIREAT")?;
+    Ok(Command::Expireat { key, timestamp })
+}
+
+fn parse_pexpireat_cmd(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 2 {
+        return Err(wrong_arity("PEXPIREAT"));
+    }
+    let key = extract_string(&args[0])?;
+    let timestamp_ms = parse_u64(&args[1], "PEXPIREAT")?;
+    Ok(Command::Pexpireat { key, timestamp_ms })
 }
 
 fn parse_expiretime(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -1161,19 +1213,29 @@ fn parse_rpush(args: &[Frame]) -> Result<Command, ProtocolError> {
 }
 
 fn parse_lpop(args: &[Frame]) -> Result<Command, ProtocolError> {
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(wrong_arity("LPOP"));
     }
     let key = extract_string(&args[0])?;
-    Ok(Command::LPop { key })
+    let count = if args.len() == 2 {
+        Some(parse_usize(&args[1], "LPOP")?)
+    } else {
+        None
+    };
+    Ok(Command::LPop { key, count })
 }
 
 fn parse_rpop(args: &[Frame]) -> Result<Command, ProtocolError> {
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(wrong_arity("RPOP"));
     }
     let key = extract_string(&args[0])?;
-    Ok(Command::RPop { key })
+    let count = if args.len() == 2 {
+        Some(parse_usize(&args[1], "RPOP")?)
+    } else {
+        None
+    };
+    Ok(Command::RPop { key, count })
 }
 
 fn parse_lrange(args: &[Frame]) -> Result<Command, ProtocolError> {

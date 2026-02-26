@@ -782,6 +782,10 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             key: key.clone(),
             milliseconds: *milliseconds,
         }),
+        AofRecord::Pexpireat { key, timestamp_ms } => Some(ShardRequest::Pexpireat {
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+        }),
         AofRecord::Incr { key } => Some(ShardRequest::Incr { key: key.clone() }),
         AofRecord::Decr { key } => Some(ShardRequest::Decr { key: key.clone() }),
         AofRecord::HSet { key, fields } => Some(ShardRequest::HSet {

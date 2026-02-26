@@ -324,3 +324,114 @@ async fn unknown_command() {
     let msg = c.err(&["NOTACOMMAND"]).await;
     assert!(msg.contains("unknown command"));
 }
+
+// --- EXPIREAT / PEXPIREAT ---
+
+#[tokio::test]
+async fn expireat_sets_absolute_expiry() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.ok(&["SET", "k", "v"]).await;
+
+    // timestamp 100 seconds in the future
+    let future = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 100;
+    let future_str = future.to_string();
+
+    assert_eq!(c.get_int(&["EXPIREAT", "k", &future_str]).await, 1);
+    let ttl = c.get_int(&["TTL", "k"]).await;
+    assert!(ttl > 0 && ttl <= 100, "expected TTL in (0,100], got {ttl}");
+}
+
+#[tokio::test]
+async fn expireat_missing_key_returns_zero() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    assert_eq!(c.get_int(&["EXPIREAT", "nope", "9999999999"]).await, 0);
+}
+
+#[tokio::test]
+async fn pexpireat_sets_absolute_expiry_ms() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.ok(&["SET", "k", "v"]).await;
+
+    let future_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+        + 60_000;
+    let future_str = future_ms.to_string();
+
+    assert_eq!(c.get_int(&["PEXPIREAT", "k", &future_str]).await, 1);
+    let pttl = c.get_int(&["PTTL", "k"]).await;
+    assert!(
+        pttl > 0 && pttl <= 60_000,
+        "expected PTTL in (0,60000], got {pttl}"
+    );
+}
+
+// --- GETSET ---
+
+#[tokio::test]
+async fn getset_returns_old_value() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.ok(&["SET", "k", "old"]).await;
+
+    let old = c.get_bulk(&["GETSET", "k", "new"]).await;
+    assert_eq!(old, Some("old".into()));
+
+    let current = c.get_bulk(&["GET", "k"]).await;
+    assert_eq!(current, Some("new".into()));
+}
+
+#[tokio::test]
+async fn getset_missing_key_returns_nil() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["GETSET", "nope", "v"]).await;
+    assert!(matches!(resp, Frame::Null));
+
+    // key should now exist
+    let current = c.get_bulk(&["GET", "nope"]).await;
+    assert_eq!(current, Some("v".into()));
+}
+
+// --- MSETNX ---
+
+#[tokio::test]
+async fn msetnx_all_new_returns_one() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    assert_eq!(c.get_int(&["MSETNX", "a", "1", "b", "2"]).await, 1);
+    assert_eq!(c.get_bulk(&["GET", "a"]).await, Some("1".into()));
+    assert_eq!(c.get_bulk(&["GET", "b"]).await, Some("2".into()));
+}
+
+#[tokio::test]
+async fn msetnx_any_existing_returns_zero_and_no_changes() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.ok(&["SET", "a", "existing"]).await;
+
+    // should fail atomically — neither "a" nor "b" should change
+    assert_eq!(c.get_int(&["MSETNX", "a", "new", "b", "2"]).await, 0);
+
+    // "a" keeps its original value
+    assert_eq!(c.get_bulk(&["GET", "a"]).await, Some("existing".into()));
+
+    // "b" was not created
+    let resp = c.cmd(&["GET", "b"]).await;
+    assert!(matches!(resp, Frame::Null));
+}

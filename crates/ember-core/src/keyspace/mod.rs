@@ -967,6 +967,48 @@ impl Keyspace {
         }
     }
 
+    /// Sets an expiration at an absolute Unix timestamp (seconds).
+    ///
+    /// Returns `true` if the key exists and the expiry was set,
+    /// `false` if the key doesn't exist.
+    pub fn expireat(&mut self, key: &str, unix_secs: u64) -> bool {
+        if self.remove_if_expired(key) {
+            return false;
+        }
+        match self.entries.get_mut(key) {
+            Some(entry) => {
+                if entry.expires_at_ms == 0 {
+                    self.expiry_count += 1;
+                }
+                entry.expires_at_ms = time::unix_ms_to_monotonic_ms(unix_secs.saturating_mul(1000));
+                self.bump_version(key);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets an expiration at an absolute Unix timestamp (milliseconds).
+    ///
+    /// Returns `true` if the key exists and the expiry was set,
+    /// `false` if the key doesn't exist.
+    pub fn pexpireat(&mut self, key: &str, unix_ms: u64) -> bool {
+        if self.remove_if_expired(key) {
+            return false;
+        }
+        match self.entries.get_mut(key) {
+            Some(entry) => {
+                if entry.expires_at_ms == 0 {
+                    self.expiry_count += 1;
+                }
+                entry.expires_at_ms = time::unix_ms_to_monotonic_ms(unix_ms);
+                self.bump_version(key);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Returns the absolute Unix timestamp (seconds) when the key expires.
     ///
     /// Returns `-2` if the key doesn't exist, `-1` if it has no expiry.
@@ -2189,6 +2231,70 @@ mod tests {
         }
         // expiry count shouldn't double-count
         assert_eq!(ks.stats().keys_with_expiry, 1);
+    }
+
+    // --- expireat / pexpireat ---
+
+    #[test]
+    fn expireat_sets_expiry_on_existing_key() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        let future_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 60;
+        assert!(ks.expireat("k", future_secs));
+        assert!(matches!(ks.ttl("k"), TtlResult::Seconds(_)));
+        assert_eq!(ks.stats().keys_with_expiry, 1);
+    }
+
+    #[test]
+    fn expireat_missing_key_returns_false() {
+        let mut ks = Keyspace::new();
+        assert!(!ks.expireat("missing", 9_999_999_999));
+    }
+
+    #[test]
+    fn expireat_does_not_double_count_expiry() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let mut ks = Keyspace::new();
+        let base = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        ks.set(
+            "k".into(),
+            Bytes::from("v"),
+            Some(Duration::from_secs(30)),
+            false,
+            false,
+        );
+        assert_eq!(ks.stats().keys_with_expiry, 1);
+        assert!(ks.expireat("k", base + 120));
+        assert_eq!(ks.stats().keys_with_expiry, 1);
+    }
+
+    #[test]
+    fn pexpireat_sets_expiry_in_ms() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        let future_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+        assert!(ks.pexpireat("k", future_ms));
+        assert!(matches!(ks.pttl("k"), TtlResult::Milliseconds(_)));
+        assert_eq!(ks.stats().keys_with_expiry, 1);
+    }
+
+    #[test]
+    fn pexpireat_missing_key_returns_false() {
+        let mut ks = Keyspace::new();
+        assert!(!ks.pexpireat("missing", 9_999_999_999_000));
     }
 
     // --- keys tests ---

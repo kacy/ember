@@ -661,7 +661,10 @@ fn rpush_no_value() {
 fn lpop_basic() {
     assert_eq!(
         Command::from_frame(cmd(&["LPOP", "list"])).unwrap(),
-        Command::LPop { key: "list".into() },
+        Command::LPop {
+            key: "list".into(),
+            count: None,
+        },
     );
 }
 
@@ -677,7 +680,10 @@ fn lpop_wrong_arity() {
 fn rpop_basic() {
     assert_eq!(
         Command::from_frame(cmd(&["RPOP", "list"])).unwrap(),
-        Command::RPop { key: "list".into() },
+        Command::RPop {
+            key: "list".into(),
+            count: None,
+        },
     );
 }
 

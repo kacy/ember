@@ -97,6 +97,7 @@ const TAG_DEL: u8 = 2;
 const TAG_EXPIRE: u8 = 3;
 const TAG_PERSIST: u8 = 10;
 const TAG_PEXPIRE: u8 = 11;
+const TAG_PEXPIREAT: u8 = 35;
 const TAG_RENAME: u8 = 22;
 const TAG_COPY: u8 = 27;
 const TAG_LSET: u8 = 28;
@@ -174,6 +175,12 @@ pub enum AofRecord {
     Persist { key: String },
     /// PEXPIRE key milliseconds.
     Pexpire { key: String, milliseconds: u64 },
+    /// PEXPIREAT key timestamp-ms — set expiry at an absolute Unix timestamp (ms).
+    ///
+    /// Used to persist EXPIREAT and PEXPIREAT commands so that after recovery
+    /// the expiry deadline is the same absolute point in time rather than
+    /// being re-anchored to the moment of replay.
+    Pexpireat { key: String, timestamp_ms: u64 },
     /// INCR key.
     Incr { key: String },
     /// DECR key.
@@ -282,6 +289,7 @@ impl AofRecord {
             AofRecord::ZRem { .. } => TAG_ZREM,
             AofRecord::Persist { .. } => TAG_PERSIST,
             AofRecord::Pexpire { .. } => TAG_PEXPIRE,
+            AofRecord::Pexpireat { .. } => TAG_PEXPIREAT,
             AofRecord::Incr { .. } => TAG_INCR,
             AofRecord::Decr { .. } => TAG_DECR,
             AofRecord::HSet { .. } => TAG_HSET,
@@ -331,10 +339,10 @@ impl AofRecord {
             | AofRecord::Persist { key }
             | AofRecord::Incr { key }
             | AofRecord::Decr { key } => 1 + LEN_PREFIX + key.len(),
-            // 1 tag + 4 key-len + key + 8 seconds/millis
-            AofRecord::Expire { key, .. } | AofRecord::Pexpire { key, .. } => {
-                1 + LEN_PREFIX + key.len() + 8
-            }
+            // 1 tag + 4 key-len + key + 8 seconds/millis/timestamp
+            AofRecord::Expire { key, .. }
+            | AofRecord::Pexpire { key, .. }
+            | AofRecord::Pexpireat { key, .. } => 1 + LEN_PREFIX + key.len() + 8,
             // 1 tag + 4 key-len + key + 4 count + (4 value-len + value) * n
             AofRecord::LPush { key, values } | AofRecord::RPush { key, values } => {
                 let values_size: usize = values.iter().map(|v| LEN_PREFIX + v.len()).sum();
@@ -476,6 +484,10 @@ impl AofRecord {
             AofRecord::Pexpire { key, milliseconds } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_i64(&mut buf, (*milliseconds).min(i64::MAX as u64) as i64)?;
+            }
+            AofRecord::Pexpireat { key, timestamp_ms } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, (*timestamp_ms).min(i64::MAX as u64) as i64)?;
             }
             AofRecord::IncrBy { key, delta } | AofRecord::DecrBy { key, delta } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
@@ -776,6 +788,16 @@ impl AofRecord {
                     ))
                 })?;
                 Ok(AofRecord::Pexpire { key, milliseconds })
+            }
+            TAG_PEXPIREAT => {
+                let key = read_string(&mut cursor, "key")?;
+                let raw = format::read_i64(&mut cursor)?;
+                let timestamp_ms = u64::try_from(raw).map_err(|_| {
+                    FormatError::InvalidData(format!(
+                        "PEXPIREAT timestamp_ms is negative ({raw}) in AOF record"
+                    ))
+                })?;
+                Ok(AofRecord::Pexpireat { key, timestamp_ms })
             }
             TAG_INCR => {
                 let key = read_string(&mut cursor, "key")?;

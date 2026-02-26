@@ -30,6 +30,33 @@ pub fn now_secs() -> u32 {
     start.elapsed().as_secs() as u32
 }
 
+/// Anchors the monotonic clock to wall time once and caches it for all
+/// subsequent conversions. Both `monotonic_to_unix_ms` and
+/// `unix_ms_to_monotonic_ms` share this anchor so the two operations are
+/// perfectly invertible.
+struct ClockAnchor {
+    /// Unix epoch ms at the moment we captured the anchor.
+    unix_ms_at_capture: u64,
+    /// Monotonic ms at the moment we captured the anchor.
+    mono_ms_at_capture: u64,
+}
+
+fn clock_anchor() -> &'static ClockAnchor {
+    static ANCHOR: OnceLock<ClockAnchor> = OnceLock::new();
+    ANCHOR.get_or_init(|| {
+        let unix_ms_at_capture = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
+        let mono_ms_at_capture = now_ms();
+        ClockAnchor {
+            unix_ms_at_capture,
+            mono_ms_at_capture,
+        }
+    })
+}
+
 /// Converts a monotonic expiry timestamp (ms since process start) to a Unix
 /// epoch timestamp in milliseconds.
 ///
@@ -37,39 +64,35 @@ pub fn now_secs() -> u32 {
 /// a single `SystemTime::now()` sample. Subsequent calls use only the fast
 /// monotonic clock and arithmetic — no system call.
 ///
-/// Returns `None` if the system clock predates the Unix epoch (shouldn't
-/// happen on any real machine) or if `expires_at_ms` is `NO_EXPIRY`.
+/// Returns `None` if `expires_at_ms` is `NO_EXPIRY`.
 #[inline]
 pub fn monotonic_to_unix_ms(expires_at_ms: u64) -> Option<u64> {
     if expires_at_ms == NO_EXPIRY {
         return None;
     }
-
-    // Capture the relationship between monotonic and wall-clock time once.
-    struct Anchor {
-        /// Unix epoch ms at the moment we captured the anchor.
-        unix_ms_at_capture: u64,
-        /// Monotonic ms at the moment we captured the anchor.
-        mono_ms_at_capture: u64,
-    }
-
-    static ANCHOR: OnceLock<Anchor> = OnceLock::new();
-    let anchor = ANCHOR.get_or_init(|| {
-        let unix_ms_at_capture = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(u64::MAX as u128) as u64;
-        let mono_ms_at_capture = now_ms();
-        Anchor {
-            unix_ms_at_capture,
-            mono_ms_at_capture,
-        }
-    });
-
+    let anchor = clock_anchor();
     // unix_ms = unix_at_capture + (mono_expiry - mono_at_capture)
     let offset = expires_at_ms.saturating_sub(anchor.mono_ms_at_capture);
     Some(anchor.unix_ms_at_capture.saturating_add(offset))
+}
+
+/// Converts a Unix epoch timestamp in milliseconds to a monotonic expiry
+/// value suitable for storage in `Entry::expires_at_ms`.
+///
+/// The inverse of `monotonic_to_unix_ms`. Used by EXPIREAT and PEXPIREAT
+/// to convert an absolute wall-clock timestamp into the internal monotonic
+/// representation. Both functions share the same clock anchor so the
+/// conversion is coherent.
+///
+/// A timestamp in the past results in a value less than or equal to
+/// `now_ms()`, which means the key will be treated as already expired on
+/// the next access.
+#[inline]
+pub fn unix_ms_to_monotonic_ms(unix_ms: u64) -> u64 {
+    let anchor = clock_anchor();
+    // mono_expiry = mono_at_capture + (unix_ms - unix_at_capture)
+    let offset = unix_ms.saturating_sub(anchor.unix_ms_at_capture);
+    anchor.mono_ms_at_capture.saturating_add(offset)
 }
 
 /// Sentinel value meaning "no expiry".
