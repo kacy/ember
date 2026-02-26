@@ -599,3 +599,193 @@ async fn lpop_count_exceeding_list_returns_all() {
         other => panic!("expected Array, got {other:?}"),
     }
 }
+
+// --- HRANDFIELD ---
+
+#[tokio::test]
+async fn hrandfield_no_count_returns_single_field() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["HSET", "h", "a", "1", "b", "2", "c", "3"]).await;
+
+    let resp = c.cmd(&["HRANDFIELD", "h"]).await;
+    match resp {
+        Frame::Bulk(b) => {
+            let field = std::str::from_utf8(&b).unwrap();
+            assert!(["a", "b", "c"].contains(&field));
+        }
+        other => panic!("expected Bulk, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hrandfield_positive_count_distinct() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["HSET", "h", "a", "1", "b", "2", "c", "3"]).await;
+
+    let resp = c.cmd(&["HRANDFIELD", "h", "2"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            assert_eq!(frames.len(), 2);
+            // all should be valid fields
+            for f in &frames {
+                if let Frame::Bulk(b) = f {
+                    let field = std::str::from_utf8(b).unwrap();
+                    assert!(["a", "b", "c"].contains(&field));
+                } else {
+                    panic!("expected Bulk in array, got {f:?}");
+                }
+            }
+            // distinct
+            let fields: std::collections::HashSet<_> = frames
+                .iter()
+                .map(|f| match f {
+                    Frame::Bulk(b) => std::str::from_utf8(b).unwrap().to_owned(),
+                    _ => unreachable!(),
+                })
+                .collect();
+            assert_eq!(fields.len(), 2);
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hrandfield_negative_count_allows_duplicates() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["HSET", "h", "only", "val"]).await;
+
+    let resp = c.cmd(&["HRANDFIELD", "h", "-5"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            assert_eq!(frames.len(), 5);
+            for f in &frames {
+                if let Frame::Bulk(b) = f {
+                    assert_eq!(std::str::from_utf8(b).unwrap(), "only");
+                } else {
+                    panic!("expected Bulk, got {f:?}");
+                }
+            }
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hrandfield_withvalues() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["HSET", "h", "field", "value"]).await;
+
+    let resp = c.cmd(&["HRANDFIELD", "h", "1", "WITHVALUES"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            // interleaved: [field, value]
+            assert_eq!(frames.len(), 2);
+            assert!(matches!(&frames[0], Frame::Bulk(b) if b == &b"field"[..]));
+            assert!(matches!(&frames[1], Frame::Bulk(b) if b == &b"value"[..]));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn hrandfield_missing_key_empty() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["HRANDFIELD", "nosuchkey"]).await;
+    assert!(matches!(resp, Frame::Null));
+
+    let resp2 = c.cmd(&["HRANDFIELD", "nosuchkey", "3"]).await;
+    match resp2 {
+        Frame::Array(frames) => assert!(frames.is_empty()),
+        other => panic!("expected empty Array, got {other:?}"),
+    }
+}
+
+// --- ZRANDMEMBER ---
+
+#[tokio::test]
+async fn zrandmember_no_count_returns_single_member() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["ZADD", "z", "1", "a", "2", "b", "3", "c"]).await;
+
+    let resp = c.cmd(&["ZRANDMEMBER", "z"]).await;
+    match resp {
+        Frame::Bulk(b) => {
+            let member = std::str::from_utf8(&b).unwrap();
+            assert!(["a", "b", "c"].contains(&member));
+        }
+        other => panic!("expected Bulk, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn zrandmember_positive_count_distinct() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["ZADD", "z", "1", "a", "2", "b", "3", "c"]).await;
+
+    let resp = c.cmd(&["ZRANDMEMBER", "z", "2"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            assert_eq!(frames.len(), 2);
+            let members: std::collections::HashSet<_> = frames
+                .iter()
+                .map(|f| match f {
+                    Frame::Bulk(b) => std::str::from_utf8(b).unwrap().to_owned(),
+                    _ => panic!("expected Bulk"),
+                })
+                .collect();
+            assert_eq!(members.len(), 2);
+            assert!(members
+                .iter()
+                .all(|m| ["a", "b", "c"].contains(&m.as_str())));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn zrandmember_withscores() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["ZADD", "z", "42", "member"]).await;
+
+    let resp = c.cmd(&["ZRANDMEMBER", "z", "1", "WITHSCORES"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            // interleaved: [member, score]
+            assert_eq!(frames.len(), 2);
+            assert!(matches!(&frames[0], Frame::Bulk(b) if b == &b"member"[..]));
+            assert!(matches!(&frames[1], Frame::Bulk(b) if b == &b"42"[..]));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn zrandmember_missing_key_empty() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let resp = c.cmd(&["ZRANDMEMBER", "nosuchkey"]).await;
+    assert!(matches!(resp, Frame::Null));
+
+    let resp2 = c.cmd(&["ZRANDMEMBER", "nosuchkey", "3"]).await;
+    match resp2 {
+        Frame::Array(frames) => assert!(frames.is_empty()),
+        other => panic!("expected empty Array, got {other:?}"),
+    }
+}

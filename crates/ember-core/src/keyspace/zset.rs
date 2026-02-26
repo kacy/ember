@@ -551,6 +551,76 @@ impl Keyspace {
         });
         Ok(result)
     }
+
+    /// Returns random member(s) from a sorted set.
+    ///
+    /// - `count = None`: return one random member as a single string (no score)
+    /// - `count > 0`: return up to count distinct members
+    /// - `count < 0`: return |count| members, allowing duplicates
+    ///
+    /// If `with_scores` is true and count is `Some`, returns `(member, Some(score))` pairs.
+    /// When `count` is `None`, the score field is always `None`.
+    pub fn zrandmember(
+        &mut self,
+        key: &str,
+        count: Option<i64>,
+        with_scores: bool,
+    ) -> Result<Vec<(String, Option<f64>)>, WrongType> {
+        let Some(entry) = self.get_live_entry(key) else {
+            return Ok(vec![]);
+        };
+        let Value::SortedSet(ref zset) = entry.value else {
+            return Err(WrongType);
+        };
+        if zset.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // collect into a vec for indexed random access
+        let members: Vec<(&str, f64)> = zset.iter().collect();
+        let mut rng = rand::rng();
+
+        let result = match count {
+            None => {
+                // single random member — no score even if with_scores is set
+                use rand::seq::IteratorRandom;
+                members
+                    .iter()
+                    .choose(&mut rng)
+                    .map(|(m, _)| ((*m).to_owned(), None))
+                    .into_iter()
+                    .collect()
+            }
+            Some(n) if n > 0 => {
+                use rand::seq::IteratorRandom;
+                let n = (n as usize).min(members.len());
+                members
+                    .iter()
+                    .choose_multiple(&mut rng, n)
+                    .into_iter()
+                    .map(|(m, s)| {
+                        let score = if with_scores { Some(*s) } else { None };
+                        ((*m).to_owned(), score)
+                    })
+                    .collect()
+            }
+            Some(n) => {
+                // negative count: allow duplicates, return |n| entries
+                use rand::Rng;
+                let n = n.unsigned_abs() as usize;
+                (0..n)
+                    .map(|_| {
+                        let idx = rng.random_range(0..members.len());
+                        let (m, s) = members[idx];
+                        let score = if with_scores { Some(s) } else { None };
+                        (m.to_owned(), score)
+                    })
+                    .collect()
+            }
+        };
+
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -1054,5 +1124,97 @@ mod tests {
         ks.set("s".into(), Bytes::from("v"), None, false, false);
         let keys = vec!["s".to_owned()];
         assert!(ks.zdiff(&keys).is_err());
+    }
+
+    // --- zrandmember ---
+
+    #[test]
+    fn zrandmember_no_count_returns_single_member() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let result = ks.zrandmember("z", None, false).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(["a", "b", "c"].contains(&result[0].0.as_str()));
+        // no count means no score
+        assert!(result[0].1.is_none());
+    }
+
+    #[test]
+    fn zrandmember_positive_count_distinct() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into()), (3.0, "c".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let result = ks.zrandmember("z", Some(2), false).unwrap();
+        assert_eq!(result.len(), 2);
+        for (m, s) in &result {
+            assert!(["a", "b", "c"].contains(&m.as_str()));
+            assert!(s.is_none());
+        }
+        // distinct
+        let unique: std::collections::HashSet<_> = result.iter().map(|(m, _)| m).collect();
+        assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn zrandmember_positive_count_capped_at_set_size() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let result = ks.zrandmember("z", Some(10), false).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn zrandmember_negative_count_allows_duplicates() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "only".into())], &ZAddFlags::default())
+            .unwrap();
+        let result = ks.zrandmember("z", Some(-5), false).unwrap();
+        assert_eq!(result.len(), 5);
+        assert!(result.iter().all(|(m, _)| m == "only"));
+    }
+
+    #[test]
+    fn zrandmember_with_scores() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "z",
+            &[(1.0, "a".into()), (2.0, "b".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        let result = ks.zrandmember("z", Some(2), true).unwrap();
+        assert_eq!(result.len(), 2);
+        for (m, s) in &result {
+            assert!(["a", "b"].contains(&m.as_str()));
+            assert!(s.is_some());
+        }
+    }
+
+    #[test]
+    fn zrandmember_missing_key_returns_empty() {
+        let mut ks = Keyspace::new();
+        assert!(ks.zrandmember("missing", None, false).unwrap().is_empty());
+        assert!(ks.zrandmember("missing", Some(5), true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn zrandmember_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.zrandmember("s", None, false).is_err());
     }
 }
