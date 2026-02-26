@@ -535,3 +535,67 @@ async fn zmpop_all_empty_returns_nil() {
     let resp = c.cmd(&["ZMPOP", "2", "nope1", "nope2", "MIN"]).await;
     assert!(matches!(resp, Frame::Null));
 }
+
+// --- lpop / rpop with count ---
+
+#[tokio::test]
+async fn lpop_no_count_returns_bulk_string() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["RPUSH", "list", "a", "b", "c"]).await;
+
+    // no count — returns a bulk string, not an array
+    let val = c.get_bulk(&["LPOP", "list"]).await;
+    assert_eq!(val, Some("a".into()));
+}
+
+#[tokio::test]
+async fn lpop_count_returns_array() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["RPUSH", "list", "a", "b", "c", "d"]).await;
+
+    let resp = c.cmd(&["LPOP", "list", "2"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            assert_eq!(frames.len(), 2);
+            assert!(matches!(&frames[0], Frame::Bulk(b) if b == &b"a"[..]));
+            assert!(matches!(&frames[1], Frame::Bulk(b) if b == &b"b"[..]));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn rpop_count_returns_array() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["RPUSH", "list", "a", "b", "c", "d"]).await;
+
+    let resp = c.cmd(&["RPOP", "list", "2"]).await;
+    match resp {
+        Frame::Array(frames) => {
+            assert_eq!(frames.len(), 2);
+            assert!(matches!(&frames[0], Frame::Bulk(b) if b == &b"d"[..]));
+            assert!(matches!(&frames[1], Frame::Bulk(b) if b == &b"c"[..]));
+        }
+        other => panic!("expected Array, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn lpop_count_exceeding_list_returns_all() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["RPUSH", "list", "x", "y"]).await;
+
+    let resp = c.cmd(&["LPOP", "list", "10"]).await;
+    match resp {
+        Frame::Array(frames) => assert_eq!(frames.len(), 2),
+        other => panic!("expected Array, got {other:?}"),
+    }
+}

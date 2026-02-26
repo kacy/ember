@@ -420,11 +420,31 @@ pub(super) async fn prepare_command(
                 ResponseTag::LenResultOom
             )
         }
-        Command::LPop { key } => {
+        Command::LPop { key, count: None } => {
             route!(key, ShardRequest::LPop { key }, ResponseTag::PopResult)
         }
-        Command::RPop { key } => {
+        Command::LPop {
+            key,
+            count: Some(count),
+        } => {
+            route!(
+                key,
+                ShardRequest::LPopCount { key, count },
+                ResponseTag::ArrayResult
+            )
+        }
+        Command::RPop { key, count: None } => {
             route!(key, ShardRequest::RPop { key }, ResponseTag::PopResult)
+        }
+        Command::RPop {
+            key,
+            count: Some(count),
+        } => {
+            route!(
+                key,
+                ShardRequest::RPopCount { key, count },
+                ResponseTag::ArrayResult
+            )
         }
         Command::LRange { key, start, stop } => {
             route!(
@@ -1200,11 +1220,14 @@ pub(super) async fn cluster_slot_check(
         | Command::Persist { ref key }
         | Command::Pttl { ref key }
         | Command::Pexpire { ref key, .. }
+        | Command::Expireat { ref key, .. }
+        | Command::Pexpireat { ref key, .. }
         | Command::Type { ref key }
+        | Command::GetSet { ref key, .. }
         | Command::LPush { ref key, .. }
         | Command::RPush { ref key, .. }
-        | Command::LPop { ref key }
-        | Command::RPop { ref key }
+        | Command::LPop { ref key, .. }
+        | Command::RPop { ref key, .. }
         | Command::LRange { ref key, .. }
         | Command::LLen { ref key }
         | Command::LIndex { ref key, .. }
@@ -1336,8 +1359,8 @@ pub(super) async fn cluster_slot_check(
                 .await
         }
 
-        // mset: extract keys from pairs for crossslot check
-        Command::MSet { ref pairs } => {
+        // mset / msetnx: extract keys from pairs for crossslot check
+        Command::MSet { ref pairs } | Command::MSetNx { ref pairs } => {
             let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
             if let Err(err) = cluster.check_crossslot(&keys) {
                 return Some(err);

@@ -262,6 +262,59 @@ impl Keyspace {
         Ok(Some(bytes))
     }
 
+    /// Atomically sets a key to a new value and returns the old value.
+    ///
+    /// Equivalent to `GET` followed by `SET` in a single operation. The new
+    /// value is always stored as a plain string with no expiry (any existing
+    /// TTL is cleared, matching Redis behaviour for GETSET).
+    ///
+    /// Returns `Ok(None)` if the key did not exist or had expired.
+    /// Returns `Err(WrongType)` if the key holds a non-string value.
+    pub fn getset(&mut self, key: &str, value: Bytes) -> Result<Option<Bytes>, WrongType> {
+        if self.remove_if_expired(key) {
+            // key was expired — treat as missing, fall through to set below
+        } else {
+            match self.entries.get(key) {
+                None => {}
+                Some(e) if !matches!(e.value, Value::String(_)) => return Err(WrongType),
+                _ => {}
+            }
+        }
+
+        let old = match self.entries.get(key) {
+            Some(e) => match &e.value {
+                Value::String(b) => Some(b.clone()),
+                _ => return Err(WrongType),
+            },
+            None => None,
+        };
+
+        // Always set with no TTL — GETSET clears any existing expiry.
+        self.set(key.to_owned(), value, None, false, false);
+        Ok(old)
+    }
+
+    /// Sets multiple keys only if none of them already exist.
+    ///
+    /// Checks all keys atomically before writing any. Returns `true` and
+    /// writes all pairs if no key exists, `false` and writes nothing if any
+    /// key is already present (including keys with a TTL that hasn't expired
+    /// yet).
+    pub fn msetnx(&mut self, pairs: &[(String, Bytes)]) -> bool {
+        // first pass: check that no key exists
+        for (key, _) in pairs {
+            self.remove_if_expired(key);
+            if self.entries.contains_key(key.as_str()) {
+                return false;
+            }
+        }
+        // second pass: write all pairs
+        for (key, value) in pairs {
+            self.set(key.clone(), value.clone(), None, false, false);
+        }
+        true
+    }
+
     /// Returns the value of a key and optionally updates its expiry.
     ///
     /// `expire` controls what happens to the TTL:
@@ -1046,5 +1099,87 @@ mod tests {
     fn getex_missing_key_returns_none() {
         let mut ks = Keyspace::new();
         assert_eq!(ks.getex("nope", None).unwrap(), None);
+    }
+
+    // --- getset ---
+
+    #[test]
+    fn getset_returns_old_value_and_sets_new() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("old"), None, false, false);
+        let old = ks.getset("k", Bytes::from("new")).unwrap();
+        assert_eq!(old, Some(Bytes::from("old")));
+        assert_eq!(
+            ks.get("k").unwrap(),
+            Some(Value::String(Bytes::from("new")))
+        );
+    }
+
+    #[test]
+    fn getset_missing_key_returns_none_and_sets_value() {
+        let mut ks = Keyspace::new();
+        let old = ks.getset("k", Bytes::from("v")).unwrap();
+        assert_eq!(old, None);
+        assert_eq!(ks.get("k").unwrap(), Some(Value::String(Bytes::from("v"))));
+    }
+
+    #[test]
+    fn getset_clears_existing_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "k".into(),
+            Bytes::from("old"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
+        assert!(matches!(ks.ttl("k"), TtlResult::Seconds(_)));
+        let _ = ks.getset("k", Bytes::from("new")).unwrap();
+        assert!(matches!(ks.ttl("k"), TtlResult::NoExpiry));
+    }
+
+    #[test]
+    fn getset_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(1.0, "a".into())], &ZAddFlags::default())
+            .unwrap();
+        assert!(ks.getset("z", Bytes::from("v")).is_err());
+    }
+
+    // --- msetnx ---
+
+    #[test]
+    fn msetnx_all_new_keys_returns_true_and_sets() {
+        let mut ks = Keyspace::new();
+        let pairs = vec![
+            ("a".to_owned(), Bytes::from("1")),
+            ("b".to_owned(), Bytes::from("2")),
+        ];
+        assert!(ks.msetnx(&pairs));
+        assert_eq!(ks.get("a").unwrap(), Some(Value::String(Bytes::from("1"))));
+        assert_eq!(ks.get("b").unwrap(), Some(Value::String(Bytes::from("2"))));
+    }
+
+    #[test]
+    fn msetnx_any_existing_returns_false_and_no_changes() {
+        let mut ks = Keyspace::new();
+        ks.set("a".into(), Bytes::from("existing"), None, false, false);
+        let pairs = vec![
+            ("a".to_owned(), Bytes::from("new")),
+            ("b".to_owned(), Bytes::from("2")),
+        ];
+        assert!(!ks.msetnx(&pairs));
+        // "a" unchanged, "b" not created
+        assert_eq!(
+            ks.get("a").unwrap(),
+            Some(Value::String(Bytes::from("existing")))
+        );
+        assert_eq!(ks.get("b").unwrap(), None);
+    }
+
+    #[test]
+    fn msetnx_empty_pairs_returns_true() {
+        let mut ks = Keyspace::new();
+        assert!(ks.msetnx(&[]));
     }
 }

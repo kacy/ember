@@ -401,8 +401,8 @@ fn extract_keys(cmd: &ember_protocol::Command) -> Vec<&str> {
         | Command::ObjectRefcount { key }
         | Command::LPush { key, .. }
         | Command::RPush { key, .. }
-        | Command::LPop { key }
-        | Command::RPop { key }
+        | Command::LPop { key, .. }
+        | Command::RPop { key, .. }
         | Command::LRange { key, .. }
         | Command::LLen { key }
         | Command::ZAdd { key, .. }
@@ -894,8 +894,14 @@ fn commands_in_category(flag: u64) -> Vec<&'static str> {
             key: String::new(),
             values: vec![],
         },
-        Command::LPop { key: String::new() },
-        Command::RPop { key: String::new() },
+        Command::LPop {
+            key: String::new(),
+            count: None,
+        },
+        Command::RPop {
+            key: String::new(),
+            count: None,
+        },
         Command::LRange {
             key: String::new(),
             start: 0,

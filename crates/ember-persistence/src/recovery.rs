@@ -510,6 +510,24 @@ fn replay_aof(
                     entry.1 = milliseconds.min(i64::MAX as u64) as i64;
                 }
             }
+            AofRecord::Pexpireat { key, timestamp_ms } => {
+                if let Some(entry) = map.get_mut(&key) {
+                    // Convert the absolute unix timestamp to a remaining TTL
+                    // relative to now. This preserves the exact wall-clock
+                    // deadline across restarts.
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    if timestamp_ms <= now_ms {
+                        // Already expired — mark as 0 so the filter removes it.
+                        entry.1 = 0;
+                    } else {
+                        let remaining = timestamp_ms.saturating_sub(now_ms);
+                        entry.1 = remaining.min(i64::MAX as u64) as i64;
+                    }
+                }
+            }
             AofRecord::Incr { key } => {
                 apply_incr(map, key, 1);
             }

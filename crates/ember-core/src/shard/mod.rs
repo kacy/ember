@@ -244,6 +244,16 @@ pub enum ShardRequest {
         key: String,
         milliseconds: u64,
     },
+    /// EXPIREAT: set expiry at an absolute Unix timestamp (seconds).
+    Expireat {
+        key: String,
+        timestamp: u64,
+    },
+    /// PEXPIREAT: set expiry at an absolute Unix timestamp (milliseconds).
+    Pexpireat {
+        key: String,
+        timestamp_ms: u64,
+    },
     LPush {
         key: String,
         values: Vec<Bytes>,
@@ -257,6 +267,16 @@ pub enum ShardRequest {
     },
     RPop {
         key: String,
+    },
+    /// LPOP key count — pop up to `count` elements from the list head, returning an array.
+    LPopCount {
+        key: String,
+        count: usize,
+    },
+    /// RPOP key count — pop up to `count` elements from the list tail, returning an array.
+    RPopCount {
+        key: String,
+        count: usize,
     },
     /// Blocking left-pop. If the list has elements, pops immediately and sends
     /// the result on `waiter`. If empty, the shard registers the waiter to be
@@ -516,6 +536,15 @@ pub enum ShardRequest {
     GetDel {
         key: String,
     },
+    /// GETSET: atomically sets key to a new value and returns the old value.
+    GetSet {
+        key: String,
+        value: Bytes,
+    },
+    /// MSETNX: sets multiple keys only if none already exist (atomic all-or-nothing).
+    MSetNx {
+        pairs: Vec<(String, Bytes)>,
+    },
     /// GETEX: returns the value at key and optionally updates its TTL.
     ///
     /// `expire`: `None` = no change, `Some(None)` = persist, `Some(Some(ms))` = new TTL in ms.
@@ -735,12 +764,16 @@ impl ShardRequest {
             | ShardRequest::Rename { .. }
             | ShardRequest::Copy { .. }
             | ShardRequest::Expire { .. }
+            | ShardRequest::Expireat { .. }
             | ShardRequest::Persist { .. }
             | ShardRequest::Pexpire { .. }
+            | ShardRequest::Pexpireat { .. }
             | ShardRequest::LPush { .. }
             | ShardRequest::RPush { .. }
             | ShardRequest::LPop { .. }
             | ShardRequest::RPop { .. }
+            | ShardRequest::LPopCount { .. }
+            | ShardRequest::RPopCount { .. }
             | ShardRequest::LSet { .. }
             | ShardRequest::LTrim { .. }
             | ShardRequest::LInsert { .. }
@@ -767,6 +800,8 @@ impl ShardRequest {
             | ShardRequest::LMove { .. }
             | ShardRequest::GetDel { .. }
             | ShardRequest::GetEx { .. }
+            | ShardRequest::GetSet { .. }
+            | ShardRequest::MSetNx { .. }
             | ShardRequest::FlushDb
             | ShardRequest::FlushDbAsync
             | ShardRequest::RestoreKey { .. } => true,
@@ -1718,11 +1753,17 @@ fn dispatch(
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::Expire { key, seconds } => ShardResponse::Bool(ks.expire(key, *seconds)),
+        ShardRequest::Expireat { key, timestamp } => {
+            ShardResponse::Bool(ks.expireat(key, *timestamp))
+        }
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
         ShardRequest::Persist { key } => ShardResponse::Bool(ks.persist(key)),
         ShardRequest::Pttl { key } => ShardResponse::Ttl(ks.pttl(key)),
         ShardRequest::Pexpire { key, milliseconds } => {
             ShardResponse::Bool(ks.pexpire(key, *milliseconds))
+        }
+        ShardRequest::Pexpireat { key, timestamp_ms } => {
+            ShardResponse::Bool(ks.pexpireat(key, *timestamp_ms))
         }
         ShardRequest::LPush { key, values } => write_result_len(ks.lpush(key, values)),
         ShardRequest::RPush { key, values } => write_result_len(ks.rpush(key, values)),
@@ -1732,6 +1773,16 @@ fn dispatch(
         },
         ShardRequest::RPop { key } => match ks.rpop(key) {
             Ok(val) => ShardResponse::Value(val.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::LPopCount { key, count } => match ks.lpop_count(key, *count) {
+            Ok(Some(items)) => ShardResponse::Array(items),
+            Ok(None) => ShardResponse::Value(None),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::RPopCount { key, count } => match ks.rpop_count(key, *count) {
+            Ok(Some(items)) => ShardResponse::Array(items),
+            Ok(None) => ShardResponse::Value(None),
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::LRange { key, start, stop } => match ks.lrange(key, *start, *stop) {
@@ -2050,6 +2101,14 @@ fn dispatch(
                 Ok(None) => ShardResponse::Value(None),
                 Err(_) => ShardResponse::WrongType,
             }
+        }
+        ShardRequest::GetSet { key, value } => match ks.getset(key, value.clone()) {
+            Ok(old) => ShardResponse::Value(old.map(Value::String)),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::MSetNx { pairs } => {
+            let result = ks.msetnx(pairs);
+            ShardResponse::Bool(result)
         }
         ShardRequest::ZDiff { keys } => match ks.zdiff(keys) {
             Ok(pairs) => ShardResponse::ScoredArray(pairs),

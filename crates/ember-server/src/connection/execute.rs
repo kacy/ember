@@ -206,6 +206,52 @@ pub(super) async fn execute(
             }
         }
 
+        Command::Expireat { key, timestamp } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Expireat {
+                key: key.clone(),
+                timestamp,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Bool(true)) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_G,
+                        "expireat",
+                        &key,
+                    );
+                    Frame::Integer(1)
+                }
+                Ok(ShardResponse::Bool(false)) => Frame::Integer(0),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::Pexpireat { key, timestamp_ms } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::Pexpireat {
+                key: key.clone(),
+                timestamp_ms,
+            };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Bool(true)) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_G,
+                        "pexpireat",
+                        &key,
+                    );
+                    Frame::Integer(1)
+                }
+                Ok(ShardResponse::Bool(false)) => Frame::Integer(0),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Ttl { key } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::Ttl { key };
@@ -509,6 +555,77 @@ pub(super) async fn execute(
                     }
                     Frame::Simple("OK".into())
                 }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::MSetNx { pairs } => {
+            // MSETNX is all-or-nothing: set all keys only if none exist.
+            //
+            // We implement this with two fan-out passes:
+            //   1. Check existence of every key across all shards.
+            //   2. If all are absent, write all pairs.
+            //
+            // This is not atomic across shards (no distributed transaction),
+            // but matches Redis cluster semantics where MSETNX pairs must
+            // share a hash slot. For single-node mode it is correct.
+            if pairs.is_empty() {
+                return Frame::Error("ERR wrong number of arguments for 'MSETNX'".into());
+            }
+
+            let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
+
+            // phase 1: check existence
+            let exists_responses = match engine
+                .route_multi(&keys, |k| ShardRequest::Exists { key: k })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return Frame::Error(format!("ERR {e}")),
+            };
+
+            let any_exists = exists_responses
+                .iter()
+                .any(|r| matches!(r, ShardResponse::Bool(true)));
+            if any_exists {
+                return Frame::Integer(0);
+            }
+
+            // phase 2: write all pairs
+            let values: std::collections::HashMap<String, Bytes> = pairs.into_iter().collect();
+            match engine
+                .route_multi(&keys, |k| {
+                    let value = values.get(&k).cloned().unwrap_or_default();
+                    ShardRequest::Set {
+                        key: k,
+                        value,
+                        expire: None,
+                        nx: false,
+                        xx: false,
+                    }
+                })
+                .await
+            {
+                Ok(responses) => {
+                    for r in &responses {
+                        if matches!(r, ShardResponse::OutOfMemory) {
+                            return oom_error();
+                        }
+                    }
+                    Frame::Integer(1)
+                }
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::GetSet { key, value } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::GetSet { key, value };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
@@ -952,7 +1069,7 @@ pub(super) async fn execute(
             }
         }
 
-        Command::LPop { key } => {
+        Command::LPop { key, count: None } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::LPop { key };
             match engine.send_to_shard(idx, req).await {
@@ -964,11 +1081,47 @@ pub(super) async fn execute(
             }
         }
 
-        Command::RPop { key } => {
+        Command::LPop {
+            key,
+            count: Some(count),
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::LPopCount { key, count };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Array(items)) => {
+                    let frames = items.into_iter().map(Frame::Bulk).collect();
+                    Frame::Array(frames)
+                }
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::RPop { key, count: None } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::RPop { key };
             match engine.send_to_shard(idx, req).await {
                 Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
+                Ok(ShardResponse::Value(None)) => Frame::Null,
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::RPop {
+            key,
+            count: Some(count),
+        } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::RPopCount { key, count };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Array(items)) => {
+                    let frames = items.into_iter().map(Frame::Bulk).collect();
+                    Frame::Array(frames)
+                }
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),

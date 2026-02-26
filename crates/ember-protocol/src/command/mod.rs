@@ -129,8 +129,19 @@ pub enum Command {
     /// MSET `key` `value` \[key value ...\]. Sets multiple key-value pairs.
     MSet { pairs: Vec<(String, Bytes)> },
 
+    /// MSETNX `key` `value` \[key value ...\]. Sets multiple keys only if none already exist.
+    /// Returns 1 if all keys were set, 0 if any key already existed (atomic: all-or-nothing).
+    MSetNx { pairs: Vec<(String, Bytes)> },
+
+    /// GETSET `key` `value`. Atomically sets `key` to `value` and returns the old value.
+    /// Deprecated in Redis 6.2 but widely used; kept for compatibility.
+    GetSet { key: String, value: Bytes },
+
     /// EXPIRE `key` `seconds`. Sets a TTL on an existing key.
     Expire { key: String, seconds: u64 },
+
+    /// EXPIREAT `key` `timestamp`. Sets expiry at an absolute Unix timestamp (seconds).
+    Expireat { key: String, timestamp: u64 },
 
     /// TTL `key`. Returns remaining time-to-live in seconds.
     Ttl { key: String },
@@ -143,6 +154,9 @@ pub enum Command {
 
     /// PEXPIRE `key` `milliseconds`. Sets a TTL in milliseconds on an existing key.
     Pexpire { key: String, milliseconds: u64 },
+
+    /// PEXPIREAT `key` `timestamp-ms`. Sets expiry at an absolute Unix timestamp (milliseconds).
+    Pexpireat { key: String, timestamp_ms: u64 },
 
     /// DBSIZE. Returns the number of keys in the database.
     DbSize,
@@ -214,11 +228,17 @@ pub enum Command {
     /// RPUSH `key` `value` \[value ...\]. Pushes values to the tail of a list.
     RPush { key: String, values: Vec<Bytes> },
 
-    /// LPOP `key`. Pops a value from the head of a list.
-    LPop { key: String },
+    /// LPOP `key` \[count\]. Pops one or more values from the head of a list.
+    ///
+    /// Without `count`: returns a bulk string (or nil). With `count`: returns
+    /// an array of up to `count` elements (Redis 6.2+ semantics).
+    LPop { key: String, count: Option<usize> },
 
-    /// RPOP `key`. Pops a value from the tail of a list.
-    RPop { key: String },
+    /// RPOP `key` \[count\]. Pops one or more values from the tail of a list.
+    ///
+    /// Without `count`: returns a bulk string (or nil). With `count`: returns
+    /// an array of up to `count` elements (Redis 6.2+ semantics).
+    RPop { key: String, count: Option<usize> },
 
     /// LRANGE `key` `start` `stop`. Returns a range of elements by index.
     LRange { key: String, start: i64, stop: i64 },
