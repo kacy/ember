@@ -15,6 +15,8 @@ use tokio::net::TcpStream;
 pub struct TestServer {
     child: Child,
     pub port: u16,
+    /// TLS port, populated when the server was started with TLS options.
+    pub tls_port: Option<u16>,
     _data_dir: Option<tempfile::TempDir>,
     /// Temp file holding server stderr for diagnostics on failure.
     stderr_path: Option<PathBuf>,
@@ -40,6 +42,10 @@ pub struct ServerOptions {
     pub shards: Option<usize>,
     /// Use concurrent (DashMap) mode instead of sharded channels.
     pub concurrent: bool,
+    /// PEM certificate file for the TLS listener (requires tls_key_file).
+    pub tls_cert_file: Option<PathBuf>,
+    /// PEM private key file for the TLS listener (requires tls_cert_file).
+    pub tls_key_file: Option<PathBuf>,
 }
 
 impl TestServer {
@@ -125,6 +131,19 @@ impl TestServer {
             None
         };
 
+        // TLS: allocate a separate port and pass cert/key files
+        let tls_port = if opts.tls_cert_file.is_some() && opts.tls_key_file.is_some() {
+            let tp = find_free_port();
+            cmd.arg("--tls-port").arg(tp.to_string());
+            cmd.arg("--tls-cert-file")
+                .arg(opts.tls_cert_file.as_ref().unwrap());
+            cmd.arg("--tls-key-file")
+                .arg(opts.tls_key_file.as_ref().unwrap());
+            Some(tp)
+        } else {
+            None
+        };
+
         // stderr is already redirected to a file for cluster servers
         if stderr_path.is_none() {
             cmd.stderr(std::process::Stdio::null());
@@ -151,6 +170,7 @@ impl TestServer {
         let server = Self {
             child,
             port,
+            tls_port,
             _data_dir: data_dir,
             stderr_path,
         };
