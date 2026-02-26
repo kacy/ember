@@ -426,7 +426,10 @@ fn healthcheck(host: &str, port: u16) -> i32 {
         Ok(s) => s,
         Err(_) => return 1,
     };
-    if stream.set_read_timeout(Some(Duration::from_secs(2))).is_err() {
+    if stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .is_err()
+    {
         return 1;
     }
     if stream.write_all(b"*1\r\n$4\r\nPING\r\n").is_err() {
