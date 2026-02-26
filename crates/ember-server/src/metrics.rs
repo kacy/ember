@@ -217,7 +217,7 @@ async fn build_health_response(ctx: &ServerContext) -> Response<Full<Bytes>> {
 }
 
 /// Spawns a background task that polls shard stats and publishes them
-/// as prometheus gauges.
+/// as prometheus gauges and counters.
 ///
 /// Keeps `ember-core` free of metrics dependencies — the poller
 /// pulls stats through the existing `ShardRequest::Stats` broadcast.
@@ -225,6 +225,11 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(poll_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // track cumulative totals from the previous poll so we can publish
+        // expired/evicted as monotonically-increasing counters rather than gauges.
+        let mut last_expired: u64 = 0;
+        let mut last_evicted: u64 = 0;
 
         loop {
             interval.tick().await;
@@ -256,11 +261,32 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
 
                     gauge!("ember_keys_total").set(total.key_count as f64);
                     gauge!("ember_memory_used_bytes").set(total.used_bytes as f64);
-                    gauge!("ember_keys_expired_total").set(total.keys_expired as f64);
-                    gauge!("ember_keys_evicted_total").set(total.keys_evicted as f64);
                     gauge!("ember_oom_rejections_total").set(total.oom_rejections as f64);
                     gauge!("ember_keyspace_hits_total").set(total.keyspace_hits as f64);
                     gauge!("ember_keyspace_misses_total").set(total.keyspace_misses as f64);
+
+                    // expired and evicted are cumulative totals from shards —
+                    // publish the delta so prometheus sees a proper counter.
+                    let expired = total.keys_expired as u64;
+                    let evicted = total.keys_evicted as u64;
+                    let delta_expired = expired.saturating_sub(last_expired);
+                    let delta_evicted = evicted.saturating_sub(last_evicted);
+                    if delta_expired > 0 {
+                        counter!("ember_expired_keys_total").increment(delta_expired);
+                    }
+                    if delta_evicted > 0 {
+                        counter!("ember_evicted_keys_total").increment(delta_evicted);
+                    }
+                    last_expired = expired;
+                    last_evicted = evicted;
+
+                    // replication lag — how many records each replica is behind.
+                    // published as max and count so alerting rules are straightforward.
+                    let lags = ctx.replica_tracker.replica_lags();
+                    let replica_count = lags.len() as f64;
+                    let max_lag = lags.iter().max().copied().unwrap_or(0) as f64;
+                    gauge!("ember_replication_connected_replicas").set(replica_count);
+                    gauge!("ember_replication_max_lag_records").set(max_lag);
 
                     // update atomic for /health endpoint
                     ctx.memory_used_bytes.store(total.used_bytes as u64);

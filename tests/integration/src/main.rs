@@ -10,3 +10,4 @@ mod persistence;
 #[cfg(feature = "protobuf")]
 mod proto;
 mod pubsub;
+mod tls;

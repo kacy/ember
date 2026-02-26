@@ -122,6 +122,17 @@ impl ReplicaTracker {
     pub fn connected_count(&self) -> usize {
         self.offsets.lock().map(|map| map.len()).unwrap_or(0)
     }
+
+    /// Returns the record lag for each connected replica.
+    ///
+    /// Lag is `write_offset - acked_offset`. A lag of 0 means fully caught up.
+    pub fn replica_lags(&self) -> Vec<u64> {
+        let write = self.write_offset.load(Ordering::Relaxed);
+        self.offsets
+            .lock()
+            .map(|map| map.values().map(|&ack| write.saturating_sub(ack)).collect())
+            .unwrap_or_default()
+    }
 }
 
 // -- framed I/O primitives --

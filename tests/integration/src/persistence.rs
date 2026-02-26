@@ -6,6 +6,54 @@ use ember_protocol::Frame;
 
 use crate::helpers::{ServerOptions, TestServer};
 
+/// Simulates a hard crash: writes N keys with `appendfsync always`, then
+/// SIGKILLs the server without any grace period. On restart the AOF tail
+/// must be fully intact because every SET response guaranteed a prior fsync.
+#[tokio::test]
+async fn sigkill_crash_recovery() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = data_dir.path().to_path_buf();
+
+    const KEY_COUNT: usize = 50;
+
+    {
+        let server = TestServer::start_with(ServerOptions {
+            appendonly: true,
+            data_dir_path: Some(path.clone()),
+            ..Default::default()
+        });
+        let mut c = server.connect().await;
+
+        for i in 0..KEY_COUNT {
+            // appendfsync=always means each OK guarantees a fsync — all
+            // of these must survive even a SIGKILL immediately after.
+            c.ok(&["SET", &format!("crash:{i}"), &format!("v{i}")]).await;
+        }
+
+        // drop immediately — no sleep, no graceful shutdown. Child::kill()
+        // sends SIGKILL on unix, which is the worst-case crash scenario.
+    }
+
+    // restart with same data directory
+    let server = TestServer::start_with(ServerOptions {
+        appendonly: true,
+        data_dir_path: Some(path),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+
+    for i in 0..KEY_COUNT {
+        let val = c.get_bulk(&["GET", &format!("crash:{i}")]).await;
+        assert_eq!(
+            val,
+            Some(format!("v{i}")),
+            "key crash:{i} missing after crash recovery"
+        );
+    }
+
+    drop(data_dir);
+}
+
 #[tokio::test]
 async fn bgsave_and_snapshot_recovery() {
     let data_dir = tempfile::tempdir().unwrap();
