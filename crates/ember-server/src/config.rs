@@ -115,6 +115,7 @@ pub fn build_engine_config(
         },
         persistence,
         replication_tx: None,
+        expired_tx: None,
         #[cfg(feature = "protobuf")]
         schema_registry: None,
         shard_channel_buffer,
@@ -188,6 +189,10 @@ pub struct EmberConfig {
     #[serde(rename = "tls-auth-clients")]
     pub tls_auth_clients: String,
 
+    // -- notifications --
+    #[serde(rename = "notify-keyspace-events")]
+    pub notify_keyspace_events: String,
+
     // -- protocol limits --
     #[serde(rename = "max-key-len")]
     pub max_key_len: String,
@@ -242,6 +247,8 @@ impl Default for EmberConfig {
             tls_key_file: String::new(),
             tls_ca_cert_file: String::new(),
             tls_auth_clients: "no".into(),
+
+            notify_keyspace_events: String::new(),
 
             max_key_len: "512kb".into(),
             max_value_len: "512mb".into(),
@@ -451,6 +458,10 @@ impl EmberConfig {
             "save-interval-secs".into(),
             self.save_interval_secs.to_string(),
         );
+        params.insert(
+            "notify-keyspace-events".into(),
+            self.notify_keyspace_events.clone(),
+        );
         params.insert("max-key-len".into(), self.max_key_len.clone());
         params.insert("max-value-len".into(), self.max_value_len.clone());
         params.insert(
@@ -593,6 +604,7 @@ const MUTABLE_PARAMS: &[&str] = &[
     "max-pipeline-depth",
     "maxmemory",
     "maxmemory-policy",
+    "notify-keyspace-events",
 ];
 
 impl ConfigRegistry {
@@ -687,6 +699,7 @@ impl ConfigRegistry {
                     ));
                 }
             },
+            "notify-keyspace-events" => {} // any string is valid; parsed at runtime
             _ => {}
         }
 

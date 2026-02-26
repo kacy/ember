@@ -12,6 +12,7 @@ mod connection;
 mod connection_common;
 #[cfg(feature = "grpc")]
 mod grpc;
+mod keyspace_notifications;
 mod metrics;
 mod pubsub;
 mod replication;

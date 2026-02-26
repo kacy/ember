@@ -959,6 +959,8 @@ pub struct PreparedShard {
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    /// Optional channel to broadcast expired key names for keyspace notifications.
+    expired_tx: Option<broadcast::Sender<String>>,
     #[cfg(feature = "protobuf")]
     schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -973,6 +975,7 @@ pub fn prepare_shard(
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    expired_tx: Option<broadcast::Sender<String>>,
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> (ShardHandle, PreparedShard) {
     let (tx, rx) = mpsc::channel(buffer);
@@ -982,6 +985,7 @@ pub fn prepare_shard(
         persistence,
         drop_handle,
         replication_tx,
+        expired_tx,
         #[cfg(feature = "protobuf")]
         schema_registry,
     };
@@ -999,6 +1003,7 @@ pub async fn run_prepared(prepared: PreparedShard) {
         prepared.persistence,
         prepared.drop_handle,
         prepared.replication_tx,
+        prepared.expired_tx,
         #[cfg(feature = "protobuf")]
         prepared.schema_registry,
     )
@@ -1019,6 +1024,7 @@ pub fn spawn_shard(
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    expired_tx: Option<broadcast::Sender<String>>,
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardHandle {
     let (handle, prepared) = prepare_shard(
@@ -1027,6 +1033,7 @@ pub fn spawn_shard(
         persistence,
         drop_handle,
         replication_tx,
+        expired_tx,
         #[cfg(feature = "protobuf")]
         schema_registry,
     );
@@ -1042,6 +1049,7 @@ async fn run_shard(
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    expired_tx: Option<broadcast::Sender<String>>,
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) {
     let shard_id = config.shard_id;
@@ -1226,7 +1234,14 @@ async fn run_shard(
                 }
             }
             _ = expiry_tick.tick() => {
-                expiry::run_expiration_cycle(&mut keyspace);
+                let expired_keys = expiry::run_expiration_cycle(&mut keyspace);
+                if let Some(ref tx) = expired_tx {
+                    if !expired_keys.is_empty() && tx.receiver_count() > 0 {
+                        for key in &expired_keys {
+                            let _ = tx.send(key.clone());
+                        }
+                    }
+                }
             }
             _ = fsync_tick.tick(), if fsync_policy == FsyncPolicy::EverySec => {
                 if let Some(ref mut writer) = aof_writer {
