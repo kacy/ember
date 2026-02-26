@@ -18,15 +18,16 @@ const MAX_ROUNDS: usize = 3;
 
 /// Runs one active expiration cycle on the keyspace.
 ///
-/// Samples up to `SAMPLE_SIZE` random keys per round, removes expired
-/// ones, and repeats if more than 25% of the sample was expired (up to
-/// `MAX_ROUNDS` total). Returns the total number of keys removed.
-pub fn run_expiration_cycle(ks: &mut Keyspace) -> usize {
-    let mut total_removed = 0;
+/// Returns the keys removed this cycle. The caller can use this to fire
+/// keyspace notifications. When nobody is listening, the caller drops
+/// the returned Vec immediately (no allocation if empty).
+pub fn run_expiration_cycle(ks: &mut Keyspace) -> Vec<String> {
+    let mut expired_keys = Vec::new();
 
     for _ in 0..MAX_ROUNDS {
-        let removed = ks.expire_sample(SAMPLE_SIZE);
-        total_removed += removed;
+        let prev_len = expired_keys.len();
+        ks.expire_sample(SAMPLE_SIZE, &mut expired_keys);
+        let removed = expired_keys.len() - prev_len;
 
         // if we removed fewer than 25% of the sample, the keyspace
         // is reasonably clean — stop early
@@ -35,7 +36,7 @@ pub fn run_expiration_cycle(ks: &mut Keyspace) -> usize {
         }
     }
 
-    total_removed
+    expired_keys
 }
 
 #[cfg(test)]
@@ -52,7 +53,7 @@ mod tests {
             ks.set(format!("key:{i}"), Bytes::from("val"), None, false, false);
         }
         let removed = run_expiration_cycle(&mut ks);
-        assert_eq!(removed, 0);
+        assert!(removed.is_empty());
         assert_eq!(ks.len(), 10);
     }
 
@@ -77,7 +78,7 @@ mod tests {
         thread::sleep(Duration::from_millis(20));
 
         let removed = run_expiration_cycle(&mut ks);
-        assert_eq!(removed, 10);
+        assert_eq!(removed.len(), 10);
         assert_eq!(ks.len(), 5);
     }
 
@@ -94,7 +95,7 @@ mod tests {
             );
         }
         let removed = run_expiration_cycle(&mut ks);
-        assert_eq!(removed, 0);
+        assert!(removed.is_empty());
         assert_eq!(ks.len(), 10);
     }
 
@@ -102,6 +103,6 @@ mod tests {
     fn empty_keyspace_is_fine() {
         let mut ks = Keyspace::new();
         let removed = run_expiration_cycle(&mut ks);
-        assert_eq!(removed, 0);
+        assert!(removed.is_empty());
     }
 }

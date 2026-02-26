@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -97,6 +97,9 @@ pub struct ServerContext {
     /// Connected client metadata. Only locked on accept, disconnect, and
     /// CLIENT commands — never on the command hot path.
     pub clients: ClientRegistry,
+    /// Keyspace notification event flags. 0 = disabled (common case — zero overhead).
+    /// Updated atomically when CONFIG SET notify-keyspace-events is called.
+    pub keyspace_event_flags: AtomicU32,
 }
 
 /// Sets nodelay, acquires a semaphore permit, registers the client, and
@@ -265,7 +268,7 @@ async fn reject_protected_mode(mut stream: TcpStream) {
 pub async fn run_concurrent(
     addr: SocketAddr,
     shard_count: usize,
-    config: EngineConfig,
+    mut config: EngineConfig,
     max_memory: Option<usize>,
     eviction_policy: EvictionPolicy,
     max_connections: Option<usize>,
@@ -285,6 +288,10 @@ pub async fn run_concurrent(
         .map(|p| p.append_only)
         .unwrap_or(false);
 
+    // set up the expired-key channel for keyspace notifications
+    let (expired_kn_tx, _expired_kn_rx) = tokio::sync::broadcast::channel::<String>(1024);
+    config.expired_tx = Some(expired_kn_tx.clone());
+
     // Create the concurrent keyspace
     let keyspace = Arc::new(ConcurrentKeyspace::new(max_memory, eviction_policy));
 
@@ -296,6 +303,15 @@ pub async fn run_concurrent(
     let semaphore = Arc::new(Semaphore::new(max_conn));
 
     let tls_listener = setup_tls_listener(tls).await?;
+
+    // read the initial notify-keyspace-events flag from the registry
+    let initial_kn_flags = {
+        let pairs = config_registry.get_matching("notify-keyspace-events");
+        pairs
+            .first()
+            .map(|(_, v)| crate::keyspace_notifications::parse_keyspace_event_flags(v))
+            .unwrap_or(0)
+    };
 
     let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
@@ -326,6 +342,7 @@ pub async fn run_concurrent(
         last_save_timestamp: AtomicU64::new(0),
         next_client_id: AtomicU64::new(1),
         clients,
+        keyspace_event_flags: AtomicU32::new(initial_kn_flags),
     });
 
     if let Some((metrics_addr, handle)) = metrics {
@@ -335,6 +352,39 @@ pub async fn run_concurrent(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
+
+    // spawn keyspace notification task for expired keys
+    {
+        let mut expired_rx = expired_kn_tx.subscribe();
+        let pubsub_kn = Arc::clone(&pubsub);
+        let ctx_kn = Arc::clone(&ctx);
+        tokio::spawn(async move {
+            loop {
+                match expired_rx.recv().await {
+                    Ok(key) => {
+                        let flags = ctx_kn
+                            .keyspace_event_flags
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        if flags != 0 {
+                            crate::keyspace_notifications::notify_keyspace_event(
+                                flags,
+                                crate::keyspace_notifications::FLAG_X,
+                                "expired",
+                                &key,
+                                &pubsub_kn,
+                            );
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            "keyspace notification subscriber lagged by {n} messages"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     if save_interval_secs > 0 {
         let engine_snap = engine.clone();
@@ -535,7 +585,7 @@ fn pin_to_core(worker_id: usize) {
 pub async fn run_threaded(
     addr: SocketAddr,
     shard_count: usize,
-    config: EngineConfig,
+    mut config: EngineConfig,
     max_connections: Option<usize>,
     metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
@@ -563,6 +613,10 @@ pub async fn run_threaded(
         .max_memory
         .map(|per_shard| per_shard * shard_count);
 
+    // set up the expired-key channel for keyspace notifications
+    let (expired_kn_tx, _expired_kn_rx) = tokio::sync::broadcast::channel::<String>(1024);
+    config.expired_tx = Some(expired_kn_tx.clone());
+
     let (engine, prepared_shards) = Engine::prepare(shard_count, config);
 
     let replica_tracker = Arc::new(crate::replication::ReplicaTracker::new());
@@ -578,6 +632,15 @@ pub async fn run_threaded(
 
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
     let semaphore = Arc::new(Semaphore::new(max_conn));
+
+    // read the initial notify-keyspace-events flag from the registry
+    let initial_kn_flags = {
+        let pairs = config_registry.get_matching("notify-keyspace-events");
+        pairs
+            .first()
+            .map(|(_, v)| crate::keyspace_notifications::parse_keyspace_event_flags(v))
+            .unwrap_or(0)
+    };
 
     let metrics_enabled = metrics.is_some();
     let stats_poll_interval = limits.stats_poll_interval;
@@ -607,6 +670,7 @@ pub async fn run_threaded(
         last_save_timestamp: AtomicU64::new(0),
         next_client_id: AtomicU64::new(1),
         clients,
+        keyspace_event_flags: AtomicU32::new(initial_kn_flags),
     });
 
     // management tasks run on the caller's runtime (not the hot path)
@@ -617,6 +681,39 @@ pub async fn run_threaded(
 
     let slow_log = Arc::new(SlowLog::new(slowlog_config));
     let pubsub = Arc::new(PubSubManager::new());
+
+    // spawn keyspace notification task for expired keys
+    {
+        let mut expired_rx = expired_kn_tx.subscribe();
+        let pubsub_kn = Arc::clone(&pubsub);
+        let ctx_kn = Arc::clone(&ctx);
+        tokio::spawn(async move {
+            loop {
+                match expired_rx.recv().await {
+                    Ok(key) => {
+                        let flags = ctx_kn
+                            .keyspace_event_flags
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        if flags != 0 {
+                            crate::keyspace_notifications::notify_keyspace_event(
+                                flags,
+                                crate::keyspace_notifications::FLAG_X,
+                                "expired",
+                                &key,
+                                &pubsub_kn,
+                            );
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(
+                            "keyspace notification subscriber lagged by {n} messages"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     if save_interval_secs > 0 {
         let engine_snap = engine.clone();

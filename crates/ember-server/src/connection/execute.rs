@@ -42,6 +42,27 @@ fn set_expire_to_duration(expire: SetExpire) -> Duration {
     }
 }
 
+/// Emits keyspace/keyevent notifications for a successful write command.
+///
+/// No-op when `notify-keyspace-events` is `""` / zero (the common case).
+/// The `flags == 0` check is a single atomic load — true zero overhead
+/// when notifications are disabled.
+#[inline]
+fn notify_write(
+    ctx: &Arc<ServerContext>,
+    pubsub: &Arc<PubSubManager>,
+    event_flag: u32,
+    event: &str,
+    key: &str,
+) {
+    let flags = ctx
+        .keyspace_event_flags
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if flags != 0 {
+        crate::keyspace_notifications::notify_keyspace_event(flags, event_flag, event, key, pubsub);
+    }
+}
+
 /// Executes a parsed command and returns the response frame.
 ///
 /// Ping and Echo are handled inline (no shard routing needed).
@@ -138,14 +159,23 @@ pub(super) async fn execute(
             let duration = expire.map(set_expire_to_duration);
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::Set {
-                key,
+                key: key.clone(),
                 value,
                 expire: duration,
                 nx,
                 xx,
             };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
+                Ok(ShardResponse::Ok) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_DOLLAR,
+                        "set",
+                        &key,
+                    );
+                    Frame::Simple("OK".into())
+                }
                 Ok(ShardResponse::Value(None)) => Frame::Null,
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -155,9 +185,22 @@ pub(super) async fn execute(
 
         Command::Expire { key, seconds } => {
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::Expire { key, seconds };
+            let req = ShardRequest::Expire {
+                key: key.clone(),
+                seconds,
+            };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
+                Ok(ShardResponse::Bool(true)) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_G,
+                        "expire",
+                        &key,
+                    );
+                    Frame::Integer(1)
+                }
+                Ok(ShardResponse::Bool(false)) => Frame::Integer(0),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
@@ -509,6 +552,11 @@ pub(super) async fn execute(
                         limit.unwrap_or(0) as u64,
                         std::sync::atomic::Ordering::Relaxed,
                     );
+                } else if key == "notify-keyspace-events" {
+                    let flags =
+                        crate::keyspace_notifications::parse_keyspace_event_flags(&value);
+                    ctx.keyspace_event_flags
+                        .store(flags, std::sync::atomic::Ordering::Relaxed);
                 }
                 Frame::Simple("OK".into())
             }
@@ -782,9 +830,21 @@ pub(super) async fn execute(
         // -- list commands --
         Command::LPush { key, values } => {
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::LPush { key, values };
+            let req = ShardRequest::LPush {
+                key: key.clone(),
+                values,
+            };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::Len(n)) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_L,
+                        "lpush",
+                        &key,
+                    );
+                    Frame::Integer(n as i64)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -794,9 +854,21 @@ pub(super) async fn execute(
 
         Command::RPush { key, values } => {
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::RPush { key, values };
+            let req = ShardRequest::RPush {
+                key: key.clone(),
+                values,
+            };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::Len(n)) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_L,
+                        "rpush",
+                        &key,
+                    );
+                    Frame::Integer(n as i64)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -977,7 +1049,7 @@ pub(super) async fn execute(
         } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::ZAdd {
-                key,
+                key: key.clone(),
                 members,
                 nx: flags.nx,
                 xx: flags.xx,
@@ -986,7 +1058,18 @@ pub(super) async fn execute(
                 ch: flags.ch,
             };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::ZAddLen { count, .. }) => Frame::Integer(count as i64),
+                Ok(ShardResponse::ZAddLen { count, .. }) => {
+                    if count > 0 {
+                        notify_write(
+                            ctx,
+                            pubsub,
+                            crate::keyspace_notifications::FLAG_Z,
+                            "zadd",
+                            &key,
+                        );
+                    }
+                    Frame::Integer(count as i64)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1250,9 +1333,21 @@ pub(super) async fn execute(
         // --- hash commands ---
         Command::HSet { key, fields } => {
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::HSet { key, fields };
+            let req = ShardRequest::HSet {
+                key: key.clone(),
+                fields,
+            };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::Len(n)) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_H,
+                        "hset",
+                        &key,
+                    );
+                    Frame::Integer(n as i64)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -1385,9 +1480,23 @@ pub(super) async fn execute(
         // --- set commands ---
         Command::SAdd { key, members } => {
             let idx = engine.shard_for_key(&key);
-            let req = ShardRequest::SAdd { key, members };
+            let req = ShardRequest::SAdd {
+                key: key.clone(),
+                members,
+            };
             match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
+                Ok(ShardResponse::Len(n)) => {
+                    if n > 0 {
+                        notify_write(
+                            ctx,
+                            pubsub,
+                            crate::keyspace_notifications::FLAG_S,
+                            "sadd",
+                            &key,
+                        );
+                    }
+                    Frame::Integer(n as i64)
+                }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),

@@ -36,6 +36,8 @@ pub struct EngineConfig {
     /// [`ReplicationEvent`] so replication clients can stream it to
     /// replicas.
     pub replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    /// Optional channel to receive expired key names. Used for keyspace notifications.
+    pub expired_tx: Option<broadcast::Sender<String>>,
     /// Optional schema registry for protobuf value validation.
     /// When set, enables PROTO.* commands.
     #[cfg(feature = "protobuf")]
@@ -53,6 +55,7 @@ pub struct EngineConfig {
 pub struct Engine {
     shards: Vec<ShardHandle>,
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    expired_tx: Option<broadcast::Sender<String>>,
     #[cfg(feature = "protobuf")]
     schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -96,6 +99,7 @@ impl Engine {
                     config.persistence.clone(),
                     Some(drop_handle.clone()),
                     config.replication_tx.clone(),
+                    config.expired_tx.clone(),
                     #[cfg(feature = "protobuf")]
                     config.schema_registry.clone(),
                 )
@@ -105,6 +109,7 @@ impl Engine {
         Self {
             shards,
             replication_tx: config.replication_tx,
+            expired_tx: config.expired_tx,
             #[cfg(feature = "protobuf")]
             schema_registry: config.schema_registry,
         }
@@ -144,6 +149,7 @@ impl Engine {
                 config.persistence.clone(),
                 Some(drop_handle.clone()),
                 config.replication_tx.clone(),
+                config.expired_tx.clone(),
                 #[cfg(feature = "protobuf")]
                 config.schema_registry.clone(),
             );
@@ -154,6 +160,7 @@ impl Engine {
         let engine = Self {
             shards: handles,
             replication_tx: config.replication_tx,
+            expired_tx: config.expired_tx,
             #[cfg(feature = "protobuf")]
             schema_registry: config.schema_registry,
         };
@@ -195,6 +202,14 @@ impl Engine {
     /// broadcast position — not from the beginning of the stream.
     pub fn subscribe_replication(&self) -> Option<broadcast::Receiver<ReplicationEvent>> {
         self.replication_tx.as_ref().map(|tx| tx.subscribe())
+    }
+
+    /// Creates a new broadcast receiver for expired key names.
+    ///
+    /// Returns `None` if no expired-key channel was configured. Used by the
+    /// server to subscribe a background task that fires keyspace notifications.
+    pub fn subscribe_expired(&self) -> Option<broadcast::Receiver<String>> {
+        self.expired_tx.as_ref().map(|tx| tx.subscribe())
     }
 
     /// Sends a request to a specific shard by index.

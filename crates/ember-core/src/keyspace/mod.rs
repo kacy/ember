@@ -1262,9 +1262,11 @@ impl Keyspace {
 
     /// Randomly samples up to `count` keys and removes any that have expired.
     ///
-    /// Returns the number of keys actually removed. Used by the active
-    /// expiration cycle to clean up keys that no one is reading.
-    pub fn expire_sample(&mut self, count: usize) -> usize {
+    /// Samples up to `count` random keys and removes any that have expired.
+    ///
+    /// Expired key names are appended to `out` so the caller can emit
+    /// keyspace notifications. Returns the number of keys removed.
+    pub(crate) fn expire_sample(&mut self, count: usize, out: &mut Vec<String>) -> usize {
         if self.entries.is_empty() {
             return 0;
         }
@@ -1280,8 +1282,9 @@ impl Keyspace {
             .collect();
 
         let mut removed = 0;
-        for key in &keys_to_check {
-            if self.remove_if_expired(key) {
+        for key in keys_to_check {
+            if self.remove_if_expired(&key) {
+                out.push(key);
                 removed += 1;
             }
         }
