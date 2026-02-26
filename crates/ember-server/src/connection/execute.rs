@@ -2799,9 +2799,14 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
     }
 
     if want("PERSISTENCE") {
-        let last_save = ctx.last_save_timestamp.load(std::sync::atomic::Ordering::Relaxed);
+        let last_save = ctx
+            .last_save_timestamp
+            .load(std::sync::atomic::Ordering::Relaxed);
         out.push_str("# Persistence\r\n");
-        out.push_str(&format!("aof_enabled:{}\r\n", if ctx.aof_enabled { 1 } else { 0 }));
+        out.push_str(&format!(
+            "aof_enabled:{}\r\n",
+            if ctx.aof_enabled { 1 } else { 0 }
+        ));
         out.push_str("aof_last_bgrewrite_status:ok\r\n");
         out.push_str(&format!("rdb_last_save_time:{last_save}\r\n"));
         out.push_str("\r\n");

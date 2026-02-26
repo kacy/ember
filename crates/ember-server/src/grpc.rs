@@ -207,12 +207,14 @@ fn parse_score_bound(s: &str) -> Result<ScoreBound, Status> {
     match s {
         "-inf" | "-INF" => Ok(ScoreBound::NegInf),
         "+inf" | "+INF" | "inf" | "INF" => Ok(ScoreBound::PosInf),
-        s if s.starts_with('(') => s[1..].parse::<f64>().map(ScoreBound::Exclusive).map_err(|_| {
-            Status::invalid_argument(format!("invalid score bound: {s}"))
-        }),
-        s => s.parse::<f64>().map(ScoreBound::Inclusive).map_err(|_| {
-            Status::invalid_argument(format!("invalid score bound: {s}"))
-        }),
+        s if s.starts_with('(') => s[1..]
+            .parse::<f64>()
+            .map(ScoreBound::Exclusive)
+            .map_err(|_| Status::invalid_argument(format!("invalid score bound: {s}"))),
+        s => s
+            .parse::<f64>()
+            .map(ScoreBound::Inclusive)
+            .map_err(|_| Status::invalid_argument(format!("invalid score bound: {s}"))),
     }
 }
 
@@ -2447,10 +2449,7 @@ impl EmberCache for EmberService {
         }
     }
 
-    async fn l_rem(
-        &self,
-        request: Request<LRemRequest>,
-    ) -> Result<Response<IntResponse>, Status> {
+    async fn l_rem(&self, request: Request<LRemRequest>) -> Result<Response<IntResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
@@ -2564,7 +2563,9 @@ impl EmberCache for EmberService {
         self.record_command(start, "SUNION");
 
         match resp {
-            ShardResponse::StringArray(members) => Ok(Response::new(KeysResponse { keys: members })),
+            ShardResponse::StringArray(members) => {
+                Ok(Response::new(KeysResponse { keys: members }))
+            }
             other => Err(unexpected_response(&other)),
         }
     }
@@ -2587,7 +2588,9 @@ impl EmberCache for EmberService {
         self.record_command(start, "SINTER");
 
         match resp {
-            ShardResponse::StringArray(members) => Ok(Response::new(KeysResponse { keys: members })),
+            ShardResponse::StringArray(members) => {
+                Ok(Response::new(KeysResponse { keys: members }))
+            }
             other => Err(unexpected_response(&other)),
         }
     }
@@ -2610,7 +2613,9 @@ impl EmberCache for EmberService {
         self.record_command(start, "SDIFF");
 
         match resp {
-            ShardResponse::StringArray(members) => Ok(Response::new(KeysResponse { keys: members })),
+            ShardResponse::StringArray(members) => {
+                Ok(Response::new(KeysResponse { keys: members }))
+            }
             other => Err(unexpected_response(&other)),
         }
     }
@@ -2638,9 +2643,9 @@ impl EmberCache for EmberService {
         self.record_command(start, "SUNIONSTORE");
 
         match resp {
-            ShardResponse::SetStoreResult { count, .. } => {
-                Ok(Response::new(IntResponse { value: count as i64 }))
-            }
+            ShardResponse::SetStoreResult { count, .. } => Ok(Response::new(IntResponse {
+                value: count as i64,
+            })),
             other => Err(unexpected_response(&other)),
         }
     }
@@ -2668,9 +2673,9 @@ impl EmberCache for EmberService {
         self.record_command(start, "SINTERSTORE");
 
         match resp {
-            ShardResponse::SetStoreResult { count, .. } => {
-                Ok(Response::new(IntResponse { value: count as i64 }))
-            }
+            ShardResponse::SetStoreResult { count, .. } => Ok(Response::new(IntResponse {
+                value: count as i64,
+            })),
             other => Err(unexpected_response(&other)),
         }
     }
@@ -2698,9 +2703,9 @@ impl EmberCache for EmberService {
         self.record_command(start, "SDIFFSTORE");
 
         match resp {
-            ShardResponse::SetStoreResult { count, .. } => {
-                Ok(Response::new(IntResponse { value: count as i64 }))
-            }
+            ShardResponse::SetStoreResult { count, .. } => Ok(Response::new(IntResponse {
+                value: count as i64,
+            })),
             other => Err(unexpected_response(&other)),
         }
     }
@@ -2761,7 +2766,6 @@ impl EmberCache for EmberService {
         &self,
         request: Request<SMisMemberRequest>,
     ) -> Result<Response<BoolArrayResponse>, Status> {
-
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
@@ -2795,7 +2799,11 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
-        let count = if req.count == 0 { 10 } else { req.count as usize };
+        let count = if req.count == 0 {
+            10
+        } else {
+            req.count as usize
+        };
         let resp = self
             .route(
                 &req.key,
@@ -3159,7 +3167,11 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
-        let count = if req.count == 0 { 10 } else { req.count as usize };
+        let count = if req.count == 0 {
+            10
+        } else {
+            req.count as usize
+        };
         let resp = self
             .route(
                 &req.key,
@@ -3207,7 +3219,11 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
-        let count = if req.count == 0 { 10 } else { req.count as usize };
+        let count = if req.count == 0 {
+            10
+        } else {
+            req.count as usize
+        };
         let resp = self
             .route(
                 &req.key,
