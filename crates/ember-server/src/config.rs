@@ -1000,12 +1000,25 @@ mod tests {
     }
 
     #[test]
-    fn config_registry_set_immutable_rejected() {
+    fn config_registry_set_maxmemory_accepted() {
         let mut params = HashMap::new();
-        params.insert("maxmemory".into(), "100".into());
+        params.insert("maxmemory".into(), "100M".into());
         let registry = ConfigRegistry::new(params);
 
-        assert!(registry.set("maxmemory", "200").is_err());
+        // maxmemory is mutable at runtime
+        assert!(registry.set("maxmemory", "200M").is_ok());
+        assert!(registry.set("maxmemory", "0").is_ok()); // 0 = unlimited
+        assert!(registry.set("maxmemory", "not-a-size").is_err());
+    }
+
+    #[test]
+    fn config_registry_set_immutable_rejected() {
+        let params = HashMap::new();
+        let registry = ConfigRegistry::new(params);
+
+        // truly immutable params are still rejected
+        assert!(registry.set("bind", "0.0.0.0").is_err());
+        assert!(registry.set("port", "6380").is_err());
     }
 
     // -- EmberConfig tests --
