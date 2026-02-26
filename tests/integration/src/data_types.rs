@@ -244,3 +244,167 @@ async fn zset_rem() {
     assert_eq!(c.get_int(&["ZREM", "z", "a", "missing"]).await, 1);
     assert_eq!(c.get_int(&["ZCARD", "z"]).await, 1);
 }
+
+// --- EXPIRETIME / PEXPIRETIME ---
+
+#[tokio::test]
+async fn expiretime_returns_absolute_epoch() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    c.cmd(&["SET", "k", "v"]).await;
+    c.cmd(&["EXPIRE", "k", "100"]).await;
+
+    let ts = c.get_int(&["EXPIRETIME", "k"]).await;
+    // should be ≈ now + 100 seconds
+    assert!(ts >= before + 99 && ts <= before + 101);
+}
+
+#[tokio::test]
+async fn expiretime_no_expiry_returns_minus_one() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SET", "k", "v"]).await;
+    assert_eq!(c.get_int(&["EXPIRETIME", "k"]).await, -1);
+}
+
+#[tokio::test]
+async fn expiretime_missing_key_returns_minus_two() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    assert_eq!(c.get_int(&["EXPIRETIME", "missing"]).await, -2);
+}
+
+#[tokio::test]
+async fn pexpiretime_precision() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    let before_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    c.cmd(&["SET", "k", "v"]).await;
+    // PEXPIRE with 10_000 ms (10 seconds)
+    c.cmd(&["PEXPIRE", "k", "10000"]).await;
+
+    let ts_ms = c.get_int(&["PEXPIRETIME", "k"]).await;
+    assert!(ts_ms >= before_ms + 9_000 && ts_ms <= before_ms + 11_000);
+}
+
+#[tokio::test]
+async fn pexpiretime_no_expiry_returns_minus_one() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SET", "k", "v"]).await;
+    assert_eq!(c.get_int(&["PEXPIRETIME", "k"]).await, -1);
+}
+
+#[tokio::test]
+async fn pexpiretime_missing_key_returns_minus_two() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    assert_eq!(c.get_int(&["PEXPIRETIME", "missing"]).await, -2);
+}
+
+// --- SMOVE ---
+
+#[tokio::test]
+async fn smove_basic() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SADD", "src", "a", "b", "c"]).await;
+
+    // move "a" from src to dst
+    assert_eq!(c.get_int(&["SMOVE", "src", "dst", "a"]).await, 1);
+
+    assert_eq!(c.get_int(&["SCARD", "src"]).await, 2);
+    assert_eq!(c.get_int(&["SISMEMBER", "src", "a"]).await, 0);
+    assert_eq!(c.get_int(&["SCARD", "dst"]).await, 1);
+    assert_eq!(c.get_int(&["SISMEMBER", "dst", "a"]).await, 1);
+}
+
+#[tokio::test]
+async fn smove_missing_member_returns_zero() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SADD", "src", "x"]).await;
+
+    // "y" is not in src
+    assert_eq!(c.get_int(&["SMOVE", "src", "dst", "y"]).await, 0);
+
+    // src unchanged
+    assert_eq!(c.get_int(&["SCARD", "src"]).await, 1);
+    // dst was not created
+    assert_eq!(c.get_int(&["EXISTS", "dst"]).await, 0);
+}
+
+#[tokio::test]
+async fn smove_missing_source_returns_zero() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    assert_eq!(c.get_int(&["SMOVE", "nosrc", "dst", "m"]).await, 0);
+}
+
+// --- SINTERCARD ---
+
+#[tokio::test]
+async fn sintercard_basic() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SADD", "s1", "a", "b", "c"]).await;
+    c.cmd(&["SADD", "s2", "b", "c", "d"]).await;
+    c.cmd(&["SADD", "s3", "c", "d", "e"]).await;
+
+    // intersection of s1, s2, s3 is {"c"} → cardinality 1
+    assert_eq!(c.get_int(&["SINTERCARD", "3", "s1", "s2", "s3"]).await, 1);
+
+    // intersection of s1 and s2 is {"b", "c"} → cardinality 2
+    assert_eq!(c.get_int(&["SINTERCARD", "2", "s1", "s2"]).await, 2);
+}
+
+#[tokio::test]
+async fn sintercard_with_limit() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SADD", "a", "1", "2", "3", "4", "5"]).await;
+    c.cmd(&["SADD", "b", "1", "2", "3", "4", "5"]).await;
+
+    // full intersection is 5, limit to 3
+    assert_eq!(
+        c.get_int(&["SINTERCARD", "2", "a", "b", "LIMIT", "3"])
+            .await,
+        3
+    );
+    // limit 0 means no cap
+    assert_eq!(
+        c.get_int(&["SINTERCARD", "2", "a", "b", "LIMIT", "0"])
+            .await,
+        5
+    );
+}
+
+#[tokio::test]
+async fn sintercard_missing_key_returns_zero() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["SADD", "s", "a"]).await;
+
+    assert_eq!(c.get_int(&["SINTERCARD", "2", "s", "missing"]).await, 0);
+}

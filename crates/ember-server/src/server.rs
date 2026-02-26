@@ -376,9 +376,7 @@ pub async fn run_concurrent(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(
-                            "keyspace notification subscriber lagged by {n} messages"
-                        );
+                        tracing::warn!("keyspace notification subscriber lagged by {n} messages");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -705,9 +703,7 @@ pub async fn run_threaded(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(
-                            "keyspace notification subscriber lagged by {n} messages"
-                        );
+                        tracing::warn!("keyspace notification subscriber lagged by {n} messages");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

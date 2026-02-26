@@ -445,6 +445,25 @@ pub enum ShardRequest {
         key: String,
         members: Vec<String>,
     },
+    /// SMOVE — atomically moves a member between two sets on the same shard.
+    SMove {
+        source: String,
+        destination: String,
+        member: String,
+    },
+    /// SINTERCARD — returns cardinality of set intersection, capped at limit (0 = no limit).
+    SInterCard {
+        keys: Vec<String>,
+        limit: usize,
+    },
+    /// EXPIRETIME — returns the absolute expiry timestamp in seconds (-1 or -2 for missing/no-expiry).
+    Expiretime {
+        key: String,
+    },
+    /// PEXPIRETIME — returns the absolute expiry timestamp in milliseconds (-1 or -2 for missing/no-expiry).
+    Pexpiretime {
+        key: String,
+    },
     /// LMOVE: atomically pops from source and pushes to destination.
     LMove {
         source: String,
@@ -699,6 +718,7 @@ impl ShardRequest {
             | ShardRequest::SUnionStore { .. }
             | ShardRequest::SInterStore { .. }
             | ShardRequest::SDiffStore { .. }
+            | ShardRequest::SMove { .. }
             | ShardRequest::LMove { .. }
             | ShardRequest::GetDel { .. }
             | ShardRequest::GetEx { .. }
@@ -1899,6 +1919,21 @@ fn dispatch(
             Ok(results) => ShardResponse::BoolArray(results),
             Err(_) => ShardResponse::WrongType,
         },
+        ShardRequest::SMove {
+            source,
+            destination,
+            member,
+        } => match ks.smove(source, destination, member) {
+            Ok(moved) => ShardResponse::Bool(moved),
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+        },
+        ShardRequest::SInterCard { keys, limit } => match ks.sintercard(keys, *limit) {
+            Ok(n) => ShardResponse::Integer(n as i64),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::Expiretime { key } => ShardResponse::Integer(ks.expiretime(key)),
+        ShardRequest::Pexpiretime { key } => ShardResponse::Integer(ks.pexpiretime(key)),
         ShardRequest::LMove {
             source,
             destination,

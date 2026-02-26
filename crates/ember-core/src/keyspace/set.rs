@@ -457,6 +457,92 @@ impl Keyspace {
         }
     }
 
+    /// Atomically moves `member` from `source` set to `destination` set.
+    ///
+    /// Returns `true` if the member was moved, `false` if it wasn't in the source
+    /// set. Returns an error if either key holds a non-set value.
+    ///
+    /// Both keys must hash to the same shard. The caller is responsible for
+    /// enforcing that constraint before routing to this method.
+    pub fn smove(
+        &mut self,
+        source: &str,
+        destination: &str,
+        member: &str,
+    ) -> Result<bool, WriteError> {
+        self.remove_if_expired(source);
+        self.remove_if_expired(destination);
+
+        // type-check source
+        match self.entries.get(source) {
+            None => return Ok(false),
+            Some(entry) => {
+                if !matches!(&entry.value, Value::Set(_)) {
+                    return Err(WriteError::WrongType);
+                }
+            }
+        }
+
+        // type-check destination if it exists
+        if let Some(entry) = self.entries.get(destination) {
+            if !matches!(&entry.value, Value::Set(_)) {
+                return Err(WriteError::WrongType);
+            }
+        }
+
+        let old_src_size = self
+            .entries
+            .get(source)
+            .map(|e| e.entry_size(source))
+            .unwrap_or(0);
+
+        // try removing the member from source
+        let removed = if let Some(entry) = self.entries.get_mut(source) {
+            if let Value::Set(ref mut set) = entry.value {
+                set.remove(member)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !removed {
+            return Ok(false);
+        }
+
+        let member_bytes = member.len() + memory::HASHSET_MEMBER_OVERHEAD;
+
+        let src_empty = self
+            .entries
+            .get(source)
+            .map(|e| matches!(&e.value, Value::Set(s) if s.is_empty()))
+            .unwrap_or(false);
+
+        self.cleanup_after_remove(source, old_src_size, src_empty, member_bytes);
+        self.bump_version(source);
+
+        // add to destination (creates the set if needed)
+        self.sadd(destination, &[member.to_string()])?;
+
+        Ok(true)
+    }
+
+    /// Returns the cardinality of the intersection of all given sets.
+    ///
+    /// If `limit` is nonzero, the count is capped at that value.
+    /// Returns 0 if any key is missing. Returns an error if any key
+    /// holds a non-set type.
+    pub fn sintercard(&mut self, keys: &[String], limit: usize) -> Result<usize, WrongType> {
+        let members = self.sinter(keys)?;
+        let count = if limit > 0 {
+            members.len().min(limit)
+        } else {
+            members.len()
+        };
+        Ok(count)
+    }
+
     /// Returns the cardinality (number of elements) of a set.
     pub fn scard(&mut self, key: &str) -> Result<usize, WrongType> {
         if self.remove_if_expired(key) {
@@ -930,5 +1016,109 @@ mod tests {
         // set should be auto-deleted
         assert_eq!(ks.len(), 0);
         assert!(!ks.exists("s"));
+    }
+
+    // --- smove ---
+
+    #[test]
+    fn smove_moves_member() {
+        let mut ks = Keyspace::new();
+        ks.sadd("src", &["a".into(), "b".into()]).unwrap();
+
+        let moved = ks.smove("src", "dst", "a").unwrap();
+        assert!(moved);
+        assert!(!ks.sismember("src", "a").unwrap());
+        assert!(ks.sismember("dst", "a").unwrap());
+        assert_eq!(ks.scard("src").unwrap(), 1);
+        assert_eq!(ks.scard("dst").unwrap(), 1);
+    }
+
+    #[test]
+    fn smove_missing_member_returns_false() {
+        let mut ks = Keyspace::new();
+        ks.sadd("src", &["x".into()]).unwrap();
+
+        let moved = ks.smove("src", "dst", "missing").unwrap();
+        assert!(!moved);
+        assert_eq!(ks.scard("src").unwrap(), 1);
+        assert!(!ks.exists("dst"));
+    }
+
+    #[test]
+    fn smove_missing_source_returns_false() {
+        let mut ks = Keyspace::new();
+        let moved = ks.smove("nosrc", "dst", "m").unwrap();
+        assert!(!moved);
+    }
+
+    #[test]
+    fn smove_removes_empty_source() {
+        let mut ks = Keyspace::new();
+        ks.sadd("src", &["only".into()]).unwrap();
+
+        ks.smove("src", "dst", "only").unwrap();
+        // source set is auto-deleted when it becomes empty
+        assert!(!ks.exists("src"));
+        assert_eq!(ks.scard("dst").unwrap(), 1);
+    }
+
+    #[test]
+    fn smove_wrong_type_source_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("src".into(), Bytes::from("string"), None, false, false);
+        assert!(ks.smove("src", "dst", "m").is_err());
+    }
+
+    #[test]
+    fn smove_wrong_type_destination_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.sadd("src", &["m".into()]).unwrap();
+        ks.set("dst".into(), Bytes::from("string"), None, false, false);
+        assert!(ks.smove("src", "dst", "m").is_err());
+    }
+
+    // --- sintercard ---
+
+    #[test]
+    fn sintercard_basic() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
+        ks.sadd("s2", &["b".into(), "c".into(), "d".into()])
+            .unwrap();
+
+        assert_eq!(ks.sintercard(&["s1".into(), "s2".into()], 0).unwrap(), 2);
+    }
+
+    #[test]
+    fn sintercard_with_limit() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
+        ks.sadd("s2", &["a".into(), "b".into(), "c".into()])
+            .unwrap();
+
+        // limit caps the result
+        assert_eq!(ks.sintercard(&["s1".into(), "s2".into()], 2).unwrap(), 2);
+        // limit 0 means no cap
+        assert_eq!(ks.sintercard(&["s1".into(), "s2".into()], 0).unwrap(), 3);
+    }
+
+    #[test]
+    fn sintercard_missing_key_returns_zero() {
+        let mut ks = Keyspace::new();
+        ks.sadd("s1", &["a".into()]).unwrap();
+
+        assert_eq!(
+            ks.sintercard(&["s1".into(), "missing".into()], 0).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn sintercard_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("str".into(), Bytes::from("val"), None, false, false);
+        assert!(ks.sintercard(&["str".into()], 0).is_err());
     }
 }
