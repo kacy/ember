@@ -2719,6 +2719,8 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                     keys_expired: 0,
                     keys_evicted: 0,
                     oom_rejections: 0,
+                    keyspace_hits: 0,
+                    keyspace_misses: 0,
                 };
                 for r in &responses {
                     if let ShardResponse::Stats(s) = r {
@@ -2728,6 +2730,8 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
                         total.keys_expired += s.keys_expired;
                         total.keys_evicted += s.keys_evicted;
                         total.oom_rejections += s.oom_rejections;
+                        total.keyspace_hits += s.keyspace_hits;
+                        total.keyspace_misses += s.keyspace_misses;
                     }
                 }
                 Some(total)
@@ -2747,6 +2751,13 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
         out.push_str(&format!("process_id:{}\r\n", std::process::id()));
         out.push_str(&format!("uptime_in_seconds:{uptime}\r\n"));
         out.push_str(&format!("shard_count:{}\r\n", ctx.shard_count));
+        out.push_str(&format!("tcp_port:{}\r\n", ctx.bind_addr.port()));
+        out.push_str("hz:10\r\n");
+        if let Some(ref path) = ctx.config_path {
+            out.push_str(&format!("config_file:{}\r\n", path.display()));
+        } else {
+            out.push_str("config_file:\r\n");
+        }
         out.push_str("\r\n");
     }
 
@@ -2788,11 +2799,11 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
     }
 
     if want("PERSISTENCE") {
+        let last_save = ctx.last_save_timestamp.load(std::sync::atomic::Ordering::Relaxed);
         out.push_str("# Persistence\r\n");
-        out.push_str(&format!(
-            "aof_enabled:{}\r\n",
-            if ctx.aof_enabled { 1 } else { 0 }
-        ));
+        out.push_str(&format!("aof_enabled:{}\r\n", if ctx.aof_enabled { 1 } else { 0 }));
+        out.push_str("aof_last_bgrewrite_status:ok\r\n");
+        out.push_str(&format!("rdb_last_save_time:{last_save}\r\n"));
         out.push_str("\r\n");
     }
 
@@ -2806,6 +2817,8 @@ async fn render_info(engine: &Engine, ctx: &Arc<ServerContext>, section: Option<
             out.push_str(&format!("expired_keys:{}\r\n", stats.keys_expired));
             out.push_str(&format!("evicted_keys:{}\r\n", stats.keys_evicted));
             out.push_str(&format!("oom_rejections:{}\r\n", stats.oom_rejections));
+            out.push_str(&format!("keyspace_hits:{}\r\n", stats.keyspace_hits));
+            out.push_str(&format!("keyspace_misses:{}\r\n", stats.keyspace_misses));
         }
         out.push_str("\r\n");
     }

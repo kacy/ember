@@ -204,6 +204,12 @@ struct Args {
     /// --cluster-auth-pass). the file contents are trimmed of trailing whitespace.
     #[arg(long, env = "EMBER_CLUSTER_AUTH_PASS_FILE")]
     cluster_auth_pass_file: Option<std::path::PathBuf>,
+
+    /// perform a health check against the running server and exit.
+    /// connects to the configured port, sends PING, expects PONG.
+    /// exits with code 0 on success, 1 on failure.
+    #[arg(long)]
+    healthcheck: bool,
 }
 
 /// Applies CLI overrides to an `EmberConfig`. Only `Some` values from the
@@ -409,6 +415,34 @@ fn build_persistence_config(
     })
 }
 
+/// Sends PING to the running server and returns 0 on success, 1 on failure.
+fn healthcheck(host: &str, port: u16) -> i32 {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let addr = format!("{host}:{port}");
+    let mut stream = match TcpStream::connect(&addr) {
+        Ok(s) => s,
+        Err(_) => return 1,
+    };
+    if stream.set_read_timeout(Some(Duration::from_secs(2))).is_err() {
+        return 1;
+    }
+    if stream.write_all(b"*1\r\n$4\r\nPING\r\n").is_err() {
+        return 1;
+    }
+    let mut buf = [0u8; 7];
+    if stream.read_exact(&mut buf).is_err() {
+        return 1;
+    }
+    if &buf == b"+PONG\r\n" {
+        0
+    } else {
+        1
+    }
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
@@ -419,6 +453,23 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+
+    // --healthcheck: ping the running server and exit
+    if args.healthcheck {
+        // build config to find the correct port; ignore errors and fall back to default
+        let mut cfg = match &args.config {
+            Some(path) => EmberConfig::from_file(path).unwrap_or_default(),
+            None => EmberConfig::default(),
+        };
+        apply_args(&mut cfg, &args);
+        let port = cfg.port;
+        let host = if cfg.bind == "0.0.0.0" || cfg.bind == "::" {
+            "127.0.0.1".to_string()
+        } else {
+            cfg.bind.clone()
+        };
+        std::process::exit(healthcheck(&host, port));
+    }
 
     // --config-template: dump defaults and exit
     if args.config_template {
