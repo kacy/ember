@@ -793,10 +793,16 @@ pub async fn run_threaded(
                 .spawn(move || {
                     pin_to_core(id);
 
-                    let rt = tokio::runtime::Builder::new_current_thread()
+                    let rt = match tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                        .expect("failed to build worker runtime");
+                    {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            error!("worker {id}: failed to build tokio runtime: {e}");
+                            return;
+                        }
+                    };
 
                     rt.block_on(worker_main(
                         id, prepared, addr, engine, ctx, slow_log, pubsub, semaphore, tls, shutdown,
@@ -805,9 +811,11 @@ pub async fn run_threaded(
                     // give in-flight connection handlers time to finish
                     rt.shutdown_timeout(Duration::from_secs(30));
                 })
-                .expect("failed to spawn worker thread")
+                .map_err(|e| {
+                    std::io::Error::other(format!("failed to spawn worker thread {id}: {e}"))
+                })
         })
-        .collect();
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
 
     info!(
         "listening on {addr} with {shard_count} shards, thread-per-core (max {max_conn} connections)"

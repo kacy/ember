@@ -29,6 +29,7 @@ use crate::connection_common::{
     is_auth_frame, is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent,
     TransactionState,
 };
+use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
 use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
@@ -126,6 +127,7 @@ where
                             .await;
                             response.serialize(&mut out);
                         } else {
+                            on_auth_failure("noauth");
                             Frame::Error("NOAUTH Authentication required.".into())
                                 .serialize(&mut out);
                         }
@@ -250,9 +252,12 @@ async fn process(
     match Command::from_frame(frame) {
         Ok(cmd) => {
             // reject oversized keys/values before any further processing
-            if let Some(err) =
-                validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
-            {
+            if let Some(err) = validate_command_sizes(
+                &cmd,
+                ctx.limits.max_key_len,
+                ctx.limits.max_value_len,
+                ctx.limits.max_command_memory,
+            ) {
                 return err;
             }
 

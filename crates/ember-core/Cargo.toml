@@ -23,6 +23,7 @@ ember-protocol = { workspace = true }
 ember-persistence = { workspace = true }
 thiserror = { workspace = true }
 bytes = { workspace = true }
+metrics = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }

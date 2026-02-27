@@ -83,6 +83,8 @@ impl Command {
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
             Command::FlushDb { .. } => "flushdb",
+            Command::FlushAll { .. } => "flushall",
+            Command::MemoryUsage { .. } => "memory",
             Command::ConfigGet { .. } => "config",
             Command::ConfigSet { .. } => "config",
             Command::ConfigRewrite => "config",
@@ -133,6 +135,9 @@ impl Command {
             Command::ZDiff { .. } => "zdiff",
             Command::ZInter { .. } => "zinter",
             Command::ZUnion { .. } => "zunion",
+            Command::ZDiffStore { .. } => "zdiffstore",
+            Command::ZInterStore { .. } => "zinterstore",
+            Command::ZUnionStore { .. } => "zunionstore",
             Command::ZRandMember { .. } => "zrandmember",
 
             // hash
@@ -238,6 +243,9 @@ impl Command {
             Command::Touch { .. } => "touch",
             Command::Sort { .. } => "sort",
 
+            Command::Command { .. } => "command",
+            Command::HIncrByFloat { .. } => "hincrbyfloat",
+
             Command::Unknown(_) => "unknown",
         }
     }
@@ -310,6 +318,7 @@ impl Command {
                 | Command::SMove { .. }
             // server / persistence
                 | Command::FlushDb { .. }
+                | Command::FlushAll { .. }
                 | Command::ConfigSet { .. }
                 | Command::Exec
                 | Command::BgRewriteAof
@@ -466,6 +475,11 @@ impl Command {
             | Command::ZUnion { .. }
             | Command::ZRandMember { .. } => READ | SORTEDSET | SLOW,
 
+            // sorted set — store variants (Redis 6.2+)
+            Command::ZDiffStore { .. }
+            | Command::ZInterStore { .. }
+            | Command::ZUnionStore { .. } => WRITE | SORTEDSET | SLOW,
+
             // string extras (Redis 6.2+)
             Command::GetDel { .. } | Command::GetEx { .. } => WRITE | STRING | FAST,
 
@@ -514,6 +528,8 @@ impl Command {
             }
             Command::BgSave | Command::BgRewriteAof => SERVER | ADMIN | SLOW,
             Command::FlushDb { .. } => KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW,
+            Command::FlushAll { .. } => KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW,
+            Command::MemoryUsage { .. } => READ | KEYSPACE | SLOW,
             Command::ConfigGet { .. } => SERVER | ADMIN | SLOW,
             Command::ConfigSet { .. } | Command::ConfigRewrite => SERVER | ADMIN | SLOW,
             Command::SlowLogGet { .. } | Command::SlowLogLen | Command::SlowLogReset => {
@@ -582,6 +598,9 @@ impl Command {
             }
             Command::AclSetUser { .. } | Command::AclDelUser { .. } => SERVER | ADMIN | SLOW,
             Command::AclCat { .. } => SERVER | SLOW,
+
+            Command::Command { .. } => SERVER | SLOW,
+            Command::HIncrByFloat { .. } => WRITE | HASH | FAST,
 
             Command::Unknown(_) => 0,
         }
@@ -676,7 +695,8 @@ impl Command {
             | Command::Restore { key, .. }
             | Command::Sort { key, .. }
             | Command::GetDel { key }
-            | Command::GetEx { key, .. } => Some(key),
+            | Command::GetEx { key, .. }
+            | Command::MemoryUsage { key } => Some(key),
             Command::LMove { source, .. } => Some(source),
             Command::Copy { source, .. } => Some(source),
             Command::SMove { source, .. } => Some(source),
@@ -698,7 +718,11 @@ impl Command {
             | Command::Zmpop { keys, .. } => keys.first().map(String::as_str),
             Command::SUnionStore { dest, .. }
             | Command::SInterStore { dest, .. }
-            | Command::SDiffStore { dest, .. } => Some(dest),
+            | Command::SDiffStore { dest, .. }
+            | Command::ZUnionStore { dest, .. }
+            | Command::ZInterStore { dest, .. }
+            | Command::ZDiffStore { dest, .. } => Some(dest),
+            Command::HIncrByFloat { key, .. } => Some(key),
             Command::MSet { pairs } | Command::MSetNx { pairs } => {
                 pairs.first().map(|(k, _)| k.as_str())
             }

@@ -152,9 +152,12 @@ pub(super) async fn prepare_command(
     };
 
     // reject oversized keys/values before any further processing
-    if let Some(err) =
-        validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
-    {
+    if let Some(err) = validate_command_sizes(
+        &cmd,
+        ctx.limits.max_key_len,
+        ctx.limits.max_value_len,
+        ctx.limits.max_command_memory,
+    ) {
         return PreparedDispatch::Immediate(PendingResponse::Immediate(err));
     }
 

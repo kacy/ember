@@ -289,12 +289,14 @@ class EmberClient:
             "euclidean": ember_pb2.VECTOR_METRIC_EUCLIDEAN,
             "ip": ember_pb2.VECTOR_METRIC_INNER_PRODUCT,
         }
+        if metric not in metric_map:
+            raise ValueError(f"unknown metric {metric!r}; expected one of: cosine, euclidean, ip")
         resp = self._stub.VAdd(
             ember_pb2.VAddRequest(
                 key=key,
                 element=element,
                 vector=vector,
-                metric=metric_map.get(metric, ember_pb2.VECTOR_METRIC_COSINE),
+                metric=metric_map[metric],
                 connectivity=m,
                 ef_construction=ef,
             ),
@@ -320,6 +322,8 @@ class EmberClient:
             "euclidean": ember_pb2.VECTOR_METRIC_EUCLIDEAN,
             "ip": ember_pb2.VECTOR_METRIC_INNER_PRODUCT,
         }
+        if metric not in metric_map:
+            raise ValueError(f"unknown metric {metric!r}; expected one of: cosine, euclidean, ip")
         batch_entries = [
             ember_pb2.VAddBatchEntry(element=elem, vector=vec)
             for elem, vec in entries
@@ -328,7 +332,7 @@ class EmberClient:
             ember_pb2.VAddBatchRequest(
                 key=key,
                 entries=batch_entries,
-                metric=metric_map.get(metric, ember_pb2.VECTOR_METRIC_COSINE),
+                metric=metric_map[metric],
                 connectivity=m,
                 ef_construction=ef,
             ),

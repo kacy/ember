@@ -116,7 +116,7 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | HMGET | ✓ | |
 | HSCAN | ✓ | |
 | HMSET | ✗ | deprecated; use HSET with multiple fields instead |
-| HINCRBYFLOAT | ✗ | not implemented |
+| HINCRBYFLOAT | ✓ | |
 | HRANDFIELD | ✓ | optional count with WITHVALUES |
 
 ---
@@ -170,9 +170,9 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | BZPOPMIN | ✗ | not implemented |
 | BZPOPMAX | ✗ | not implemented |
 | ZRANDMEMBER | ✓ | optional count with WITHSCORES |
-| ZUNIONSTORE | ✗ | not implemented |
-| ZINTERSTORE | ✗ | not implemented |
-| ZDIFFSTORE | ✗ | not implemented |
+| ZUNIONSTORE | ✓ | dest and source keys must hash to the same shard |
+| ZINTERSTORE | ✓ | dest and source keys must hash to the same shard |
+| ZDIFFSTORE | ✓ | dest and source keys must hash to the same shard |
 | ZUNION | ✓ | |
 | ZINTER | ✓ | |
 | ZDIFF | ✓ | |
@@ -242,22 +242,22 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | CLIENT SETNAME | ✓ | |
 | CLIENT GETNAME | ✓ | |
 | CLIENT LIST | ✓ | |
-| FLUSHALL | ✗ | use FLUSHDB instead |
+| FLUSHALL | ✓ | ASYNC mode supported; single-database, equivalent to FLUSHDB |
 | SAVE | ✗ | use BGSAVE instead |
 | SHUTDOWN | ✗ | use SIGTERM instead |
 | DEBUG | ✗ | not implemented |
 | CONFIG RESETSTAT | ✗ | not implemented |
-| COMMAND | ✗ | not implemented |
-| COMMAND COUNT | ✗ | not implemented |
-| COMMAND INFO | ✗ | not implemented |
-| COMMAND DOCS | ✗ | not implemented |
+| COMMAND | ✓ | returns static metadata for all supported commands |
+| COMMAND COUNT | ✓ | |
+| COMMAND INFO | ✓ | returns metadata for named commands |
+| COMMAND DOCS | ✓ | returns empty docs map (sufficient for client compat) |
 | CLIENT KILL | ✗ | not implemented |
 | CLIENT PAUSE | ✗ | not implemented |
 | CLIENT UNPAUSE | ✗ | not implemented |
 | CLIENT NO-EVICT | ✗ | not implemented |
 | CLIENT NO-TOUCH | ✗ | not implemented |
 | LATENCY | ✗ | not implemented |
-| MEMORY USAGE | ✗ | not implemented |
+| MEMORY USAGE | ✓ | returns estimated key memory in bytes; SAMPLES option accepted and ignored |
 | MEMORY STATS | ✗ | not implemented |
 | MEMORY DOCTOR | ✗ | not implemented |
 | RESET | ✗ | not implemented |
@@ -277,7 +277,11 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | WATCH | ✓ | accepts keys for optimistic locking |
 | UNWATCH | ✓ | clears watched keys |
 
-single-shard transactions are truly atomic (the shard is single-threaded). cross-shard transactions execute in order but are not globally atomic — same limitation as Redis Cluster. blocking commands (BLPOP, BRPOP) inside MULTI return an error.
+**single-shard transactions** are truly atomic — the shard processes them serially with no interleaving.
+
+**cross-shard transactions** (keys on different shards) execute commands in order but are not globally atomic. a failure mid-transaction does not roll back commands already applied to other shards. this is the same limitation Redis Cluster has. if your application requires cross-key atomicity, keep all transaction keys on the same shard by using a hash tag: `{user:42}:balance` and `{user:42}:name` always co-locate.
+
+blocking commands (BLPOP, BRPOP) inside MULTI return an error.
 
 ---
 
@@ -334,7 +338,7 @@ all cluster commands are implemented. see the cluster documentation for operatio
 some Redis commands are explicitly not planned for Ember:
 
 **scripting**
-- `EVAL`, `EVALSHA`, `EVALRO`, `SCRIPT LOAD`, `SCRIPT EXISTS`, `SCRIPT FLUSH` — Lua scripting is an anti-goal. We may support WASM-based extensions in the future instead.
+- `EVAL`, `EVALSHA`, `EVALRO`, `SCRIPT LOAD`, `SCRIPT EXISTS`, `SCRIPT FLUSH` — Lua scripting is explicitly not planned. if you need server-side logic, WASM-based extensions may be supported in a future release.
 - `FCALL`, `FUNCTION LOAD`, `FUNCTION LIST`, `FUNCTION DELETE` — same reasoning as EVAL.
 
 **streams**
@@ -344,7 +348,7 @@ some Redis commands are explicitly not planned for Ember:
 - `BITFIELD`, `BITFIELD_RO` — not planned; use application-level serialization if needed.
 
 **geo**
-- `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — not implemented yet.
+- `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — coming in a future release.
 
 **other**
 - `LOLWUT` — not implemented.

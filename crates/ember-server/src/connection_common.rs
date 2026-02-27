@@ -11,6 +11,7 @@ use ember_protocol::Command;
 use subtle::ConstantTimeEq;
 
 use crate::acl::AclUser;
+use crate::metrics::on_auth_failure;
 use crate::server::ServerContext;
 
 // Default values for connection limits. These serve as documentation
@@ -23,6 +24,9 @@ pub const DEFAULT_MAX_KEY_LEN: usize = 512 * 1024;
 #[cfg(test)]
 /// Default max value length (512MB).
 pub const DEFAULT_MAX_VALUE_LEN: usize = 512 * 1024 * 1024;
+#[cfg(test)]
+/// Default max command memory (128MB total payload per command).
+pub const DEFAULT_MAX_COMMAND_MEMORY: usize = 128 * 1024 * 1024;
 
 /// Checks if a raw frame is an AUTH command (before full parsing).
 ///
@@ -106,6 +110,7 @@ pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
         let user = match state.get_user(&username) {
             Some(u) => u,
             None => {
+                on_auth_failure("wrongpass");
                 return AuthResult::fail(
                     "WRONGPASS invalid username-password pair or user is disabled.",
                 );
@@ -113,12 +118,14 @@ pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
         };
 
         if !user.enabled {
+            on_auth_failure("wrongpass");
             return AuthResult::fail(
                 "WRONGPASS invalid username-password pair or user is disabled.",
             );
         }
 
         if !user.verify_password(&password) {
+            on_auth_failure("wrongpass");
             return AuthResult::fail(
                 "WRONGPASS invalid username-password pair or user is disabled.",
             );
@@ -145,6 +152,7 @@ pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
                     username,
                 }
             } else {
+                on_auth_failure("wrongpass");
                 AuthResult::fail("WRONGPASS invalid username-password pair or user is disabled.")
             }
         }
@@ -179,13 +187,15 @@ pub fn initial_acl_user(ctx: &ServerContext) -> (Option<Arc<AclUser>>, String) {
 
 /// Validates key and value sizes for a parsed command.
 ///
-/// Returns an error frame if any key exceeds `max_key_len` or any value
-/// exceeds `max_value_len`. Returns `None` when the command passes validation.
+/// Returns an error frame if any key exceeds `max_key_len`, any value exceeds
+/// `max_value_len`, or the combined payload of a bulk command exceeds
+/// `max_command_memory`. Returns `None` when the command passes validation.
 /// Called on the RESP path to match the limits already enforced by gRPC.
 pub fn validate_command_sizes(
     cmd: &Command,
     max_key_len: usize,
     max_value_len: usize,
+    max_command_memory: usize,
 ) -> Option<Frame> {
     // check primary key length
     if let Some(key) = cmd.primary_key() {
@@ -228,6 +238,7 @@ pub fn validate_command_sizes(
             }
         }
         Command::MSet { pairs } => {
+            let mut total = 0usize;
             for (k, v) in pairs {
                 if k.len() > max_key_len {
                     return Some(Frame::Error(format!(
@@ -241,9 +252,16 @@ pub fn validate_command_sizes(
                         v.len()
                     )));
                 }
+                total = total.saturating_add(k.len()).saturating_add(v.len());
+            }
+            if total > max_command_memory {
+                return Some(Frame::Error(format!(
+                    "ERR command payload {total} bytes exceeds limit of {max_command_memory} bytes"
+                )));
             }
         }
         Command::LPush { values, .. } | Command::RPush { values, .. } => {
+            let mut total = 0usize;
             for v in values {
                 if v.len() > max_value_len {
                     return Some(Frame::Error(format!(
@@ -251,6 +269,12 @@ pub fn validate_command_sizes(
                         v.len()
                     )));
                 }
+                total = total.saturating_add(v.len());
+            }
+            if total > max_command_memory {
+                return Some(Frame::Error(format!(
+                    "ERR command payload {total} bytes exceeds limit of {max_command_memory} bytes"
+                )));
             }
         }
         Command::HSet { fields, .. } => {
@@ -448,14 +472,26 @@ mod tests {
             nx: false,
             xx: false,
         };
-        assert!(validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).is_none());
+        assert!(validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY
+        )
+        .is_none());
     }
 
     #[test]
     fn oversized_key_rejected() {
         let big_key = "x".repeat(DEFAULT_MAX_KEY_LEN + 1);
         let cmd = Command::Get { key: big_key };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
     }
 
@@ -463,7 +499,13 @@ mod tests {
     fn key_at_limit_passes() {
         let key = "k".repeat(DEFAULT_MAX_KEY_LEN);
         let cmd = Command::Get { key };
-        assert!(validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).is_none());
+        assert!(validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY
+        )
+        .is_none());
     }
 
     #[test]
@@ -476,7 +518,13 @@ mod tests {
             nx: false,
             xx: false,
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("value length")));
     }
 
@@ -486,7 +534,13 @@ mod tests {
         let cmd = Command::MSet {
             pairs: vec![(big_key, Bytes::from_static(b"v"))],
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
     }
 
@@ -497,7 +551,13 @@ mod tests {
             key: "mylist".into(),
             values: vec![Bytes::from_static(b"ok"), big_val],
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("value length")));
     }
 
@@ -507,7 +567,13 @@ mod tests {
         let cmd = Command::Del {
             keys: vec!["ok".into(), big_key],
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
     }
 
@@ -516,13 +582,15 @@ mod tests {
         assert!(validate_command_sizes(
             &Command::Ping(None),
             DEFAULT_MAX_KEY_LEN,
-            DEFAULT_MAX_VALUE_LEN
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY
         )
         .is_none());
         assert!(validate_command_sizes(
             &Command::DbSize,
             DEFAULT_MAX_KEY_LEN,
-            DEFAULT_MAX_VALUE_LEN
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY
         )
         .is_none());
     }

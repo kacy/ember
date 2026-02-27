@@ -11,7 +11,7 @@ use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
-use ember_protocol::{parse_frame, Command, Frame, SetExpire};
+use ember_protocol::{command::BitOpKind, parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -28,14 +28,24 @@ fn set_expire_to_duration(expire: SetExpire) -> Duration {
         SetExpire::ExAt(ts) => {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
+                .unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "system clock is before UNIX epoch; EXAT TTL calculations may be incorrect"
+                    );
+                    Duration::ZERO
+                })
                 .as_secs();
             Duration::from_secs(ts.saturating_sub(now))
         }
         SetExpire::PxAt(ts_ms) => {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
+                .unwrap_or_else(|_| {
+                    tracing::warn!(
+                        "system clock is before UNIX epoch; PXAT TTL calculations may be incorrect"
+                    );
+                    Duration::ZERO
+                })
                 .as_millis() as u64;
             Duration::from_millis(ts_ms.saturating_sub(now_ms))
         }
@@ -109,6 +119,7 @@ pub(super) async fn execute(
         Command::Ping(None) => Frame::Simple("PONG".into()),
         Command::Ping(Some(msg)) => Frame::Bulk(msg),
         Command::Echo(msg) => Frame::Bulk(msg),
+        Command::Command { subcommand, args } => handle_command_cmd(subcommand.as_deref(), &args),
 
         // -- client commands (connection-scoped, no shard needed) --
         Command::ClientId => Frame::Integer(client_id as i64),
@@ -409,11 +420,80 @@ pub(super) async fn execute(
         }
 
         Command::BitOp { op, dest, keys } => {
-            let idx = engine.shard_for_key(&dest);
-            let req = ShardRequest::BitOp { op, dest, keys };
-            match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Integer(len)) => Frame::Integer(len),
-                Ok(ShardResponse::WrongType) => wrongtype_error(),
+            // Read source keys from their respective shards, then compute the
+            // bitwise result here and write it to dest's shard. This is
+            // necessary because source keys may live on different shards.
+            let responses = match engine
+                .route_multi(&keys, |k| ShardRequest::Get { key: k })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return Frame::Error(format!("ERR {e}")),
+            };
+
+            let mut sources: Vec<Bytes> = Vec::with_capacity(responses.len());
+            for r in responses {
+                match r {
+                    ShardResponse::Value(Some(Value::String(b))) => sources.push(b),
+                    ShardResponse::Value(None) => sources.push(Bytes::new()),
+                    ShardResponse::WrongType => return wrongtype_error(),
+                    _ => sources.push(Bytes::new()),
+                }
+            }
+
+            let result_len = sources.iter().map(|s| s.len()).max().unwrap_or(0);
+            let mut result = vec![0u8; result_len];
+            match op {
+                BitOpKind::Not => {
+                    let src = sources.first().map(|b| b.as_ref()).unwrap_or(&[]);
+                    for (i, b) in result.iter_mut().enumerate() {
+                        *b = if i < src.len() { !src[i] } else { 0xFF };
+                    }
+                }
+                BitOpKind::And => {
+                    if let Some(first) = sources.first() {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            *b = if i < first.len() { first[i] } else { 0 };
+                        }
+                    }
+                    for src in sources.iter().skip(1) {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            *b &= if i < src.len() { src[i] } else { 0 };
+                        }
+                    }
+                }
+                BitOpKind::Or => {
+                    for src in &sources {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            if i < src.len() {
+                                *b |= src[i];
+                            }
+                        }
+                    }
+                }
+                BitOpKind::Xor => {
+                    for src in &sources {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            if i < src.len() {
+                                *b ^= src[i];
+                            }
+                        }
+                    }
+                }
+            }
+
+            let dest_idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::Set {
+                key: dest,
+                value: Bytes::from(result),
+                expire: None,
+                nx: false,
+                xx: false,
+            };
+            match engine.send_to_shard(dest_idx, req).await {
+                Ok(ShardResponse::Ok) | Ok(ShardResponse::Value(_)) => {
+                    Frame::Integer(result_len as i64)
+                }
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
@@ -846,6 +926,30 @@ pub(super) async fn execute(
             };
             match engine.broadcast(req).await {
                 Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        // Ember is single-database, so FLUSHALL is identical to FLUSHDB.
+        Command::FlushAll { async_mode } => {
+            let req = if async_mode {
+                || ShardRequest::FlushDbAsync
+            } else {
+                || ShardRequest::FlushDb
+            };
+            match engine.broadcast(req).await {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::MemoryUsage { key } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::MemoryUsage { key: key.clone() };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(-1)) => Frame::Null,
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
             }
         }
@@ -1719,6 +1823,19 @@ pub(super) async fn execute(
             }
         }
 
+        Command::HIncrByFloat { key, field, delta } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::HIncrByFloat { key, field, delta };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::BulkString(val)) => Frame::Bulk(Bytes::from(val)),
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(ShardResponse::OutOfMemory) => oom_error(),
+                Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::HKeys { key } => {
             let idx = engine.shard_for_key(&key);
             let req = ShardRequest::HKeys { key };
@@ -2101,7 +2218,9 @@ pub(super) async fn execute(
 
             // Start with the smallest set to minimise comparisons.
             sets.sort_unstable_by_key(|s| s.len());
-            let (first, rest) = sets.split_first().expect("non-empty");
+            let Some((first, rest)) = sets.split_first() else {
+                return Frame::Integer(0);
+            };
             let mut count = 0usize;
             'outer: for member in first {
                 for other in rest {
@@ -2248,6 +2367,66 @@ pub(super) async fn execute(
                         }
                     }
                     Frame::Array(frames)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZDiffStore { dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::ZDiffStore { dest: dest.clone(), keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZStoreResult { count, .. }) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_Z,
+                        "zdiffstore",
+                        &dest,
+                    );
+                    Frame::Integer(count as i64)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZInterStore { dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::ZInterStore { dest: dest.clone(), keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZStoreResult { count, .. }) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_Z,
+                        "zinterstore",
+                        &dest,
+                    );
+                    Frame::Integer(count as i64)
+                }
+                Ok(ShardResponse::WrongType) => wrongtype_error(),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::ZUnionStore { dest, keys } => {
+            let idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::ZUnionStore { dest: dest.clone(), keys };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::ZStoreResult { count, .. }) => {
+                    notify_write(
+                        ctx,
+                        pubsub,
+                        crate::keyspace_notifications::FLAG_Z,
+                        "zunionstore",
+                        &dest,
+                    );
+                    Frame::Integer(count as i64)
                 }
                 Ok(ShardResponse::WrongType) => wrongtype_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
@@ -3504,6 +3683,230 @@ pub(super) fn resolve_collection_scan(
 pub(super) fn oom_error() -> Frame {
     Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
 }
+
+/// Handles COMMAND [COUNT | INFO name... | DOCS name... | LIST].
+///
+/// Provides static command metadata for client library discovery.
+/// The format matches Redis 7 conventions so clients can probe capabilities
+/// without falling back to error-handling paths.
+fn handle_command_cmd(subcommand: Option<&str>, args: &[String]) -> Frame {
+    match subcommand {
+        None | Some("LIST") => Frame::Array(COMMAND_TABLE.iter().map(command_entry).collect()),
+        Some("COUNT") => Frame::Integer(COMMAND_TABLE.len() as i64),
+        Some("INFO") => {
+            if args.is_empty() {
+                return Frame::Array(COMMAND_TABLE.iter().map(command_entry).collect());
+            }
+            let frames = args
+                .iter()
+                .map(|name| {
+                    let upper = name.to_ascii_uppercase();
+                    match COMMAND_TABLE.iter().find(|e| e.name == upper) {
+                        Some(entry) => command_entry(entry),
+                        None => Frame::Null,
+                    }
+                })
+                .collect();
+            Frame::Array(frames)
+        }
+        Some("DOCS") => {
+            // return empty docs — clients use this for documentation display,
+            // not capability detection. an empty map per command is valid.
+            if args.is_empty() {
+                return Frame::Array(vec![]);
+            }
+            let mut frames = Vec::with_capacity(args.len() * 2);
+            for name in args {
+                let upper = name.to_ascii_uppercase();
+                frames.push(Frame::Bulk(Bytes::from(upper)));
+                frames.push(Frame::Array(vec![]));
+            }
+            Frame::Array(frames)
+        }
+        Some("GETKEYS") => Frame::Array(vec![]),
+        Some(other) => Frame::Error(format!("ERR unknown COMMAND subcommand '{other}'")),
+    }
+}
+
+/// Builds a COMMAND entry array for a single command.
+///
+/// Format: [name, arity, [flags], first_key, last_key, step]
+fn command_entry(e: &CommandEntry) -> Frame {
+    Frame::Array(vec![
+        Frame::Bulk(Bytes::from(e.name.to_ascii_lowercase())),
+        Frame::Integer(e.arity),
+        Frame::Array(e.flags.iter().map(|f| Frame::Simple((*f).into())).collect()),
+        Frame::Integer(e.first_key),
+        Frame::Integer(e.last_key),
+        Frame::Integer(e.step),
+    ])
+}
+
+struct CommandEntry {
+    name: &'static str,
+    arity: i64,
+    flags: &'static [&'static str],
+    first_key: i64,
+    last_key: i64,
+    step: i64,
+}
+
+/// Static command table. Arity: positive = exact, negative = minimum.
+/// Flags: write, readonly, denyoom, admin, pubsub, noscript, fast, loading, etc.
+static COMMAND_TABLE: &[CommandEntry] = &[
+    CommandEntry { name: "APPEND", arity: 3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "AUTH", arity: -2, flags: &["noscript", "loading", "fast", "no_auth"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "BGREWRITEAOF", arity: 1, flags: &["admin"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "BGSAVE", arity: -1, flags: &["admin"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "BITCOUNT", arity: -2, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "BITOP", arity: -4, flags: &["write", "denyoom"], first_key: 2, last_key: -1, step: 1 },
+    CommandEntry { name: "BITPOS", arity: -3, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "BLPOP", arity: -3, flags: &["write", "noscript"], first_key: 1, last_key: -2, step: 1 },
+    CommandEntry { name: "BRPOP", arity: -3, flags: &["write", "noscript"], first_key: 1, last_key: -2, step: 1 },
+    CommandEntry { name: "CLIENT", arity: -2, flags: &["admin", "noscript", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "CLUSTER", arity: -2, flags: &["admin"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "COMMAND", arity: -1, flags: &["loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "CONFIG", arity: -2, flags: &["admin", "loading", "noscript"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "COPY", arity: -3, flags: &["write"], first_key: 1, last_key: 2, step: 1 },
+    CommandEntry { name: "DBSIZE", arity: 1, flags: &["readonly", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "DECR", arity: 2, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "DECRBY", arity: 3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "DEL", arity: -2, flags: &["write"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "DISCARD", arity: 1, flags: &["noscript", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "ECHO", arity: 2, flags: &["fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "EXEC", arity: 1, flags: &["noscript", "loading"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "EXISTS", arity: -2, flags: &["readonly", "fast"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "EXPIRE", arity: 3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "EXPIREAT", arity: 3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "EXPIRETIME", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "FLUSHALL", arity: -1, flags: &["write"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "FLUSHDB", arity: -1, flags: &["write"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "GET", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "GETBIT", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "GETDEL", arity: 2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "GETEX", arity: -2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "GETRANGE", arity: 4, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "GETSET", arity: 3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HDEL", arity: -3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HEXISTS", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HGET", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HGETALL", arity: 2, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HINCRBY", arity: 4, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HINCRBYFLOAT", arity: 4, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HKEYS", arity: 2, flags: &["readonly", "sort_for_script"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HLEN", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HMGET", arity: -3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HMSET", arity: -4, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HRANDFIELD", arity: -2, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HSCAN", arity: -3, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HSET", arity: -4, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "HVALS", arity: 2, flags: &["readonly", "sort_for_script"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "INCR", arity: 2, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "INCRBY", arity: 3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "INCRBYFLOAT", arity: 3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "INFO", arity: -1, flags: &["loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "KEYS", arity: 2, flags: &["readonly", "sort_for_script"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "LASTSAVE", arity: 1, flags: &["random", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "LINDEX", arity: 3, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LINSERT", arity: 5, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LLEN", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LMOVE", arity: 5, flags: &["write", "denyoom"], first_key: 1, last_key: 2, step: 1 },
+    CommandEntry { name: "LMPOP", arity: -4, flags: &["write", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "LPOS", arity: -3, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LPOP", arity: -2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LPUSH", arity: -3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LPUSHX", arity: -3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LRANGE", arity: 4, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LREM", arity: 4, flags: &["write"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LSET", arity: 4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "LTRIM", arity: 4, flags: &["write"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "MEMORY", arity: -2, flags: &["readonly"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "MGET", arity: -2, flags: &["readonly", "fast"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "MIGRATE", arity: -6, flags: &["write"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "MONITOR", arity: 1, flags: &["admin", "loading"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "MSET", arity: -3, flags: &["write", "denyoom"], first_key: 1, last_key: -1, step: 2 },
+    CommandEntry { name: "MSETNX", arity: -3, flags: &["write", "denyoom"], first_key: 1, last_key: -1, step: 2 },
+    CommandEntry { name: "MULTI", arity: 1, flags: &["noscript", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "OBJECT", arity: -2, flags: &["slow"], first_key: 2, last_key: 2, step: 1 },
+    CommandEntry { name: "PERSIST", arity: 2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "PEXPIRE", arity: 3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "PEXPIREAT", arity: 3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "PEXPIRETIME", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "PING", arity: -1, flags: &["fast", "loading"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "PSETEX", arity: 4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "PSUBSCRIBE", arity: -2, flags: &["pubsub", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "PTTL", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "PUBLISH", arity: 3, flags: &["pubsub", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "PUBSUB", arity: -2, flags: &["pubsub", "random", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "PUNSUBSCRIBE", arity: -1, flags: &["pubsub", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "QUIT", arity: 1, flags: &["fast", "loading"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "RANDOMKEY", arity: 1, flags: &["readonly", "random"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "RENAME", arity: 3, flags: &["write"], first_key: 1, last_key: 2, step: 1 },
+    CommandEntry { name: "ROLE", arity: 1, flags: &["noscript", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "RPOP", arity: -2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "RPUSH", arity: -3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "RPUSHX", arity: -3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SADD", arity: -3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SCAN", arity: -2, flags: &["readonly"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "SCARD", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SDIFF", arity: -2, flags: &["readonly", "sort_for_script"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "SDIFFSTORE", arity: -3, flags: &["write", "denyoom"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "SET", arity: -3, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SETBIT", arity: 4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SETEX", arity: 4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SETNX", arity: 3, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SETRANGE", arity: 4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SINTER", arity: -2, flags: &["readonly", "sort_for_script"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "SINTERCARD", arity: -3, flags: &["readonly"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "SINTERSTORE", arity: -3, flags: &["write", "denyoom"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "SISMEMBER", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SLOWLOG", arity: -2, flags: &["admin", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "SMEMBERS", arity: 2, flags: &["readonly", "sort_for_script"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SMISMEMBER", arity: -3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SMOVE", arity: 4, flags: &["write", "fast"], first_key: 1, last_key: 2, step: 1 },
+    CommandEntry { name: "SORT", arity: -2, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SPOP", arity: -2, flags: &["write", "random", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SRANDMEMBER", arity: -2, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SREM", arity: -3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SSCAN", arity: -3, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "STRLEN", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "SUBSCRIBE", arity: -2, flags: &["pubsub", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "SUNION", arity: -2, flags: &["readonly", "sort_for_script"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "SUNIONSTORE", arity: -3, flags: &["write", "denyoom"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "TIME", arity: 1, flags: &["random", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "TOUCH", arity: -2, flags: &["readonly", "fast"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "TTL", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "TYPE", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "UNLINK", arity: -2, flags: &["write", "fast"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "UNSUBSCRIBE", arity: -1, flags: &["pubsub", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "UNWATCH", arity: 1, flags: &["noscript", "loading", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "WAIT", arity: 3, flags: &["noscript"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "WATCH", arity: -2, flags: &["noscript", "loading", "fast"], first_key: 1, last_key: -1, step: 1 },
+    CommandEntry { name: "ZADD", arity: -4, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZCARD", arity: 2, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZCOUNT", arity: 4, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZDIFF", arity: -3, flags: &["readonly", "sort_for_script"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "ZDIFFSTORE", arity: -4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZINCRBY", arity: 4, flags: &["write", "denyoom", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZINTER", arity: -3, flags: &["readonly", "sort_for_script"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "ZINTERSTORE", arity: -4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZLEXCOUNT", arity: 4, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZMPOP", arity: -4, flags: &["write", "fast"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "ZPOPMAX", arity: -2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZPOPMIN", arity: -2, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZRANDMEMBER", arity: -2, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZRANGE", arity: -4, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZRANGEBYSCORE", arity: -4, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZRANK", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZREM", arity: -3, flags: &["write", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZREVRANGE", arity: -4, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZREVRANGEBYSCORE", arity: -4, flags: &["readonly"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZREVRANK", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZSCAN", arity: -3, flags: &["readonly", "random"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZSCORE", arity: 3, flags: &["readonly", "fast"], first_key: 1, last_key: 1, step: 1 },
+    CommandEntry { name: "ZUNION", arity: -3, flags: &["readonly", "sort_for_script"], first_key: 0, last_key: 0, step: 0 },
+    CommandEntry { name: "ZUNIONSTORE", arity: -4, flags: &["write", "denyoom"], first_key: 1, last_key: 1, step: 1 },
+];
 
 /// Implements the WAIT command: blocks until `needed` replicas have
 /// acknowledged all writes at or before the current primary offset,

@@ -234,6 +234,10 @@ pub enum ShardRequest {
     Ttl {
         key: String,
     },
+    /// MEMORY USAGE. Returns the estimated memory footprint of a key in bytes.
+    MemoryUsage {
+        key: String,
+    },
     Persist {
         key: String,
     },
@@ -445,6 +449,12 @@ pub enum ShardRequest {
         field: String,
         delta: i64,
     },
+    /// HINCRBYFLOAT key field increment — increments a hash field by a float.
+    HIncrByFloat {
+        key: String,
+        field: String,
+        delta: f64,
+    },
     HKeys {
         key: String,
     },
@@ -568,6 +578,21 @@ pub enum ShardRequest {
     },
     /// ZUNION: returns the union of all sorted sets, scores summed.
     ZUnion {
+        keys: Vec<String>,
+    },
+    /// ZDIFFSTORE destkey numkeys key [key ...] — stores diff result in dest.
+    ZDiffStore {
+        dest: String,
+        keys: Vec<String>,
+    },
+    /// ZINTERSTORE destkey numkeys key [key ...] — stores intersection in dest.
+    ZInterStore {
+        dest: String,
+        keys: Vec<String>,
+    },
+    /// ZUNIONSTORE destkey numkeys key [key ...] — stores union in dest.
+    ZUnionStore {
+        dest: String,
         keys: Vec<String>,
     },
     /// ZRANDMEMBER — returns random member(s) from a sorted set; read-only, no AOF.
@@ -802,6 +827,7 @@ impl ShardRequest {
             | ShardRequest::HSet { .. }
             | ShardRequest::HDel { .. }
             | ShardRequest::HIncrBy { .. }
+            | ShardRequest::HIncrByFloat { .. }
             | ShardRequest::SAdd { .. }
             | ShardRequest::SRem { .. }
             | ShardRequest::SPop { .. }
@@ -809,6 +835,9 @@ impl ShardRequest {
             | ShardRequest::SInterStore { .. }
             | ShardRequest::SDiffStore { .. }
             | ShardRequest::SMove { .. }
+            | ShardRequest::ZDiffStore { .. }
+            | ShardRequest::ZInterStore { .. }
+            | ShardRequest::ZUnionStore { .. }
             | ShardRequest::LMove { .. }
             | ShardRequest::GetDel { .. }
             | ShardRequest::GetEx { .. }
@@ -901,6 +930,12 @@ pub enum ShardResponse {
     BoolArray(Vec<bool>),
     /// SUNIONSTORE/SINTERSTORE/SDIFFSTORE result: count + stored members for AOF.
     SetStoreResult { count: usize, members: Vec<String> },
+    /// ZUNIONSTORE/ZINTERSTORE/ZDIFFSTORE result: count + scored members for AOF.
+    ZStoreResult {
+        count: usize,
+        /// (score, member) pairs stored in dest.
+        members: Vec<(f64, String)>,
+    },
     /// Serialized key dump with remaining TTL (for MIGRATE/DUMP).
     KeyDump { data: Vec<u8>, ttl_ms: i64 },
     /// In-memory snapshot of the full shard state (for replication).
@@ -1773,6 +1808,9 @@ fn dispatch(
             ShardResponse::Bool(ks.expireat(key, *timestamp))
         }
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
+        ShardRequest::MemoryUsage { key } => {
+            ShardResponse::Integer(ks.memory_usage(key).map(|n| n as i64).unwrap_or(-1))
+        }
         ShardRequest::Persist { key } => ShardResponse::Bool(ks.persist(key)),
         ShardRequest::Pttl { key } => ShardResponse::Ttl(ks.pttl(key)),
         ShardRequest::Pexpire { key, milliseconds } => {
@@ -2021,6 +2059,12 @@ fn dispatch(
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::HIncrBy { key, field, delta } => incr_result(ks.hincrby(key, field, *delta)),
+        ShardRequest::HIncrByFloat { key, field, delta } => match ks.hincrbyfloat(key, field, *delta) {
+            Ok(val) => ShardResponse::BulkString(val),
+            Err(IncrFloatError::WrongType) => ShardResponse::WrongType,
+            Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
+        },
         ShardRequest::HKeys { key } => match ks.hkeys(key) {
             Ok(keys) => ShardResponse::StringArray(keys),
             Err(_) => ShardResponse::WrongType,
@@ -2144,6 +2188,18 @@ fn dispatch(
         },
         ShardRequest::ZUnion { keys } => match ks.zunion(keys) {
             Ok(pairs) => ShardResponse::ScoredArray(pairs),
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZDiffStore { dest, keys } => match ks.zdiffstore(dest, keys) {
+            Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZInterStore { dest, keys } => match ks.zinterstore(dest, keys) {
+            Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
+            Err(_) => ShardResponse::WrongType,
+        },
+        ShardRequest::ZUnionStore { dest, keys } => match ks.zunionstore(dest, keys) {
+            Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::ZRandMember {
