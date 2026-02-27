@@ -28,14 +28,20 @@ fn set_expire_to_duration(expire: SetExpire) -> Duration {
         SetExpire::ExAt(ts) => {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
+                .unwrap_or_else(|_| {
+                    tracing::warn!("system clock is before UNIX epoch; EXAT TTL calculations may be incorrect");
+                    Duration::ZERO
+                })
                 .as_secs();
             Duration::from_secs(ts.saturating_sub(now))
         }
         SetExpire::PxAt(ts_ms) => {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
+                .unwrap_or_else(|_| {
+                    tracing::warn!("system clock is before UNIX epoch; PXAT TTL calculations may be incorrect");
+                    Duration::ZERO
+                })
                 .as_millis() as u64;
             Duration::from_millis(ts_ms.saturating_sub(now_ms))
         }
@@ -2101,7 +2107,9 @@ pub(super) async fn execute(
 
             // Start with the smallest set to minimise comparisons.
             sets.sort_unstable_by_key(|s| s.len());
-            let (first, rest) = sets.split_first().expect("non-empty");
+            let Some((first, rest)) = sets.split_first() else {
+                return Frame::Integer(0);
+            };
             let mut count = 0usize;
             'outer: for member in first {
                 for other in rest {
