@@ -145,7 +145,7 @@ impl Migration {
             if total == 0 {
                 100
             } else {
-                (self.keys_migrated.saturating_mul(100) / total).min(100) as u8
+                ((self.keys_migrated as f64 / total as f64) * 100.0).min(100.0) as u8
             }
         })
     }
