@@ -365,12 +365,12 @@ fn scan_page(frame: Frame) -> Result<ScanPage, ClientError> {
 
     let mut iter = elems.into_iter();
     // Safety: length was validated to be exactly 2 above.
-    let cursor_frame = iter.next().ok_or_else(|| {
-        ClientError::Protocol("SCAN response missing cursor element".into())
-    })?;
-    let keys_frame = iter.next().ok_or_else(|| {
-        ClientError::Protocol("SCAN response missing keys element".into())
-    })?;
+    let cursor_frame = iter
+        .next()
+        .ok_or_else(|| ClientError::Protocol("SCAN response missing cursor element".into()))?;
+    let keys_frame = iter
+        .next()
+        .ok_or_else(|| ClientError::Protocol("SCAN response missing keys element".into()))?;
 
     let cursor = match cursor_frame {
         Frame::Bulk(b) => {
