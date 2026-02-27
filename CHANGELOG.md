@@ -94,7 +94,7 @@ this is the "make it real" milestone. ember went from a single-node cache to a c
 - bincode for raft rpcs — smaller wire format than json
 - o(log n) sorted set rank via vec-based structure
 - incremental memory tracking — `grow_by` / `shrink_by` instead of full recompute
-- concurrent pipeline dispatch for multi-core throughput
+- parallel pipeline dispatch for multi-core throughput
 - `now_ms()` caching to avoid repeated syscalls in expiry checks
 
 ### fixes
@@ -139,7 +139,6 @@ with the foundation solid, this milestone filled in everything that makes ember 
 - `--shards` flag to tune the number of keyspace partitions
 - jemalloc as the global allocator
 - pipeline dispatch optimization — batched command processing
-- concurrent keyspace mode with dashmap for read-heavy workloads
 - memory overhead reduction — keyspace entry footprint profiled and trimmed
 - memtier benchmark integration
 - bench-all.sh for running all benchmark suites in one pass

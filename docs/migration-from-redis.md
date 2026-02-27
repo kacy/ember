@@ -15,7 +15,7 @@ Ember speaks RESP3, so the first thing to know is that your existing Redis clien
 
 ## command compatibility
 
-Ember implements over 135 Redis commands. The tables below show what's supported, what's missing, and any behavioral differences worth knowing about.
+Ember implements over 150 Redis commands. The tables below show what's supported, what's missing, and any behavioral differences worth knowing about.
 
 Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 
@@ -40,10 +40,10 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | SETEX | ✓ | legacy alias; prefer `SET key value EX seconds` |
 | PSETEX | ✓ | legacy alias; prefer `SET key value PX millis` |
 | SUBSTR | ✓ | alias for GETRANGE |
-| GETSET | ✗ | use `SET key value GET` instead |
-| GETDEL | ✗ | not implemented |
-| GETEX | ✗ | not implemented |
-| MSETNX | ✗ | not implemented |
+| GETSET | ✓ | atomic get-and-set; deprecated in Redis 6.2 |
+| GETDEL | ✓ | |
+| GETEX | ✓ | |
+| MSETNX | ✓ | |
 
 ### lists
 
@@ -65,8 +65,8 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | BRPOP | ✓ | multi-key with timeout |
 | LPUSHX | ✗ | not implemented |
 | RPUSHX | ✗ | not implemented |
-| LMOVE | ✗ | not implemented |
-| LMPOP | ✗ | not implemented |
+| LMOVE | ✓ | |
+| LMPOP | ✓ | |
 | BLMOVE | ✗ | not implemented |
 
 ### sets
@@ -88,8 +88,8 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | SRANDMEMBER | ✓ | optional count |
 | SPOP | ✓ | optional count |
 | SSCAN | ✓ | |
-| SMOVE | ✗ | not implemented |
-| SINTERCARD | ✗ | not implemented |
+| SMOVE | ✓ | cross-shard moves are sequential (not atomic) |
+| SINTERCARD | ✓ | optional LIMIT cap |
 
 ### sorted sets
 
@@ -115,14 +115,14 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | ZLEXCOUNT | ✗ | not implemented |
 | BZPOPMIN | ✗ | not implemented |
 | BZPOPMAX | ✗ | not implemented |
-| ZRANDMEMBER | ✗ | not implemented |
+| ZRANDMEMBER | ✓ | optional count with WITHSCORES |
 | ZUNIONSTORE | ✗ | not implemented |
 | ZINTERSTORE | ✗ | not implemented |
 | ZDIFFSTORE | ✗ | not implemented |
-| ZUNION | ✗ | not implemented |
-| ZINTER | ✗ | not implemented |
-| ZDIFF | ✗ | not implemented |
-| ZMPOP | ✗ | not implemented |
+| ZUNION | ✓ | |
+| ZINTER | ✓ | |
+| ZDIFF | ✓ | |
+| ZMPOP | ✓ | |
 | ZMSCORE | ✗ | not implemented |
 
 ### hashes
@@ -142,7 +142,7 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | HSCAN | ✓ | |
 | HMSET | ✗ | use HSET with multiple fields instead |
 | HINCRBYFLOAT | ✗ | not implemented |
-| HRANDFIELD | ✗ | not implemented |
+| HRANDFIELD | ✓ | optional count with WITHVALUES |
 
 ### keys
 
@@ -171,11 +171,11 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | SWAPDB | ✗ | single database only |
 | DUMP | ✗ | not implemented |
 | RESTORE | ~ | supported for cluster MIGRATE only |
-| WAIT | ✗ | not implemented |
-| EXPIREAT | ✗ | not implemented |
-| PEXPIREAT | ✗ | not implemented |
-| EXPIRETIME | ✗ | not implemented |
-| PEXPIRETIME | ✗ | not implemented |
+| WAIT | ✓ | waits for replica acknowledgements |
+| EXPIREAT | ✓ | |
+| PEXPIREAT | ✓ | |
+| EXPIRETIME | ✓ | |
+| PEXPIRETIME | ✓ | |
 
 ### server
 
@@ -191,7 +191,7 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | FLUSHDB | ✓ | ASYNC mode supported |
 | CONFIG GET | ✓ | glob pattern matching |
 | CONFIG SET | ✓ | mutable: slowlog-log-slower-than, slowlog-max-len |
-| CONFIG REWRITE | ✗ | not implemented |
+| CONFIG REWRITE | ✓ | flushes runtime config back to file |
 | CONFIG RESETSTAT | ✗ | not implemented |
 | SLOWLOG GET | ✓ | optional count argument |
 | SLOWLOG LEN | ✓ | |
@@ -307,7 +307,7 @@ A few Redis command families are explicitly out of scope:
 
 - **lua scripting** — EVAL, EVALSHA, EVALRO, SCRIPT LOAD/EXISTS/FLUSH, FCALL, and the FUNCTION family. Lua scripting is an anti-goal. WASM-based extensions may come in a future release.
 - **streams** — XADD, XREAD, XRANGE, and the full Streams family. Ember focuses on caching workloads; use a dedicated stream store for this.
-- **bit operations** — BITCOUNT, SETBIT, GETBIT, BITOP, BITPOS, BITFIELD. Not implemented yet, may be added later.
+- **BITFIELD / BITFIELD_RO** — not planned; use application-level serialization if needed.
 - **geo** — GEOADD, GEOPOS, GEODIST, GEORADIUS, GEOSEARCH, GEOHASH, and variants. Not implemented.
 - **hyperloglog** — PFADD, PFCOUNT, PFMERGE. Not implemented.
 
@@ -463,7 +463,6 @@ before anything else, check which commands your application uses. the compatibil
 
 common substitutions:
 
-- `GETSET key value` → `SET key value GET`
 - `SETNX key value` → `SET key value NX`
 - `SETEX key seconds value` → `SET key value EX seconds`
 - `HMSET key field value ...` → `HSET key field value ...`
