@@ -1407,4 +1407,236 @@ export class EmberClient {
   async slowLogReset(): Promise<void> {
     await this.call('slowLogReset', {});
   }
+
+  // ---------------------------------------------------------------------------
+  // expiry (extended)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the absolute unix expiry timestamp in seconds.
+   * Returns -1 if no expiry, -2 if the key does not exist.
+   */
+  async expiretime(key: string): Promise<number> {
+    const res = await this.call<{ value: number }>('expiretime', { key });
+    return res.value;
+  }
+
+  /**
+   * Returns the absolute unix expiry timestamp in milliseconds.
+   * Returns -1 if no expiry, -2 if the key does not exist.
+   */
+  async pexpiretime(key: string): Promise<number> {
+    const res = await this.call<{ value: number }>('pexpiretime', { key });
+    return res.value;
+  }
+
+  /**
+   * Sets the expiry to an absolute unix timestamp (seconds).
+   * Returns `true` if the timeout was set.
+   */
+  async expireat(key: string, timestamp: number): Promise<boolean> {
+    const res = await this.call<{ value: boolean }>('expireat', { key, timestamp });
+    return res.value;
+  }
+
+  /**
+   * Sets the expiry to an absolute unix timestamp (milliseconds).
+   * Returns `true` if the timeout was set.
+   */
+  async pexpireat(key: string, timestampMs: number): Promise<boolean> {
+    const res = await this.call<{ value: boolean }>('pexpireat', { key, timestampMs });
+    return res.value;
+  }
+
+  // ---------------------------------------------------------------------------
+  // strings (extended)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Atomically sets `key` to `value` and returns the old value.
+   * Returns `null` if the key did not exist.
+   */
+  async getset(key: string, value: Buffer | string): Promise<Buffer | null> {
+    const res = await this.call<{ value?: Buffer }>('getset', {
+      key,
+      value: Buffer.isBuffer(value) ? value : Buffer.from(value),
+    });
+    return res.value ?? null;
+  }
+
+  /**
+   * Sets multiple keys only if none of them exist.
+   * Returns `true` if all keys were set, `false` if any existed.
+   */
+  async msetnx(pairs: Array<{ key: string; value: Buffer | string }>): Promise<boolean> {
+    const res = await this.call<{ value: boolean }>('msetnx', {
+      pairs: pairs.map(p => ({
+        key: p.key,
+        value: Buffer.isBuffer(p.value) ? p.value : Buffer.from(p.value),
+      })),
+    });
+    return res.value;
+  }
+
+  // ---------------------------------------------------------------------------
+  // bitmaps
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the bit at `offset` in the string stored at `key`.
+   */
+  async getbit(key: string, offset: number): Promise<number> {
+    const res = await this.call<{ value: number }>('getbit', { key, offset });
+    return res.value;
+  }
+
+  /**
+   * Sets or clears the bit at `offset`. Returns the original bit value.
+   */
+  async setbit(key: string, offset: number, value: 0 | 1): Promise<number> {
+    const res = await this.call<{ value: number }>('setbit', { key, offset, value });
+    return res.value;
+  }
+
+  /**
+   * Counts the number of set bits in the string at `key`.
+   * Pass `range` as `{ start, end, unit }` to count within a range.
+   */
+  async bitcount(key: string, range?: { start: number; end: number; unit?: 'BYTE' | 'BIT' }): Promise<number> {
+    const req: Record<string, unknown> = { key };
+    if (range) {
+      req.hasRange = true;
+      req.start = range.start;
+      req.end = range.end;
+      req.unit = range.unit ?? 'BYTE';
+    }
+    const res = await this.call<{ value: number }>('bitcount', req);
+    return res.value;
+  }
+
+  /**
+   * Finds the first set (`bit=1`) or clear (`bit=0`) bit in the string at `key`.
+   */
+  async bitpos(key: string, bit: 0 | 1, range?: { start: number; end: number; unit?: 'BYTE' | 'BIT' }): Promise<number> {
+    const req: Record<string, unknown> = { key, bit };
+    if (range) {
+      req.hasRange = true;
+      req.start = range.start;
+      req.end = range.end;
+      req.unit = range.unit ?? 'BYTE';
+    }
+    const res = await this.call<{ value: number }>('bitpos', req);
+    return res.value;
+  }
+
+  /**
+   * Performs a bitwise operation between strings.
+   * `op` is `"AND"`, `"OR"`, `"XOR"`, or `"NOT"`.
+   * Result is stored at `dest`. Returns the length of the resulting string.
+   */
+  async bitop(op: 'AND' | 'OR' | 'XOR' | 'NOT', dest: string, keys: string[]): Promise<number> {
+    const res = await this.call<{ value: number }>('bitop', { op, dest, keys });
+    return res.value;
+  }
+
+  // ---------------------------------------------------------------------------
+  // sets (extended)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Atomically moves `member` from `source` to `destination`.
+   * Returns `true` if the move succeeded.
+   */
+  async smove(source: string, destination: string, member: string): Promise<boolean> {
+    const res = await this.call<{ value: boolean }>('smove', { source, destination, member });
+    return res.value;
+  }
+
+  /**
+   * Returns the cardinality of the intersection of `keys`.
+   * `limit=0` means no limit.
+   */
+  async sintercard(keys: string[], limit = 0): Promise<number> {
+    const res = await this.call<{ value: number }>('sintercard', { keys, limit });
+    return res.value;
+  }
+
+  // ---------------------------------------------------------------------------
+  // lists (extended)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Pops up to `count` elements from the first non-empty list in `keys`.
+   * `left=true` pops from the head, `left=false` from the tail.
+   * Returns `null` if all lists are empty.
+   */
+  async lmpop(
+    keys: string[],
+    left: boolean,
+    count = 1,
+  ): Promise<{ key: string; elements: Buffer[] } | null> {
+    const res = await this.call<{ found: boolean; key: string; elements: Buffer[] }>('lmpop', {
+      keys,
+      left,
+      count,
+    });
+    if (!res.found) return null;
+    return { key: res.key, elements: res.elements };
+  }
+
+  // ---------------------------------------------------------------------------
+  // hash (extended)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns random field(s) from the hash at `key`.
+   * `count=undefined` returns a single field.
+   * `withValues=true` returns interleaved field-value pairs.
+   */
+  async hrandfield(key: string, count?: number, withValues = false): Promise<Buffer[]> {
+    const req: Record<string, unknown> = { key, withValues };
+    if (count != null) {
+      req.hasCount = true;
+      req.count = count;
+    }
+    const res = await this.call<{ values: Buffer[] }>('hrandfield', req);
+    return res.values ?? [];
+  }
+
+  // ---------------------------------------------------------------------------
+  // sorted sets (extended)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Pops up to `count` elements from the first non-empty sorted set in `keys`.
+   * `min=true` pops minimum-score members. Returns `null` if all sorted sets are empty.
+   */
+  async zmpop(
+    keys: string[],
+    min: boolean,
+    count = 1,
+  ): Promise<{ key: string; members: Array<{ member: string; score: number }> } | null> {
+    const res = await this.call<{
+      found: boolean;
+      key: string;
+      members: Array<{ member: string; score: number }>;
+    }>('zmpop', { keys, min, count });
+    if (!res.found) return null;
+    return { key: res.key, members: res.members };
+  }
+
+  /**
+   * Returns random member(s) from the sorted set at `key`.
+   * `count=undefined` returns a single member.
+   * `withScores=true` returns interleaved member-score pairs.
+   */
+  async zrandmember(key: string, count?: number, withScores = false): Promise<Buffer[]> {
+    const req: Record<string, unknown> = { key, withScores };
+    if (count != null) {
+      req.hasCount = true;
+      req.count = count;
+    }
+    const res = await this.call<{ values: Buffer[] }>('zrandmember', req);
+    return res.values ?? [];
+  }
 }

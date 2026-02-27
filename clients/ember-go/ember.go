@@ -632,3 +632,235 @@ func (c *Client) PubSubNumSub(ctx context.Context, channels ...string) (map[stri
 	}
 	return result, nil
 }
+
+// Expiretime returns the absolute unix expiry timestamp in seconds (-1 = no expiry, -2 = missing).
+func (c *Client) Expiretime(ctx context.Context, key string) (int64, error) {
+	resp, err := c.rpc.Expiretime(c.ctx(ctx), &pb.ExpiretimeRequest{Key: key})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Pexpiretime returns the absolute unix expiry timestamp in milliseconds (-1 = no expiry, -2 = missing).
+func (c *Client) Pexpiretime(ctx context.Context, key string) (int64, error) {
+	resp, err := c.rpc.Pexpiretime(c.ctx(ctx), &pb.PexpiretimeRequest{Key: key})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Expireat sets the expiry at an absolute unix timestamp (seconds). Returns true if set.
+func (c *Client) Expireat(ctx context.Context, key string, timestamp uint64) (bool, error) {
+	resp, err := c.rpc.Expireat(c.ctx(ctx), &pb.ExpireatRequest{Key: key, Timestamp: timestamp})
+	if err != nil {
+		return false, err
+	}
+	return resp.Value, nil
+}
+
+// Pexpireat sets the expiry at an absolute unix timestamp (milliseconds). Returns true if set.
+func (c *Client) Pexpireat(ctx context.Context, key string, timestampMs uint64) (bool, error) {
+	resp, err := c.rpc.Pexpireat(c.ctx(ctx), &pb.PexpireatRequest{Key: key, TimestampMs: timestampMs})
+	if err != nil {
+		return false, err
+	}
+	return resp.Value, nil
+}
+
+// Getset sets key to value and returns the old value. Returns nil if the key didn't exist.
+func (c *Client) Getset(ctx context.Context, key string, value []byte) ([]byte, error) {
+	resp, err := c.rpc.Getset(c.ctx(ctx), &pb.GetsetRequest{Key: key, Value: value})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Value, nil
+}
+
+// Msetnx sets multiple key-value pairs only if none exist. Returns true if all were set.
+func (c *Client) Msetnx(ctx context.Context, pairs map[string][]byte) (bool, error) {
+	kvs := make([]*pb.KeyValue, 0, len(pairs))
+	for k, v := range pairs {
+		kvs = append(kvs, &pb.KeyValue{Key: k, Value: v})
+	}
+	resp, err := c.rpc.Msetnx(c.ctx(ctx), &pb.MsetnxRequest{Pairs: kvs})
+	if err != nil {
+		return false, err
+	}
+	return resp.Value, nil
+}
+
+// Getbit returns the bit at offset in the string stored at key.
+func (c *Client) Getbit(ctx context.Context, key string, offset uint64) (int64, error) {
+	resp, err := c.rpc.Getbit(c.ctx(ctx), &pb.GetbitRequest{Key: key, Offset: offset})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Setbit sets or clears the bit at offset. Returns the original bit value.
+func (c *Client) Setbit(ctx context.Context, key string, offset uint64, value uint32) (int64, error) {
+	resp, err := c.rpc.Setbit(c.ctx(ctx), &pb.SetbitRequest{Key: key, Offset: offset, Value: value})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Bitcount counts set bits in the string at key. Pass nil range for the whole string.
+func (c *Client) Bitcount(ctx context.Context, key string, start, end int64, unit string, hasRange bool) (int64, error) {
+	resp, err := c.rpc.Bitcount(c.ctx(ctx), &pb.BitcountRequest{
+		Key:      key,
+		HasRange: hasRange,
+		Start:    start,
+		End:      end,
+		Unit:     unit,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Bitpos finds the first set or clear bit in the string at key.
+func (c *Client) Bitpos(ctx context.Context, key string, bit uint32, start, end int64, unit string, hasRange bool) (int64, error) {
+	resp, err := c.rpc.Bitpos(c.ctx(ctx), &pb.BitposRequest{
+		Key:      key,
+		Bit:      bit,
+		HasRange: hasRange,
+		Start:    start,
+		End:      end,
+		Unit:     unit,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Bitop performs a bitwise operation between strings. op is "AND", "OR", "XOR", or "NOT".
+func (c *Client) Bitop(ctx context.Context, op, dest string, keys []string) (int64, error) {
+	resp, err := c.rpc.Bitop(c.ctx(ctx), &pb.BitopRequest{Op: op, Dest: dest, Keys: keys})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// Smove atomically moves member from source to destination. Returns true if moved.
+func (c *Client) Smove(ctx context.Context, source, destination, member string) (bool, error) {
+	resp, err := c.rpc.Smove(c.ctx(ctx), &pb.SmoveRequest{
+		Source:      source,
+		Destination: destination,
+		Member:      member,
+	})
+	if err != nil {
+		return false, err
+	}
+	return resp.Value, nil
+}
+
+// Sintercard returns the cardinality of the set intersection. limit=0 means no limit.
+func (c *Client) Sintercard(ctx context.Context, limit uint64, keys ...string) (int64, error) {
+	resp, err := c.rpc.Sintercard(c.ctx(ctx), &pb.SintercardRequest{Keys: keys, Limit: limit})
+	if err != nil {
+		return 0, err
+	}
+	return resp.Value, nil
+}
+
+// LmpopResult is the result of an LMPOP command.
+type LmpopResult struct {
+	Key      string
+	Elements [][]byte
+}
+
+// Lmpop pops elements from the first non-empty list. left=true for LEFT, false for RIGHT.
+// Returns nil if all lists are empty.
+func (c *Client) Lmpop(ctx context.Context, left bool, count uint32, keys ...string) (*LmpopResult, error) {
+	resp, err := c.rpc.Lmpop(c.ctx(ctx), &pb.LmpopRequest{
+		Keys:  keys,
+		Left:  left,
+		Count: count,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, nil
+	}
+	return &LmpopResult{Key: resp.Key, Elements: resp.Elements}, nil
+}
+
+// ZmpopResult is the result of a ZMPOP command.
+type ZmpopResult struct {
+	Key     string
+	Members []ScoreMemberResult
+}
+
+// ScoreMemberResult is a member-score pair from ZMPOP.
+type ScoreMemberResult struct {
+	Member string
+	Score  float64
+}
+
+// Zmpop pops elements from the first non-empty sorted set. min=true for MIN, false for MAX.
+// Returns nil if all sorted sets are empty.
+func (c *Client) Zmpop(ctx context.Context, min bool, count uint32, keys ...string) (*ZmpopResult, error) {
+	resp, err := c.rpc.Zmpop(c.ctx(ctx), &pb.ZmpopRequest{
+		Keys:  keys,
+		Min:   min,
+		Count: count,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Found {
+		return nil, nil
+	}
+	members := make([]ScoreMemberResult, len(resp.Members))
+	for i, m := range resp.Members {
+		members[i] = ScoreMemberResult{Member: m.Member, Score: m.Score}
+	}
+	return &ZmpopResult{Key: resp.Key, Members: members}, nil
+}
+
+// Hrandfield returns random fields from the hash at key.
+// count=nil returns a single field; positive = distinct fields, negative = allow repeats.
+func (c *Client) Hrandfield(ctx context.Context, key string, count *int32, withValues bool) ([][]byte, error) {
+	req := &pb.HrandfieldRequest{Key: key, WithValues: withValues}
+	if count != nil {
+		req.HasCount = true
+		req.Count = *count
+	}
+	resp, err := c.rpc.Hrandfield(c.ctx(ctx), req)
+	if err != nil {
+		return nil, err
+	}
+	result := make([][]byte, len(resp.Values))
+	for i, v := range resp.Values {
+		result[i] = v
+	}
+	return result, nil
+}
+
+// Zrandmember returns random members from the sorted set at key.
+// count=nil returns a single member; positive = distinct members, negative = allow repeats.
+func (c *Client) Zrandmember(ctx context.Context, key string, count *int32, withScores bool) ([][]byte, error) {
+	req := &pb.ZrandmemberRequest{Key: key, WithScores: withScores}
+	if count != nil {
+		req.HasCount = true
+		req.Count = *count
+	}
+	resp, err := c.rpc.Zrandmember(c.ctx(ctx), req)
+	if err != nil {
+		return nil, err
+	}
+	result := make([][]byte, len(resp.Values))
+	for i, v := range resp.Values {
+		result[i] = v
+	}
+	return result, nil
+}
