@@ -1628,29 +1628,29 @@ impl ClusterCoordinator {
                             if id == coordinator.local_id {
                                 false
                             } else {
-                            debug!(
-                                "cluster: node {} slots changed ({} ranges)",
-                                id,
-                                slots.len()
-                            );
-                            // clear old slot assignments for this node
-                            let old_ranges = state.slot_map.slots_for_node(id);
-                            for range in &old_ranges {
-                                for slot in range.iter() {
-                                    state.slot_map.unassign(slot);
+                                debug!(
+                                    "cluster: node {} slots changed ({} ranges)",
+                                    id,
+                                    slots.len()
+                                );
+                                // clear old slot assignments for this node
+                                let old_ranges = state.slot_map.slots_for_node(id);
+                                for range in &old_ranges {
+                                    for slot in range.iter() {
+                                        state.slot_map.unassign(slot);
+                                    }
                                 }
-                            }
-                            // apply new slot assignments
-                            for range in &slots {
-                                for slot in range.iter() {
-                                    state.slot_map.assign(slot, id);
+                                // apply new slot assignments
+                                for range in &slots {
+                                    for slot in range.iter() {
+                                        state.slot_map.assign(slot, id);
+                                    }
                                 }
-                            }
-                            if let Some(node) = state.nodes.get_mut(&id) {
-                                node.slots = slots;
-                            }
-                            state.update_health();
-                            true
+                                if let Some(node) = state.nodes.get_mut(&id) {
+                                    node.slots = slots;
+                                }
+                                state.update_health();
+                                true
                             }
                         }
                         GossipEvent::RoleChanged(id, is_primary, replicates) => {
