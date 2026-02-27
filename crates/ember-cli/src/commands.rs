@@ -86,6 +86,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get a substring of the string stored at a key",
     },
     CommandInfo {
+        name: "GETSET",
+        args: "key value",
+        group: "string",
+        summary: "set a key's value and return its old value",
+    },
+    CommandInfo {
         name: "INCR",
         args: "key",
         group: "string",
@@ -114,6 +120,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key value [key value ...]",
         group: "string",
         summary: "set multiple keys to multiple values",
+    },
+    CommandInfo {
+        name: "MSETNX",
+        args: "key value [key value ...]",
+        group: "string",
+        summary: "set multiple keys only if none of them exist",
     },
     CommandInfo {
         name: "PSETEX",
@@ -157,6 +169,37 @@ pub static COMMANDS: &[CommandInfo] = &[
         group: "string",
         summary: "get a substring of the string stored at a key (alias for GETRANGE)",
     },
+    // --- bitmap ---
+    CommandInfo {
+        name: "BITCOUNT",
+        args: "key [start end [BYTE|BIT]]",
+        group: "bitmap",
+        summary: "count set bits in a string",
+    },
+    CommandInfo {
+        name: "BITOP",
+        args: "AND|OR|XOR|NOT destkey key [key ...]",
+        group: "bitmap",
+        summary: "perform bitwise operations between strings",
+    },
+    CommandInfo {
+        name: "BITPOS",
+        args: "key bit [start [end [BYTE|BIT]]]",
+        group: "bitmap",
+        summary: "find first set or clear bit in a string",
+    },
+    CommandInfo {
+        name: "GETBIT",
+        args: "key offset",
+        group: "bitmap",
+        summary: "return the bit value at offset in the string",
+    },
+    CommandInfo {
+        name: "SETBIT",
+        args: "key offset value",
+        group: "bitmap",
+        summary: "set or clear the bit at offset in the string",
+    },
     // --- generic ---
     CommandInfo {
         name: "COPY",
@@ -183,6 +226,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "set a key's time to live in seconds",
     },
     CommandInfo {
+        name: "EXPIREAT",
+        args: "key timestamp",
+        group: "generic",
+        summary: "set expiry at an absolute unix timestamp (seconds)",
+    },
+    CommandInfo {
+        name: "EXPIRETIME",
+        args: "key",
+        group: "generic",
+        summary: "get the absolute unix expiry timestamp of a key in seconds",
+    },
+    CommandInfo {
         name: "KEYS",
         args: "pattern",
         group: "generic",
@@ -205,6 +260,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key milliseconds",
         group: "generic",
         summary: "set a key's time to live in milliseconds",
+    },
+    CommandInfo {
+        name: "PEXPIREAT",
+        args: "key timestamp-ms",
+        group: "generic",
+        summary: "set expiry at an absolute unix timestamp (milliseconds)",
+    },
+    CommandInfo {
+        name: "PEXPIRETIME",
+        args: "key",
+        group: "generic",
+        summary: "get the absolute unix expiry timestamp of a key in milliseconds",
     },
     CommandInfo {
         name: "PTTL",
@@ -292,8 +359,14 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the length of a list",
     },
     CommandInfo {
+        name: "LMPOP",
+        args: "numkeys key [key ...] LEFT|RIGHT [COUNT n]",
+        group: "list",
+        summary: "pop elements from the first non-empty list",
+    },
+    CommandInfo {
         name: "LPOP",
-        args: "key",
+        args: "key [count]",
         group: "list",
         summary: "remove and return the first element of a list",
     },
@@ -335,7 +408,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     },
     CommandInfo {
         name: "RPOP",
-        args: "key",
+        args: "key [count]",
         group: "list",
         summary: "remove and return the last element of a list",
     },
@@ -395,6 +468,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the values of multiple hash fields",
     },
     CommandInfo {
+        name: "HRANDFIELD",
+        args: "key [count [WITHVALUES]]",
+        group: "hash",
+        summary: "get one or more random fields from a hash",
+    },
+    CommandInfo {
         name: "HSCAN",
         args: "key cursor [MATCH pattern] [COUNT count]",
         group: "hash",
@@ -426,6 +505,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the number of members in a set",
     },
     CommandInfo {
+        name: "SINTERCARD",
+        args: "numkeys key [key ...] [LIMIT count]",
+        group: "set",
+        summary: "intersect multiple sets and return the cardinality",
+    },
+    CommandInfo {
         name: "SISMEMBER",
         args: "key member",
         group: "set",
@@ -436,6 +521,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key",
         group: "set",
         summary: "get all members in a set",
+    },
+    CommandInfo {
+        name: "SMOVE",
+        args: "source destination member",
+        group: "set",
+        summary: "move a member from one set to another",
     },
     CommandInfo {
         name: "SREM",
@@ -461,6 +552,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key",
         group: "sorted_set",
         summary: "get the number of members in a sorted set",
+    },
+    CommandInfo {
+        name: "ZMPOP",
+        args: "numkeys key [key ...] MIN|MAX [COUNT n]",
+        group: "sorted_set",
+        summary: "pop elements from the first non-empty sorted set",
+    },
+    CommandInfo {
+        name: "ZRANDMEMBER",
+        args: "key [count [WITHSCORES]]",
+        group: "sorted_set",
+        summary: "get one or more random members from a sorted set",
     },
     CommandInfo {
         name: "ZRANGE",
