@@ -364,8 +364,13 @@ fn scan_page(frame: Frame) -> Result<ScanPage, ClientError> {
     }
 
     let mut iter = elems.into_iter();
-    let cursor_frame = iter.next().unwrap();
-    let keys_frame = iter.next().unwrap();
+    // Safety: length was validated to be exactly 2 above.
+    let cursor_frame = iter.next().ok_or_else(|| {
+        ClientError::Protocol("SCAN response missing cursor element".into())
+    })?;
+    let keys_frame = iter.next().ok_or_else(|| {
+        ClientError::Protocol("SCAN response missing keys element".into())
+    })?;
 
     let cursor = match cursor_frame {
         Frame::Bulk(b) => {
@@ -443,7 +448,9 @@ fn slowlog_entries(frame: Frame) -> Result<Vec<SlowlogEntry>, ClientError> {
                     )))
                 }
             };
-            let command = match entry.into_iter().nth(3).unwrap() {
+            let command = match entry.into_iter().nth(3).ok_or_else(|| {
+                ClientError::Protocol("slowlog entry missing command field".into())
+            })? {
                 Frame::Array(parts) => parts
                     .into_iter()
                     .map(|p| match p {
