@@ -60,13 +60,25 @@ spec:
               protocol: TCP
             {{- end }}
           livenessProbe:
+            {{- if .Values.ember.metricsPort }}
+            httpGet:
+              path: /health
+              port: metrics
+            {{- else }}
             tcpSocket:
               port: cache
+            {{- end }}
             initialDelaySeconds: 5
             periodSeconds: 10
           readinessProbe:
+            {{- if .Values.ember.metricsPort }}
+            httpGet:
+              path: /health
+              port: metrics
+            {{- else }}
             tcpSocket:
               port: cache
+            {{- end }}
             initialDelaySeconds: 2
             periodSeconds: 5
           volumeMounts:
@@ -78,4 +90,11 @@ spec:
           {{- end }}
       volumes:
         - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "ember.fullname" .) }}
+          {{- else }}
+          # WARNING: emptyDir data is ephemeral and will be lost on pod restart.
+          # enable persistence.enabled=true for production deployments.
           emptyDir: {}
+          {{- end }}

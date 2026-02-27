@@ -30,3 +30,20 @@ resources: {}
 serviceAccount:
   create: true
   name: ""
+
+# persistence configuration.
+#
+# by default ember uses emptyDir, which means all data is lost when the pod
+# restarts. for production deployments enable persistence to survive pod
+# restarts, rolling updates, and node rescheduling.
+#
+# to enable: set enabled=true and ensure ember.appendonly=true so data
+# is actually written to the volume.
+persistence:
+  enabled: false
+  # use an existing PVC instead of creating one
+  existingClaim: ""
+  size: 10Gi
+  accessMode: ReadWriteOnce
+  # leave storageClass empty to use the cluster default
+  storageClass: ""

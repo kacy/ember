@@ -37,6 +37,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "manage client connections",
     },
     CommandInfo {
+        name: "COMMAND",
+        args: "[COUNT | INFO name [name ...] | DOCS name [name ...]]",
+        group: "connection",
+        summary: "get an array of server command metadata",
+    },
+    CommandInfo {
         name: "ECHO",
         args: "message",
         group: "connection",
@@ -450,6 +456,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "increment the integer value of a hash field",
     },
     CommandInfo {
+        name: "HINCRBYFLOAT",
+        args: "key field increment",
+        group: "hash",
+        summary: "increment the float value of a hash field",
+    },
+    CommandInfo {
         name: "HKEYS",
         args: "key",
         group: "hash",
@@ -554,6 +566,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the number of members in a sorted set",
     },
     CommandInfo {
+        name: "ZDIFFSTORE",
+        args: "destkey numkeys key [key ...]",
+        group: "sorted_set",
+        summary: "subtract multiple sorted sets and store the result in a new key",
+    },
+    CommandInfo {
+        name: "ZINTERSTORE",
+        args: "destkey numkeys key [key ...]",
+        group: "sorted_set",
+        summary: "intersect multiple sorted sets and store the result in a new key",
+    },
+    CommandInfo {
         name: "ZMPOP",
         args: "numkeys key [key ...] MIN|MAX [COUNT n]",
         group: "sorted_set",
@@ -594,6 +618,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key member",
         group: "sorted_set",
         summary: "get the score of a member in a sorted set",
+    },
+    CommandInfo {
+        name: "ZUNIONSTORE",
+        args: "destkey numkeys key [key ...]",
+        group: "sorted_set",
+        summary: "add multiple sorted sets and store the result in a new key",
     },
     // --- server ---
     CommandInfo {

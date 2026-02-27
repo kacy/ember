@@ -212,6 +212,78 @@ impl Keyspace {
         Ok(new_val)
     }
 
+    /// Increments a field's float value by the given amount.
+    ///
+    /// If the field doesn't exist, it is created with the increment as its value.
+    /// The stored value must be a valid float or the call returns an error.
+    /// Returns the new value as a formatted string.
+    pub fn hincrbyfloat(&mut self, key: &str, field: &str, delta: f64) -> Result<String, IncrFloatError> {
+        self.remove_if_expired(key);
+
+        let is_new = match self.entries.get(key) {
+            None => true,
+            Some(e) if matches!(e.value, Value::Hash(_)) => false,
+            Some(_) => return Err(IncrFloatError::WrongType),
+        };
+
+        // generous float string length estimate
+        let val_str_len = 32usize;
+        let estimated_increase = if is_new {
+            memory::ENTRY_OVERHEAD
+                + key.len()
+                + memory::PACKED_HASH_BASE_OVERHEAD
+                + field.len()
+                + val_str_len
+                + memory::PACKED_HASH_ENTRY_OVERHEAD
+        } else {
+            field.len() + val_str_len + memory::PACKED_HASH_ENTRY_OVERHEAD
+        };
+
+        if !self.enforce_memory_limit(estimated_increase) {
+            return Err(IncrFloatError::OutOfMemory);
+        }
+
+        if is_new {
+            let value = Value::Hash(Box::default());
+            self.memory.add(key, &value);
+            let entry = Entry::new(value, None);
+            self.entries.insert(CompactString::from(key), entry);
+            self.bump_version(key);
+        }
+
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Err(IncrFloatError::WrongType);
+        };
+        let old_entry_size = entry.entry_size(key);
+
+        let Value::Hash(ref mut hash) = entry.value else {
+            return Err(IncrFloatError::WrongType);
+        };
+        let current = match hash.get(field) {
+            Some(data) => {
+                let s = std::str::from_utf8(data).map_err(|_| IncrFloatError::NotAFloat)?;
+                s.parse::<f64>().map_err(|_| IncrFloatError::NotAFloat)?
+            }
+            None => 0.0,
+        };
+        let new_val = current + delta;
+        if new_val.is_nan() || new_val.is_infinite() {
+            return Err(IncrFloatError::NanOrInfinity);
+        }
+
+        let formatted = format_float(new_val);
+        hash.insert(field.into(), Bytes::from(formatted.clone()));
+        entry.touch(self.track_access);
+
+        let new_value_size = memory::value_size(&entry.value);
+        entry.cached_value_size = new_value_size as u32;
+        let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
+        self.memory.adjust(old_entry_size, new_entry_size);
+        self.bump_version(key);
+
+        Ok(formatted)
+    }
+
     /// Returns all field names in a hash.
     pub fn hkeys(&mut self, key: &str) -> Result<Vec<String>, WrongType> {
         let Some(entry) = self.get_live_entry(key) else {

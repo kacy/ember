@@ -346,6 +346,18 @@ pub enum Command {
         with_scores: bool,
     },
 
+    /// ZDIFFSTORE `destkey` `numkeys` `key` \[key ...\].
+    /// Stores the diff of sorted sets in destkey. Returns the cardinality.
+    ZDiffStore { dest: String, keys: Vec<String> },
+
+    /// ZINTERSTORE `destkey` `numkeys` `key` \[key ...\].
+    /// Stores the intersection of sorted sets in destkey. Returns the cardinality.
+    ZInterStore { dest: String, keys: Vec<String> },
+
+    /// ZUNIONSTORE `destkey` `numkeys` `key` \[key ...\].
+    /// Stores the union of sorted sets in destkey. Returns the cardinality.
+    ZUnionStore { dest: String, keys: Vec<String> },
+
     /// TYPE `key`. Returns the type of the value stored at key.
     Type { key: String },
 
@@ -881,6 +893,27 @@ pub enum Command {
         alpha: bool,
         limit: Option<(i64, i64)>,
         store: Option<String>,
+    },
+
+    /// COMMAND \[COUNT | INFO name \[name ...\] | DOCS name \[name ...\]\]
+    ///
+    /// Returns metadata about supported commands. Used by client libraries
+    /// for capability discovery on connect.
+    Command {
+        /// Optional subcommand: COUNT, INFO, DOCS, LIST. None = list all commands.
+        subcommand: Option<String>,
+        /// Arguments to the subcommand (command names for INFO/DOCS).
+        args: Vec<String>,
+    },
+
+    /// HINCRBYFLOAT `key` `field` `increment`. Increments the float value of a hash field.
+    ///
+    /// If the field doesn't exist it is set to 0 before the operation.
+    /// Returns the new value as a bulk string.
+    HIncrByFloat {
+        key: String,
+        field: String,
+        delta: f64,
     },
 
     /// A command we don't recognize (yet).

@@ -253,6 +253,14 @@ pub(super) fn to_aof_records(
         (ShardRequest::HIncrBy { key, field, delta }, ShardResponse::Integer(_)) => {
             smallvec![AofRecord::HIncrBy { key, field, delta }]
         }
+        // HINCRBYFLOAT: record as HSET with the resulting float value to avoid
+        // float rounding drift during replay (same strategy as INCRBYFLOAT).
+        (ShardRequest::HIncrByFloat { key, field, .. }, ShardResponse::BulkString(val)) => {
+            smallvec![AofRecord::HSet {
+                key,
+                fields: vec![(field, Bytes::from(val.clone()))],
+            }]
+        }
         // Set commands
         (ShardRequest::SAdd { key, members }, ShardResponse::Len(count)) if *count > 0 => {
             smallvec![AofRecord::SAdd { key, members }]
@@ -298,6 +306,25 @@ pub(super) fn to_aof_records(
                 smallvec![
                     AofRecord::Del { key: dest.clone() },
                     AofRecord::SAdd {
+                        key: dest,
+                        members: members.clone(),
+                    },
+                ]
+            } else {
+                smallvec![AofRecord::Del { key: dest }]
+            }
+        }
+        // Z*STORE commands: persist as DEL dest + ZADD dest with the resulting members
+        (
+            ShardRequest::ZUnionStore { dest, .. }
+            | ShardRequest::ZInterStore { dest, .. }
+            | ShardRequest::ZDiffStore { dest, .. },
+            ShardResponse::ZStoreResult { count, members },
+        ) => {
+            if *count > 0 {
+                smallvec![
+                    AofRecord::Del { key: dest.clone() },
+                    AofRecord::ZAdd {
                         key: dest,
                         members: members.clone(),
                     },

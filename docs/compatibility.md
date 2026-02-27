@@ -116,7 +116,7 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | HMGET | ✓ | |
 | HSCAN | ✓ | |
 | HMSET | ✗ | deprecated; use HSET with multiple fields instead |
-| HINCRBYFLOAT | ✗ | not implemented |
+| HINCRBYFLOAT | ✓ | |
 | HRANDFIELD | ✓ | optional count with WITHVALUES |
 
 ---
@@ -170,9 +170,9 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | BZPOPMIN | ✗ | not implemented |
 | BZPOPMAX | ✗ | not implemented |
 | ZRANDMEMBER | ✓ | optional count with WITHSCORES |
-| ZUNIONSTORE | ✗ | not implemented |
-| ZINTERSTORE | ✗ | not implemented |
-| ZDIFFSTORE | ✗ | not implemented |
+| ZUNIONSTORE | ✓ | dest and source keys must hash to the same shard |
+| ZINTERSTORE | ✓ | dest and source keys must hash to the same shard |
+| ZDIFFSTORE | ✓ | dest and source keys must hash to the same shard |
 | ZUNION | ✓ | |
 | ZINTER | ✓ | |
 | ZDIFF | ✓ | |
@@ -247,10 +247,10 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | SHUTDOWN | ✗ | use SIGTERM instead |
 | DEBUG | ✗ | not implemented |
 | CONFIG RESETSTAT | ✗ | not implemented |
-| COMMAND | ✗ | not implemented |
-| COMMAND COUNT | ✗ | not implemented |
-| COMMAND INFO | ✗ | not implemented |
-| COMMAND DOCS | ✗ | not implemented |
+| COMMAND | ✓ | returns static metadata for all supported commands |
+| COMMAND COUNT | ✓ | |
+| COMMAND INFO | ✓ | returns metadata for named commands |
+| COMMAND DOCS | ✓ | returns empty docs map (sufficient for client compat) |
 | CLIENT KILL | ✗ | not implemented |
 | CLIENT PAUSE | ✗ | not implemented |
 | CLIENT UNPAUSE | ✗ | not implemented |
@@ -277,7 +277,11 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | WATCH | ✓ | accepts keys for optimistic locking |
 | UNWATCH | ✓ | clears watched keys |
 
-single-shard transactions are truly atomic (the shard is single-threaded). cross-shard transactions execute in order but are not globally atomic — same limitation as Redis Cluster. blocking commands (BLPOP, BRPOP) inside MULTI return an error.
+**single-shard transactions** are truly atomic — the shard processes them serially with no interleaving.
+
+**cross-shard transactions** (keys on different shards) execute commands in order but are not globally atomic. a failure mid-transaction does not roll back commands already applied to other shards. this is the same limitation Redis Cluster has. if your application requires cross-key atomicity, keep all transaction keys on the same shard by using a hash tag: `{user:42}:balance` and `{user:42}:name` always co-locate.
+
+blocking commands (BLPOP, BRPOP) inside MULTI return an error.
 
 ---
 

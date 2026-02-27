@@ -20,12 +20,12 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **resp3 protocol** — full compatibility with `redis-cli` and existing Redis clients
 - **string commands** — GET, SET (with NX/XX/EX/PX), MGET, MSET, MSETNX, INCR, DECR, INCRBY, DECRBY, INCRBYFLOAT, APPEND, STRLEN, GETRANGE, SETRANGE, GETSET, GETDEL, GETEX
 - **list operations** — LPUSH, RPUSH, LPOP, RPOP, LRANGE, LLEN, LINDEX, LSET, LTRIM, LINSERT, LREM, LPOS, LMOVE, LMPOP, BLPOP, BRPOP
-- **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZREVRANK, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZINCRBY, ZCOUNT, ZPOPMIN, ZPOPMAX, ZCARD, ZSCAN, ZUNION, ZINTER, ZDIFF, ZMPOP, ZRANDMEMBER
-- **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HKEYS, HVALS, HMGET, HSCAN, HRANDFIELD
+- **sorted sets** — ZADD (with NX/XX/GT/LT/CH), ZREM, ZSCORE, ZRANK, ZREVRANK, ZRANGE, ZREVRANGE, ZRANGEBYSCORE, ZREVRANGEBYSCORE, ZINCRBY, ZCOUNT, ZPOPMIN, ZPOPMAX, ZCARD, ZSCAN, ZUNION, ZINTER, ZDIFF, ZUNIONSTORE, ZINTERSTORE, ZDIFFSTORE, ZMPOP, ZRANDMEMBER
+- **hashes** — HSET, HGET, HGETALL, HDEL, HEXISTS, HLEN, HINCRBY, HINCRBYFLOAT, HKEYS, HVALS, HMGET, HSCAN, HRANDFIELD
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SMISMEMBER, SUNION, SINTER, SDIFF, SUNIONSTORE, SINTERSTORE, SDIFFSTORE, SRANDMEMBER, SPOP, SSCAN, SMOVE, SINTERCARD
 - **bitmaps** — GETBIT, SETBIT, BITCOUNT, BITPOS, BITOP
 - **key commands** — DEL, UNLINK, EXISTS, EXPIRE, EXPIREAT, EXPIRETIME, TTL, PEXPIRE, PEXPIREAT, PEXPIRETIME, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME, COPY, TOUCH, RANDOMKEY, SORT, OBJECT ENCODING/REFCOUNT, WAIT
-- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, FLUSHALL, MEMORY USAGE, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET/REWRITE, SLOWLOG, CLIENT ID/SETNAME/GETNAME/LIST, TIME, LASTSAVE, ROLE, MONITOR
+- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, FLUSHALL, MEMORY USAGE, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET/REWRITE, SLOWLOG, CLIENT ID/SETNAME/GETNAME/LIST, TIME, LASTSAVE, ROLE, MONITOR, COMMAND/COMMAND COUNT/COMMAND INFO/COMMAND DOCS
 - **transactions** — MULTI, EXEC, DISCARD, WATCH/UNWATCH for optimistic locking
 - **acl** — per-user command permissions and key pattern restrictions: ACL SETUSER, GETUSER, DELUSER, LIST, WHOAMI, CAT, USERS
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
@@ -45,6 +45,25 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **pipelining** — multiple commands per read for high throughput
 - **interactive CLI** — `ember-cli` with REPL, syntax highlighting, tab-completion, inline hints, cluster subcommands, and built-in benchmark
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
+
+## quickest start
+
+```bash
+# docker — no install needed
+docker run -p 6379:6379 ghcr.io/kacy/ember:latest
+redis-cli ping
+# => PONG
+```
+
+or with docker compose for a persistent single-node setup:
+
+```bash
+curl -O https://raw.githubusercontent.com/kacy/ember/main/docker-compose.yml
+docker compose up -d
+redis-cli ping
+```
+
+---
 
 ## not supported
 

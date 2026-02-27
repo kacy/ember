@@ -164,6 +164,9 @@ impl Command {
             "ZDIFF" => parse_zset_multi("ZDIFF", &frames[1..]),
             "ZINTER" => parse_zset_multi("ZINTER", &frames[1..]),
             "ZUNION" => parse_zset_multi("ZUNION", &frames[1..]),
+            "ZDIFFSTORE" => parse_zset_store("ZDIFFSTORE", &frames[1..]),
+            "ZINTERSTORE" => parse_zset_store("ZINTERSTORE", &frames[1..]),
+            "ZUNIONSTORE" => parse_zset_store("ZUNIONSTORE", &frames[1..]),
             "ZRANDMEMBER" => parse_zrandmember(&frames[1..]),
             "HSET" => parse_hset(&frames[1..]),
             "HGET" => parse_hget(&frames[1..]),
@@ -172,6 +175,7 @@ impl Command {
             "HEXISTS" => parse_hexists(&frames[1..]),
             "HLEN" => parse_hlen(&frames[1..]),
             "HINCRBY" => parse_hincrby(&frames[1..]),
+            "HINCRBYFLOAT" => parse_hincrbyfloat(&frames[1..]),
             "HKEYS" => parse_hkeys(&frames[1..]),
             "HVALS" => parse_hvals(&frames[1..]),
             "HMGET" => parse_hmget(&frames[1..]),
@@ -199,6 +203,7 @@ impl Command {
             "MIGRATE" => parse_migrate(&frames[1..]),
             "RESTORE" => parse_restore(&frames[1..]),
             "CONFIG" => parse_config(&frames[1..]),
+            "COMMAND" => parse_command_cmd(&frames[1..]),
             "MULTI" => parse_no_args("MULTI", &frames[1..], Command::Multi),
             "EXEC" => parse_no_args("EXEC", &frames[1..], Command::Exec),
             "DISCARD" => parse_no_args("DISCARD", &frames[1..], Command::Discard),
@@ -2017,6 +2022,16 @@ fn parse_hincrby(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::HIncrBy { key, field, delta })
 }
 
+fn parse_hincrbyfloat(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.len() != 3 {
+        return Err(wrong_arity("HINCRBYFLOAT"));
+    }
+    let key = extract_string(&args[0])?;
+    let field = extract_string(&args[1])?;
+    let delta = parse_f64(&args[2], "HINCRBYFLOAT")?;
+    Ok(Command::HIncrByFloat { key, field, delta })
+}
+
 fn parse_hkeys(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() != 1 {
         return Err(wrong_arity("HKEYS"));
@@ -3621,6 +3636,32 @@ fn parse_zset_multi(cmd: &'static str, args: &[Frame]) -> Result<Command, Protoc
     }
 }
 
+/// Parses ZDIFFSTORE/ZINTERSTORE/ZUNIONSTORE: `destkey numkeys key [key ...]`.
+fn parse_zset_store(cmd: &'static str, args: &[Frame]) -> Result<Command, ProtocolError> {
+    // need at least: dest numkeys key
+    if args.len() < 3 {
+        return Err(wrong_arity(cmd));
+    }
+    let dest = extract_string(&args[0])?;
+    let numkeys = parse_u64(&args[1], cmd)? as usize;
+    if numkeys == 0 {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "{cmd}: numkeys must be positive"
+        )));
+    }
+    if args.len() < 2 + numkeys {
+        return Err(wrong_arity(cmd));
+    }
+    let keys = extract_strings(&args[2..2 + numkeys])?;
+
+    match cmd {
+        "ZDIFFSTORE" => Ok(Command::ZDiffStore { dest, keys }),
+        "ZINTERSTORE" => Ok(Command::ZInterStore { dest, keys }),
+        "ZUNIONSTORE" => Ok(Command::ZUnionStore { dest, keys }),
+        _ => Err(wrong_arity(cmd)),
+    }
+}
+
 fn parse_zrandmember(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.is_empty() {
         return Err(wrong_arity("ZRANDMEMBER"));
@@ -3664,4 +3705,51 @@ fn parse_wait(args: &[Frame]) -> Result<Command, ProtocolError> {
         numreplicas,
         timeout_ms,
     })
+}
+
+fn parse_command_cmd(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Ok(Command::Command {
+            subcommand: None,
+            args: vec![],
+        });
+    }
+    let sub = extract_string(&args[0])?.to_ascii_uppercase();
+    match sub.as_str() {
+        "COUNT" => Ok(Command::Command {
+            subcommand: Some("COUNT".into()),
+            args: vec![],
+        }),
+        "INFO" => {
+            let names = args[1..]
+                .iter()
+                .map(|f| extract_string(f).map(|s| s.to_ascii_uppercase()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Command::Command {
+                subcommand: Some("INFO".into()),
+                args: names,
+            })
+        }
+        "DOCS" => {
+            let names = args[1..]
+                .iter()
+                .map(|f| extract_string(f).map(|s| s.to_ascii_uppercase()))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Command::Command {
+                subcommand: Some("DOCS".into()),
+                args: names,
+            })
+        }
+        "GETKEYS" => Ok(Command::Command {
+            subcommand: Some("GETKEYS".into()),
+            args: vec![],
+        }),
+        "LIST" => Ok(Command::Command {
+            subcommand: Some("LIST".into()),
+            args: vec![],
+        }),
+        _ => Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown COMMAND subcommand: {sub}"
+        ))),
+    }
 }
