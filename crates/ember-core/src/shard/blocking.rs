@@ -25,7 +25,9 @@ pub(super) fn handle_blocking_pop(
 
     match result {
         Ok(Some(data)) => {
-            // got an element — send to waiter and record the mutation
+            // got an element — send to waiter and record the mutation.
+            // try_send can only fail if the client disconnected between
+            // registering the waiter and the element arriving; safe to ignore.
             let _ = waiter.try_send((key.to_owned(), data));
             reply.send(ShardResponse::Ok);
 

@@ -1003,6 +1003,7 @@ dependencies = [
  "ember-cluster",
  "ember-persistence",
  "ember-protocol",
+ "metrics",
  "ordered-float",
  "parking_lot",
  "prost-reflect",
