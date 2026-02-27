@@ -12,7 +12,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.4.8"
+version = "0.4.9"
 edition = "2021"
 rust-version = "1.93"
 license = "Apache-2.0"
@@ -91,8 +91,8 @@ tonic-build = "0.13"
 tokio-stream = "0.1"
 
 # internal crates (version required for crates.io publishing)
-emberkv-core = { version = "0.4.8", path = "crates/ember-core" }
-ember-protocol = { version = "0.4.8", path = "crates/ember-protocol" }
-ember-persistence = { version = "0.4.8", path = "crates/ember-persistence" }
-ember-cluster = { version = "0.4.8", path = "crates/ember-cluster" }
-ember-client = { version = "0.4.8", path = "crates/ember-client" }
+emberkv-core = { version = "0.4.9", path = "crates/ember-core" }
+ember-protocol = { version = "0.4.9", path = "crates/ember-protocol" }
+ember-persistence = { version = "0.4.9", path = "crates/ember-persistence" }
+ember-cluster = { version = "0.4.9", path = "crates/ember-cluster" }
+ember-client = { version = "0.4.9", path = "crates/ember-client" }
