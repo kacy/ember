@@ -123,12 +123,16 @@ impl ClusterCoordinator {
         })?;
         let gossip_addr = SocketAddr::new(bind_addr.ip(), gossip_port);
 
-        let gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
+        let mut gossip = GossipEngine::new(local_id, gossip_addr, gossip_config, event_tx);
 
         let state = if bootstrap {
             let mut node = ClusterNode::new_primary_with_offset(local_id, bind_addr, port_offset);
             node.set_myself();
-            ClusterState::single_node(node)
+            let cs = ClusterState::single_node(node);
+            // Populate local_slots so Welcome replies correctly advertise all owned slots
+            // instead of sending an empty list and triggering a stale SlotsChanged event.
+            gossip.set_local_slots(cs.slot_map.slots_for_node(local_id));
+            cs
         } else {
             let mut cs = ClusterState::new(local_id);
             let mut node = ClusterNode::new_primary_with_offset(local_id, bind_addr, port_offset);
@@ -431,6 +435,16 @@ impl ClusterCoordinator {
             }
         };
 
+        // Insert placeholder before sending UDP so the gossip receive task always
+        // finds an entry during MemberJoined resolution. Without this, the Welcome
+        // reply can arrive and be processed before we add the placeholder, leaving
+        // both a real entry and a stale placeholder in state.nodes.
+        {
+            let mut state = self.state.write().await;
+            let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
+            state.add_node(node);
+        }
+
         // send join message via UDP
         {
             let socket = self.udp_socket.lock().await;
@@ -442,14 +456,6 @@ impl ClusterCoordinator {
             } else {
                 return Frame::Error("ERR gossip socket not ready".into());
             }
-        }
-
-        // add a placeholder to the routing table so MOVED redirects work
-        // immediately — the real node ID arrives via gossip and replaces this
-        {
-            let mut state = self.state.write().await;
-            let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
-            state.add_node(node);
         }
 
         self.save_config().await;
@@ -1617,6 +1623,11 @@ impl ClusterCoordinator {
                             false
                         }
                         GossipEvent::SlotsChanged(id, slots) => {
+                            // The local node is authoritative for its own slot ownership;
+                            // external gossip about it must never overwrite canonical state.
+                            if id == coordinator.local_id {
+                                false
+                            } else {
                             debug!(
                                 "cluster: node {} slots changed ({} ranges)",
                                 id,
@@ -1640,6 +1651,7 @@ impl ClusterCoordinator {
                             }
                             state.update_health();
                             true
+                            }
                         }
                         GossipEvent::RoleChanged(id, is_primary, replicates) => {
                             debug!(

@@ -350,7 +350,8 @@ impl std::fmt::Display for ClusterHealth {
 
 impl ClusterState {
     /// Creates a new cluster state for a single-node cluster.
-    pub fn single_node(local_node: ClusterNode) -> Self {
+    pub fn single_node(mut local_node: ClusterNode) -> Self {
+        local_node.config_epoch = 1;
         let local_id = local_node.id;
         let slot_map = SlotMap::single_node(local_id);
         let mut nodes = HashMap::new();
