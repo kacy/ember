@@ -217,7 +217,12 @@ impl Keyspace {
     /// If the field doesn't exist, it is created with the increment as its value.
     /// The stored value must be a valid float or the call returns an error.
     /// Returns the new value as a formatted string.
-    pub fn hincrbyfloat(&mut self, key: &str, field: &str, delta: f64) -> Result<String, IncrFloatError> {
+    pub fn hincrbyfloat(
+        &mut self,
+        key: &str,
+        field: &str,
+        delta: f64,
+    ) -> Result<String, IncrFloatError> {
         self.remove_if_expired(key);
 
         let is_new = match self.entries.get(key) {
