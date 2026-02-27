@@ -1,5 +1,5 @@
 {
-  "name": "ember-ts",
+  "name": "emberdb",
   "version": "0.1.0",
   "description": "TypeScript client for ember — a high-performance gRPC cache",
   "main": "dist/index.js",
