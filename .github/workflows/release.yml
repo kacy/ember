@@ -141,9 +141,12 @@ jobs:
           files: release/*
 
   npm:
-    name: publish ember-ts
+    name: publish emberdb
     runs-on: ubuntu-latest
     needs: release
+    permissions:
+      id-token: write
+    environment: npm
     steps:
       - uses: actions/checkout@v4
 
@@ -157,9 +160,7 @@ jobs:
         run: |
           npm install
           npm run build
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          npm publish --access public --provenance
 
   homebrew:
     name: update homebrew formula
