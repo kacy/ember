@@ -568,10 +568,30 @@ type SubscribeEvent struct {
 	Pattern string // only set for pmessage
 }
 
+// Subscription holds the channels returned by [Client.Subscribe].
+// Events are read from C; any stream error that ends the subscription
+// is retrievable via Err() after C is closed.
+type Subscription struct {
+	// C receives events until the stream ends or the context is cancelled.
+	C    <-chan SubscribeEvent
+	errc <-chan error
+}
+
+// Err returns the first error that caused the subscription stream to close,
+// or nil if the stream ended cleanly (context cancellation or EOF).
+// Call Err only after C has been drained and closed.
+func (s *Subscription) Err() error {
+	if err, ok := <-s.errc; ok {
+		return err
+	}
+	return nil
+}
+
 // Subscribe opens a server-streaming subscription for the given channels
-// and/or patterns. Returns a channel that yields events until the context
-// is cancelled or the stream ends.
-func (c *Client) Subscribe(ctx context.Context, channels []string, patterns []string) (<-chan SubscribeEvent, error) {
+// and/or patterns. Returns a Subscription whose C field yields events
+// until the context is cancelled or the stream ends. Use sub.Err() after
+// the channel closes to check whether the stream ended due to an error.
+func (c *Client) Subscribe(ctx context.Context, channels []string, patterns []string) (*Subscription, error) {
 	stream, err := c.rpc.Subscribe(c.ctx(ctx), &pb.SubscribeRequest{
 		Channels: channels,
 		Patterns: patterns,
@@ -581,11 +601,17 @@ func (c *Client) Subscribe(ctx context.Context, channels []string, patterns []st
 	}
 
 	ch := make(chan SubscribeEvent, 64)
+	errc := make(chan error, 1)
 	go func() {
 		defer close(ch)
+		defer close(errc)
 		for {
-			evt, err := stream.Recv()
-			if err != nil {
+			evt, recvErr := stream.Recv()
+			if recvErr != nil {
+				if ctx.Err() == nil {
+					// stream closed unexpectedly — propagate the error
+					errc <- recvErr
+				}
 				return
 			}
 			se := SubscribeEvent{
@@ -604,7 +630,7 @@ func (c *Client) Subscribe(ctx context.Context, channels []string, patterns []st
 		}
 	}()
 
-	return ch, nil
+	return &Subscription{C: ch, errc: errc}, nil
 }
 
 // PubSubChannels returns active channel names, optionally filtered by pattern.
