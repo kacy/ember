@@ -30,7 +30,9 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | GETSET | ✓ | atomic get-and-set; deprecated in Redis 6.2 but supported |
 | GETDEL | ✓ | |
 | GETEX | ✓ | |
-| SETNX | ✗ | use `SET key value NX` instead |
+| SETNX | ✓ | legacy alias; prefer `SET key value NX` |
+| SETEX | ✓ | legacy alias; prefer `SET key value EX seconds` |
+| PSETEX | ✓ | legacy alias; prefer `SET key value PX millis` |
 | MSETNX | ✓ | |
 | SUBSTR | ✗ | deprecated; use GETRANGE instead |
 
