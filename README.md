@@ -25,7 +25,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **sets** — SADD, SREM, SMEMBERS, SISMEMBER, SCARD, SMISMEMBER, SUNION, SINTER, SDIFF, SUNIONSTORE, SINTERSTORE, SDIFFSTORE, SRANDMEMBER, SPOP, SSCAN, SMOVE, SINTERCARD
 - **bitmaps** — GETBIT, SETBIT, BITCOUNT, BITPOS, BITOP
 - **key commands** — DEL, UNLINK, EXISTS, EXPIRE, EXPIREAT, EXPIRETIME, TTL, PEXPIRE, PEXPIREAT, PEXPIRETIME, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME, COPY, TOUCH, RANDOMKEY, SORT, OBJECT ENCODING/REFCOUNT, WAIT
-- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET/REWRITE, SLOWLOG, CLIENT ID/SETNAME/GETNAME/LIST, TIME, LASTSAVE, ROLE, MONITOR
+- **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, FLUSHALL, MEMORY USAGE, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET/REWRITE, SLOWLOG, CLIENT ID/SETNAME/GETNAME/LIST, TIME, LASTSAVE, ROLE, MONITOR
 - **transactions** — MULTI, EXEC, DISCARD, WATCH/UNWATCH for optimistic locking
 - **acl** — per-user command permissions and key pattern restrictions: ACL SETUSER, GETUSER, DELUSER, LIST, WHOAMI, CAT, USERS
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
@@ -45,6 +45,24 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **pipelining** — multiple commands per read for high throughput
 - **interactive CLI** — `ember-cli` with REPL, syntax highlighting, tab-completion, inline hints, cluster subcommands, and built-in benchmark
 - **graceful shutdown** — drains active connections on SIGINT/SIGTERM before exiting
+
+## not supported
+
+ember is purpose-built for caching. some Redis features are intentionally excluded:
+
+- **lua scripting** — `EVAL`, `EVALSHA`, `SCRIPT *` are not implemented and not planned. server-side logic may be supported via WASM extensions in a future release.
+- **streams** — `XADD`, `XREAD`, and related commands are not implemented. use a dedicated stream store (Kafka, Redpanda, etc.) for this.
+- **multiple databases** — `SELECT`, `MOVE`, `SWAPDB` are not supported. ember is single-database by design.
+- **bitfield** — `BITFIELD` and `BITFIELD_RO` are not planned; use application-level serialization instead.
+
+see [docs/compatibility.md](docs/compatibility.md) for the full command support matrix.
+
+## notable differences from redis
+
+- **RENAME** requires the source and destination keys to hash to the same shard. cross-shard renames return an error.
+- **transactions** (MULTI/EXEC) are fully atomic within a single shard. cross-shard transactions execute in order but are not globally atomic — the same limitation as Redis Cluster.
+- **geo commands** are coming in a future release.
+- `redis-cli` connects on port 6379 (RESP3). the typed gRPC API is on port 6380 (when `--features grpc` is compiled in).
 
 ## install
 
