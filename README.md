@@ -458,6 +458,8 @@ redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grai
 ./bench/bench-all.sh         # run everything
 ```
 
+**150+ commands, 1,200+ tests, ~25k lines of code** (~47k including tests and comments). see [bench/README.md](bench/README.md) for full methodology and results.
+
 ## architecture
 
 ember uses a thread-per-core architecture with channel-based routing. each shard owns a partition of the keyspace with no cross-shard locking on the hot path. supports all data types and enables atomic multi-key operations.
@@ -479,23 +481,6 @@ contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 | [architecture deep dive](ARCHITECTURE.md) | execution model, protocol layer, data model, persistence, clustering |
 | [changelog](CHANGELOG.md) | release history and phase summaries |
 | [security policy](SECURITY.md) | vulnerability reporting, deployment hardening |
-
-## status
-
-| phase | description | status |
-|-------|-------------|--------|
-| 1 | foundation (protocol, engine, expiration) | ✅ complete |
-| 2 | persistence (AOF, snapshots, recovery) | ✅ complete |
-| 3 | data types (sorted sets, lists, hashes, sets) | ✅ complete |
-| 4 | clustering (raft, gossip, slots, migration) | ✅ complete |
-| 5 | developer experience (observability, CLI, clients) | 🚧 in progress |
-| 6 | replication and high availability | ✅ complete |
-| 7 | security hardening | ✅ complete |
-| 8 | production gaps (transactions, blocking ops, config) | ✅ complete |
-
-phase 6 added leader/replica data streaming, `CLUSTER REPLICATE`, automatic failover via epoch-based elections, and `CLUSTER FAILOVER` for manual promotion. phase 7 added RESP key/value size limits and cluster transport HMAC-SHA256 auth. phase 8 filled critical production gaps: MULTI/EXEC/DISCARD transactions, BLPOP/BRPOP blocking list ops, CONFIG GET/SET, WATCH optimistic locking, CLIENT introspection, SSCAN/HSCAN/ZSCAN collection scanning, and ACL per-user access control.
-
-**current**: 150+ commands, 1,200+ tests, ~25k lines of code (~47k including tests and comments)
 
 ## security
 
