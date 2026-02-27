@@ -17,8 +17,6 @@ pub(in crate::connection) async fn proto_register(
     descriptor: Bytes,
     cx: &ExecCtx<'_>,
 ) -> Frame {
-    use std::time::Duration;
-
     let registry = match cx.engine.schema_registry() {
         Some(r) => r,
         None => return Frame::Error("ERR protobuf support is not enabled".into()),
@@ -227,7 +225,7 @@ pub(in crate::connection) async fn proto_get_field(
 pub(in crate::connection) async fn proto_set_field(
     key: String,
     field_path: String,
-    value: bytes::Bytes,
+    value: String,
     cx: &ExecCtx<'_>,
 ) -> Frame {
     if cx.engine.schema_registry().is_none() {
@@ -237,7 +235,7 @@ pub(in crate::connection) async fn proto_set_field(
     let req = ShardRequest::ProtoSetField {
         key,
         field_path,
-        value,
+        value: bytes::Bytes::from(value),
     };
     match cx.engine.send_to_shard(idx, req).await {
         Ok(ShardResponse::ProtoFieldUpdated { .. }) => Frame::Simple("OK".into()),
