@@ -3287,7 +3287,9 @@ impl EmberCache for EmberService {
         let resp = self
             .route(
                 &req.key,
-                ShardRequest::Expiretime { key: req.key.clone() },
+                ShardRequest::Expiretime {
+                    key: req.key.clone(),
+                },
             )
             .await?;
         self.record_command(start, "EXPIRETIME");
@@ -3308,7 +3310,9 @@ impl EmberCache for EmberService {
         let resp = self
             .route(
                 &req.key,
-                ShardRequest::Pexpiretime { key: req.key.clone() },
+                ShardRequest::Pexpiretime {
+                    key: req.key.clone(),
+                },
             )
             .await?;
         self.record_command(start, "PEXPIRETIME");
@@ -3580,10 +3584,7 @@ impl EmberCache for EmberService {
         }
     }
 
-    async fn bitop(
-        &self,
-        request: Request<BitopRequest>,
-    ) -> Result<Response<IntResponse>, Status> {
+    async fn bitop(&self, request: Request<BitopRequest>) -> Result<Response<IntResponse>, Status> {
         let start = Instant::now();
         let req = request.into_inner();
         if req.keys.is_empty() {
@@ -3674,10 +3675,7 @@ impl EmberCache for EmberService {
         let limit = req.limit as usize;
         let first_key = keys[0].clone();
         let resp = self
-            .route(
-                &first_key,
-                ShardRequest::SInterCard { keys, limit },
-            )
+            .route(&first_key, ShardRequest::SInterCard { keys, limit })
             .await?;
         self.record_command(start, "SINTERCARD");
 
@@ -3783,7 +3781,10 @@ impl EmberCache for EmberService {
                         key: key.clone(),
                         members: members
                             .into_iter()
-                            .map(|(m, s)| ScoreMember { score: s, member: m })
+                            .map(|(m, s)| ScoreMember {
+                                score: s,
+                                member: m,
+                            })
                             .collect(),
                     }));
                 }
@@ -3816,7 +3817,11 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
-        let count = if req.has_count { Some(req.count as i64) } else { None };
+        let count = if req.has_count {
+            Some(req.count as i64)
+        } else {
+            None
+        };
         let with_values = req.with_values;
         let resp = self
             .route(
@@ -3858,7 +3863,11 @@ impl EmberCache for EmberService {
         let start = Instant::now();
         let req = request.into_inner();
         validate_key(&req.key, &self.ctx.limits)?;
-        let count = if req.has_count { Some(req.count as i64) } else { None };
+        let count = if req.has_count {
+            Some(req.count as i64)
+        } else {
+            None
+        };
         let with_scores = req.with_scores;
         let resp = self
             .route(

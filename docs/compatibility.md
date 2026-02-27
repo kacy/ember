@@ -27,11 +27,11 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | STRLEN | ✓ | |
 | GETRANGE | ✓ | |
 | SETRANGE | ✓ | |
-| GETSET | ✗ | use `SET key value GET` pattern instead |
-| GETDEL | ✗ | not implemented |
-| GETEX | ✗ | not implemented |
+| GETSET | ✓ | atomic get-and-set; deprecated in Redis 6.2 but supported |
+| GETDEL | ✓ | |
+| GETEX | ✓ | |
 | SETNX | ✗ | use `SET key value NX` instead |
-| MSETNX | ✗ | not implemented |
+| MSETNX | ✓ | |
 | SUBSTR | ✗ | deprecated; use GETRANGE instead |
 
 ---
@@ -64,11 +64,11 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | SELECT | ✗ | single database only |
 | SWAPDB | ✗ | single database only |
 | DUMP | ✗ | not implemented |
-| WAIT | ✗ | not implemented |
-| EXPIREAT | ✗ | not implemented |
-| PEXPIREAT | ✗ | not implemented |
-| EXPIRETIME | ✗ | not implemented |
-| PEXPIRETIME | ✗ | not implemented |
+| WAIT | ✓ | waits for replica acknowledgements |
+| EXPIREAT | ✓ | |
+| PEXPIREAT | ✓ | |
+| EXPIRETIME | ✓ | |
+| PEXPIRETIME | ✓ | |
 
 ---
 
@@ -90,8 +90,8 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | LPOS | ✓ | |
 | BLPOP | ✓ | multi-key with timeout, blocks until element available |
 | BRPOP | ✓ | multi-key with timeout, blocks until element available |
-| LMOVE | ✗ | not implemented |
-| LMPOP | ✗ | not implemented |
+| LMOVE | ✓ | |
+| LMPOP | ✓ | |
 | BLMOVE | ✗ | not implemented |
 | LPUSHX | ✗ | not implemented |
 | RPUSHX | ✗ | not implemented |
@@ -115,7 +115,7 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | HSCAN | ✓ | |
 | HMSET | ✗ | deprecated; use HSET with multiple fields instead |
 | HINCRBYFLOAT | ✗ | not implemented |
-| HRANDFIELD | ✗ | not implemented |
+| HRANDFIELD | ✓ | optional count with WITHVALUES |
 
 ---
 
@@ -138,8 +138,8 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | SRANDMEMBER | ✓ | optional count argument |
 | SPOP | ✓ | optional count argument |
 | SSCAN | ✓ | |
-| SMOVE | ✗ | not implemented |
-| SINTERCARD | ✗ | not implemented |
+| SMOVE | ✓ | cross-shard moves are sequential (not atomic) |
+| SINTERCARD | ✓ | optional LIMIT cap |
 
 ---
 
@@ -167,15 +167,29 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | ZLEXCOUNT | ✗ | not implemented |
 | BZPOPMIN | ✗ | not implemented |
 | BZPOPMAX | ✗ | not implemented |
-| ZRANDMEMBER | ✗ | not implemented |
+| ZRANDMEMBER | ✓ | optional count with WITHSCORES |
 | ZUNIONSTORE | ✗ | not implemented |
 | ZINTERSTORE | ✗ | not implemented |
 | ZDIFFSTORE | ✗ | not implemented |
-| ZUNION | ✗ | not implemented |
-| ZINTER | ✗ | not implemented |
-| ZDIFF | ✗ | not implemented |
-| ZMPOP | ✗ | not implemented |
+| ZUNION | ✓ | |
+| ZINTER | ✓ | |
+| ZDIFF | ✓ | |
+| ZMPOP | ✓ | |
 | ZMSCORE | ✗ | not implemented |
+
+---
+
+## bitmaps
+
+| command | status | notes |
+|---------|--------|-------|
+| BITCOUNT | ✓ | optional byte/bit range |
+| GETBIT | ✓ | |
+| SETBIT | ✓ | |
+| BITOP | ✓ | AND, OR, XOR, NOT |
+| BITPOS | ✓ | optional byte/bit range |
+| BITFIELD | ✗ | out of scope |
+| BITFIELD_RO | ✗ | out of scope |
 
 ---
 
@@ -325,7 +339,7 @@ some Redis commands are explicitly not planned for Ember:
 - `XADD`, `XREAD`, `XRANGE`, `XREVRANGE`, `XLEN`, `XACK`, `XGROUP`, `XDEL`, `XTRIM`, `XINFO` — streams are a complex, purpose-built data type. Ember focuses on caching workloads; use a dedicated stream store for this.
 
 **bit operations**
-- `BITCOUNT`, `SETBIT`, `GETBIT`, `BITOP`, `BITPOS`, `BITFIELD`, `BITFIELD_RO` — not implemented yet; may be added in a future release.
+- `BITFIELD`, `BITFIELD_RO` — not planned; use application-level serialization if needed.
 
 **geo**
 - `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — not implemented yet.

@@ -1307,7 +1307,9 @@ impl Client {
 
     /// Returns the absolute unix expiry timestamp in milliseconds, or -1 if no expiry, -2 if key missing.
     pub async fn pexpiretime(&mut self, key: &str) -> Result<i64, ClientError> {
-        let frame = self.send_frame(cmd2(b"PEXPIRETIME", key.as_bytes())).await?;
+        let frame = self
+            .send_frame(cmd2(b"PEXPIRETIME", key.as_bytes()))
+            .await?;
         integer(frame)
     }
 
@@ -1375,7 +1377,12 @@ impl Client {
         let off = offset.to_string();
         let val = value.to_string();
         let frame = self
-            .send_frame(cmd4(b"SETBIT", key.as_bytes(), off.as_bytes(), val.as_bytes()))
+            .send_frame(cmd4(
+                b"SETBIT",
+                key.as_bytes(),
+                off.as_bytes(),
+                val.as_bytes(),
+            ))
             .await?;
         integer(frame)
     }
@@ -1436,12 +1443,7 @@ impl Client {
     ///
     /// `op` is `"AND"`, `"OR"`, `"XOR"`, or `"NOT"`. Result is stored at `dest`.
     /// Returns the length of the resulting string.
-    pub async fn bitop(
-        &mut self,
-        op: &str,
-        dest: &str,
-        keys: &[&str],
-    ) -> Result<i64, ClientError> {
+    pub async fn bitop(&mut self, op: &str, dest: &str, keys: &[&str]) -> Result<i64, ClientError> {
         let mut parts = Vec::with_capacity(3 + keys.len());
         parts.push(Frame::Bulk(Bytes::from_static(b"BITOP")));
         parts.push(Frame::Bulk(Bytes::copy_from_slice(op.as_bytes())));
@@ -1456,14 +1458,14 @@ impl Client {
     // --- set commands (extended) ---
 
     /// Atomically moves `member` from `src` to `dst`. Returns `true` if the move succeeded.
-    pub async fn smove(
-        &mut self,
-        src: &str,
-        dst: &str,
-        member: &str,
-    ) -> Result<bool, ClientError> {
+    pub async fn smove(&mut self, src: &str, dst: &str, member: &str) -> Result<bool, ClientError> {
         let frame = self
-            .send_frame(cmd4(b"SMOVE", src.as_bytes(), dst.as_bytes(), member.as_bytes()))
+            .send_frame(cmd4(
+                b"SMOVE",
+                src.as_bytes(),
+                dst.as_bytes(),
+                member.as_bytes(),
+            ))
             .await?;
         bool_flag(frame)
     }
@@ -1647,7 +1649,8 @@ impl Client {
             self.send_frame(cmd3(b"ZRANDMEMBER", key.as_bytes(), s.as_bytes()))
                 .await?
         } else {
-            self.send_frame(cmd2(b"ZRANDMEMBER", key.as_bytes())).await?
+            self.send_frame(cmd2(b"ZRANDMEMBER", key.as_bytes()))
+                .await?
         };
         match frame {
             Frame::Bulk(b) => Ok(vec![b]),
@@ -1774,12 +1777,12 @@ mod tests {
 
     #[test]
     fn bool_flag_one() {
-        assert_eq!(bool_flag(Frame::Integer(1)).unwrap(), true);
+        assert!(bool_flag(Frame::Integer(1)).unwrap());
     }
 
     #[test]
     fn bool_flag_zero() {
-        assert_eq!(bool_flag(Frame::Integer(0)).unwrap(), false);
+        assert!(!bool_flag(Frame::Integer(0)).unwrap());
     }
 
     #[test]
@@ -1824,9 +1827,9 @@ mod tests {
 
     #[test]
     fn optional_score_valid_float() {
-        let f = Frame::Bulk(Bytes::from_static(b"3.14"));
+        let f = Frame::Bulk(Bytes::from_static(b"3.14159265358979"));
         let s = optional_score(f).unwrap();
-        assert!((s.unwrap() - 3.14).abs() < f64::EPSILON);
+        assert!((s.unwrap() - std::f64::consts::PI).abs() < 1e-10);
     }
 
     #[test]

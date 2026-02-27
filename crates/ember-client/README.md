@@ -73,6 +73,7 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `set` | `set(key, value)` | `()` |
 | `set_ex` | `set_ex(key, value, seconds)` | `()` |
 | `getdel` | `getdel(key)` | `Option<Bytes>` |
+| `getset` | `getset(key, value)` | `Option<Bytes>` (old value) |
 | `append` | `append(key, value)` | `i64` (new length) |
 | `strlen` | `strlen(key)` | `i64` |
 | `incr` | `incr(key)` | `i64` |
@@ -82,6 +83,7 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `incr_by_float` | `incr_by_float(key, delta)` | `f64` |
 | `mget` | `mget(&[key, ...])` | `Vec<Option<Bytes>>` |
 | `mset` | `mset(&[(key, value), ...])` | `()` |
+| `msetnx` | `msetnx(&[(key, value), ...])` | `bool` (false if any key exists) |
 
 ### keys
 
@@ -92,9 +94,13 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `exists` | `exists(&[key, ...])` | `i64` (count found) |
 | `expire` | `expire(key, seconds)` | `bool` |
 | `pexpire` | `pexpire(key, millis)` | `bool` |
+| `expireat` | `expireat(key, timestamp)` | `bool` |
+| `pexpireat` | `pexpireat(key, timestamp_ms)` | `bool` |
 | `persist` | `persist(key)` | `bool` |
 | `ttl` | `ttl(key)` | `i64` (-2 missing, -1 no expiry) |
 | `pttl` | `pttl(key)` | `i64` |
+| `expiretime` | `expiretime(key)` | `i64` (unix seconds, -1 or -2 if no expiry/missing) |
+| `pexpiretime` | `pexpiretime(key)` | `i64` (unix millis) |
 | `key_type` | `key_type(key)` | `String` |
 | `keys` | `keys(pattern)` | `Vec<Bytes>` |
 | `rename` | `rename(key, newkey)` | `()` |
@@ -110,6 +116,7 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `rpop` | `rpop(key)` | `Option<Bytes>` |
 | `lrange` | `lrange(key, start, stop)` | `Vec<Bytes>` |
 | `llen` | `llen(key)` | `i64` |
+| `lmpop` | `lmpop(&[key, ...], left, count)` | `Option<(String, Vec<Bytes>)>` |
 
 ### hashes
 
@@ -125,6 +132,8 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `hincrby` | `hincrby(key, field, delta)` | `i64` |
 | `hkeys` | `hkeys(key)` | `Vec<Bytes>` |
 | `hvals` | `hvals(key)` | `Vec<Bytes>` |
+| `hrandfield` | `hrandfield(key, count)` | `Vec<Bytes>` |
+| `hrandfield_withvalues` | `hrandfield_withvalues(key, count)` | `Vec<(Bytes, Bytes)>` |
 
 ### sets
 
@@ -135,6 +144,8 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `smembers` | `smembers(key)` | `Vec<Bytes>` |
 | `sismember` | `sismember(key, member)` | `bool` |
 | `scard` | `scard(key)` | `i64` |
+| `smove` | `smove(src, dst, member)` | `bool` |
+| `sintercard` | `sintercard(&[key, ...], limit)` | `i64` (0 = no limit) |
 
 ### sorted sets
 
@@ -147,6 +158,19 @@ async fn main() -> Result<(), ember_client::ClientError> {
 | `zrank` | `zrank(key, member)` | `Option<i64>` |
 | `zrem` | `zrem(key, &[member, ...])` | `i64` |
 | `zcard` | `zcard(key)` | `i64` |
+| `zmpop` | `zmpop(&[key, ...], min, count)` | `Option<(String, Vec<(Bytes, f64)>)>` |
+| `zrandmember` | `zrandmember(key, count)` | `Vec<Bytes>` |
+| `zrandmember_withscores` | `zrandmember_withscores(key, count)` | `Vec<(Bytes, f64)>` |
+
+### bitmaps
+
+| command | signature | returns |
+|---------|-----------|---------|
+| `getbit` | `getbit(key, offset)` | `i64` (0 or 1) |
+| `setbit` | `setbit(key, offset, value)` | `i64` (old bit value) |
+| `bitcount` | `bitcount(key, range)` | `i64` (`range` is `Option<(i64, i64, &str)>` where unit is `"BYTE"` or `"BIT"`) |
+| `bitpos` | `bitpos(key, bit, range)` | `i64` (position of first matching bit) |
+| `bitop` | `bitop(op, dest, &[key, ...])` | `i64` (length of result string) |
 
 ### server
 
