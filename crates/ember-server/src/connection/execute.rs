@@ -11,7 +11,7 @@ use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse, TtlResult, Value};
-use ember_protocol::{parse_frame, Command, Frame, SetExpire};
+use ember_protocol::{command::BitOpKind, parse_frame, Command, Frame, SetExpire};
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -419,11 +419,80 @@ pub(super) async fn execute(
         }
 
         Command::BitOp { op, dest, keys } => {
-            let idx = engine.shard_for_key(&dest);
-            let req = ShardRequest::BitOp { op, dest, keys };
-            match engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Integer(len)) => Frame::Integer(len),
-                Ok(ShardResponse::WrongType) => wrongtype_error(),
+            // Read source keys from their respective shards, then compute the
+            // bitwise result here and write it to dest's shard. This is
+            // necessary because source keys may live on different shards.
+            let responses = match engine
+                .route_multi(&keys, |k| ShardRequest::Get { key: k })
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => return Frame::Error(format!("ERR {e}")),
+            };
+
+            let mut sources: Vec<Bytes> = Vec::with_capacity(responses.len());
+            for r in responses {
+                match r {
+                    ShardResponse::Value(Some(Value::String(b))) => sources.push(b),
+                    ShardResponse::Value(None) => sources.push(Bytes::new()),
+                    ShardResponse::WrongType => return wrongtype_error(),
+                    _ => sources.push(Bytes::new()),
+                }
+            }
+
+            let result_len = sources.iter().map(|s| s.len()).max().unwrap_or(0);
+            let mut result = vec![0u8; result_len];
+            match op {
+                BitOpKind::Not => {
+                    let src = sources.first().map(|b| b.as_ref()).unwrap_or(&[]);
+                    for (i, b) in result.iter_mut().enumerate() {
+                        *b = if i < src.len() { !src[i] } else { 0xFF };
+                    }
+                }
+                BitOpKind::And => {
+                    if let Some(first) = sources.first() {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            *b = if i < first.len() { first[i] } else { 0 };
+                        }
+                    }
+                    for src in sources.iter().skip(1) {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            *b &= if i < src.len() { src[i] } else { 0 };
+                        }
+                    }
+                }
+                BitOpKind::Or => {
+                    for src in &sources {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            if i < src.len() {
+                                *b |= src[i];
+                            }
+                        }
+                    }
+                }
+                BitOpKind::Xor => {
+                    for src in &sources {
+                        for (i, b) in result.iter_mut().enumerate() {
+                            if i < src.len() {
+                                *b ^= src[i];
+                            }
+                        }
+                    }
+                }
+            }
+
+            let dest_idx = engine.shard_for_key(&dest);
+            let req = ShardRequest::Set {
+                key: dest,
+                value: Bytes::from(result),
+                expire: None,
+                nx: false,
+                xx: false,
+            };
+            match engine.send_to_shard(dest_idx, req).await {
+                Ok(ShardResponse::Ok) | Ok(ShardResponse::Value(_)) => {
+                    Frame::Integer(result_len as i64)
+                }
                 Ok(ShardResponse::OutOfMemory) => oom_error(),
                 Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
                 Err(e) => Frame::Error(format!("ERR {e}")),
