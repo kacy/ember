@@ -145,6 +145,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: release
     permissions:
+      contents: read
       id-token: write
     environment: npm
     steps:
