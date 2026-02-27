@@ -27,6 +27,7 @@ use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 
 mod dispatch;
+mod exec;
 mod execute;
 mod handler;
 mod response;
