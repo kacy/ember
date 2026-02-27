@@ -505,3 +505,164 @@ class EmberClient:
             metadata=self._metadata(),
         )
         return resp.value
+
+    # --- expiry ---
+
+    def expiretime(self, key: str) -> int:
+        """Get the absolute unix expiry timestamp in seconds (-1 = no expiry, -2 = missing)."""
+        resp = self._stub.Expiretime(
+            ember_pb2.ExpiretimeRequest(key=key),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def pexpiretime(self, key: str) -> int:
+        """Get the absolute unix expiry timestamp in milliseconds."""
+        resp = self._stub.Pexpiretime(
+            ember_pb2.PexpiretimeRequest(key=key),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def expireat(self, key: str, timestamp: int) -> bool:
+        """Set expiry at an absolute unix timestamp (seconds)."""
+        resp = self._stub.Expireat(
+            ember_pb2.ExpireatRequest(key=key, timestamp=timestamp),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def pexpireat(self, key: str, timestamp_ms: int) -> bool:
+        """Set expiry at an absolute unix timestamp (milliseconds)."""
+        resp = self._stub.Pexpireat(
+            ember_pb2.PexpireatRequest(key=key, timestamp_ms=timestamp_ms),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    # --- strings ---
+
+    def getset(self, key: str, value: bytes) -> bytes | None:
+        """Set key to value and return the old value, or None if the key didn't exist."""
+        resp = self._stub.Getset(
+            ember_pb2.GetsetRequest(key=key, value=value),
+            metadata=self._metadata(),
+        )
+        return resp.value if resp.HasField("value") else None
+
+    def msetnx(self, pairs: dict[str, bytes]) -> bool:
+        """Set multiple keys only if none exist. Returns True if all were set."""
+        kvs = [ember_pb2.KeyValue(key=k, value=v) for k, v in pairs.items()]
+        resp = self._stub.Msetnx(
+            ember_pb2.MsetnxRequest(pairs=kvs),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    # --- bitmaps ---
+
+    def getbit(self, key: str, offset: int) -> int:
+        """Return the bit at offset in the string stored at key."""
+        resp = self._stub.Getbit(
+            ember_pb2.GetbitRequest(key=key, offset=offset),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def setbit(self, key: str, offset: int, value: int) -> int:
+        """Set or clear the bit at offset. Returns the original bit value."""
+        resp = self._stub.Setbit(
+            ember_pb2.SetbitRequest(key=key, offset=offset, value=value),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def bitcount(self, key: str, start: int = 0, end: int = -1, unit: str = "BYTE", has_range: bool = False) -> int:
+        """Count set bits in the string. Set has_range=True to use start/end/unit."""
+        resp = self._stub.Bitcount(
+            ember_pb2.BitcountRequest(
+                key=key, has_range=has_range, start=start, end=end, unit=unit
+            ),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def bitpos(self, key: str, bit: int, start: int = 0, end: int = -1, unit: str = "BYTE", has_range: bool = False) -> int:
+        """Find the first set or clear bit. Set has_range=True to use start/end/unit."""
+        resp = self._stub.Bitpos(
+            ember_pb2.BitposRequest(
+                key=key, bit=bit, has_range=has_range, start=start, end=end, unit=unit
+            ),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def bitop(self, op: str, dest: str, *keys: str) -> int:
+        """Perform a bitwise operation. op is 'AND', 'OR', 'XOR', or 'NOT'."""
+        resp = self._stub.Bitop(
+            ember_pb2.BitopRequest(op=op, dest=dest, keys=list(keys)),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    # --- sets ---
+
+    def smove(self, source: str, destination: str, member: str) -> bool:
+        """Atomically move member from source to destination."""
+        resp = self._stub.Smove(
+            ember_pb2.SmoveRequest(source=source, destination=destination, member=member),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    def sintercard(self, *keys: str, limit: int = 0) -> int:
+        """Return the cardinality of the set intersection. limit=0 means no limit."""
+        resp = self._stub.Sintercard(
+            ember_pb2.SintercardRequest(keys=list(keys), limit=limit),
+            metadata=self._metadata(),
+        )
+        return resp.value
+
+    # --- lists ---
+
+    def lmpop(self, *keys: str, left: bool = True, count: int = 1) -> tuple[str, list[bytes]] | None:
+        """Pop elements from the first non-empty list. Returns (key, elements) or None."""
+        resp = self._stub.Lmpop(
+            ember_pb2.LmpopRequest(keys=list(keys), left=left, count=count),
+            metadata=self._metadata(),
+        )
+        if not resp.found:
+            return None
+        return resp.key, list(resp.elements)
+
+    # --- hash ---
+
+    def hrandfield(self, key: str, count: int | None = None, with_values: bool = False) -> list[bytes]:
+        """Get random field(s) from the hash. Returns a flat list (interleaved with values if with_values=True)."""
+        req = ember_pb2.HrandfieldRequest(key=key, with_values=with_values)
+        if count is not None:
+            req.has_count = True
+            req.count = count
+        resp = self._stub.Hrandfield(req, metadata=self._metadata())
+        return list(resp.values)
+
+    # --- sorted sets ---
+
+    def zmpop(self, *keys: str, min: bool = True, count: int = 1) -> tuple[str, list[tuple[str, float]]] | None:
+        """Pop elements from the first non-empty sorted set. Returns (key, [(member, score)]) or None."""
+        resp = self._stub.Zmpop(
+            ember_pb2.ZmpopRequest(keys=list(keys), min=min, count=count),
+            metadata=self._metadata(),
+        )
+        if not resp.found:
+            return None
+        return resp.key, [(m.member, m.score) for m in resp.members]
+
+    def zrandmember(self, key: str, count: int | None = None, with_scores: bool = False) -> list[bytes]:
+        """Get random member(s) from the sorted set. Returns a flat list (interleaved with scores if with_scores=True)."""
+        req = ember_pb2.ZrandmemberRequest(key=key, with_scores=with_scores)
+        if count is not None:
+            req.has_count = True
+            req.count = count
+        resp = self._stub.Zrandmember(req, metadata=self._metadata())
+        return list(resp.values)

@@ -1297,6 +1297,389 @@ impl Client {
         Ok(Subscriber::new(self))
     }
 
+    // --- expiry commands ---
+
+    /// Returns the absolute unix expiry timestamp in seconds, or -1 if no expiry, -2 if key missing.
+    pub async fn expiretime(&mut self, key: &str) -> Result<i64, ClientError> {
+        let frame = self.send_frame(cmd2(b"EXPIRETIME", key.as_bytes())).await?;
+        integer(frame)
+    }
+
+    /// Returns the absolute unix expiry timestamp in milliseconds, or -1 if no expiry, -2 if key missing.
+    pub async fn pexpiretime(&mut self, key: &str) -> Result<i64, ClientError> {
+        let frame = self.send_frame(cmd2(b"PEXPIRETIME", key.as_bytes())).await?;
+        integer(frame)
+    }
+
+    /// Sets expiry at an absolute unix timestamp (seconds). Returns `true` if the timeout was set.
+    pub async fn expireat(&mut self, key: &str, timestamp: u64) -> Result<bool, ClientError> {
+        let ts = timestamp.to_string();
+        let frame = self
+            .send_frame(cmd3(b"EXPIREAT", key.as_bytes(), ts.as_bytes()))
+            .await?;
+        bool_flag(frame)
+    }
+
+    /// Sets expiry at an absolute unix timestamp (milliseconds). Returns `true` if the timeout was set.
+    pub async fn pexpireat(&mut self, key: &str, timestamp_ms: u64) -> Result<bool, ClientError> {
+        let ts = timestamp_ms.to_string();
+        let frame = self
+            .send_frame(cmd3(b"PEXPIREAT", key.as_bytes(), ts.as_bytes()))
+            .await?;
+        bool_flag(frame)
+    }
+
+    // --- string commands (extended) ---
+
+    /// Sets `key` to `value`, returning the old value. Returns `None` if the key didn't exist.
+    pub async fn getset(
+        &mut self,
+        key: &str,
+        value: impl AsRef<[u8]>,
+    ) -> Result<Option<Bytes>, ClientError> {
+        let frame = self
+            .send_frame(cmd3(b"GETSET", key.as_bytes(), value.as_ref()))
+            .await?;
+        optional_bytes(frame)
+    }
+
+    /// Sets multiple key-value pairs only if none of the keys already exist.
+    /// Returns `true` if all keys were set, `false` if any key existed.
+    pub async fn msetnx<V: AsRef<[u8]>>(
+        &mut self,
+        pairs: &[(&str, V)],
+    ) -> Result<bool, ClientError> {
+        let mut parts = Vec::with_capacity(1 + pairs.len() * 2);
+        parts.push(Frame::Bulk(Bytes::from_static(b"MSETNX")));
+        for (k, v) in pairs {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(k.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(v.as_ref())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        bool_flag(frame)
+    }
+
+    // --- bitmap commands ---
+
+    /// Returns the bit value at `offset` in the string stored at `key`.
+    pub async fn getbit(&mut self, key: &str, offset: u64) -> Result<i64, ClientError> {
+        let off = offset.to_string();
+        let frame = self
+            .send_frame(cmd3(b"GETBIT", key.as_bytes(), off.as_bytes()))
+            .await?;
+        integer(frame)
+    }
+
+    /// Sets or clears the bit at `offset`. Returns the original bit value.
+    pub async fn setbit(&mut self, key: &str, offset: u64, value: u8) -> Result<i64, ClientError> {
+        let off = offset.to_string();
+        let val = value.to_string();
+        let frame = self
+            .send_frame(cmd4(b"SETBIT", key.as_bytes(), off.as_bytes(), val.as_bytes()))
+            .await?;
+        integer(frame)
+    }
+
+    /// Counts set bits in the string at `key`.
+    ///
+    /// `range`: optional `(start, end, unit)` where unit is `"BYTE"` or `"BIT"`.
+    pub async fn bitcount(
+        &mut self,
+        key: &str,
+        range: Option<(i64, i64, &str)>,
+    ) -> Result<i64, ClientError> {
+        let frame = if let Some((start, end, unit)) = range {
+            let s = start.to_string();
+            let e = end.to_string();
+            let mut parts = Vec::with_capacity(5);
+            parts.push(Frame::Bulk(Bytes::from_static(b"BITCOUNT")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(key.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(s.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(e.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(unit.as_bytes())));
+            self.send_frame(Frame::Array(parts)).await?
+        } else {
+            self.send_frame(cmd2(b"BITCOUNT", key.as_bytes())).await?
+        };
+        integer(frame)
+    }
+
+    /// Finds the first set (`bit=1`) or clear (`bit=0`) bit in the string at `key`.
+    ///
+    /// `range`: optional `(start, end, unit)` where unit is `"BYTE"` or `"BIT"`.
+    pub async fn bitpos(
+        &mut self,
+        key: &str,
+        bit: u8,
+        range: Option<(i64, i64, &str)>,
+    ) -> Result<i64, ClientError> {
+        let b = bit.to_string();
+        let frame = if let Some((start, end, unit)) = range {
+            let s = start.to_string();
+            let e = end.to_string();
+            let mut parts = Vec::with_capacity(6);
+            parts.push(Frame::Bulk(Bytes::from_static(b"BITPOS")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(key.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(b.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(s.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(e.as_bytes())));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(unit.as_bytes())));
+            self.send_frame(Frame::Array(parts)).await?
+        } else {
+            self.send_frame(cmd3(b"BITPOS", key.as_bytes(), b.as_bytes()))
+                .await?
+        };
+        integer(frame)
+    }
+
+    /// Performs a bitwise operation between strings.
+    ///
+    /// `op` is `"AND"`, `"OR"`, `"XOR"`, or `"NOT"`. Result is stored at `dest`.
+    /// Returns the length of the resulting string.
+    pub async fn bitop(
+        &mut self,
+        op: &str,
+        dest: &str,
+        keys: &[&str],
+    ) -> Result<i64, ClientError> {
+        let mut parts = Vec::with_capacity(3 + keys.len());
+        parts.push(Frame::Bulk(Bytes::from_static(b"BITOP")));
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(op.as_bytes())));
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(dest.as_bytes())));
+        for k in keys {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(k.as_bytes())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        integer(frame)
+    }
+
+    // --- set commands (extended) ---
+
+    /// Atomically moves `member` from `src` to `dst`. Returns `true` if the move succeeded.
+    pub async fn smove(
+        &mut self,
+        src: &str,
+        dst: &str,
+        member: &str,
+    ) -> Result<bool, ClientError> {
+        let frame = self
+            .send_frame(cmd4(b"SMOVE", src.as_bytes(), dst.as_bytes(), member.as_bytes()))
+            .await?;
+        bool_flag(frame)
+    }
+
+    /// Returns the cardinality of the intersection of multiple sets. `limit=0` means no limit.
+    pub async fn sintercard(&mut self, keys: &[&str], limit: usize) -> Result<i64, ClientError> {
+        let n = keys.len().to_string();
+        let lim = limit.to_string();
+        let mut parts = Vec::with_capacity(3 + keys.len() + 2);
+        parts.push(Frame::Bulk(Bytes::from_static(b"SINTERCARD")));
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(n.as_bytes())));
+        for k in keys {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(k.as_bytes())));
+        }
+        if limit > 0 {
+            parts.push(Frame::Bulk(Bytes::from_static(b"LIMIT")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(lim.as_bytes())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        integer(frame)
+    }
+
+    // --- list commands (extended) ---
+
+    /// Pops up to `count` elements from the first non-empty list in `keys`.
+    ///
+    /// `left=true` pops from the head, `left=false` from the tail.
+    /// Returns `None` if all lists are empty, or `Some((key, elements))`.
+    pub async fn lmpop(
+        &mut self,
+        keys: &[&str],
+        left: bool,
+        count: usize,
+    ) -> Result<Option<(String, Vec<Bytes>)>, ClientError> {
+        let n = keys.len().to_string();
+        let dir = if left { b"LEFT" as &[u8] } else { b"RIGHT" };
+        let cnt = count.to_string();
+        let mut parts = Vec::with_capacity(4 + keys.len() + 2);
+        parts.push(Frame::Bulk(Bytes::from_static(b"LMPOP")));
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(n.as_bytes())));
+        for k in keys {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(k.as_bytes())));
+        }
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(dir)));
+        if count > 0 {
+            parts.push(Frame::Bulk(Bytes::from_static(b"COUNT")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(cnt.as_bytes())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        match frame {
+            Frame::Null => Ok(None),
+            Frame::Array(mut elems) if elems.len() == 2 => {
+                let key = match elems.remove(0) {
+                    Frame::Bulk(b) => String::from_utf8(b.to_vec())
+                        .map_err(|_| ClientError::Protocol("key is not valid UTF-8".into()))?,
+                    other => {
+                        return Err(ClientError::Protocol(format!(
+                            "expected bulk key in LMPOP response, got {other:?}"
+                        )))
+                    }
+                };
+                let elements = bytes_vec(elems.remove(0))?;
+                Ok(Some((key, elements)))
+            }
+            Frame::Error(e) => Err(ClientError::Server(e)),
+            other => Err(ClientError::Protocol(format!(
+                "unexpected LMPOP response: {other:?}"
+            ))),
+        }
+    }
+
+    // --- hash commands (extended) ---
+
+    /// Returns random field(s) from the hash at `key`.
+    ///
+    /// `count=None` returns a single field name as a one-element Vec.
+    /// Positive count returns that many distinct fields; negative allows repeats.
+    pub async fn hrandfield(
+        &mut self,
+        key: &str,
+        count: Option<i64>,
+    ) -> Result<Vec<Bytes>, ClientError> {
+        let frame = if let Some(n) = count {
+            let s = n.to_string();
+            self.send_frame(cmd3(b"HRANDFIELD", key.as_bytes(), s.as_bytes()))
+                .await?
+        } else {
+            self.send_frame(cmd2(b"HRANDFIELD", key.as_bytes())).await?
+        };
+        match frame {
+            Frame::Bulk(b) => Ok(vec![b]),
+            Frame::Null => Ok(vec![]),
+            Frame::Array(_) => bytes_vec(frame),
+            Frame::Error(e) => Err(ClientError::Server(e)),
+            other => Err(ClientError::Protocol(format!(
+                "unexpected HRANDFIELD response: {other:?}"
+            ))),
+        }
+    }
+
+    /// Returns random field-value pairs from the hash at `key`.
+    ///
+    /// `count` controls how many pairs to return (positive = distinct, negative = allow repeats).
+    pub async fn hrandfield_withvalues(
+        &mut self,
+        key: &str,
+        count: i64,
+    ) -> Result<Vec<(Bytes, Bytes)>, ClientError> {
+        let s = count.to_string();
+        let frame = self
+            .send_frame(Frame::Array(vec![
+                Frame::Bulk(Bytes::from_static(b"HRANDFIELD")),
+                Frame::Bulk(Bytes::copy_from_slice(key.as_bytes())),
+                Frame::Bulk(Bytes::copy_from_slice(s.as_bytes())),
+                Frame::Bulk(Bytes::from_static(b"WITHVALUES")),
+            ]))
+            .await?;
+        pairs(frame)
+    }
+
+    // --- sorted set commands (extended) ---
+
+    /// Pops up to `count` elements from the first non-empty sorted set in `keys`.
+    ///
+    /// `min=true` pops minimum-score members, `min=false` pops maximum-score members.
+    /// Returns `None` if all sorted sets are empty, or `Some((key, members))`.
+    pub async fn zmpop(
+        &mut self,
+        keys: &[&str],
+        min: bool,
+        count: usize,
+    ) -> Result<Option<(String, Vec<(Bytes, f64)>)>, ClientError> {
+        let n = keys.len().to_string();
+        let dir = if min { b"MIN" as &[u8] } else { b"MAX" };
+        let cnt = count.to_string();
+        let mut parts = Vec::with_capacity(4 + keys.len() + 2);
+        parts.push(Frame::Bulk(Bytes::from_static(b"ZMPOP")));
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(n.as_bytes())));
+        for k in keys {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(k.as_bytes())));
+        }
+        parts.push(Frame::Bulk(Bytes::copy_from_slice(dir)));
+        if count > 0 {
+            parts.push(Frame::Bulk(Bytes::from_static(b"COUNT")));
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(cnt.as_bytes())));
+        }
+        let frame = self.send_frame(Frame::Array(parts)).await?;
+        match frame {
+            Frame::Null => Ok(None),
+            Frame::Array(mut elems) if elems.len() == 2 => {
+                let key = match elems.remove(0) {
+                    Frame::Bulk(b) => String::from_utf8(b.to_vec())
+                        .map_err(|_| ClientError::Protocol("key is not valid UTF-8".into()))?,
+                    other => {
+                        return Err(ClientError::Protocol(format!(
+                            "expected bulk key in ZMPOP response, got {other:?}"
+                        )))
+                    }
+                };
+                let members = scored_members(elems.remove(0))?;
+                Ok(Some((key, members)))
+            }
+            Frame::Error(e) => Err(ClientError::Server(e)),
+            other => Err(ClientError::Protocol(format!(
+                "unexpected ZMPOP response: {other:?}"
+            ))),
+        }
+    }
+
+    /// Returns random member(s) from the sorted set at `key`.
+    ///
+    /// `count=None` returns a single member name. Positive count returns distinct members;
+    /// negative allows repeats.
+    pub async fn zrandmember(
+        &mut self,
+        key: &str,
+        count: Option<i64>,
+    ) -> Result<Vec<Bytes>, ClientError> {
+        let frame = if let Some(n) = count {
+            let s = n.to_string();
+            self.send_frame(cmd3(b"ZRANDMEMBER", key.as_bytes(), s.as_bytes()))
+                .await?
+        } else {
+            self.send_frame(cmd2(b"ZRANDMEMBER", key.as_bytes())).await?
+        };
+        match frame {
+            Frame::Bulk(b) => Ok(vec![b]),
+            Frame::Null => Ok(vec![]),
+            Frame::Array(_) => bytes_vec(frame),
+            Frame::Error(e) => Err(ClientError::Server(e)),
+            other => Err(ClientError::Protocol(format!(
+                "unexpected ZRANDMEMBER response: {other:?}"
+            ))),
+        }
+    }
+
+    /// Returns random member-score pairs from the sorted set at `key`.
+    ///
+    /// `count` controls how many pairs to return (positive = distinct, negative = allow repeats).
+    pub async fn zrandmember_withscores(
+        &mut self,
+        key: &str,
+        count: i64,
+    ) -> Result<Vec<(Bytes, f64)>, ClientError> {
+        let s = count.to_string();
+        let frame = self
+            .send_frame(Frame::Array(vec![
+                Frame::Bulk(Bytes::from_static(b"ZRANDMEMBER")),
+                Frame::Bulk(Bytes::copy_from_slice(key.as_bytes())),
+                Frame::Bulk(Bytes::copy_from_slice(s.as_bytes())),
+                Frame::Bulk(Bytes::from_static(b"WITHSCORES")),
+            ]))
+            .await?;
+        scored_members(frame)
+    }
+
     // --- pipeline ---
 
     /// Executes all commands queued in `pipeline` as a single batch.
