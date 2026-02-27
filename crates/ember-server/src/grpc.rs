@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ember_core::{Engine, ShardRequest, ShardResponse, TtlResult, Value};
-use ember_protocol::command::ScoreBound;
+use ember_protocol::command::{BitOpKind, BitRange, BitRangeUnit, ScoreBound};
 use subtle::ConstantTimeEq;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::service::interceptor::InterceptedService;
@@ -3274,6 +3274,628 @@ impl EmberCache for EmberService {
     }
 
     // -----------------------------------------------------------------------
+    // keys (new)
+    // -----------------------------------------------------------------------
+
+    async fn expiretime(
+        &self,
+        request: Request<ExpiretimeRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Expiretime { key: req.key.clone() },
+            )
+            .await?;
+        self.record_command(start, "EXPIRETIME");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn pexpiretime(
+        &self,
+        request: Request<PexpiretimeRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Pexpiretime { key: req.key.clone() },
+            )
+            .await?;
+        self.record_command(start, "PEXPIRETIME");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn expireat(
+        &self,
+        request: Request<ExpireatRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Expireat {
+                    key: req.key.clone(),
+                    timestamp: req.timestamp,
+                },
+            )
+            .await?;
+        self.record_command(start, "EXPIREAT");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn pexpireat(
+        &self,
+        request: Request<PexpireatRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::Pexpireat {
+                    key: req.key.clone(),
+                    timestamp_ms: req.timestamp_ms,
+                },
+            )
+            .await?;
+        self.record_command(start, "PEXPIREAT");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // strings (new)
+    // -----------------------------------------------------------------------
+
+    async fn getset(
+        &self,
+        request: Request<GetsetRequest>,
+    ) -> Result<Response<GetResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::GetSet {
+                    key: req.key.clone(),
+                    value: req.value.into(),
+                },
+            )
+            .await?;
+        self.record_command(start, "GETSET");
+
+        match resp {
+            ShardResponse::Value(opt) => Ok(Response::new(GetResponse {
+                value: opt.and_then(|v| match v {
+                    Value::String(b) => Some(b.to_vec()),
+                    _ => None,
+                }),
+            })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn msetnx(
+        &self,
+        request: Request<MsetnxRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.pairs.is_empty() {
+            return Err(Status::invalid_argument("at least one pair required"));
+        }
+        for p in &req.pairs {
+            validate_key(&p.key, &self.ctx.limits)?;
+        }
+        let pairs: Vec<(String, Bytes)> = req
+            .pairs
+            .into_iter()
+            .map(|kv| (kv.key, kv.value.into()))
+            .collect();
+        let first_key = pairs[0].0.clone();
+        let resp = self
+            .route(&first_key, ShardRequest::MSetNx { pairs })
+            .await?;
+        self.record_command(start, "MSETNX");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // bitmaps
+    // -----------------------------------------------------------------------
+
+    async fn getbit(
+        &self,
+        request: Request<GetbitRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::GetBit {
+                    key: req.key.clone(),
+                    offset: req.offset,
+                },
+            )
+            .await?;
+        self.record_command(start, "GETBIT");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn setbit(
+        &self,
+        request: Request<SetbitRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        if req.value > 1 {
+            return Err(Status::invalid_argument("bit value must be 0 or 1"));
+        }
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::SetBit {
+                    key: req.key.clone(),
+                    offset: req.offset,
+                    value: req.value as u8,
+                },
+            )
+            .await?;
+        self.record_command(start, "SETBIT");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn bitcount(
+        &self,
+        request: Request<BitcountRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let range = if req.has_range {
+            let unit = if req.unit == "BIT" {
+                BitRangeUnit::Bit
+            } else {
+                BitRangeUnit::Byte
+            };
+            Some(BitRange {
+                start: req.start,
+                end: req.end,
+                unit,
+            })
+        } else {
+            None
+        };
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::BitCount {
+                    key: req.key.clone(),
+                    range,
+                },
+            )
+            .await?;
+        self.record_command(start, "BITCOUNT");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn bitpos(
+        &self,
+        request: Request<BitposRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        if req.bit > 1 {
+            return Err(Status::invalid_argument("bit argument must be 0 or 1"));
+        }
+        let range = if req.has_range {
+            let unit = if req.unit == "BIT" {
+                BitRangeUnit::Bit
+            } else {
+                BitRangeUnit::Byte
+            };
+            Some(BitRange {
+                start: req.start,
+                end: req.end,
+                unit,
+            })
+        } else {
+            None
+        };
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::BitPos {
+                    key: req.key.clone(),
+                    bit: req.bit as u8,
+                    range,
+                },
+            )
+            .await?;
+        self.record_command(start, "BITPOS");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn bitop(
+        &self,
+        request: Request<BitopRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.keys.is_empty() {
+            return Err(Status::invalid_argument("at least one source key required"));
+        }
+        validate_key(&req.dest, &self.ctx.limits)?;
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let op = match req.op.to_uppercase().as_str() {
+            "AND" => BitOpKind::And,
+            "OR" => BitOpKind::Or,
+            "XOR" => BitOpKind::Xor,
+            "NOT" => BitOpKind::Not,
+            other => {
+                return Err(Status::invalid_argument(format!(
+                    "unsupported BITOP operation: {other}"
+                )));
+            }
+        };
+        let resp = self
+            .route(
+                &req.dest,
+                ShardRequest::BitOp {
+                    op,
+                    dest: req.dest.clone(),
+                    keys: req.keys,
+                },
+            )
+            .await?;
+        self.record_command(start, "BITOP");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // sets (new)
+    // -----------------------------------------------------------------------
+
+    async fn smove(
+        &self,
+        request: Request<SmoveRequest>,
+    ) -> Result<Response<BoolResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.source, &self.ctx.limits)?;
+        validate_key(&req.destination, &self.ctx.limits)?;
+        let resp = self
+            .route(
+                &req.source,
+                ShardRequest::SMove {
+                    source: req.source.clone(),
+                    destination: req.destination,
+                    member: req.member,
+                },
+            )
+            .await?;
+        self.record_command(start, "SMOVE");
+
+        match resp {
+            ShardResponse::Bool(v) => Ok(Response::new(BoolResponse { value: v })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn sintercard(
+        &self,
+        request: Request<SintercardRequest>,
+    ) -> Result<Response<IntResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        let keys = req.keys;
+        if keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let limit = req.limit as usize;
+        let first_key = keys[0].clone();
+        let resp = self
+            .route(
+                &first_key,
+                ShardRequest::SInterCard { keys, limit },
+            )
+            .await?;
+        self.record_command(start, "SINTERCARD");
+
+        match resp {
+            ShardResponse::Integer(n) => Ok(Response::new(IntResponse { value: n })),
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // lists (new)
+    // -----------------------------------------------------------------------
+
+    async fn lmpop(
+        &self,
+        request: Request<LmpopRequest>,
+    ) -> Result<Response<LmpopResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let count = req.count.max(1) as usize;
+
+        for key in &req.keys {
+            let resp = self
+                .route(
+                    key,
+                    ShardRequest::LmpopSingle {
+                        key: key.clone(),
+                        left: req.left,
+                        count,
+                    },
+                )
+                .await?;
+            match resp {
+                ShardResponse::Array(items) if !items.is_empty() => {
+                    self.record_command(start, "LMPOP");
+                    return Ok(Response::new(LmpopResponse {
+                        found: true,
+                        key: key.clone(),
+                        elements: items.into_iter().map(|b| b.to_vec()).collect(),
+                    }));
+                }
+                ShardResponse::Array(_) | ShardResponse::Value(None) => continue,
+                ShardResponse::WrongType => {
+                    return Err(Status::invalid_argument(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
+                    ));
+                }
+                other => return Err(unexpected_response(&other)),
+            }
+        }
+
+        self.record_command(start, "LMPOP");
+        Ok(Response::new(LmpopResponse {
+            found: false,
+            key: String::new(),
+            elements: vec![],
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // sorted sets (new)
+    // -----------------------------------------------------------------------
+
+    async fn zmpop(
+        &self,
+        request: Request<ZmpopRequest>,
+    ) -> Result<Response<ZmpopResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        if req.keys.is_empty() {
+            return Err(Status::invalid_argument("at least one key required"));
+        }
+        for k in &req.keys {
+            validate_key(k, &self.ctx.limits)?;
+        }
+        let count = req.count.max(1) as usize;
+
+        for key in &req.keys {
+            let resp = self
+                .route(
+                    key,
+                    ShardRequest::ZmpopSingle {
+                        key: key.clone(),
+                        min: req.min,
+                        count,
+                    },
+                )
+                .await?;
+            match resp {
+                ShardResponse::ZPopResult(members) if !members.is_empty() => {
+                    self.record_command(start, "ZMPOP");
+                    return Ok(Response::new(ZmpopResponse {
+                        found: true,
+                        key: key.clone(),
+                        members: members
+                            .into_iter()
+                            .map(|(m, s)| ScoreMember { score: s, member: m })
+                            .collect(),
+                    }));
+                }
+                ShardResponse::ZPopResult(_) | ShardResponse::Value(None) => continue,
+                ShardResponse::WrongType => {
+                    return Err(Status::invalid_argument(
+                        "WRONGTYPE Operation against a key holding the wrong kind of value",
+                    ));
+                }
+                other => return Err(unexpected_response(&other)),
+            }
+        }
+
+        self.record_command(start, "ZMPOP");
+        Ok(Response::new(ZmpopResponse {
+            found: false,
+            key: String::new(),
+            members: vec![],
+        }))
+    }
+
+    // -----------------------------------------------------------------------
+    // hashes (new)
+    // -----------------------------------------------------------------------
+
+    async fn hrandfield(
+        &self,
+        request: Request<HrandfieldRequest>,
+    ) -> Result<Response<ArrayResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let count = if req.has_count { Some(req.count as i64) } else { None };
+        let with_values = req.with_values;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::HRandField {
+                    key: req.key.clone(),
+                    count,
+                    with_values,
+                },
+            )
+            .await?;
+        self.record_command(start, "HRANDFIELD");
+
+        match resp {
+            ShardResponse::HRandFieldResult(pairs) => {
+                let values = if with_values {
+                    let mut v = Vec::with_capacity(pairs.len() * 2);
+                    for (field, val) in pairs {
+                        v.push(field.into_bytes());
+                        v.push(val.map(|b| b.to_vec()).unwrap_or_default());
+                    }
+                    v
+                } else {
+                    pairs.into_iter().map(|(f, _)| f.into_bytes()).collect()
+                };
+                Ok(Response::new(ArrayResponse { values }))
+            }
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    async fn zrandmember(
+        &self,
+        request: Request<ZrandmemberRequest>,
+    ) -> Result<Response<ArrayResponse>, Status> {
+        let start = Instant::now();
+        let req = request.into_inner();
+        validate_key(&req.key, &self.ctx.limits)?;
+        let count = if req.has_count { Some(req.count as i64) } else { None };
+        let with_scores = req.with_scores;
+        let resp = self
+            .route(
+                &req.key,
+                ShardRequest::ZRandMember {
+                    key: req.key.clone(),
+                    count,
+                    with_scores,
+                },
+            )
+            .await?;
+        self.record_command(start, "ZRANDMEMBER");
+
+        match resp {
+            ShardResponse::ZRandMemberResult(pairs) => {
+                let values = if with_scores {
+                    let mut v = Vec::with_capacity(pairs.len() * 2);
+                    for (member, score) in pairs {
+                        v.push(member.into_bytes());
+                        if let Some(s) = score {
+                            v.push(format!("{s}").into_bytes());
+                        }
+                    }
+                    v
+                } else {
+                    pairs.into_iter().map(|(m, _)| m.into_bytes()).collect()
+                };
+                Ok(Response::new(ArrayResponse { values }))
+            }
+            ShardResponse::WrongType => Err(Status::invalid_argument(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
+            other => Err(unexpected_response(&other)),
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // pipeline (bidirectional streaming)
     // -----------------------------------------------------------------------
 
@@ -3494,6 +4116,35 @@ async fn handle_pipeline_command(
         // extended server
         Time     => time      => TimeResp,
         LastSave => last_save => IntVal,
+
+        // new keys
+        Expiretime  => expiretime  => IntVal,
+        Pexpiretime => pexpiretime => IntVal,
+        Expireat    => expireat    => BoolVal,
+        Pexpireat   => pexpireat   => BoolVal,
+
+        // new strings
+        Getset => getset => Get,
+        Msetnx => msetnx => BoolVal,
+
+        // bitmaps
+        Getbit   => getbit   => IntVal,
+        Setbit   => setbit   => IntVal,
+        Bitcount => bitcount => IntVal,
+        Bitpos   => bitpos   => IntVal,
+        Bitop    => bitop    => IntVal,
+
+        // new sets
+        Smove     => smove     => BoolVal,
+        Sintercard => sintercard => IntVal,
+
+        // new lists
+        Lmpop => lmpop => Lmpop,
+
+        // new sorted sets
+        Zmpop       => zmpop       => Zmpop,
+        Hrandfield  => hrandfield  => Array,
+        Zrandmember => zrandmember => Array,
     })
 }
 
