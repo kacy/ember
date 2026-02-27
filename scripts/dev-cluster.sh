@@ -103,12 +103,12 @@ cmd_start() {
     "$CLI" -p "$p1" cluster meet 127.0.0.1 "$p3" >/dev/null
 
     echo "assigning slots..."
-    "$CLI" -p "$p1" cluster addslotsrange 0 5460 >/dev/null
+    # node-1 already owns slots 0-5460 via bootstrap; nodes 2 and 3 take their ranges
     "$CLI" -p "$p2" cluster addslotsrange 5461 10922 >/dev/null
     "$CLI" -p "$p3" cluster addslotsrange 10923 16383 >/dev/null
 
-    # give gossip a moment to converge
-    sleep 0.5
+    # give gossip time to fully converge before printing status
+    sleep 1.5
 
     echo ""
     "$CLI" -p "$p1" cluster info
