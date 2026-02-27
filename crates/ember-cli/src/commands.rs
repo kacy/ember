@@ -633,6 +633,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "remove all keys from the current database",
     },
     CommandInfo {
+        name: "FLUSHALL",
+        args: "[ASYNC]",
+        group: "server",
+        summary: "remove all keys from all databases (alias for FLUSHDB in ember)",
+    },
+    CommandInfo {
+        name: "MEMORY USAGE",
+        args: "key [SAMPLES count]",
+        group: "server",
+        summary: "estimate memory usage for a key in bytes",
+    },
+    CommandInfo {
         name: "INFO",
         args: "[section]",
         group: "server",

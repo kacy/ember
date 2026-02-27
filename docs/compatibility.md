@@ -242,7 +242,7 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | CLIENT SETNAME | ✓ | |
 | CLIENT GETNAME | ✓ | |
 | CLIENT LIST | ✓ | |
-| FLUSHALL | ✗ | use FLUSHDB instead |
+| FLUSHALL | ✓ | ASYNC mode supported; single-database, equivalent to FLUSHDB |
 | SAVE | ✗ | use BGSAVE instead |
 | SHUTDOWN | ✗ | use SIGTERM instead |
 | DEBUG | ✗ | not implemented |
@@ -257,7 +257,7 @@ Ember also exposes port `6379` by default, the same as Redis, so most default co
 | CLIENT NO-EVICT | ✗ | not implemented |
 | CLIENT NO-TOUCH | ✗ | not implemented |
 | LATENCY | ✗ | not implemented |
-| MEMORY USAGE | ✗ | not implemented |
+| MEMORY USAGE | ✓ | returns estimated key memory in bytes; SAMPLES option accepted and ignored |
 | MEMORY STATS | ✗ | not implemented |
 | MEMORY DOCTOR | ✗ | not implemented |
 | RESET | ✗ | not implemented |
@@ -334,7 +334,7 @@ all cluster commands are implemented. see the cluster documentation for operatio
 some Redis commands are explicitly not planned for Ember:
 
 **scripting**
-- `EVAL`, `EVALSHA`, `EVALRO`, `SCRIPT LOAD`, `SCRIPT EXISTS`, `SCRIPT FLUSH` — Lua scripting is an anti-goal. We may support WASM-based extensions in the future instead.
+- `EVAL`, `EVALSHA`, `EVALRO`, `SCRIPT LOAD`, `SCRIPT EXISTS`, `SCRIPT FLUSH` — Lua scripting is explicitly not planned. if you need server-side logic, WASM-based extensions may be supported in a future release.
 - `FCALL`, `FUNCTION LOAD`, `FUNCTION LIST`, `FUNCTION DELETE` — same reasoning as EVAL.
 
 **streams**
@@ -344,7 +344,7 @@ some Redis commands are explicitly not planned for Ember:
 - `BITFIELD`, `BITFIELD_RO` — not planned; use application-level serialization if needed.
 
 **geo**
-- `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — not implemented yet.
+- `GEOADD`, `GEOPOS`, `GEODIST`, `GEORADIUS`, `GEORADIUSBYMEMBER`, `GEOSEARCH`, `GEOSEARCHSTORE`, `GEOHASH` — coming in a future release.
 
 **other**
 - `LOLWUT` — not implemented.

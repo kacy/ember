@@ -115,6 +115,8 @@ impl Command {
             "BGSAVE" => parse_bgsave(&frames[1..]),
             "BGREWRITEAOF" => parse_bgrewriteaof(&frames[1..]),
             "FLUSHDB" => parse_flushdb(&frames[1..]),
+            "FLUSHALL" => parse_flushall(&frames[1..]),
+            "MEMORY" => parse_memory_cmd(&frames[1..]),
             "SCAN" => parse_scan(&frames[1..]),
             "SSCAN" => parse_key_scan(&frames[1..], "SSCAN"),
             "HSCAN" => parse_key_scan(&frames[1..], "HSCAN"),
@@ -1019,6 +1021,39 @@ fn parse_flushdb(args: &[Frame]) -> Result<Command, ProtocolError> {
         }
     }
     Err(wrong_arity("FLUSHDB"))
+}
+
+fn parse_flushall(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Ok(Command::FlushAll { async_mode: false });
+    }
+    if args.len() == 1 {
+        let arg = extract_string(&args[0])?;
+        if arg.eq_ignore_ascii_case("ASYNC") {
+            return Ok(Command::FlushAll { async_mode: true });
+        }
+    }
+    Err(wrong_arity("FLUSHALL"))
+}
+
+fn parse_memory_cmd(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(ProtocolError::WrongArity("memory".into()));
+    }
+    let subcommand = extract_string(&args[0])?;
+    if subcommand.eq_ignore_ascii_case("USAGE") {
+        if args.len() < 2 {
+            return Err(wrong_arity("MEMORY USAGE"));
+        }
+        let key = extract_string(&args[1])?;
+        // Accept but ignore SAMPLES count — we always use the cached value size.
+        Ok(Command::MemoryUsage { key })
+    } else {
+        Err(ProtocolError::InvalidCommandFrame(format!(
+            "unknown subcommand '{}' for 'memory' command",
+            subcommand
+        )))
+    }
 }
 
 fn parse_unlink(args: &[Frame]) -> Result<Command, ProtocolError> {

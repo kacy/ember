@@ -873,6 +873,7 @@ fn commands_in_category(flag: u64) -> Vec<&'static str> {
         Command::BgSave,
         Command::BgRewriteAof,
         Command::FlushDb { async_mode: false },
+        Command::FlushAll { async_mode: false },
         Command::ConfigGet {
             pattern: String::new(),
         },

@@ -83,6 +83,8 @@ impl Command {
             Command::BgSave => "bgsave",
             Command::BgRewriteAof => "bgrewriteaof",
             Command::FlushDb { .. } => "flushdb",
+            Command::FlushAll { .. } => "flushall",
+            Command::MemoryUsage { .. } => "memory",
             Command::ConfigGet { .. } => "config",
             Command::ConfigSet { .. } => "config",
             Command::ConfigRewrite => "config",
@@ -310,6 +312,7 @@ impl Command {
                 | Command::SMove { .. }
             // server / persistence
                 | Command::FlushDb { .. }
+                | Command::FlushAll { .. }
                 | Command::ConfigSet { .. }
                 | Command::Exec
                 | Command::BgRewriteAof
@@ -514,6 +517,8 @@ impl Command {
             }
             Command::BgSave | Command::BgRewriteAof => SERVER | ADMIN | SLOW,
             Command::FlushDb { .. } => KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW,
+            Command::FlushAll { .. } => KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW,
+            Command::MemoryUsage { .. } => READ | KEYSPACE | SLOW,
             Command::ConfigGet { .. } => SERVER | ADMIN | SLOW,
             Command::ConfigSet { .. } | Command::ConfigRewrite => SERVER | ADMIN | SLOW,
             Command::SlowLogGet { .. } | Command::SlowLogLen | Command::SlowLogReset => {
@@ -676,7 +681,8 @@ impl Command {
             | Command::Restore { key, .. }
             | Command::Sort { key, .. }
             | Command::GetDel { key }
-            | Command::GetEx { key, .. } => Some(key),
+            | Command::GetEx { key, .. }
+            | Command::MemoryUsage { key } => Some(key),
             Command::LMove { source, .. } => Some(source),
             Command::Copy { source, .. } => Some(source),
             Command::SMove { source, .. } => Some(source),
