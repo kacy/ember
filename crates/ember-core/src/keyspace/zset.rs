@@ -552,6 +552,86 @@ impl Keyspace {
         Ok(result)
     }
 
+    /// Computes the diff of sorted sets and stores the result in `dest`.
+    ///
+    /// Equivalent to calling `zdiff` then writing the result to `dest`.
+    /// Replaces any existing value at `dest`. Returns the count of stored
+    /// members and the scored pairs (for AOF persistence).
+    pub fn zdiffstore(
+        &mut self,
+        dest: &str,
+        keys: &[String],
+    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+        let members = self.zdiff(keys)?;
+        self.zstore_result(dest, members)
+    }
+
+    /// Computes the intersection of sorted sets and stores the result in `dest`.
+    ///
+    /// Equivalent to calling `zinter` then writing the result to `dest`.
+    /// Replaces any existing value at `dest`. Returns the count of stored
+    /// members and the scored pairs (for AOF persistence).
+    pub fn zinterstore(
+        &mut self,
+        dest: &str,
+        keys: &[String],
+    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+        let members = self.zinter(keys)?;
+        self.zstore_result(dest, members)
+    }
+
+    /// Computes the union of sorted sets and stores the result in `dest`.
+    ///
+    /// Equivalent to calling `zunion` then writing the result to `dest`.
+    /// Replaces any existing value at `dest`. Returns the count of stored
+    /// members and the scored pairs (for AOF persistence).
+    pub fn zunionstore(
+        &mut self,
+        dest: &str,
+        keys: &[String],
+    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+        let members = self.zunion(keys)?;
+        self.zstore_result(dest, members)
+    }
+
+    /// Writes a computed sorted set result to `dest`, replacing any existing key.
+    ///
+    /// Returns the cardinality and the stored members (score, member) pairs for AOF.
+    fn zstore_result(
+        &mut self,
+        dest: &str,
+        members: Vec<(String, f64)>,
+    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+        // remove any existing entry at dest (any type)
+        self.remove_if_expired(dest);
+        if let Some(old) = self.entries.remove(dest) {
+            self.memory.remove(dest, &old.value);
+            self.decrement_expiry_if_set(&old);
+            self.defer_drop(old.value);
+        }
+
+        let count = members.len();
+        if count == 0 {
+            return Ok((0, vec![]));
+        }
+
+        let mut ss = SortedSet::default();
+        let flags = ZAddFlags::default();
+        for (member, score) in &members {
+            ss.add_with_flags(member, *score, &flags);
+        }
+
+        let value = Value::SortedSet(Box::new(ss));
+        self.memory.add(dest, &value);
+        let entry = Entry::new(value, None);
+        self.entries.insert(CompactString::from(dest), entry);
+        self.bump_version(dest);
+
+        // return as (score, member) to match the ZAdd AOF record convention
+        let stored: Vec<(f64, String)> = members.into_iter().map(|(m, s)| (s, m)).collect();
+        Ok((count, stored))
+    }
+
     /// Returns random member(s) from a sorted set.
     ///
     /// - `count = None`: return one random member as a single string (no score)
@@ -1216,5 +1296,143 @@ mod tests {
         let mut ks = Keyspace::new();
         ks.set("s".into(), Bytes::from("val"), None, false, false);
         assert!(ks.zrandmember("s", None, false).is_err());
+    }
+
+    // --- zdiffstore / zinterstore / zunionstore ---
+
+    #[test]
+    fn zdiffstore_basic() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "a",
+            &[(1.0, "x".into()), (2.0, "y".into()), (3.0, "z".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        ks.zadd("b", &[(1.0, "y".into())], &ZAddFlags::default())
+            .unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let (count, _stored) = ks.zdiffstore("dest", &keys).unwrap();
+        assert_eq!(count, 2); // x, z
+
+        // dest key should now hold a sorted set
+        assert_eq!(ks.value_type("dest"), "zset");
+        let members = ks.zrange("dest", 0, -1).unwrap();
+        let names: Vec<&str> = members.iter().map(|(m, _)| m.as_str()).collect();
+        assert!(names.contains(&"x"));
+        assert!(names.contains(&"z"));
+        assert!(!names.contains(&"y"));
+    }
+
+    #[test]
+    fn zinterstore_basic() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "a",
+            &[(1.0, "x".into()), (2.0, "y".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        ks.zadd(
+            "b",
+            &[(3.0, "x".into()), (4.0, "z".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let (count, _stored) = ks.zinterstore("dest", &keys).unwrap();
+        assert_eq!(count, 1); // only x is in both
+
+        let members = ks.zrange("dest", 0, -1).unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].0, "x");
+        // score is summed: 1.0 + 3.0 = 4.0
+        assert!((members[0].1 - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zunionstore_basic() {
+        let mut ks = Keyspace::new();
+        ks.zadd(
+            "a",
+            &[(1.0, "x".into()), (2.0, "y".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+        ks.zadd(
+            "b",
+            &[(3.0, "x".into()), (4.0, "z".into())],
+            &ZAddFlags::default(),
+        )
+        .unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        let (count, _stored) = ks.zunionstore("dest", &keys).unwrap();
+        assert_eq!(count, 3); // x, y, z
+
+        let members = ks.zrange("dest", 0, -1).unwrap();
+        assert_eq!(members.len(), 3);
+        let x = members.iter().find(|(m, _)| m == "x").unwrap();
+        // score is summed: 1.0 + 3.0 = 4.0
+        assert!((x.1 - 4.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zstore_overwrites_existing_dest() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default())
+            .unwrap();
+        // put something at dest first
+        ks.set("dest".into(), Bytes::from("old"), None, false, false);
+
+        let keys = vec!["a".to_owned()];
+        let (count, _) = ks.zunionstore("dest", &keys).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(ks.value_type("dest"), "zset");
+    }
+
+    #[test]
+    fn zstore_empty_result_removes_dest() {
+        let mut ks = Keyspace::new();
+        ks.zadd("a", &[(1.0, "x".into())], &ZAddFlags::default())
+            .unwrap();
+        ks.zadd("b", &[(1.0, "x".into())], &ZAddFlags::default())
+            .unwrap();
+        // intersection of disjoint sets is empty
+        ks.zadd("dest", &[(5.0, "old".into())], &ZAddFlags::default())
+            .unwrap();
+
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        // zdiff of a and b where b has all of a's members → empty
+        let keys_diff = vec!["a".to_owned(), "b".to_owned()];
+        let (count, _) = ks.zdiffstore("dest", &keys_diff).unwrap();
+        assert_eq!(count, 0);
+        // dest should be removed when result is empty
+        assert_eq!(ks.value_type("dest"), "none");
+
+        // also check zinterstore on disjoint sets
+        ks.zadd("c", &[(1.0, "p".into())], &ZAddFlags::default())
+            .unwrap();
+        ks.zadd("d", &[(1.0, "q".into())], &ZAddFlags::default())
+            .unwrap();
+        ks.zadd("dest2", &[(5.0, "old".into())], &ZAddFlags::default())
+            .unwrap();
+        let keys_inter = vec!["c".to_owned(), "d".to_owned()];
+        let (count2, _) = ks.zinterstore("dest2", &keys_inter).unwrap();
+        assert_eq!(count2, 0);
+        assert_eq!(ks.value_type("dest2"), "none");
+        _ = keys;
+    }
+
+    #[test]
+    fn zstore_wrong_type_returns_error() {
+        let mut ks = Keyspace::new();
+        ks.set("s".into(), Bytes::from("val"), None, false, false);
+        let keys = vec!["s".to_owned()];
+        assert!(ks.zunionstore("dest", &keys).is_err());
+        assert!(ks.zinterstore("dest", &keys).is_err());
+        assert!(ks.zdiffstore("dest", &keys).is_err());
     }
 }

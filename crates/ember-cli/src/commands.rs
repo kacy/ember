@@ -566,6 +566,18 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "get the number of members in a sorted set",
     },
     CommandInfo {
+        name: "ZDIFFSTORE",
+        args: "destkey numkeys key [key ...]",
+        group: "sorted_set",
+        summary: "subtract multiple sorted sets and store the result in a new key",
+    },
+    CommandInfo {
+        name: "ZINTERSTORE",
+        args: "destkey numkeys key [key ...]",
+        group: "sorted_set",
+        summary: "intersect multiple sorted sets and store the result in a new key",
+    },
+    CommandInfo {
         name: "ZMPOP",
         args: "numkeys key [key ...] MIN|MAX [COUNT n]",
         group: "sorted_set",
@@ -606,18 +618,6 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "key member",
         group: "sorted_set",
         summary: "get the score of a member in a sorted set",
-    },
-    CommandInfo {
-        name: "ZDIFFSTORE",
-        args: "destkey numkeys key [key ...]",
-        group: "sorted_set",
-        summary: "subtract multiple sorted sets and store the result in a new key",
-    },
-    CommandInfo {
-        name: "ZINTERSTORE",
-        args: "destkey numkeys key [key ...]",
-        group: "sorted_set",
-        summary: "intersect multiple sorted sets and store the result in a new key",
     },
     CommandInfo {
         name: "ZUNIONSTORE",
