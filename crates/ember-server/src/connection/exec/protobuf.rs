@@ -235,7 +235,7 @@ pub(in crate::connection) async fn proto_set_field(
     let req = ShardRequest::ProtoSetField {
         key,
         field_path,
-        value: bytes::Bytes::from(value),
+        value,
     };
     match cx.engine.send_to_shard(idx, req).await {
         Ok(ShardResponse::ProtoFieldUpdated { .. }) => Frame::Simple("OK".into()),
