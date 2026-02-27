@@ -331,6 +331,18 @@ pub fn on_connection_rejected() {
     counter!("ember_connections_rejected").increment(1);
 }
 
+/// Records an authentication failure.
+///
+/// `reason` is a static label describing why auth failed:
+/// - `"wrongpass"` — bad password or unknown user
+/// - `"noauth"` — command sent without authenticating first
+/// - `"acl_deny"` — authenticated but ACL denied the command
+#[inline]
+pub fn on_auth_failure(reason: &'static str) {
+    let labels = [("reason", reason)];
+    counter!("ember_auth_failures_total", &labels).increment(1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

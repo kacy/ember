@@ -403,6 +403,7 @@ impl EmberConfig {
             max_pipeline_depth: self.max_pipeline_depth,
             max_key_len,
             max_value_len,
+            max_command_memory: 128 * 1024 * 1024, // 128MB
             stats_poll_interval: Duration::from_secs(self.engine.stats_poll_interval_secs),
         })
     }
@@ -572,6 +573,12 @@ pub struct ConnectionLimits {
     pub max_pipeline_depth: usize,
     pub max_key_len: usize,
     pub max_value_len: usize,
+    /// Total bytes allowed across all keys and values in a single command.
+    ///
+    /// Guards against DoS via commands like MSET or LPUSH with millions of
+    /// small elements that individually pass the per-item checks. Defaults
+    /// to 128MB.
+    pub max_command_memory: usize,
     pub stats_poll_interval: Duration,
 }
 

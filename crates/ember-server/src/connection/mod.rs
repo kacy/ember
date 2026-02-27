@@ -21,6 +21,7 @@ use crate::connection_common::{
     initial_acl_user, is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth,
     TransactionState,
 };
+use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -347,6 +348,7 @@ where
                     .await;
                     response.serialize(&mut out);
                 } else {
+                    on_auth_failure("noauth");
                     Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
                 }
             }

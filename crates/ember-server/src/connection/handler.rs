@@ -229,9 +229,12 @@ pub(super) async fn handle_blocking_pop_cmd(
         Err(e) => return Frame::Error(format!("ERR {e}")),
     };
 
-    if let Some(err) =
-        validate_command_sizes(&cmd, ctx.limits.max_key_len, ctx.limits.max_value_len)
-    {
+    if let Some(err) = validate_command_sizes(
+        &cmd,
+        ctx.limits.max_key_len,
+        ctx.limits.max_value_len,
+        ctx.limits.max_command_memory,
+    ) {
         return err;
     }
 
