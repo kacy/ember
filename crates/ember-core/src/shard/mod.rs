@@ -2059,12 +2059,14 @@ fn dispatch(
             Err(_) => ShardResponse::WrongType,
         },
         ShardRequest::HIncrBy { key, field, delta } => incr_result(ks.hincrby(key, field, *delta)),
-        ShardRequest::HIncrByFloat { key, field, delta } => match ks.hincrbyfloat(key, field, *delta) {
-            Ok(val) => ShardResponse::BulkString(val),
-            Err(IncrFloatError::WrongType) => ShardResponse::WrongType,
-            Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
-            Err(e) => ShardResponse::Err(e.to_string()),
-        },
+        ShardRequest::HIncrByFloat { key, field, delta } => {
+            match ks.hincrbyfloat(key, field, *delta) {
+                Ok(val) => ShardResponse::BulkString(val),
+                Err(IncrFloatError::WrongType) => ShardResponse::WrongType,
+                Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
+                Err(e) => ShardResponse::Err(e.to_string()),
+            }
+        }
         ShardRequest::HKeys { key } => match ks.hkeys(key) {
             Ok(keys) => ShardResponse::StringArray(keys),
             Err(_) => ShardResponse::WrongType,
