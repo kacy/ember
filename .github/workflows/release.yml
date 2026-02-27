@@ -158,6 +158,7 @@ jobs:
       - name: build and publish
         working-directory: clients/ember-ts
         run: |
+          npm version --no-git-tag-version ${GITHUB_REF_NAME#v}
           npm install
           npm run build
           npm publish --access public --provenance
