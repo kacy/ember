@@ -811,7 +811,9 @@ pub async fn run_threaded(
                     // give in-flight connection handlers time to finish
                     rt.shutdown_timeout(Duration::from_secs(30));
                 })
-                .map_err(|e| std::io::Error::other(format!("failed to spawn worker thread {id}: {e}")))
+                .map_err(|e| {
+                    std::io::Error::other(format!("failed to spawn worker thread {id}: {e}"))
+                })
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
 

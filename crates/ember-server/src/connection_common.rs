@@ -472,14 +472,26 @@ mod tests {
             nx: false,
             xx: false,
         };
-        assert!(validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).is_none());
+        assert!(validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY
+        )
+        .is_none());
     }
 
     #[test]
     fn oversized_key_rejected() {
         let big_key = "x".repeat(DEFAULT_MAX_KEY_LEN + 1);
         let cmd = Command::Get { key: big_key };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
     }
 
@@ -487,7 +499,13 @@ mod tests {
     fn key_at_limit_passes() {
         let key = "k".repeat(DEFAULT_MAX_KEY_LEN);
         let cmd = Command::Get { key };
-        assert!(validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).is_none());
+        assert!(validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY
+        )
+        .is_none());
     }
 
     #[test]
@@ -500,7 +518,13 @@ mod tests {
             nx: false,
             xx: false,
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("value length")));
     }
 
@@ -510,7 +534,13 @@ mod tests {
         let cmd = Command::MSet {
             pairs: vec![(big_key, Bytes::from_static(b"v"))],
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
     }
 
@@ -521,7 +551,13 @@ mod tests {
             key: "mylist".into(),
             values: vec![Bytes::from_static(b"ok"), big_val],
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("value length")));
     }
 
@@ -531,7 +567,13 @@ mod tests {
         let cmd = Command::Del {
             keys: vec!["ok".into(), big_key],
         };
-        let err = validate_command_sizes(&cmd, DEFAULT_MAX_KEY_LEN, DEFAULT_MAX_VALUE_LEN, DEFAULT_MAX_COMMAND_MEMORY).unwrap();
+        let err = validate_command_sizes(
+            &cmd,
+            DEFAULT_MAX_KEY_LEN,
+            DEFAULT_MAX_VALUE_LEN,
+            DEFAULT_MAX_COMMAND_MEMORY,
+        )
+        .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
     }
 

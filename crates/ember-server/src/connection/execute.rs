@@ -29,7 +29,9 @@ fn set_expire_to_duration(expire: SetExpire) -> Duration {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_else(|_| {
-                    tracing::warn!("system clock is before UNIX epoch; EXAT TTL calculations may be incorrect");
+                    tracing::warn!(
+                        "system clock is before UNIX epoch; EXAT TTL calculations may be incorrect"
+                    );
                     Duration::ZERO
                 })
                 .as_secs();
@@ -39,7 +41,9 @@ fn set_expire_to_duration(expire: SetExpire) -> Duration {
             let now_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_else(|_| {
-                    tracing::warn!("system clock is before UNIX epoch; PXAT TTL calculations may be incorrect");
+                    tracing::warn!(
+                        "system clock is before UNIX epoch; PXAT TTL calculations may be incorrect"
+                    );
                     Duration::ZERO
                 })
                 .as_millis() as u64;
