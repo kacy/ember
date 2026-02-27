@@ -131,6 +131,23 @@ const (
 	EmberCache_SScan_FullMethodName            = "/ember.v1.EmberCache/SScan"
 	EmberCache_Time_FullMethodName             = "/ember.v1.EmberCache/Time"
 	EmberCache_LastSave_FullMethodName         = "/ember.v1.EmberCache/LastSave"
+	EmberCache_Expiretime_FullMethodName       = "/ember.v1.EmberCache/Expiretime"
+	EmberCache_Pexpiretime_FullMethodName      = "/ember.v1.EmberCache/Pexpiretime"
+	EmberCache_Expireat_FullMethodName         = "/ember.v1.EmberCache/Expireat"
+	EmberCache_Pexpireat_FullMethodName        = "/ember.v1.EmberCache/Pexpireat"
+	EmberCache_Getset_FullMethodName           = "/ember.v1.EmberCache/Getset"
+	EmberCache_Msetnx_FullMethodName           = "/ember.v1.EmberCache/Msetnx"
+	EmberCache_Getbit_FullMethodName           = "/ember.v1.EmberCache/Getbit"
+	EmberCache_Setbit_FullMethodName           = "/ember.v1.EmberCache/Setbit"
+	EmberCache_Bitcount_FullMethodName         = "/ember.v1.EmberCache/Bitcount"
+	EmberCache_Bitpos_FullMethodName           = "/ember.v1.EmberCache/Bitpos"
+	EmberCache_Bitop_FullMethodName            = "/ember.v1.EmberCache/Bitop"
+	EmberCache_Smove_FullMethodName            = "/ember.v1.EmberCache/Smove"
+	EmberCache_Sintercard_FullMethodName       = "/ember.v1.EmberCache/Sintercard"
+	EmberCache_Lmpop_FullMethodName            = "/ember.v1.EmberCache/Lmpop"
+	EmberCache_Zmpop_FullMethodName            = "/ember.v1.EmberCache/Zmpop"
+	EmberCache_Hrandfield_FullMethodName       = "/ember.v1.EmberCache/Hrandfield"
+	EmberCache_Zrandmember_FullMethodName      = "/ember.v1.EmberCache/Zrandmember"
 	EmberCache_Pipeline_FullMethodName         = "/ember.v1.EmberCache/Pipeline"
 )
 
@@ -254,6 +271,23 @@ type EmberCacheClient interface {
 	SScan(ctx context.Context, in *SScanRequest, opts ...grpc.CallOption) (*SScanResponse, error)
 	Time(ctx context.Context, in *TimeRequest, opts ...grpc.CallOption) (*TimeResponse, error)
 	LastSave(ctx context.Context, in *LastSaveRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Expiretime(ctx context.Context, in *ExpiretimeRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Pexpiretime(ctx context.Context, in *PexpiretimeRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Expireat(ctx context.Context, in *ExpireatRequest, opts ...grpc.CallOption) (*BoolResponse, error)
+	Pexpireat(ctx context.Context, in *PexpireatRequest, opts ...grpc.CallOption) (*BoolResponse, error)
+	Getset(ctx context.Context, in *GetsetRequest, opts ...grpc.CallOption) (*GetResponse, error)
+	Msetnx(ctx context.Context, in *MsetnxRequest, opts ...grpc.CallOption) (*BoolResponse, error)
+	Getbit(ctx context.Context, in *GetbitRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Setbit(ctx context.Context, in *SetbitRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Bitcount(ctx context.Context, in *BitcountRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Bitpos(ctx context.Context, in *BitposRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Bitop(ctx context.Context, in *BitopRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Smove(ctx context.Context, in *SmoveRequest, opts ...grpc.CallOption) (*BoolResponse, error)
+	Sintercard(ctx context.Context, in *SintercardRequest, opts ...grpc.CallOption) (*IntResponse, error)
+	Lmpop(ctx context.Context, in *LmpopRequest, opts ...grpc.CallOption) (*LmpopResponse, error)
+	Zmpop(ctx context.Context, in *ZmpopRequest, opts ...grpc.CallOption) (*ZmpopResponse, error)
+	Hrandfield(ctx context.Context, in *HrandfieldRequest, opts ...grpc.CallOption) (*ArrayResponse, error)
+	Zrandmember(ctx context.Context, in *ZrandmemberRequest, opts ...grpc.CallOption) (*ArrayResponse, error)
 	Pipeline(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipelineRequest, PipelineResponse], error)
 }
 
@@ -1394,6 +1428,176 @@ func (c *emberCacheClient) LastSave(ctx context.Context, in *LastSaveRequest, op
 	return out, nil
 }
 
+func (c *emberCacheClient) Expiretime(ctx context.Context, in *ExpiretimeRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Expiretime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Pexpiretime(ctx context.Context, in *PexpiretimeRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Pexpiretime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Expireat(ctx context.Context, in *ExpireatRequest, opts ...grpc.CallOption) (*BoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoolResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Expireat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Pexpireat(ctx context.Context, in *PexpireatRequest, opts ...grpc.CallOption) (*BoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoolResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Pexpireat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Getset(ctx context.Context, in *GetsetRequest, opts ...grpc.CallOption) (*GetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Getset_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Msetnx(ctx context.Context, in *MsetnxRequest, opts ...grpc.CallOption) (*BoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoolResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Msetnx_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Getbit(ctx context.Context, in *GetbitRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Getbit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Setbit(ctx context.Context, in *SetbitRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Setbit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Bitcount(ctx context.Context, in *BitcountRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Bitcount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Bitpos(ctx context.Context, in *BitposRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Bitpos_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Bitop(ctx context.Context, in *BitopRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Bitop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Smove(ctx context.Context, in *SmoveRequest, opts ...grpc.CallOption) (*BoolResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(BoolResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Smove_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Sintercard(ctx context.Context, in *SintercardRequest, opts ...grpc.CallOption) (*IntResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(IntResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Sintercard_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Lmpop(ctx context.Context, in *LmpopRequest, opts ...grpc.CallOption) (*LmpopResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LmpopResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Lmpop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Zmpop(ctx context.Context, in *ZmpopRequest, opts ...grpc.CallOption) (*ZmpopResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ZmpopResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Zmpop_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Hrandfield(ctx context.Context, in *HrandfieldRequest, opts ...grpc.CallOption) (*ArrayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArrayResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Hrandfield_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *emberCacheClient) Zrandmember(ctx context.Context, in *ZrandmemberRequest, opts ...grpc.CallOption) (*ArrayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ArrayResponse)
+	err := c.cc.Invoke(ctx, EmberCache_Zrandmember_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *emberCacheClient) Pipeline(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[PipelineRequest, PipelineResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &EmberCache_ServiceDesc.Streams[1], EmberCache_Pipeline_FullMethodName, cOpts...)
@@ -1527,6 +1731,23 @@ type EmberCacheServer interface {
 	SScan(context.Context, *SScanRequest) (*SScanResponse, error)
 	Time(context.Context, *TimeRequest) (*TimeResponse, error)
 	LastSave(context.Context, *LastSaveRequest) (*IntResponse, error)
+	Expiretime(context.Context, *ExpiretimeRequest) (*IntResponse, error)
+	Pexpiretime(context.Context, *PexpiretimeRequest) (*IntResponse, error)
+	Expireat(context.Context, *ExpireatRequest) (*BoolResponse, error)
+	Pexpireat(context.Context, *PexpireatRequest) (*BoolResponse, error)
+	Getset(context.Context, *GetsetRequest) (*GetResponse, error)
+	Msetnx(context.Context, *MsetnxRequest) (*BoolResponse, error)
+	Getbit(context.Context, *GetbitRequest) (*IntResponse, error)
+	Setbit(context.Context, *SetbitRequest) (*IntResponse, error)
+	Bitcount(context.Context, *BitcountRequest) (*IntResponse, error)
+	Bitpos(context.Context, *BitposRequest) (*IntResponse, error)
+	Bitop(context.Context, *BitopRequest) (*IntResponse, error)
+	Smove(context.Context, *SmoveRequest) (*BoolResponse, error)
+	Sintercard(context.Context, *SintercardRequest) (*IntResponse, error)
+	Lmpop(context.Context, *LmpopRequest) (*LmpopResponse, error)
+	Zmpop(context.Context, *ZmpopRequest) (*ZmpopResponse, error)
+	Hrandfield(context.Context, *HrandfieldRequest) (*ArrayResponse, error)
+	Zrandmember(context.Context, *ZrandmemberRequest) (*ArrayResponse, error)
 	Pipeline(grpc.BidiStreamingServer[PipelineRequest, PipelineResponse]) error
 	mustEmbedUnimplementedEmberCacheServer()
 }
@@ -1873,6 +2094,57 @@ func (UnimplementedEmberCacheServer) Time(context.Context, *TimeRequest) (*TimeR
 }
 func (UnimplementedEmberCacheServer) LastSave(context.Context, *LastSaveRequest) (*IntResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method LastSave not implemented")
+}
+func (UnimplementedEmberCacheServer) Expiretime(context.Context, *ExpiretimeRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Expiretime not implemented")
+}
+func (UnimplementedEmberCacheServer) Pexpiretime(context.Context, *PexpiretimeRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Pexpiretime not implemented")
+}
+func (UnimplementedEmberCacheServer) Expireat(context.Context, *ExpireatRequest) (*BoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Expireat not implemented")
+}
+func (UnimplementedEmberCacheServer) Pexpireat(context.Context, *PexpireatRequest) (*BoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Pexpireat not implemented")
+}
+func (UnimplementedEmberCacheServer) Getset(context.Context, *GetsetRequest) (*GetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Getset not implemented")
+}
+func (UnimplementedEmberCacheServer) Msetnx(context.Context, *MsetnxRequest) (*BoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Msetnx not implemented")
+}
+func (UnimplementedEmberCacheServer) Getbit(context.Context, *GetbitRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Getbit not implemented")
+}
+func (UnimplementedEmberCacheServer) Setbit(context.Context, *SetbitRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Setbit not implemented")
+}
+func (UnimplementedEmberCacheServer) Bitcount(context.Context, *BitcountRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Bitcount not implemented")
+}
+func (UnimplementedEmberCacheServer) Bitpos(context.Context, *BitposRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Bitpos not implemented")
+}
+func (UnimplementedEmberCacheServer) Bitop(context.Context, *BitopRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Bitop not implemented")
+}
+func (UnimplementedEmberCacheServer) Smove(context.Context, *SmoveRequest) (*BoolResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Smove not implemented")
+}
+func (UnimplementedEmberCacheServer) Sintercard(context.Context, *SintercardRequest) (*IntResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Sintercard not implemented")
+}
+func (UnimplementedEmberCacheServer) Lmpop(context.Context, *LmpopRequest) (*LmpopResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Lmpop not implemented")
+}
+func (UnimplementedEmberCacheServer) Zmpop(context.Context, *ZmpopRequest) (*ZmpopResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Zmpop not implemented")
+}
+func (UnimplementedEmberCacheServer) Hrandfield(context.Context, *HrandfieldRequest) (*ArrayResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Hrandfield not implemented")
+}
+func (UnimplementedEmberCacheServer) Zrandmember(context.Context, *ZrandmemberRequest) (*ArrayResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Zrandmember not implemented")
 }
 func (UnimplementedEmberCacheServer) Pipeline(grpc.BidiStreamingServer[PipelineRequest, PipelineResponse]) error {
 	return status.Error(codes.Unimplemented, "method Pipeline not implemented")
@@ -3907,6 +4179,312 @@ func _EmberCache_LastSave_Handler(srv interface{}, ctx context.Context, dec func
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EmberCache_Expiretime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExpiretimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Expiretime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Expiretime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Expiretime(ctx, req.(*ExpiretimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Pexpiretime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PexpiretimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Pexpiretime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Pexpiretime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Pexpiretime(ctx, req.(*PexpiretimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Expireat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ExpireatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Expireat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Expireat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Expireat(ctx, req.(*ExpireatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Pexpireat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PexpireatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Pexpireat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Pexpireat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Pexpireat(ctx, req.(*PexpireatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Getset_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetsetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Getset(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Getset_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Getset(ctx, req.(*GetsetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Msetnx_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MsetnxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Msetnx(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Msetnx_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Msetnx(ctx, req.(*MsetnxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Getbit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetbitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Getbit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Getbit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Getbit(ctx, req.(*GetbitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Setbit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetbitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Setbit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Setbit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Setbit(ctx, req.(*SetbitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Bitcount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BitcountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Bitcount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Bitcount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Bitcount(ctx, req.(*BitcountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Bitpos_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BitposRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Bitpos(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Bitpos_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Bitpos(ctx, req.(*BitposRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Bitop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BitopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Bitop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Bitop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Bitop(ctx, req.(*BitopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Smove_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SmoveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Smove(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Smove_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Smove(ctx, req.(*SmoveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Sintercard_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SintercardRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Sintercard(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Sintercard_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Sintercard(ctx, req.(*SintercardRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Lmpop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LmpopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Lmpop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Lmpop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Lmpop(ctx, req.(*LmpopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Zmpop_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZmpopRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Zmpop(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Zmpop_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Zmpop(ctx, req.(*ZmpopRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Hrandfield_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HrandfieldRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Hrandfield(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Hrandfield_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Hrandfield(ctx, req.(*HrandfieldRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _EmberCache_Zrandmember_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ZrandmemberRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EmberCacheServer).Zrandmember(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EmberCache_Zrandmember_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EmberCacheServer).Zrandmember(ctx, req.(*ZrandmemberRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _EmberCache_Pipeline_Handler(srv interface{}, stream grpc.ServerStream) error {
 	return srv.(EmberCacheServer).Pipeline(&grpc.GenericServerStream[PipelineRequest, PipelineResponse]{ServerStream: stream})
 }
@@ -4364,6 +4942,74 @@ var EmberCache_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "LastSave",
 			Handler:    _EmberCache_LastSave_Handler,
+		},
+		{
+			MethodName: "Expiretime",
+			Handler:    _EmberCache_Expiretime_Handler,
+		},
+		{
+			MethodName: "Pexpiretime",
+			Handler:    _EmberCache_Pexpiretime_Handler,
+		},
+		{
+			MethodName: "Expireat",
+			Handler:    _EmberCache_Expireat_Handler,
+		},
+		{
+			MethodName: "Pexpireat",
+			Handler:    _EmberCache_Pexpireat_Handler,
+		},
+		{
+			MethodName: "Getset",
+			Handler:    _EmberCache_Getset_Handler,
+		},
+		{
+			MethodName: "Msetnx",
+			Handler:    _EmberCache_Msetnx_Handler,
+		},
+		{
+			MethodName: "Getbit",
+			Handler:    _EmberCache_Getbit_Handler,
+		},
+		{
+			MethodName: "Setbit",
+			Handler:    _EmberCache_Setbit_Handler,
+		},
+		{
+			MethodName: "Bitcount",
+			Handler:    _EmberCache_Bitcount_Handler,
+		},
+		{
+			MethodName: "Bitpos",
+			Handler:    _EmberCache_Bitpos_Handler,
+		},
+		{
+			MethodName: "Bitop",
+			Handler:    _EmberCache_Bitop_Handler,
+		},
+		{
+			MethodName: "Smove",
+			Handler:    _EmberCache_Smove_Handler,
+		},
+		{
+			MethodName: "Sintercard",
+			Handler:    _EmberCache_Sintercard_Handler,
+		},
+		{
+			MethodName: "Lmpop",
+			Handler:    _EmberCache_Lmpop_Handler,
+		},
+		{
+			MethodName: "Zmpop",
+			Handler:    _EmberCache_Zmpop_Handler,
+		},
+		{
+			MethodName: "Hrandfield",
+			Handler:    _EmberCache_Hrandfield_Handler,
+		},
+		{
+			MethodName: "Zrandmember",
+			Handler:    _EmberCache_Zrandmember_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{
