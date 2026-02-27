@@ -234,6 +234,10 @@ pub enum ShardRequest {
     Ttl {
         key: String,
     },
+    /// MEMORY USAGE. Returns the estimated memory footprint of a key in bytes.
+    MemoryUsage {
+        key: String,
+    },
     Persist {
         key: String,
     },
@@ -1773,6 +1777,9 @@ fn dispatch(
             ShardResponse::Bool(ks.expireat(key, *timestamp))
         }
         ShardRequest::Ttl { key } => ShardResponse::Ttl(ks.ttl(key)),
+        ShardRequest::MemoryUsage { key } => {
+            ShardResponse::Integer(ks.memory_usage(key).map(|n| n as i64).unwrap_or(-1))
+        }
         ShardRequest::Persist { key } => ShardResponse::Bool(ks.persist(key)),
         ShardRequest::Pttl { key } => ShardResponse::Ttl(ks.pttl(key)),
         ShardRequest::Pexpire { key, milliseconds } => {

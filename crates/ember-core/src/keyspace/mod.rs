@@ -906,6 +906,19 @@ impl Keyspace {
         }
     }
 
+    /// Returns the estimated memory usage in bytes for the given key,
+    /// or `None` if the key does not exist or is expired.
+    ///
+    /// Uses the cached value size for O(1) cost. The estimate covers the
+    /// key string, the serialized value, and the per-entry overhead.
+    pub fn memory_usage(&mut self, key: &str) -> Option<usize> {
+        if self.remove_if_expired(key) {
+            return None;
+        }
+        let entry = self.entries.get(key)?;
+        Some(entry.entry_size(key))
+    }
+
     /// Removes the expiration from a key.
     ///
     /// Returns `true` if the key existed and had a timeout that was removed.

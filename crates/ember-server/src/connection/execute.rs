@@ -856,6 +856,30 @@ pub(super) async fn execute(
             }
         }
 
+        // Ember is single-database, so FLUSHALL is identical to FLUSHDB.
+        Command::FlushAll { async_mode } => {
+            let req = if async_mode {
+                || ShardRequest::FlushDbAsync
+            } else {
+                || ShardRequest::FlushDb
+            };
+            match engine.broadcast(req).await {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
+        Command::MemoryUsage { key } => {
+            let idx = engine.shard_for_key(&key);
+            let req = ShardRequest::MemoryUsage { key: key.clone() };
+            match engine.send_to_shard(idx, req).await {
+                Ok(ShardResponse::Integer(-1)) => Frame::Null,
+                Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
+                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            }
+        }
+
         Command::Keys { pattern } => {
             match engine
                 .broadcast(|| ShardRequest::Keys {

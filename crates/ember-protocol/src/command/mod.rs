@@ -173,6 +173,12 @@ pub enum Command {
     /// FLUSHDB \[ASYNC\]. Removes all keys from the database.
     FlushDb { async_mode: bool },
 
+    /// FLUSHALL \[ASYNC\]. Removes all keys (alias for FLUSHDB — Ember is single-database).
+    FlushAll { async_mode: bool },
+
+    /// MEMORY USAGE key \[SAMPLES count\]. Returns estimated memory usage in bytes.
+    MemoryUsage { key: String },
+
     /// CONFIG GET `pattern`. Returns matching server configuration parameters.
     ConfigGet { pattern: String },
 
