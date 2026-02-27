@@ -41,4 +41,7 @@ LABEL org.opencontainers.image.title="ember" \
       org.opencontainers.image.description="low-latency distributed cache" \
       org.opencontainers.image.source="https://github.com/kacy/ember"
 
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget -qO- http://localhost:9100/health || exit 1
+
 ENTRYPOINT ["ember-server"]
