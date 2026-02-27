@@ -42,7 +42,7 @@ the routing api on `Engine` has five methods:
 | `send_to_shard(idx, req)` | direct shard access by index (SCAN) |
 | `dispatch_to_shard(idx, req)` | non-blocking dispatch returning a oneshot receiver |
 
-all five data types and all 150+ commands are supported.
+all five data types and all 190+ commands are supported.
 
 ---
 

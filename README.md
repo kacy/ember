@@ -495,7 +495,7 @@ redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grai
 ./bench/bench-all.sh         # run everything
 ```
 
-**150+ commands, 1,690+ tests, ~25k lines of code** (~47k including tests and comments). see [bench/README.md](bench/README.md) for full methodology and results.
+**190+ commands, 1,690+ tests, ~25k lines of code** (~47k including tests and comments). see [bench/README.md](bench/README.md) for full methodology and results.
 
 ## architecture
 
