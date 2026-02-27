@@ -627,22 +627,16 @@ pub static COMMANDS: &[CommandInfo] = &[
         summary: "return the number of keys in the database",
     },
     CommandInfo {
-        name: "FLUSHDB",
-        args: "[ASYNC]",
-        group: "server",
-        summary: "remove all keys from the current database",
-    },
-    CommandInfo {
         name: "FLUSHALL",
         args: "[ASYNC]",
         group: "server",
         summary: "remove all keys from all databases (alias for FLUSHDB in ember)",
     },
     CommandInfo {
-        name: "MEMORY USAGE",
-        args: "key [SAMPLES count]",
+        name: "FLUSHDB",
+        args: "[ASYNC]",
         group: "server",
-        summary: "estimate memory usage for a key in bytes",
+        summary: "remove all keys from the current database",
     },
     CommandInfo {
         name: "INFO",
@@ -655,6 +649,12 @@ pub static COMMANDS: &[CommandInfo] = &[
         args: "",
         group: "server",
         summary: "return the unix timestamp of the last successful save",
+    },
+    CommandInfo {
+        name: "MEMORY USAGE",
+        args: "key [SAMPLES count]",
+        group: "server",
+        summary: "estimate memory usage for a key in bytes",
     },
     CommandInfo {
         name: "MONITOR",
