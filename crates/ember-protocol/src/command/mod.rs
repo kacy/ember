@@ -981,5 +981,6 @@ impl Eq for ZAddFlags {}
 
 mod attributes;
 mod parse;
+pub mod table;
 #[cfg(test)]
 mod tests;
