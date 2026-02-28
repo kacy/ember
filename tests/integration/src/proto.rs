@@ -1173,3 +1173,451 @@ async fn concurrent_schema_recovery_after_restart() {
 
     drop(data_dir);
 }
+
+// ---- PROTO.SCAN tests ----
+
+/// Helper: decode a PROTO.SCAN / PROTO.FIND response into (next_cursor, keys).
+fn decode_scan_response(frame: Frame) -> (u64, Vec<String>) {
+    match frame {
+        Frame::Array(items) if items.len() == 2 => {
+            let cursor_str = match &items[0] {
+                Frame::Bulk(b) => std::str::from_utf8(b).unwrap().to_owned(),
+                Frame::Simple(s) => s.clone(),
+                other => panic!("expected cursor bulk, got {other:?}"),
+            };
+            let cursor: u64 = cursor_str.parse().expect("cursor is u64");
+            let keys = match &items[1] {
+                Frame::Array(ks) => ks
+                    .iter()
+                    .map(|k| match k {
+                        Frame::Bulk(b) => std::str::from_utf8(b).unwrap().to_owned(),
+                        other => panic!("expected key bulk, got {other:?}"),
+                    })
+                    .collect(),
+                other => panic!("expected key array, got {other:?}"),
+            };
+            (cursor, keys)
+        }
+        other => panic!("expected [cursor, [keys]], got {other:?}"),
+    }
+}
+
+/// PROTO.SCAN with no arguments returns all proto keys across all pages.
+#[tokio::test]
+async fn proto_scan_all_keys() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    // store 5 proto keys
+    for i in 1..=5u32 {
+        let data = encode_profile(&desc, &format!("user{i}"), i as i32, true);
+        c.cmd_raw(&[b"PROTO.SET", format!("user:{i}").as_bytes(), b"test.Profile", &data])
+            .await;
+    }
+
+    // also store a non-proto key to ensure it's excluded
+    c.cmd(&["SET", "plain:1", "hello"]).await;
+
+    // collect all keys via cursor iteration
+    let mut all_keys = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let resp = c.cmd(&["PROTO.SCAN", &cursor.to_string()]).await;
+        let (next, keys) = decode_scan_response(resp);
+        all_keys.extend(keys);
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+
+    all_keys.sort();
+    assert_eq!(all_keys.len(), 5);
+    for i in 1..=5u32 {
+        assert!(all_keys.contains(&format!("user:{i}")));
+    }
+    // plain key must not appear
+    assert!(!all_keys.contains(&"plain:1".to_owned()));
+}
+
+/// TYPE filter restricts PROTO.SCAN to keys of a specific message type.
+#[tokio::test]
+async fn proto_scan_type_filter() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    // register two different message types
+    let profile_desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &profile_desc])
+        .await;
+
+    let user_desc = make_descriptor("users", "User", "username");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &user_desc]).await;
+
+    // store one of each
+    let pdata = encode_profile(&profile_desc, "alice", 30, true);
+    c.cmd_raw(&[b"PROTO.SET", b"profile:1", b"test.Profile", &pdata])
+        .await;
+
+    let udata = encode_message(&user_desc, "users.User", "username", "alice");
+    c.cmd_raw(&[b"PROTO.SET", b"user:1", b"users.User", &udata])
+        .await;
+
+    // scan with TYPE=test.Profile — should only return profile:1
+    let resp = c
+        .cmd(&["PROTO.SCAN", "0", "TYPE", "test.Profile"])
+        .await;
+    let (_, keys) = decode_scan_response(resp);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "profile:1");
+
+    // scan with TYPE=users.User — should only return user:1
+    let resp = c.cmd(&["PROTO.SCAN", "0", "TYPE", "users.User"]).await;
+    let (_, keys) = decode_scan_response(resp);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "user:1");
+}
+
+/// MATCH pattern narrows PROTO.SCAN results to matching key names.
+#[tokio::test]
+async fn proto_scan_match_pattern() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    for i in 1..=3u32 {
+        let data = encode_profile(&desc, "x", i as i32, false);
+        c.cmd_raw(&[b"PROTO.SET", format!("profile:{i}").as_bytes(), b"test.Profile", &data])
+            .await;
+        let data = encode_profile(&desc, "y", i as i32, false);
+        c.cmd_raw(&[b"PROTO.SET", format!("other:{i}").as_bytes(), b"test.Profile", &data])
+            .await;
+    }
+
+    let mut matched = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let resp = c
+            .cmd(&["PROTO.SCAN", &cursor.to_string(), "MATCH", "profile:*"])
+            .await;
+        let (next, keys) = decode_scan_response(resp);
+        matched.extend(keys);
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+
+    assert_eq!(matched.len(), 3);
+    for k in &matched {
+        assert!(k.starts_with("profile:"), "unexpected key {k}");
+    }
+}
+
+/// Cursor iteration is stable — adding keys mid-scan doesn't cause duplicates or panics.
+#[tokio::test]
+async fn proto_scan_cursor_consistency() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    for i in 1..=10u32 {
+        let data = encode_profile(&desc, "x", i as i32, true);
+        c.cmd_raw(&[b"PROTO.SET", format!("p:{i}").as_bytes(), b"test.Profile", &data])
+            .await;
+    }
+
+    // first page with COUNT 3
+    let resp = c.cmd(&["PROTO.SCAN", "0", "COUNT", "3"]).await;
+    let (cursor, first_page) = decode_scan_response(resp);
+    assert!(!first_page.is_empty());
+
+    // add more keys while iterating
+    for i in 11..=15u32 {
+        let data = encode_profile(&desc, "y", i as i32, false);
+        c.cmd_raw(&[b"PROTO.SET", format!("p:{i}").as_bytes(), b"test.Profile", &data])
+            .await;
+    }
+
+    // continue iterating — must not panic or crash
+    if cursor != 0 {
+        let resp = c.cmd(&["PROTO.SCAN", &cursor.to_string(), "COUNT", "3"]).await;
+        let (_, _) = decode_scan_response(resp);
+    }
+}
+
+// ---- PROTO.FIND tests ----
+
+/// PROTO.FIND locates keys by scalar field value.
+#[tokio::test]
+async fn proto_find_scalar_match() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    // store three profiles with different active values
+    let active_data = encode_profile(&desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"profile:alice", b"test.Profile", &active_data])
+        .await;
+
+    let inactive_data = encode_profile(&desc, "bob", 30, false);
+    c.cmd_raw(&[b"PROTO.SET", b"profile:bob", b"test.Profile", &inactive_data])
+        .await;
+
+    let active2_data = encode_profile(&desc, "carol", 22, true);
+    c.cmd_raw(&[b"PROTO.SET", b"profile:carol", b"test.Profile", &active2_data])
+        .await;
+
+    // find by bool field
+    let mut found = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let resp = c
+            .cmd(&["PROTO.FIND", &cursor.to_string(), "active", "true"])
+            .await;
+        let (next, keys) = decode_scan_response(resp);
+        found.extend(keys);
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+    found.sort();
+    assert_eq!(found.len(), 2);
+    assert!(found.contains(&"profile:alice".to_owned()));
+    assert!(found.contains(&"profile:carol".to_owned()));
+
+    // find by int field
+    let resp = c
+        .cmd(&["PROTO.FIND", "0", "age", "30"])
+        .await;
+    let (_, keys) = decode_scan_response(resp);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "profile:bob");
+
+    // find by string field
+    let resp = c
+        .cmd(&["PROTO.FIND", "0", "name", "alice"])
+        .await;
+    let (_, keys) = decode_scan_response(resp);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "profile:alice");
+}
+
+/// PROTO.FIND with a dot-separated path searches nested message fields.
+#[tokio::test]
+async fn proto_find_nested_path() {
+    use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
+
+    // build a descriptor with a nested Address.city field
+    let fds = FileDescriptorSet {
+        file: vec![FileDescriptorProto {
+            name: Some("nested.proto".into()),
+            package: Some("nested".into()),
+            message_type: vec![
+                DescriptorProto {
+                    name: Some("Address".into()),
+                    field: vec![FieldDescriptorProto {
+                        name: Some("city".into()),
+                        number: Some(1),
+                        r#type: Some(9), // TYPE_STRING
+                        label: Some(1),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                DescriptorProto {
+                    name: Some("Person".into()),
+                    field: vec![
+                        FieldDescriptorProto {
+                            name: Some("name".into()),
+                            number: Some(1),
+                            r#type: Some(9), // TYPE_STRING
+                            label: Some(1),
+                            ..Default::default()
+                        },
+                        FieldDescriptorProto {
+                            name: Some("address".into()),
+                            number: Some(2),
+                            r#type: Some(11), // TYPE_MESSAGE
+                            label: Some(1),
+                            type_name: Some(".nested.Address".into()),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+    };
+    let mut desc_bytes = Vec::new();
+    fds.encode(&mut desc_bytes).expect("encode descriptor");
+
+    let pool = DescriptorPool::decode(desc_bytes.as_slice()).expect("decode pool");
+    let person_desc = pool.get_message_by_name("nested.Person").expect("find message");
+
+    let encode_person = |name: &str, city: &str| {
+        let addr_desc = pool.get_message_by_name("nested.Address").expect("find address");
+        let mut addr = DynamicMessage::new(addr_desc);
+        addr.set_field_by_name("city", prost_reflect::Value::String(city.into()));
+
+        let mut person = DynamicMessage::new(person_desc.clone());
+        person.set_field_by_name("name", prost_reflect::Value::String(name.into()));
+        person.set_field_by_name("address", prost_reflect::Value::Message(addr));
+        let mut buf = Vec::new();
+        person.encode(&mut buf).expect("encode person");
+        buf
+    };
+
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    c.cmd_raw(&[b"PROTO.REGISTER", b"nested_schema", &desc_bytes])
+        .await;
+
+    let alice_data = encode_person("alice", "Seattle");
+    c.cmd_raw(&[b"PROTO.SET", b"person:alice", b"nested.Person", &alice_data])
+        .await;
+
+    let bob_data = encode_person("bob", "Portland");
+    c.cmd_raw(&[b"PROTO.SET", b"person:bob", b"nested.Person", &bob_data])
+        .await;
+
+    let carol_data = encode_person("carol", "Seattle");
+    c.cmd_raw(&[b"PROTO.SET", b"person:carol", b"nested.Person", &carol_data])
+        .await;
+
+    // find by nested address.city
+    let mut found = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let resp = c
+            .cmd(&["PROTO.FIND", &cursor.to_string(), "address.city", "Seattle"])
+            .await;
+        let (next, keys) = decode_scan_response(resp);
+        found.extend(keys);
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+    found.sort();
+    assert_eq!(found.len(), 2);
+    assert!(found.contains(&"person:alice".to_owned()));
+    assert!(found.contains(&"person:carol".to_owned()));
+}
+
+/// PROTO.FIND combined with TYPE filter only inspects keys of the given type.
+#[tokio::test]
+async fn proto_find_type_filter() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let profile_desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &profile_desc])
+        .await;
+
+    let user_desc = make_descriptor("users", "User", "name");
+    c.cmd_raw(&[b"PROTO.REGISTER", b"users", &user_desc]).await;
+
+    // profiles with age=25
+    let p1 = encode_profile(&profile_desc, "alice", 25, true);
+    c.cmd_raw(&[b"PROTO.SET", b"profile:1", b"test.Profile", &p1])
+        .await;
+
+    // user key with field "name" (not "age")
+    let u1 = encode_message(&user_desc, "users.User", "name", "alice");
+    c.cmd_raw(&[b"PROTO.SET", b"user:1", b"users.User", &u1])
+        .await;
+
+    // PROTO.FIND age=25 TYPE=test.Profile — should find profile:1 but not crash on user:1
+    let resp = c
+        .cmd(&["PROTO.FIND", "0", "age", "25", "TYPE", "test.Profile"])
+        .await;
+    let (_, keys) = decode_scan_response(resp);
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0], "profile:1");
+}
+
+/// PROTO.FIND returns cursor 0 and empty array when no keys match.
+#[tokio::test]
+async fn proto_find_no_match() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    let data = encode_profile(&desc, "alice", 25, false);
+    c.cmd_raw(&[b"PROTO.SET", b"profile:1", b"test.Profile", &data])
+        .await;
+
+    let resp = c
+        .cmd(&["PROTO.FIND", "0", "active", "true"])
+        .await;
+    let (cursor, keys) = decode_scan_response(resp);
+    assert_eq!(cursor, 0);
+    assert!(keys.is_empty());
+}
+
+/// PROTO.FIND with COUNT paginates correctly — all pages together return the full match set.
+#[tokio::test]
+async fn proto_find_count_pagination() {
+    let server = start_proto_server(false);
+    let mut c = server.connect().await;
+
+    let desc = make_multi_field_descriptor();
+    c.cmd_raw(&[b"PROTO.REGISTER", b"profiles", &desc]).await;
+
+    // 6 active profiles
+    for i in 1..=6u32 {
+        let data = encode_profile(&desc, &format!("user{i}"), i as i32, true);
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("profile:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
+    }
+    // 2 inactive profiles
+    for i in 7..=8u32 {
+        let data = encode_profile(&desc, &format!("user{i}"), i as i32, false);
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("profile:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
+    }
+
+    let mut all_found = Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let resp = c
+            .cmd(&["PROTO.FIND", &cursor.to_string(), "active", "true", "COUNT", "2"])
+            .await;
+        let (next, keys) = decode_scan_response(resp);
+        all_found.extend(keys);
+        if next == 0 {
+            break;
+        }
+        cursor = next;
+    }
+
+    assert_eq!(all_found.len(), 6);
+    for i in 1..=6u32 {
+        assert!(all_found.contains(&format!("profile:{i}")));
+    }
+}

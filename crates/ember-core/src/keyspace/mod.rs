@@ -1242,6 +1242,70 @@ impl Keyspace {
         self.entries.is_empty()
     }
 
+    /// Scans proto keys starting from a cursor position.
+    ///
+    /// Returns only keys holding `Value::Proto` values. If `type_name` is
+    /// provided, further restricts to keys whose message type matches exactly.
+    /// Pattern matching follows the same glob rules as `scan_keys`.
+    #[cfg(feature = "protobuf")]
+    pub fn scan_proto_keys(
+        &self,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+        type_name: Option<&str>,
+    ) -> (u64, Vec<String>) {
+        let mut keys = Vec::with_capacity(count);
+        let mut position = 0u64;
+        let target_count = if count == 0 { 10 } else { count };
+        let compiled = pattern.map(GlobPattern::new);
+
+        for (key, entry) in self.entries.iter() {
+            if entry.is_expired() {
+                continue;
+            }
+
+            if position < cursor {
+                position += 1;
+                continue;
+            }
+
+            // only proto entries
+            let entry_type = match &entry.value {
+                Value::Proto { type_name: t, .. } => t.as_str(),
+                _ => {
+                    position += 1;
+                    continue;
+                }
+            };
+
+            // optional type filter
+            if let Some(wanted) = type_name {
+                if entry_type != wanted {
+                    position += 1;
+                    continue;
+                }
+            }
+
+            // optional key pattern
+            if let Some(ref pat) = compiled {
+                if !pat.matches(key) {
+                    position += 1;
+                    continue;
+                }
+            }
+
+            keys.push(String::from(&**key));
+            position += 1;
+
+            if keys.len() >= target_count {
+                return (position, keys);
+            }
+        }
+
+        (0, keys)
+    }
+
     /// Scans keys starting from a cursor position.
     ///
     /// Returns the next cursor (0 if scan complete) and a batch of keys.

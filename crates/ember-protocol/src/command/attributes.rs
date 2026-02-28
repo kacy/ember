@@ -229,6 +229,8 @@ impl Command {
             Command::ProtoGetField { .. } => "proto.getfield",
             Command::ProtoSetField { .. } => "proto.setfield",
             Command::ProtoDelField { .. } => "proto.delfield",
+            Command::ProtoScan { .. } => "proto.scan",
+            Command::ProtoFind { .. } => "proto.find",
 
             // acl
             Command::AclWhoAmI => "acl",
@@ -589,7 +591,9 @@ impl Command {
             | Command::ProtoType { .. }
             | Command::ProtoSchemas
             | Command::ProtoDescribe { .. }
-            | Command::ProtoGetField { .. } => READ | STRING | SLOW,
+            | Command::ProtoGetField { .. }
+            | Command::ProtoScan { .. }
+            | Command::ProtoFind { .. } => READ | STRING | SLOW,
 
             // ACL commands
             Command::AclWhoAmI => CONNECTION | FAST,

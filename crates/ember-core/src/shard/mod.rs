@@ -778,6 +778,25 @@ pub enum ShardRequest {
         key: String,
         field_path: String,
     },
+    /// Cursor-based scan over proto keys, optionally filtered by type name.
+    #[cfg(feature = "protobuf")]
+    ProtoScan {
+        cursor: u64,
+        count: usize,
+        pattern: Option<String>,
+        type_name: Option<String>,
+    },
+    /// Cursor-based scan over proto keys, returning those where the given
+    /// field equals the given value.
+    #[cfg(feature = "protobuf")]
+    ProtoFind {
+        cursor: u64,
+        count: usize,
+        pattern: Option<String>,
+        type_name: Option<String>,
+        field_path: String,
+        field_value: String,
+    },
 }
 
 impl ShardRequest {
@@ -2487,6 +2506,55 @@ fn dispatch(
                     expire: ttl,
                 })
             })
+        }
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoScan {
+            cursor,
+            count,
+            pattern,
+            type_name,
+        } => {
+            let (next_cursor, keys) = ks.scan_proto_keys(
+                *cursor,
+                *count,
+                pattern.as_deref(),
+                type_name.as_deref(),
+            );
+            ShardResponse::Scan {
+                cursor: next_cursor,
+                keys,
+            }
+        }
+        #[cfg(feature = "protobuf")]
+        ShardRequest::ProtoFind {
+            cursor,
+            count,
+            pattern,
+            type_name,
+            field_path,
+            field_value,
+        } => {
+            let registry = match schema_registry {
+                Some(r) => r,
+                None => return ShardResponse::Err("protobuf support is not enabled".into()),
+            };
+            let reg = match registry.read() {
+                Ok(r) => r,
+                Err(_) => return ShardResponse::Err("schema registry lock poisoned".into()),
+            };
+            let (next_cursor, keys) = ks.scan_proto_find(
+                *cursor,
+                *count,
+                pattern.as_deref(),
+                type_name.as_deref(),
+                field_path,
+                field_value,
+                &reg,
+            );
+            ShardResponse::Scan {
+                cursor: next_cursor,
+                keys,
+            }
         }
         // these requests are intercepted in process_message, not handled here
         ShardRequest::Snapshot

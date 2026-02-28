@@ -255,6 +255,25 @@ impl SchemaRegistry {
         value_to_frame(&value, &field_desc)
     }
 
+    /// Reads a scalar field from an encoded protobuf message and returns it
+    /// as a `String` suitable for equality comparison in `PROTO.FIND`.
+    ///
+    /// Booleans are represented as `"true"` / `"false"`, integers as their
+    /// decimal string, floats via Rust's default `Display`, and strings
+    /// verbatim. Returns an error for complex types (message, list, map).
+    pub fn get_field_str(
+        &self,
+        type_name: &str,
+        data: &[u8],
+        field_path: &str,
+    ) -> Result<String, SchemaError> {
+        let descriptor = self.find_message(type_name)?;
+        let msg = DynamicMessage::decode(descriptor, data)
+            .map_err(|e| SchemaError::ValidationFailed(e.to_string()))?;
+        let (value, field_desc) = resolve_field_path(&msg, field_path)?;
+        value_to_comparison_string(&value, &field_desc)
+    }
+
     /// Updates a single scalar field in an encoded protobuf message.
     ///
     /// Decodes the message, walks the dot-separated `field_path`, parses
@@ -442,6 +461,49 @@ fn value_to_frame(
         )),
         prost_reflect::Value::Map(_) => Err(SchemaError::ValidationFailed(
             "use PROTO.GET for map fields".into(),
+        )),
+    }
+}
+
+/// Converts a prost_reflect scalar value to a `String` for comparison in
+/// `PROTO.FIND`. Booleans become `"true"` / `"false"`, integers and floats
+/// use their decimal representation, strings are returned verbatim.
+/// Returns an error for complex types.
+fn value_to_comparison_string(
+    value: &prost_reflect::Value,
+    field_desc: &FieldDescriptor,
+) -> Result<String, SchemaError> {
+    if field_desc.is_list() || field_desc.is_map() {
+        return Err(SchemaError::ValidationFailed(
+            "PROTO.FIND does not support repeated/map fields".into(),
+        ));
+    }
+    match value {
+        prost_reflect::Value::String(s) => Ok(s.clone()),
+        prost_reflect::Value::Bytes(b) => Ok(String::from_utf8_lossy(b).into_owned()),
+        prost_reflect::Value::I32(n) => Ok(n.to_string()),
+        prost_reflect::Value::I64(n) => Ok(n.to_string()),
+        prost_reflect::Value::U32(n) => Ok(n.to_string()),
+        prost_reflect::Value::U64(n) => Ok(n.to_string()),
+        prost_reflect::Value::F32(n) => Ok(n.to_string()),
+        prost_reflect::Value::F64(n) => Ok(n.to_string()),
+        prost_reflect::Value::Bool(b) => Ok(if *b { "true" } else { "false" }.into()),
+        prost_reflect::Value::EnumNumber(n) => {
+            if let Kind::Enum(enum_desc) = field_desc.kind() {
+                if let Some(val) = enum_desc.get_value(*n) {
+                    return Ok(val.name().to_owned());
+                }
+            }
+            Ok(n.to_string())
+        }
+        prost_reflect::Value::Message(_) => Err(SchemaError::ValidationFailed(
+            "PROTO.FIND does not support nested message fields".into(),
+        )),
+        prost_reflect::Value::List(_) => Err(SchemaError::ValidationFailed(
+            "PROTO.FIND does not support repeated fields".into(),
+        )),
+        prost_reflect::Value::Map(_) => Err(SchemaError::ValidationFailed(
+            "PROTO.FIND does not support map fields".into(),
         )),
     }
 }
