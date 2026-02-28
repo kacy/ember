@@ -155,13 +155,13 @@ impl TestServer {
                 panic!("failed to spawn ember-server at {}: {e}", binary.display())
             });
 
-        // wait for the server to accept TCP connections
+        // wait until the server is ready to handle commands (not just TCP open)
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
             if std::time::Instant::now() > deadline {
                 panic!("ember-server failed to start within 5 seconds on port {port}");
             }
-            if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            if Self::ping_ready_sync(port) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -215,6 +215,31 @@ impl TestServer {
             Ok(n) if n > 0 => {
                 let response = String::from_utf8_lossy(&buf[..n]);
                 response.contains("cluster_state:ok")
+            }
+            _ => false,
+        }
+    }
+
+    /// Sends PING and returns true if the server responds with PONG.
+    /// Used as a readiness probe — stronger than a bare TCP connect check
+    /// because it confirms the command dispatcher is running.
+    fn ping_ready_sync(port: u16) -> bool {
+        use std::io::{Read, Write};
+
+        let Ok(mut stream) = std::net::TcpStream::connect(format!("127.0.0.1:{port}")) else {
+            return false;
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .ok();
+        if stream.write_all(b"*1\r\n$4\r\nPING\r\n").is_err() {
+            return false;
+        }
+        let mut buf = vec![0u8; 128];
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let r = &buf[..n];
+                r.starts_with(b"+PONG") || r.starts_with(b"$4\r\nPONG")
             }
             _ => false,
         }
