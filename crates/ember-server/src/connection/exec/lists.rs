@@ -1,7 +1,7 @@
 //! List command handlers.
 
 use bytes::Bytes;
-use ember_core::{ShardRequest, ShardResponse, Value};
+use ember_core::{ShardRequest, ShardResponse};
 use ember_protocol::Frame;
 
 use super::ExecCtx;
@@ -16,16 +16,11 @@ pub(in crate::connection) async fn lpush(
         key: key.clone(),
         values,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_L, "lpush", &key);
-            Frame::Integer(n as i64)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, super::resp_len).await;
+    if matches!(frame, Frame::Integer(_)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_L, "lpush", &key);
     }
+    frame
 }
 
 pub(in crate::connection) async fn rpush(
@@ -38,16 +33,11 @@ pub(in crate::connection) async fn rpush(
         key: key.clone(),
         values,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_L, "rpush", &key);
-            Frame::Integer(n as i64)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, super::resp_len).await;
+    if matches!(frame, Frame::Integer(_)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_L, "rpush", &key);
     }
+    frame
 }
 
 pub(in crate::connection) async fn lpop(
@@ -58,26 +48,28 @@ pub(in crate::connection) async fn lpop(
     let idx = cx.engine.shard_for_key(&key);
     match count {
         None => {
-            let req = ShardRequest::LPop { key };
-            match cx.engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
-                Ok(ShardResponse::Value(None)) => Frame::Null,
-                Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-                Err(e) => Frame::Error(format!("ERR {e}")),
-            }
+            super::route_to_shard(
+                cx,
+                idx,
+                ShardRequest::LPop { key },
+                super::resp_string_value,
+            )
+            .await
         }
         Some(count) => {
-            let req = ShardRequest::LPopCount { key, count };
-            match cx.engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Array(items)) => {
-                    Frame::Array(items.into_iter().map(Frame::Bulk).collect())
-                }
-                Ok(ShardResponse::Value(None)) => Frame::Null,
-                Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-                Err(e) => Frame::Error(format!("ERR {e}")),
-            }
+            super::route_to_shard(
+                cx,
+                idx,
+                ShardRequest::LPopCount { key, count },
+                |resp| match resp {
+                    ShardResponse::Array(items) => {
+                        Frame::Array(items.into_iter().map(Frame::Bulk).collect())
+                    }
+                    ShardResponse::Value(None) => Frame::Null,
+                    other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                },
+            )
+            .await
         }
     }
 }
@@ -90,26 +82,28 @@ pub(in crate::connection) async fn rpop(
     let idx = cx.engine.shard_for_key(&key);
     match count {
         None => {
-            let req = ShardRequest::RPop { key };
-            match cx.engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
-                Ok(ShardResponse::Value(None)) => Frame::Null,
-                Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-                Err(e) => Frame::Error(format!("ERR {e}")),
-            }
+            super::route_to_shard(
+                cx,
+                idx,
+                ShardRequest::RPop { key },
+                super::resp_string_value,
+            )
+            .await
         }
         Some(count) => {
-            let req = ShardRequest::RPopCount { key, count };
-            match cx.engine.send_to_shard(idx, req).await {
-                Ok(ShardResponse::Array(items)) => {
-                    Frame::Array(items.into_iter().map(Frame::Bulk).collect())
-                }
-                Ok(ShardResponse::Value(None)) => Frame::Null,
-                Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-                Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-                Err(e) => Frame::Error(format!("ERR {e}")),
-            }
+            super::route_to_shard(
+                cx,
+                idx,
+                ShardRequest::RPopCount { key, count },
+                |resp| match resp {
+                    ShardResponse::Array(items) => {
+                        Frame::Array(items.into_iter().map(Frame::Bulk).collect())
+                    }
+                    ShardResponse::Value(None) => Frame::Null,
+                    other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+                },
+            )
+            .await
         }
     }
 }
@@ -122,37 +116,19 @@ pub(in crate::connection) async fn lrange(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::LRange { key, start, stop };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Array(items)) => {
-            Frame::Array(items.into_iter().map(Frame::Bulk).collect())
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_bulk_array).await
 }
 
 pub(in crate::connection) async fn llen(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::LLen { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_len).await
 }
 
 pub(in crate::connection) async fn lindex(key: String, index: i64, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::LIndex { key, index };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
-        Ok(ShardResponse::Value(None)) => Frame::Null,
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_value).await
 }
 
 pub(in crate::connection) async fn lset(
@@ -163,13 +139,7 @@ pub(in crate::connection) async fn lset(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::LSet { key, index, value };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_ok).await
 }
 
 pub(in crate::connection) async fn ltrim(
@@ -180,12 +150,7 @@ pub(in crate::connection) async fn ltrim(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::LTrim { key, start, stop };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_ok).await
 }
 
 pub(in crate::connection) async fn linsert(
@@ -202,13 +167,7 @@ pub(in crate::connection) async fn linsert(
         pivot,
         value,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_integer).await
 }
 
 pub(in crate::connection) async fn lrem(
@@ -219,12 +178,7 @@ pub(in crate::connection) async fn lrem(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::LRem { key, count, value };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_len).await
 }
 
 pub(in crate::connection) async fn lpos(
@@ -275,14 +229,7 @@ pub(in crate::connection) async fn lmove(
         src_left,
         dst_left,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Value(Some(Value::String(data)))) => Frame::Bulk(data),
-        Ok(ShardResponse::Value(None)) => Frame::Null,
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_value).await
 }
 
 pub(in crate::connection) async fn lmpop(

@@ -107,775 +107,336 @@ pub struct ShardPersistenceConfig {
     pub encryption_key: Option<ember_persistence::encryption::EncryptionKey>,
 }
 
-/// A protocol-agnostic command sent to a shard.
-#[derive(Debug)]
-pub enum ShardRequest {
-    Get {
-        key: String,
-    },
-    Set {
-        key: String,
-        value: Bytes,
-        expire: Option<Duration>,
-        /// Only set the key if it does not already exist.
-        nx: bool,
-        /// Only set the key if it already exists.
-        xx: bool,
-    },
-    Incr {
-        key: String,
-    },
-    Decr {
-        key: String,
-    },
-    IncrBy {
-        key: String,
-        delta: i64,
-    },
-    DecrBy {
-        key: String,
-        delta: i64,
-    },
-    IncrByFloat {
-        key: String,
-        delta: f64,
-    },
-    Append {
-        key: String,
-        value: Bytes,
-    },
-    Strlen {
-        key: String,
-    },
-    GetRange {
-        key: String,
-        start: i64,
-        end: i64,
-    },
-    SetRange {
-        key: String,
-        offset: usize,
-        value: Bytes,
-    },
-    /// GETBIT key offset. Returns the bit at `offset` (0 or 1). Big-endian ordering.
-    GetBit {
-        key: String,
-        offset: u64,
-    },
-    /// SETBIT key offset value. Sets the bit at `offset` to 0 or 1. Returns old bit.
-    SetBit {
-        key: String,
-        offset: u64,
-        value: u8,
-    },
-    /// BITCOUNT key [range]. Counts set bits, optionally restricted to a range.
-    BitCount {
-        key: String,
-        range: Option<BitRange>,
-    },
-    /// BITPOS key bit [range]. Finds first set or clear bit position.
-    BitPos {
-        key: String,
-        bit: u8,
-        range: Option<BitRange>,
-    },
-    /// BITOP op destkey key [key ...]. Bitwise operation across strings.
-    BitOp {
-        op: BitOpKind,
-        dest: String,
-        keys: Vec<String>,
-    },
-    /// Returns all keys matching a glob pattern in this shard.
-    Keys {
-        pattern: String,
-    },
-    /// Renames a key within this shard.
-    Rename {
-        key: String,
-        newkey: String,
-    },
-    /// Copies the value at source to destination within this shard.
-    Copy {
-        source: String,
-        destination: String,
-        replace: bool,
-    },
-    /// Returns the internal encoding name for the value at key.
-    ObjectEncoding {
-        key: String,
-    },
-    Del {
-        key: String,
-    },
-    /// Like DEL but defers value deallocation to the background drop thread.
-    Unlink {
-        key: String,
-    },
-    Exists {
-        key: String,
-    },
-    /// Returns a random key from the shard's keyspace.
-    RandomKey,
-    /// Updates last access time for a key. Returns bool (existed).
-    Touch {
-        key: String,
-    },
-    /// Sorts elements from a list, set, or sorted set in this shard.
-    Sort {
-        key: String,
-        desc: bool,
-        alpha: bool,
-        limit: Option<(i64, i64)>,
-    },
-    Expire {
-        key: String,
-        seconds: u64,
-    },
-    Ttl {
-        key: String,
-    },
-    /// MEMORY USAGE. Returns the estimated memory footprint of a key in bytes.
-    MemoryUsage {
-        key: String,
-    },
-    Persist {
-        key: String,
-    },
-    Pttl {
-        key: String,
-    },
-    Pexpire {
-        key: String,
-        milliseconds: u64,
-    },
-    /// EXPIREAT: set expiry at an absolute Unix timestamp (seconds).
-    Expireat {
-        key: String,
-        timestamp: u64,
-    },
-    /// PEXPIREAT: set expiry at an absolute Unix timestamp (milliseconds).
-    Pexpireat {
-        key: String,
-        timestamp_ms: u64,
-    },
-    LPush {
-        key: String,
-        values: Vec<Bytes>,
-    },
-    RPush {
-        key: String,
-        values: Vec<Bytes>,
-    },
-    LPop {
-        key: String,
-    },
-    RPop {
-        key: String,
-    },
-    /// LPOP key count — pop up to `count` elements from the list head, returning an array.
-    LPopCount {
-        key: String,
-        count: usize,
-    },
-    /// RPOP key count — pop up to `count` elements from the list tail, returning an array.
-    RPopCount {
-        key: String,
-        count: usize,
-    },
-    /// Blocking left-pop. If the list has elements, pops immediately and sends
-    /// the result on `waiter`. If empty, the shard registers the waiter to be
-    /// woken when an element is pushed. Uses an mpsc sender so multiple shards
-    /// can race to deliver the first result to a single receiver.
-    BLPop {
-        key: String,
-        waiter: mpsc::Sender<(String, Bytes)>,
-    },
-    /// Blocking right-pop. Same semantics as BLPop but pops from the tail.
-    BRPop {
-        key: String,
-        waiter: mpsc::Sender<(String, Bytes)>,
-    },
-    LRange {
-        key: String,
-        start: i64,
-        stop: i64,
-    },
-    LLen {
-        key: String,
-    },
-    LIndex {
-        key: String,
-        index: i64,
-    },
-    LSet {
-        key: String,
-        index: i64,
-        value: Bytes,
-    },
-    LTrim {
-        key: String,
-        start: i64,
-        stop: i64,
-    },
-    LInsert {
-        key: String,
-        before: bool,
-        pivot: Bytes,
-        value: Bytes,
-    },
-    LRem {
-        key: String,
-        count: i64,
-        value: Bytes,
-    },
-    LPos {
-        key: String,
-        element: Bytes,
-        rank: i64,
-        count: usize,
-        maxlen: usize,
-    },
-    Type {
-        key: String,
-    },
-    ZAdd {
-        key: String,
-        members: Vec<(f64, String)>,
-        nx: bool,
-        xx: bool,
-        gt: bool,
-        lt: bool,
-        ch: bool,
-    },
-    ZRem {
-        key: String,
-        members: Vec<String>,
-    },
-    ZScore {
-        key: String,
-        member: String,
-    },
-    ZRank {
-        key: String,
-        member: String,
-    },
-    ZRevRank {
-        key: String,
-        member: String,
-    },
-    ZCard {
-        key: String,
-    },
-    ZRange {
-        key: String,
-        start: i64,
-        stop: i64,
-        with_scores: bool,
-    },
-    ZRevRange {
-        key: String,
-        start: i64,
-        stop: i64,
-        with_scores: bool,
-    },
-    ZCount {
-        key: String,
-        min: ScoreBound,
-        max: ScoreBound,
-    },
-    ZIncrBy {
-        key: String,
-        increment: f64,
-        member: String,
-    },
-    ZRangeByScore {
-        key: String,
-        min: ScoreBound,
-        max: ScoreBound,
-        offset: usize,
-        count: Option<usize>,
-    },
-    ZRevRangeByScore {
-        key: String,
-        min: ScoreBound,
-        max: ScoreBound,
-        offset: usize,
-        count: Option<usize>,
-    },
-    ZPopMin {
-        key: String,
-        count: usize,
-    },
-    ZPopMax {
-        key: String,
-        count: usize,
-    },
-    /// LMPOP single-key sub-request: pop up to `count` items from one list.
-    LmpopSingle {
-        key: String,
-        left: bool,
-        count: usize,
-    },
-    /// ZMPOP single-key sub-request: pop up to `count` items from one sorted set.
-    ZmpopSingle {
-        key: String,
-        min: bool,
-        count: usize,
-    },
-    HSet {
-        key: String,
-        fields: Vec<(String, Bytes)>,
-    },
-    HGet {
-        key: String,
-        field: String,
-    },
-    HGetAll {
-        key: String,
-    },
-    HDel {
-        key: String,
-        fields: Vec<String>,
-    },
-    HExists {
-        key: String,
-        field: String,
-    },
-    HLen {
-        key: String,
-    },
-    HIncrBy {
-        key: String,
-        field: String,
-        delta: i64,
-    },
-    /// HINCRBYFLOAT key field increment — increments a hash field by a float.
-    HIncrByFloat {
-        key: String,
-        field: String,
-        delta: f64,
-    },
-    HKeys {
-        key: String,
-    },
-    HVals {
-        key: String,
-    },
-    HMGet {
-        key: String,
-        fields: Vec<String>,
-    },
-    /// HRANDFIELD — returns random field(s) from a hash; read-only, no AOF.
-    HRandField {
-        key: String,
-        count: Option<i64>,
-        with_values: bool,
-    },
-    SAdd {
-        key: String,
-        members: Vec<String>,
-    },
-    SRem {
-        key: String,
-        members: Vec<String>,
-    },
-    SMembers {
-        key: String,
-    },
-    SIsMember {
-        key: String,
-        member: String,
-    },
-    SCard {
-        key: String,
-    },
-    SUnion {
-        keys: Vec<String>,
-    },
-    SInter {
-        keys: Vec<String>,
-    },
-    SDiff {
-        keys: Vec<String>,
-    },
-    SUnionStore {
-        dest: String,
-        keys: Vec<String>,
-    },
-    SInterStore {
-        dest: String,
-        keys: Vec<String>,
-    },
-    SDiffStore {
-        dest: String,
-        keys: Vec<String>,
-    },
-    SRandMember {
-        key: String,
-        count: i64,
-    },
-    SPop {
-        key: String,
-        count: usize,
-    },
-    SMisMember {
-        key: String,
-        members: Vec<String>,
-    },
-    /// SMOVE — atomically moves a member between two sets on the same shard.
-    SMove {
-        source: String,
-        destination: String,
-        member: String,
-    },
-    /// SINTERCARD — returns cardinality of set intersection, capped at limit (0 = no limit).
-    SInterCard {
-        keys: Vec<String>,
-        limit: usize,
-    },
-    /// EXPIRETIME — returns the absolute expiry timestamp in seconds (-1 or -2 for missing/no-expiry).
-    Expiretime {
-        key: String,
-    },
-    /// PEXPIRETIME — returns the absolute expiry timestamp in milliseconds (-1 or -2 for missing/no-expiry).
-    Pexpiretime {
-        key: String,
-    },
-    /// LMOVE: atomically pops from source and pushes to destination.
-    LMove {
-        source: String,
-        destination: String,
-        src_left: bool,
-        dst_left: bool,
-    },
-    /// GETDEL: returns the value at key and deletes it.
-    GetDel {
-        key: String,
-    },
-    /// GETSET: atomically sets key to a new value and returns the old value.
-    GetSet {
-        key: String,
-        value: Bytes,
-    },
-    /// MSETNX: sets multiple keys only if none already exist (atomic all-or-nothing).
-    MSetNx {
-        pairs: Vec<(String, Bytes)>,
-    },
-    /// GETEX: returns the value at key and optionally updates its TTL.
-    ///
-    /// `expire`: `None` = no change, `Some(None)` = persist, `Some(Some(ms))` = new TTL in ms.
-    GetEx {
-        key: String,
-        expire: Option<Option<u64>>,
-    },
-    /// ZDIFF: returns members in the first sorted set not in the others.
-    ZDiff {
-        keys: Vec<String>,
-    },
-    /// ZINTER: returns members present in all sorted sets, scores summed.
-    ZInter {
-        keys: Vec<String>,
-    },
-    /// ZUNION: returns the union of all sorted sets, scores summed.
-    ZUnion {
-        keys: Vec<String>,
-    },
-    /// ZDIFFSTORE destkey numkeys key [key ...] — stores diff result in dest.
-    ZDiffStore {
-        dest: String,
-        keys: Vec<String>,
-    },
-    /// ZINTERSTORE destkey numkeys key [key ...] — stores intersection in dest.
-    ZInterStore {
-        dest: String,
-        keys: Vec<String>,
-    },
-    /// ZUNIONSTORE destkey numkeys key [key ...] — stores union in dest.
-    ZUnionStore {
-        dest: String,
-        keys: Vec<String>,
-    },
-    /// ZRANDMEMBER — returns random member(s) from a sorted set; read-only, no AOF.
-    ZRandMember {
-        key: String,
-        count: Option<i64>,
-        with_scores: bool,
-    },
-    /// Returns the key count for this shard.
-    DbSize,
-    /// Returns keyspace stats for this shard.
-    Stats,
-    /// Returns the current version of a key for WATCH optimistic locking.
-    /// Read-only, no AOF, no replication — cold path only.
-    KeyVersion {
-        key: String,
-    },
-    /// Applies a live memory configuration update to this shard.
-    ///
-    /// Sent by the server when CONFIG SET maxmemory or maxmemory-policy
-    /// is changed at runtime. Takes effect on the next write check.
-    UpdateMemoryConfig {
-        max_memory: Option<usize>,
-        eviction_policy: EvictionPolicy,
-    },
-    /// Triggers a snapshot write.
-    Snapshot,
-    /// Serializes the current shard state to bytes (in-memory snapshot).
-    ///
-    /// Used by the replication server to capture a consistent shard
-    /// snapshot for transmission to a new replica without filesystem I/O.
-    SerializeSnapshot,
-    /// Triggers an AOF rewrite (snapshot + truncate AOF).
-    RewriteAof,
-    /// Clears all keys from the keyspace.
-    FlushDb,
-    /// Clears all keys, deferring deallocation to the background drop thread.
-    FlushDbAsync,
-    /// Scans keys in the keyspace.
-    Scan {
-        cursor: u64,
-        count: usize,
-        pattern: Option<String>,
-    },
-    /// Incrementally iterates set members.
-    SScan {
-        key: String,
-        cursor: u64,
-        count: usize,
-        pattern: Option<String>,
-    },
-    /// Incrementally iterates hash fields.
-    HScan {
-        key: String,
-        cursor: u64,
-        count: usize,
-        pattern: Option<String>,
-    },
-    /// Incrementally iterates sorted set members.
-    ZScan {
-        key: String,
-        cursor: u64,
-        count: usize,
-        pattern: Option<String>,
-    },
-    /// Counts keys in this shard that hash to the given cluster slot.
-    CountKeysInSlot {
-        slot: u16,
-    },
-    /// Returns up to `count` keys that hash to the given cluster slot.
-    GetKeysInSlot {
-        slot: u16,
-        count: usize,
-    },
-    /// Dumps a key's value as serialized bytes for MIGRATE.
-    DumpKey {
-        key: String,
-    },
-    /// Restores a key from serialized bytes (received via MIGRATE).
-    RestoreKey {
-        key: String,
-        ttl_ms: u64,
-        data: bytes::Bytes,
-        replace: bool,
-    },
-    /// Adds a vector to a vector set.
-    #[cfg(feature = "vector")]
-    VAdd {
-        key: String,
-        element: String,
-        vector: Vec<f32>,
-        metric: u8,
-        quantization: u8,
-        connectivity: u32,
-        expansion_add: u32,
-    },
-    /// Adds multiple vectors to a vector set in a single command.
-    #[cfg(feature = "vector")]
-    VAddBatch {
-        key: String,
-        entries: Vec<(String, Vec<f32>)>,
-        dim: usize,
-        metric: u8,
-        quantization: u8,
-        connectivity: u32,
-        expansion_add: u32,
-    },
-    /// Searches for nearest neighbors in a vector set.
-    #[cfg(feature = "vector")]
-    VSim {
-        key: String,
-        query: Vec<f32>,
-        count: usize,
-        ef_search: usize,
-    },
-    /// Removes an element from a vector set.
-    #[cfg(feature = "vector")]
-    VRem {
-        key: String,
-        element: String,
-    },
-    /// Gets the stored vector for an element.
-    #[cfg(feature = "vector")]
-    VGet {
-        key: String,
-        element: String,
-    },
-    /// Returns the number of elements in a vector set.
-    #[cfg(feature = "vector")]
-    VCard {
-        key: String,
-    },
-    /// Returns the dimensionality of a vector set.
-    #[cfg(feature = "vector")]
-    VDim {
-        key: String,
-    },
-    /// Returns metadata about a vector set.
-    #[cfg(feature = "vector")]
-    VInfo {
-        key: String,
-    },
-    /// Stores a validated protobuf value.
-    #[cfg(feature = "protobuf")]
-    ProtoSet {
-        key: String,
-        type_name: String,
-        data: Bytes,
-        expire: Option<Duration>,
-        nx: bool,
-        xx: bool,
-    },
-    /// Retrieves a protobuf value.
-    #[cfg(feature = "protobuf")]
-    ProtoGet {
-        key: String,
-    },
-    /// Returns the protobuf message type name for a key.
-    #[cfg(feature = "protobuf")]
-    ProtoType {
-        key: String,
-    },
-    /// Writes a ProtoRegister AOF record (no keyspace mutation).
-    /// Broadcast to all shards after a schema registration so the
-    /// schema is recovered from any shard's AOF on restart.
-    #[cfg(feature = "protobuf")]
-    ProtoRegisterAof {
-        name: String,
-        descriptor: Bytes,
-    },
-    /// Atomically reads a proto value, sets a field, and writes it back.
-    /// Runs entirely within the shard's single-threaded dispatch.
-    #[cfg(feature = "protobuf")]
-    ProtoSetField {
-        key: String,
-        field_path: String,
-        value: String,
-    },
-    /// Atomically reads a proto value, clears a field, and writes it back.
-    /// Runs entirely within the shard's single-threaded dispatch.
-    #[cfg(feature = "protobuf")]
-    ProtoDelField {
-        key: String,
-        field_path: String,
-    },
-    /// Cursor-based scan over proto keys, optionally filtered by type name.
-    #[cfg(feature = "protobuf")]
-    ProtoScan {
-        cursor: u64,
-        count: usize,
-        pattern: Option<String>,
-        type_name: Option<String>,
-    },
-    /// Cursor-based scan over proto keys, returning those where the given
-    /// field equals the given value.
-    #[cfg(feature = "protobuf")]
-    ProtoFind {
-        cursor: u64,
-        count: usize,
-        pattern: Option<String>,
-        type_name: Option<String>,
-        field_path: String,
-        field_value: String,
-    },
+/// Generates the [`ShardRequest`] enum and its `is_write()` method from
+/// read/write variant groupings. Adding a new command forces you to place
+/// it in the correct group — the compiler enforces it.
+macro_rules! shard_request {
+    (
+        read {
+            $( $(#[$rmeta:meta])* $rvar:ident $({ $( $(#[$rfmeta:meta])* $rfield:ident : $rty:ty ),* $(,)? })? ),* $(,)?
+        }
+        write {
+            $( $(#[$wmeta:meta])* $wvar:ident $({ $( $(#[$wfmeta:meta])* $wfield:ident : $wty:ty ),* $(,)? })? ),* $(,)?
+        }
+    ) => {
+        /// A protocol-agnostic command sent to a shard.
+        #[derive(Debug)]
+        pub enum ShardRequest {
+            $( $(#[$rmeta])* $rvar $({ $( $(#[$rfmeta])* $rfield : $rty ),* })?, )*
+            $( $(#[$wmeta])* $wvar $({ $( $(#[$wfmeta])* $wfield : $wty ),* })?, )*
+        }
+
+        impl ShardRequest {
+            /// Returns `true` if this request mutates the keyspace and should be
+            /// rejected when the AOF disk is full. Read-only operations, admin
+            /// commands, and scan operations always proceed.
+            fn is_write(&self) -> bool {
+                #[allow(unreachable_patterns, unused_doc_comments)]
+                match self {
+                    $( $(#[$wmeta])* Self::$wvar { .. } => true, )*
+                    _ => false,
+                }
+            }
+        }
+    };
 }
 
-impl ShardRequest {
-    /// Returns `true` if this request mutates the keyspace and should be
-    /// rejected when the AOF disk is full. Read-only operations, admin
-    /// commands, and scan operations always proceed.
-    fn is_write(&self) -> bool {
-        #[allow(unreachable_patterns)]
-        match self {
-            ShardRequest::Set { .. }
-            | ShardRequest::Incr { .. }
-            | ShardRequest::Decr { .. }
-            | ShardRequest::IncrBy { .. }
-            | ShardRequest::DecrBy { .. }
-            | ShardRequest::IncrByFloat { .. }
-            | ShardRequest::Append { .. }
-            | ShardRequest::SetBit { .. }
-            | ShardRequest::BitOp { .. }
-            | ShardRequest::Del { .. }
-            | ShardRequest::Unlink { .. }
-            | ShardRequest::Rename { .. }
-            | ShardRequest::Copy { .. }
-            | ShardRequest::Expire { .. }
-            | ShardRequest::Expireat { .. }
-            | ShardRequest::Persist { .. }
-            | ShardRequest::Pexpire { .. }
-            | ShardRequest::Pexpireat { .. }
-            | ShardRequest::LPush { .. }
-            | ShardRequest::RPush { .. }
-            | ShardRequest::LPop { .. }
-            | ShardRequest::RPop { .. }
-            | ShardRequest::LPopCount { .. }
-            | ShardRequest::RPopCount { .. }
-            | ShardRequest::LSet { .. }
-            | ShardRequest::LTrim { .. }
-            | ShardRequest::LInsert { .. }
-            | ShardRequest::LRem { .. }
-            | ShardRequest::BLPop { .. }
-            | ShardRequest::BRPop { .. }
-            | ShardRequest::ZAdd { .. }
-            | ShardRequest::ZRem { .. }
-            | ShardRequest::ZIncrBy { .. }
-            | ShardRequest::ZPopMin { .. }
-            | ShardRequest::ZPopMax { .. }
-            | ShardRequest::LmpopSingle { .. }
-            | ShardRequest::ZmpopSingle { .. }
-            | ShardRequest::HSet { .. }
-            | ShardRequest::HDel { .. }
-            | ShardRequest::HIncrBy { .. }
-            | ShardRequest::HIncrByFloat { .. }
-            | ShardRequest::SAdd { .. }
-            | ShardRequest::SRem { .. }
-            | ShardRequest::SPop { .. }
-            | ShardRequest::SUnionStore { .. }
-            | ShardRequest::SInterStore { .. }
-            | ShardRequest::SDiffStore { .. }
-            | ShardRequest::SMove { .. }
-            | ShardRequest::ZDiffStore { .. }
-            | ShardRequest::ZInterStore { .. }
-            | ShardRequest::ZUnionStore { .. }
-            | ShardRequest::LMove { .. }
-            | ShardRequest::GetDel { .. }
-            | ShardRequest::GetEx { .. }
-            | ShardRequest::GetSet { .. }
-            | ShardRequest::MSetNx { .. }
-            | ShardRequest::FlushDb
-            | ShardRequest::FlushDbAsync
-            | ShardRequest::RestoreKey { .. } => true,
-            #[cfg(feature = "protobuf")]
-            ShardRequest::ProtoSet { .. }
-            | ShardRequest::ProtoRegisterAof { .. }
-            | ShardRequest::ProtoSetField { .. }
-            | ShardRequest::ProtoDelField { .. } => true,
-            #[cfg(feature = "vector")]
-            ShardRequest::VAdd { .. }
-            | ShardRequest::VAddBatch { .. }
-            | ShardRequest::VRem { .. } => true,
-            _ => false,
-        }
+shard_request! {
+    read {
+        // --- strings (read) ---
+        Get { key: String },
+        Strlen { key: String },
+        GetRange { key: String, start: i64, end: i64 },
+        /// GETBIT key offset. Returns the bit at `offset` (0 or 1). Big-endian ordering.
+        GetBit { key: String, offset: u64 },
+        /// BITCOUNT key [range]. Counts set bits, optionally restricted to a range.
+        BitCount { key: String, range: Option<BitRange> },
+        /// BITPOS key bit [range]. Finds first set or clear bit position.
+        BitPos { key: String, bit: u8, range: Option<BitRange> },
+
+        // --- keyspace (read) ---
+        /// Returns all keys matching a glob pattern in this shard.
+        Keys { pattern: String },
+        /// Returns the internal encoding name for the value at key.
+        ObjectEncoding { key: String },
+        Exists { key: String },
+        /// Returns a random key from the shard's keyspace.
+        RandomKey,
+        /// Updates last access time for a key. Returns bool (existed).
+        Touch { key: String },
+        /// Sorts elements from a list, set, or sorted set in this shard.
+        Sort { key: String, desc: bool, alpha: bool, limit: Option<(i64, i64)> },
+        Ttl { key: String },
+        /// MEMORY USAGE. Returns the estimated memory footprint of a key in bytes.
+        MemoryUsage { key: String },
+        Pttl { key: String },
+        Type { key: String },
+        /// EXPIRETIME — returns the absolute expiry timestamp in seconds (-1 or -2 for missing/no-expiry).
+        Expiretime { key: String },
+        /// PEXPIRETIME — returns the absolute expiry timestamp in milliseconds (-1 or -2 for missing/no-expiry).
+        Pexpiretime { key: String },
+
+        // --- lists (read) ---
+        LRange { key: String, start: i64, stop: i64 },
+        LLen { key: String },
+        LIndex { key: String, index: i64 },
+        LPos { key: String, element: Bytes, rank: i64, count: usize, maxlen: usize },
+
+        // --- sorted sets (read) ---
+        ZScore { key: String, member: String },
+        ZRank { key: String, member: String },
+        ZRevRank { key: String, member: String },
+        ZCard { key: String },
+        ZRange { key: String, start: i64, stop: i64, with_scores: bool },
+        ZRevRange { key: String, start: i64, stop: i64, with_scores: bool },
+        ZCount { key: String, min: ScoreBound, max: ScoreBound },
+        ZRangeByScore { key: String, min: ScoreBound, max: ScoreBound, offset: usize, count: Option<usize> },
+        ZRevRangeByScore { key: String, min: ScoreBound, max: ScoreBound, offset: usize, count: Option<usize> },
+        /// ZDIFF: returns members in the first sorted set not in the others.
+        ZDiff { keys: Vec<String> },
+        /// ZINTER: returns members present in all sorted sets, scores summed.
+        ZInter { keys: Vec<String> },
+        /// ZUNION: returns the union of all sorted sets, scores summed.
+        ZUnion { keys: Vec<String> },
+        /// ZRANDMEMBER — returns random member(s) from a sorted set; read-only, no AOF.
+        ZRandMember { key: String, count: Option<i64>, with_scores: bool },
+
+        // --- hashes (read) ---
+        HGet { key: String, field: String },
+        HGetAll { key: String },
+        HExists { key: String, field: String },
+        HLen { key: String },
+        HKeys { key: String },
+        HVals { key: String },
+        HMGet { key: String, fields: Vec<String> },
+        /// HRANDFIELD — returns random field(s) from a hash; read-only, no AOF.
+        HRandField { key: String, count: Option<i64>, with_values: bool },
+
+        // --- sets (read) ---
+        SMembers { key: String },
+        SIsMember { key: String, member: String },
+        SCard { key: String },
+        SUnion { keys: Vec<String> },
+        SInter { keys: Vec<String> },
+        SDiff { keys: Vec<String> },
+        SRandMember { key: String, count: i64 },
+        SMisMember { key: String, members: Vec<String> },
+        /// SINTERCARD — returns cardinality of set intersection, capped at limit (0 = no limit).
+        SInterCard { keys: Vec<String>, limit: usize },
+
+        // --- admin / stats ---
+        /// Returns the key count for this shard.
+        DbSize,
+        /// Returns keyspace stats for this shard.
+        Stats,
+        /// Returns the current version of a key for WATCH optimistic locking.
+        /// Read-only, no AOF, no replication — cold path only.
+        KeyVersion { key: String },
+        /// Applies a live memory configuration update to this shard.
+        ///
+        /// Sent by the server when CONFIG SET maxmemory or maxmemory-policy
+        /// is changed at runtime. Takes effect on the next write check.
+        UpdateMemoryConfig { max_memory: Option<usize>, eviction_policy: EvictionPolicy },
+        /// Triggers a snapshot write.
+        Snapshot,
+        /// Serializes the current shard state to bytes (in-memory snapshot).
+        ///
+        /// Used by the replication server to capture a consistent shard
+        /// snapshot for transmission to a new replica without filesystem I/O.
+        SerializeSnapshot,
+        /// Triggers an AOF rewrite (snapshot + truncate AOF).
+        RewriteAof,
+
+        // --- scan operations ---
+        /// Scans keys in the keyspace.
+        Scan { cursor: u64, count: usize, pattern: Option<String> },
+        /// Incrementally iterates set members.
+        SScan { key: String, cursor: u64, count: usize, pattern: Option<String> },
+        /// Incrementally iterates hash fields.
+        HScan { key: String, cursor: u64, count: usize, pattern: Option<String> },
+        /// Incrementally iterates sorted set members.
+        ZScan { key: String, cursor: u64, count: usize, pattern: Option<String> },
+
+        // --- cluster ---
+        /// Counts keys in this shard that hash to the given cluster slot.
+        CountKeysInSlot { slot: u16 },
+        /// Returns up to `count` keys that hash to the given cluster slot.
+        GetKeysInSlot { slot: u16, count: usize },
+        /// Dumps a key's value as serialized bytes for MIGRATE.
+        DumpKey { key: String },
+
+        // --- vector (read) ---
+        /// Searches for nearest neighbors in a vector set.
+        #[cfg(feature = "vector")]
+        VSim { key: String, query: Vec<f32>, count: usize, ef_search: usize },
+        /// Gets the stored vector for an element.
+        #[cfg(feature = "vector")]
+        VGet { key: String, element: String },
+        /// Returns the number of elements in a vector set.
+        #[cfg(feature = "vector")]
+        VCard { key: String },
+        /// Returns the dimensionality of a vector set.
+        #[cfg(feature = "vector")]
+        VDim { key: String },
+        /// Returns metadata about a vector set.
+        #[cfg(feature = "vector")]
+        VInfo { key: String },
+
+        // --- protobuf (read) ---
+        /// Retrieves a protobuf value.
+        #[cfg(feature = "protobuf")]
+        ProtoGet { key: String },
+        /// Returns the protobuf message type name for a key.
+        #[cfg(feature = "protobuf")]
+        ProtoType { key: String },
+        /// Cursor-based scan over proto keys, optionally filtered by type name.
+        #[cfg(feature = "protobuf")]
+        ProtoScan { cursor: u64, count: usize, pattern: Option<String>, type_name: Option<String> },
+        /// Cursor-based scan over proto keys, returning those where the given
+        /// field equals the given value.
+        #[cfg(feature = "protobuf")]
+        ProtoFind {
+            cursor: u64,
+            count: usize,
+            pattern: Option<String>,
+            type_name: Option<String>,
+            field_path: String,
+            field_value: String,
+        },
+    }
+
+    write {
+        // --- strings (write) ---
+        Set { key: String, value: Bytes, expire: Option<Duration>, nx: bool, xx: bool },
+        Incr { key: String },
+        Decr { key: String },
+        IncrBy { key: String, delta: i64 },
+        DecrBy { key: String, delta: i64 },
+        IncrByFloat { key: String, delta: f64 },
+        Append { key: String, value: Bytes },
+        SetRange { key: String, offset: usize, value: Bytes },
+        /// SETBIT key offset value. Sets the bit at `offset` to 0 or 1. Returns old bit.
+        SetBit { key: String, offset: u64, value: u8 },
+        /// BITOP op destkey key [key ...]. Bitwise operation across strings.
+        BitOp { op: BitOpKind, dest: String, keys: Vec<String> },
+
+        // --- keyspace (write) ---
+        /// Renames a key within this shard.
+        Rename { key: String, newkey: String },
+        /// Copies the value at source to destination within this shard.
+        Copy { source: String, destination: String, replace: bool },
+        Del { key: String },
+        /// Like DEL but defers value deallocation to the background drop thread.
+        Unlink { key: String },
+        Expire { key: String, seconds: u64 },
+        Persist { key: String },
+        Pexpire { key: String, milliseconds: u64 },
+        /// EXPIREAT: set expiry at an absolute Unix timestamp (seconds).
+        Expireat { key: String, timestamp: u64 },
+        /// PEXPIREAT: set expiry at an absolute Unix timestamp (milliseconds).
+        Pexpireat { key: String, timestamp_ms: u64 },
+        /// GETDEL: returns the value at key and deletes it.
+        GetDel { key: String },
+        /// GETSET: atomically sets key to a new value and returns the old value.
+        GetSet { key: String, value: Bytes },
+        /// GETEX: returns the value at key and optionally updates its TTL.
+        ///
+        /// `expire`: `None` = no change, `Some(None)` = persist, `Some(Some(ms))` = new TTL in ms.
+        GetEx { key: String, expire: Option<Option<u64>> },
+        /// MSETNX: sets multiple keys only if none already exist (atomic all-or-nothing).
+        MSetNx { pairs: Vec<(String, Bytes)> },
+        /// Clears all keys from the keyspace.
+        FlushDb,
+        /// Clears all keys, deferring deallocation to the background drop thread.
+        FlushDbAsync,
+        /// Restores a key from serialized bytes (received via MIGRATE).
+        RestoreKey { key: String, ttl_ms: u64, data: bytes::Bytes, replace: bool },
+
+        // --- lists (write) ---
+        LPush { key: String, values: Vec<Bytes> },
+        RPush { key: String, values: Vec<Bytes> },
+        LPop { key: String },
+        RPop { key: String },
+        /// LPOP key count — pop up to `count` elements from the list head, returning an array.
+        LPopCount { key: String, count: usize },
+        /// RPOP key count — pop up to `count` elements from the list tail, returning an array.
+        RPopCount { key: String, count: usize },
+        /// Blocking left-pop. If the list has elements, pops immediately and sends
+        /// the result on `waiter`. If empty, the shard registers the waiter to be
+        /// woken when an element is pushed. Uses an mpsc sender so multiple shards
+        /// can race to deliver the first result to a single receiver.
+        BLPop { key: String, waiter: mpsc::Sender<(String, Bytes)> },
+        /// Blocking right-pop. Same semantics as BLPop but pops from the tail.
+        BRPop { key: String, waiter: mpsc::Sender<(String, Bytes)> },
+        LSet { key: String, index: i64, value: Bytes },
+        LTrim { key: String, start: i64, stop: i64 },
+        LInsert { key: String, before: bool, pivot: Bytes, value: Bytes },
+        LRem { key: String, count: i64, value: Bytes },
+        /// LMPOP single-key sub-request: pop up to `count` items from one list.
+        LmpopSingle { key: String, left: bool, count: usize },
+        /// LMOVE: atomically pops from source and pushes to destination.
+        LMove { source: String, destination: String, src_left: bool, dst_left: bool },
+
+        // --- sorted sets (write) ---
+        ZAdd { key: String, members: Vec<(f64, String)>, nx: bool, xx: bool, gt: bool, lt: bool, ch: bool },
+        ZRem { key: String, members: Vec<String> },
+        ZIncrBy { key: String, increment: f64, member: String },
+        ZPopMin { key: String, count: usize },
+        ZPopMax { key: String, count: usize },
+        /// ZMPOP single-key sub-request: pop up to `count` items from one sorted set.
+        ZmpopSingle { key: String, min: bool, count: usize },
+        /// ZDIFFSTORE destkey numkeys key [key ...] — stores diff result in dest.
+        ZDiffStore { dest: String, keys: Vec<String> },
+        /// ZINTERSTORE destkey numkeys key [key ...] — stores intersection in dest.
+        ZInterStore { dest: String, keys: Vec<String> },
+        /// ZUNIONSTORE destkey numkeys key [key ...] — stores union in dest.
+        ZUnionStore { dest: String, keys: Vec<String> },
+
+        // --- hashes (write) ---
+        HSet { key: String, fields: Vec<(String, Bytes)> },
+        HDel { key: String, fields: Vec<String> },
+        HIncrBy { key: String, field: String, delta: i64 },
+        /// HINCRBYFLOAT key field increment — increments a hash field by a float.
+        HIncrByFloat { key: String, field: String, delta: f64 },
+
+        // --- sets (write) ---
+        SAdd { key: String, members: Vec<String> },
+        SRem { key: String, members: Vec<String> },
+        SPop { key: String, count: usize },
+        SUnionStore { dest: String, keys: Vec<String> },
+        SInterStore { dest: String, keys: Vec<String> },
+        SDiffStore { dest: String, keys: Vec<String> },
+        /// SMOVE — atomically moves a member between two sets on the same shard.
+        SMove { source: String, destination: String, member: String },
+
+        // --- vector (write) ---
+        /// Adds a vector to a vector set.
+        #[cfg(feature = "vector")]
+        VAdd { key: String, element: String, vector: Vec<f32>, metric: u8, quantization: u8, connectivity: u32, expansion_add: u32 },
+        /// Adds multiple vectors to a vector set in a single command.
+        #[cfg(feature = "vector")]
+        VAddBatch { key: String, entries: Vec<(String, Vec<f32>)>, dim: usize, metric: u8, quantization: u8, connectivity: u32, expansion_add: u32 },
+        /// Removes an element from a vector set.
+        #[cfg(feature = "vector")]
+        VRem { key: String, element: String },
+
+        // --- protobuf (write) ---
+        /// Stores a validated protobuf value.
+        #[cfg(feature = "protobuf")]
+        ProtoSet { key: String, type_name: String, data: Bytes, expire: Option<Duration>, nx: bool, xx: bool },
+        /// Writes a ProtoRegister AOF record (no keyspace mutation).
+        /// Broadcast to all shards after a schema registration so the
+        /// schema is recovered from any shard's AOF on restart.
+        #[cfg(feature = "protobuf")]
+        ProtoRegisterAof { name: String, descriptor: Bytes },
+        /// Atomically reads a proto value, sets a field, and writes it back.
+        /// Runs entirely within the shard's single-threaded dispatch.
+        #[cfg(feature = "protobuf")]
+        ProtoSetField { key: String, field_path: String, value: String },
+        /// Atomically reads a proto value, clears a field, and writes it back.
+        /// Runs entirely within the shard's single-threaded dispatch.
+        #[cfg(feature = "protobuf")]
+        ProtoDelField { key: String, field_path: String },
     }
 }
 

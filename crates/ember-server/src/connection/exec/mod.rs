@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use ember_core::{Engine, ShardRequest, ShardResponse};
+use ember_core::{Engine, ShardRequest, ShardResponse, Value};
 use ember_protocol::{Frame, SetExpire};
 
 use crate::pubsub::PubSubManager;
@@ -146,5 +146,164 @@ pub(in crate::connection) fn resolve_collection_scan(
         Ok(ShardResponse::WrongType) => wrongtype_error(),
         Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         Err(e) => Frame::Error(format!("ERR {e}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// route_to_shard + response mapper helpers
+//
+// These eliminate the repetitive send → match → error-handling boilerplate
+// from every single-key command handler. The caller only provides the success
+// mapping via `map_ok`; common error variants are handled uniformly.
+// ---------------------------------------------------------------------------
+
+/// Routes a single-key command to its owning shard and maps the response.
+///
+/// Handles WrongType, OutOfMemory, Err, and channel errors uniformly.
+/// The caller only maps the success case via `map_ok`. If `map_ok`
+/// doesn't recognise the response variant, it should return a
+/// `Frame::Error("ERR unexpected ...")` itself.
+pub(in crate::connection) async fn route_to_shard<F>(
+    cx: &ExecCtx<'_>,
+    shard_idx: usize,
+    req: ShardRequest,
+    map_ok: F,
+) -> Frame
+where
+    F: FnOnce(ShardResponse) -> Frame,
+{
+    match cx.engine.send_to_shard(shard_idx, req).await {
+        Ok(ShardResponse::WrongType) => wrongtype_error(),
+        Ok(ShardResponse::OutOfMemory) => oom_error(),
+        Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
+        Ok(resp) => map_ok(resp),
+        Err(e) => Frame::Error(format!("ERR {e}")),
+    }
+}
+
+/// Maps `Value(Some(String(data)))` → `Bulk`, `Value(None)` → `Null`.
+pub(in crate::connection) fn resp_string_value(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Value(Some(Value::String(data))) => Frame::Bulk(data),
+        ShardResponse::Value(None) => Frame::Null,
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Integer(n)` → `Frame::Integer(n)`.
+pub(in crate::connection) fn resp_integer(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Integer(n) => Frame::Integer(n),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Bool(b)` → `Frame::Integer(0|1)`.
+pub(in crate::connection) fn resp_bool_int(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Bool(b) => Frame::Integer(i64::from(b)),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Ok` → `Simple("OK")`.
+pub(in crate::connection) fn resp_ok(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Ok => Frame::Simple("OK".into()),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Ok` → `Simple("OK")`, `Value(None)` → `Null` (for SET with NX/XX).
+pub(in crate::connection) fn resp_ok_or_null(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Ok => Frame::Simple("OK".into()),
+        ShardResponse::Value(None) => Frame::Null,
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Len(n)` → `Frame::Integer(n as i64)`.
+pub(in crate::connection) fn resp_len(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Len(n) => Frame::Integer(n as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `BulkString(val)` → `Frame::Bulk(Bytes::from(val))`.
+pub(in crate::connection) fn resp_bulk_string(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::BulkString(val) => Frame::Bulk(Bytes::from(val)),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Array(items)` → `Frame::Array` of `Bulk` frames.
+pub(in crate::connection) fn resp_bulk_array(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Array(items) => Frame::Array(items.into_iter().map(Frame::Bulk).collect()),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `StringArray(items)` → `Frame::Array` of `Bulk` frames.
+pub(in crate::connection) fn resp_string_array(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::StringArray(members) => Frame::Array(
+            members
+                .into_iter()
+                .map(|m| Frame::Bulk(Bytes::from(m)))
+                .collect(),
+        ),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Converts a scored array into RESP frames, optionally interleaving scores.
+pub(in crate::connection) fn scored_to_frame(
+    items: Vec<(String, f64)>,
+    with_scores: bool,
+) -> Frame {
+    let mut frames = Vec::with_capacity(items.len() * if with_scores { 2 } else { 1 });
+    for (member, score) in items {
+        frames.push(Frame::Bulk(Bytes::from(member)));
+        if with_scores {
+            frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+        }
+    }
+    Frame::Array(frames)
+}
+
+/// Maps `Rank(Some(r))` → `Integer`, `Rank(None)` → `Null`.
+pub(in crate::connection) fn resp_rank(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Rank(Some(r)) => Frame::Integer(r as i64),
+        ShardResponse::Rank(None) => Frame::Null,
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `Score(Some(s))` → `Bulk`, `Score(None)` → `Null`.
+pub(in crate::connection) fn resp_score(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::Score(Some(s)) => Frame::Bulk(Bytes::from(format!("{s}"))),
+        ShardResponse::Score(None) => Frame::Null,
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    }
+}
+
+/// Maps `ZPopResult` → interleaved `[member, score, ...]` array.
+pub(in crate::connection) fn resp_zpop(resp: ShardResponse) -> Frame {
+    match resp {
+        ShardResponse::ZPopResult(items) => {
+            let mut frames = Vec::with_capacity(items.len() * 2);
+            for (member, score) in items {
+                frames.push(Frame::Bulk(Bytes::from(member)));
+                frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
+            }
+            Frame::Array(frames)
+        }
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
     }
 }

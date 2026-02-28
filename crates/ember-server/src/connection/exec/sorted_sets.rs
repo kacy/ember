@@ -23,18 +23,17 @@ pub(in crate::connection) async fn zadd(
         lt: flags.lt,
         ch: flags.ch,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZAddLen { count, .. }) => {
-            if count > 0 {
-                cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zadd", &key);
-            }
-            Frame::Integer(count as i64)
+    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ZAddLen { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await;
+    if let Frame::Integer(n) = &frame {
+        if *n > 0 {
+            cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zadd", &key);
         }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
     }
+    frame
 }
 
 pub(in crate::connection) async fn zrem(
@@ -44,36 +43,23 @@ pub(in crate::connection) async fn zrem(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZRem { key, members };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZRemLen { count, .. }) => Frame::Integer(count as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ZRemLen { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zscore(key: String, member: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZScore { key, member };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Score(Some(s))) => Frame::Bulk(Bytes::from(format!("{s}"))),
-        Ok(ShardResponse::Score(None)) => Frame::Null,
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_score).await
 }
 
 pub(in crate::connection) async fn zrank(key: String, member: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZRank { key, member };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Rank(Some(r))) => Frame::Integer(r as i64),
-        Ok(ShardResponse::Rank(None)) => Frame::Null,
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_rank).await
 }
 
 pub(in crate::connection) async fn zrevrank(
@@ -83,13 +69,7 @@ pub(in crate::connection) async fn zrevrank(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZRevRank { key, member };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Rank(Some(r))) => Frame::Integer(r as i64),
-        Ok(ShardResponse::Rank(None)) => Frame::Null,
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_rank).await
 }
 
 pub(in crate::connection) async fn zrange(
@@ -106,21 +86,11 @@ pub(in crate::connection) async fn zrange(
         stop,
         with_scores,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zrevrange(
@@ -137,32 +107,17 @@ pub(in crate::connection) async fn zrevrange(
         stop,
         with_scores,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zcard(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZCard { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_len).await
 }
 
 pub(in crate::connection) async fn zcount(
@@ -173,12 +128,7 @@ pub(in crate::connection) async fn zcount(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZCount { key, min, max };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_len).await
 }
 
 pub(in crate::connection) async fn zincrby(
@@ -193,15 +143,13 @@ pub(in crate::connection) async fn zincrby(
         increment,
         member,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZIncrByResult { new_score, .. }) => {
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ZIncrByResult { new_score, .. } => {
             Frame::Bulk(Bytes::from(format!("{new_score}")))
         }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zrangebyscore(
@@ -221,21 +169,11 @@ pub(in crate::connection) async fn zrangebyscore(
         offset,
         count,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zrevrangebyscore(
@@ -255,57 +193,23 @@ pub(in crate::connection) async fn zrevrangebyscore(
         offset,
         count,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zpopmin(key: String, count: usize, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZPopMin { key, count };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZPopResult(items)) => {
-            let mut frames = Vec::with_capacity(items.len() * 2);
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_zpop).await
 }
 
 pub(in crate::connection) async fn zpopmax(key: String, count: usize, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZPopMax { key, count };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZPopResult(items)) => {
-            let mut frames = Vec::with_capacity(items.len() * 2);
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_zpop).await
 }
 
 pub(in crate::connection) async fn zmpop(
@@ -354,21 +258,11 @@ pub(in crate::connection) async fn zdiff(
     let key = keys.first().cloned().unwrap_or_default();
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZDiff { keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zinter(
@@ -379,21 +273,11 @@ pub(in crate::connection) async fn zinter(
     let key = keys.first().cloned().unwrap_or_default();
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZInter { keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zunion(
@@ -404,21 +288,11 @@ pub(in crate::connection) async fn zunion(
     let key = keys.first().cloned().unwrap_or_default();
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ZUnion { keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ScoredArray(items)) => {
-            let mut frames = Vec::new();
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                if with_scores {
-                    frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-                }
-            }
-            Frame::Array(frames)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn zdiffstore(
@@ -431,15 +305,15 @@ pub(in crate::connection) async fn zdiffstore(
         dest: dest.clone(),
         keys,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZStoreResult { count, .. }) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zdiffstore", &dest);
-            Frame::Integer(count as i64)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await;
+    if matches!(frame, Frame::Integer(_)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zdiffstore", &dest);
     }
+    frame
 }
 
 pub(in crate::connection) async fn zinterstore(
@@ -452,15 +326,15 @@ pub(in crate::connection) async fn zinterstore(
         dest: dest.clone(),
         keys,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZStoreResult { count, .. }) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zinterstore", &dest);
-            Frame::Integer(count as i64)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await;
+    if matches!(frame, Frame::Integer(_)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zinterstore", &dest);
     }
+    frame
 }
 
 pub(in crate::connection) async fn zunionstore(
@@ -473,15 +347,15 @@ pub(in crate::connection) async fn zunionstore(
         dest: dest.clone(),
         keys,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::ZStoreResult { count, .. }) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zunionstore", &dest);
-            Frame::Integer(count as i64)
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await;
+    if matches!(frame, Frame::Integer(_)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zunionstore", &dest);
     }
+    frame
 }
 
 pub(in crate::connection) async fn zrandmember(
