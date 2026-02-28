@@ -1214,8 +1214,13 @@ async fn proto_scan_all_keys() {
     // store 5 proto keys
     for i in 1..=5u32 {
         let data = encode_profile(&desc, &format!("user{i}"), i as i32, true);
-        c.cmd_raw(&[b"PROTO.SET", format!("user:{i}").as_bytes(), b"test.Profile", &data])
-            .await;
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("user:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
     }
 
     // also store a non-proto key to ensure it's excluded
@@ -1267,9 +1272,7 @@ async fn proto_scan_type_filter() {
         .await;
 
     // scan with TYPE=test.Profile — should only return profile:1
-    let resp = c
-        .cmd(&["PROTO.SCAN", "0", "TYPE", "test.Profile"])
-        .await;
+    let resp = c.cmd(&["PROTO.SCAN", "0", "TYPE", "test.Profile"]).await;
     let (_, keys) = decode_scan_response(resp);
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0], "profile:1");
@@ -1292,11 +1295,21 @@ async fn proto_scan_match_pattern() {
 
     for i in 1..=3u32 {
         let data = encode_profile(&desc, "x", i as i32, false);
-        c.cmd_raw(&[b"PROTO.SET", format!("profile:{i}").as_bytes(), b"test.Profile", &data])
-            .await;
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("profile:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
         let data = encode_profile(&desc, "y", i as i32, false);
-        c.cmd_raw(&[b"PROTO.SET", format!("other:{i}").as_bytes(), b"test.Profile", &data])
-            .await;
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("other:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
     }
 
     let mut matched = Vec::new();
@@ -1330,8 +1343,13 @@ async fn proto_scan_cursor_consistency() {
 
     for i in 1..=10u32 {
         let data = encode_profile(&desc, "x", i as i32, true);
-        c.cmd_raw(&[b"PROTO.SET", format!("p:{i}").as_bytes(), b"test.Profile", &data])
-            .await;
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("p:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
     }
 
     // first page with COUNT 3
@@ -1342,13 +1360,20 @@ async fn proto_scan_cursor_consistency() {
     // add more keys while iterating
     for i in 11..=15u32 {
         let data = encode_profile(&desc, "y", i as i32, false);
-        c.cmd_raw(&[b"PROTO.SET", format!("p:{i}").as_bytes(), b"test.Profile", &data])
-            .await;
+        c.cmd_raw(&[
+            b"PROTO.SET",
+            format!("p:{i}").as_bytes(),
+            b"test.Profile",
+            &data,
+        ])
+        .await;
     }
 
     // continue iterating — must not panic or crash
     if cursor != 0 {
-        let resp = c.cmd(&["PROTO.SCAN", &cursor.to_string(), "COUNT", "3"]).await;
+        let resp = c
+            .cmd(&["PROTO.SCAN", &cursor.to_string(), "COUNT", "3"])
+            .await;
         let (_, _) = decode_scan_response(resp);
     }
 }
@@ -1366,16 +1391,31 @@ async fn proto_find_scalar_match() {
 
     // store three profiles with different active values
     let active_data = encode_profile(&desc, "alice", 25, true);
-    c.cmd_raw(&[b"PROTO.SET", b"profile:alice", b"test.Profile", &active_data])
-        .await;
+    c.cmd_raw(&[
+        b"PROTO.SET",
+        b"profile:alice",
+        b"test.Profile",
+        &active_data,
+    ])
+    .await;
 
     let inactive_data = encode_profile(&desc, "bob", 30, false);
-    c.cmd_raw(&[b"PROTO.SET", b"profile:bob", b"test.Profile", &inactive_data])
-        .await;
+    c.cmd_raw(&[
+        b"PROTO.SET",
+        b"profile:bob",
+        b"test.Profile",
+        &inactive_data,
+    ])
+    .await;
 
     let active2_data = encode_profile(&desc, "carol", 22, true);
-    c.cmd_raw(&[b"PROTO.SET", b"profile:carol", b"test.Profile", &active2_data])
-        .await;
+    c.cmd_raw(&[
+        b"PROTO.SET",
+        b"profile:carol",
+        b"test.Profile",
+        &active2_data,
+    ])
+    .await;
 
     // find by bool field
     let mut found = Vec::new();
@@ -1397,17 +1437,13 @@ async fn proto_find_scalar_match() {
     assert!(found.contains(&"profile:carol".to_owned()));
 
     // find by int field
-    let resp = c
-        .cmd(&["PROTO.FIND", "0", "age", "30"])
-        .await;
+    let resp = c.cmd(&["PROTO.FIND", "0", "age", "30"]).await;
     let (_, keys) = decode_scan_response(resp);
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0], "profile:bob");
 
     // find by string field
-    let resp = c
-        .cmd(&["PROTO.FIND", "0", "name", "alice"])
-        .await;
+    let resp = c.cmd(&["PROTO.FIND", "0", "name", "alice"]).await;
     let (_, keys) = decode_scan_response(resp);
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0], "profile:alice");
@@ -1416,7 +1452,9 @@ async fn proto_find_scalar_match() {
 /// PROTO.FIND with a dot-separated path searches nested message fields.
 #[tokio::test]
 async fn proto_find_nested_path() {
-    use prost_reflect::prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet};
+    use prost_reflect::prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+    };
 
     // build a descriptor with a nested Address.city field
     let fds = FileDescriptorSet {
@@ -1464,10 +1502,14 @@ async fn proto_find_nested_path() {
     fds.encode(&mut desc_bytes).expect("encode descriptor");
 
     let pool = DescriptorPool::decode(desc_bytes.as_slice()).expect("decode pool");
-    let person_desc = pool.get_message_by_name("nested.Person").expect("find message");
+    let person_desc = pool
+        .get_message_by_name("nested.Person")
+        .expect("find message");
 
     let encode_person = |name: &str, city: &str| {
-        let addr_desc = pool.get_message_by_name("nested.Address").expect("find address");
+        let addr_desc = pool
+            .get_message_by_name("nested.Address")
+            .expect("find address");
         let mut addr = DynamicMessage::new(addr_desc);
         addr.set_field_by_name("city", prost_reflect::Value::String(city.into()));
 
@@ -1562,9 +1604,7 @@ async fn proto_find_no_match() {
     c.cmd_raw(&[b"PROTO.SET", b"profile:1", b"test.Profile", &data])
         .await;
 
-    let resp = c
-        .cmd(&["PROTO.FIND", "0", "active", "true"])
-        .await;
+    let resp = c.cmd(&["PROTO.FIND", "0", "active", "true"]).await;
     let (cursor, keys) = decode_scan_response(resp);
     assert_eq!(cursor, 0);
     assert!(keys.is_empty());
@@ -1606,7 +1646,14 @@ async fn proto_find_count_pagination() {
     let mut cursor = 0u64;
     loop {
         let resp = c
-            .cmd(&["PROTO.FIND", &cursor.to_string(), "active", "true", "COUNT", "2"])
+            .cmd(&[
+                "PROTO.FIND",
+                &cursor.to_string(),
+                "active",
+                "true",
+                "COUNT",
+                "2",
+            ])
             .await;
         let (next, keys) = decode_scan_response(resp);
         all_found.extend(keys);

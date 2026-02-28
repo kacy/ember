@@ -26,6 +26,8 @@ mod hash;
 mod list;
 #[cfg(feature = "protobuf")]
 mod proto;
+#[cfg(feature = "protobuf")]
+pub use proto::ProtoFindOpts;
 mod set;
 mod string;
 #[cfg(feature = "vector")]

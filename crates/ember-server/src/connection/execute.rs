@@ -574,8 +574,16 @@ pub(super) async fn execute(
             type_name,
             count,
         } => {
-            exec::protobuf::proto_find(cursor, field_path, field_value, pattern, type_name, count, &cx)
-                .await
+            exec::protobuf::proto_find(
+                cursor,
+                field_path,
+                field_value,
+                pattern,
+                type_name,
+                count,
+                &cx,
+            )
+            .await
         }
         #[cfg(not(feature = "protobuf"))]
         Command::ProtoRegister { .. }

@@ -3,6 +3,17 @@ use super::*;
 #[cfg(feature = "protobuf")]
 use crate::schema::SchemaRegistry;
 
+/// Parameters for [`Keyspace::scan_proto_find`].
+#[cfg(feature = "protobuf")]
+pub struct ProtoFindOpts<'a> {
+    pub cursor: u64,
+    pub count: usize,
+    pub pattern: Option<&'a str>,
+    pub type_name: Option<&'a str>,
+    pub field_path: &'a str,
+    pub field_value: &'a str,
+}
+
 #[cfg(feature = "protobuf")]
 impl Keyspace {
     /// Stores a protobuf value. No schema validation here — that's the
@@ -91,19 +102,22 @@ impl Keyspace {
     /// `scan_proto_keys`. Skips keys where field decoding fails (e.g. wrong
     /// type, nested/repeated field) rather than returning an error.
     ///
-    /// `field_value` is compared against the field's string representation:
+    /// `opts.field_value` is compared against the field's string representation:
     /// booleans as `"true"/"false"`, integers and floats as their decimal
     /// string, strings verbatim.
     pub fn scan_proto_find(
         &self,
-        cursor: u64,
-        count: usize,
-        pattern: Option<&str>,
-        type_name: Option<&str>,
-        field_path: &str,
-        field_value: &str,
+        opts: ProtoFindOpts<'_>,
         registry: &SchemaRegistry,
     ) -> (u64, Vec<String>) {
+        let ProtoFindOpts {
+            cursor,
+            count,
+            pattern,
+            type_name,
+            field_path,
+            field_value,
+        } = opts;
         let mut keys = Vec::with_capacity(count);
         let mut position = 0u64;
         let target_count = if count == 0 { 10 } else { count };
