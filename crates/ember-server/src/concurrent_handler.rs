@@ -1137,10 +1137,7 @@ async fn execute_concurrent(
                 let sid = (cursor >> 48) as usize;
                 let pos = cursor & 0xFFFF_FFFF_FFFF;
                 if sid >= shard_count {
-                    return Frame::Array(vec![
-                        Frame::Bulk(Bytes::from("0")),
-                        Frame::Array(vec![]),
-                    ]);
+                    return Frame::Array(vec![Frame::Bulk(Bytes::from("0")), Frame::Array(vec![])]);
                 }
                 (sid, pos)
             };
@@ -1210,10 +1207,7 @@ async fn execute_concurrent(
                 let sid = (cursor >> 48) as usize;
                 let pos = cursor & 0xFFFF_FFFF_FFFF;
                 if sid >= shard_count {
-                    return Frame::Array(vec![
-                        Frame::Bulk(Bytes::from("0")),
-                        Frame::Array(vec![]),
-                    ]);
+                    return Frame::Array(vec![Frame::Bulk(Bytes::from("0")), Frame::Array(vec![])]);
                 }
                 (sid, pos)
             };

@@ -2514,12 +2514,8 @@ fn dispatch(
             pattern,
             type_name,
         } => {
-            let (next_cursor, keys) = ks.scan_proto_keys(
-                *cursor,
-                *count,
-                pattern.as_deref(),
-                type_name.as_deref(),
-            );
+            let (next_cursor, keys) =
+                ks.scan_proto_keys(*cursor, *count, pattern.as_deref(), type_name.as_deref());
             ShardResponse::Scan {
                 cursor: next_cursor,
                 keys,
@@ -2543,12 +2539,14 @@ fn dispatch(
                 Err(_) => return ShardResponse::Err("schema registry lock poisoned".into()),
             };
             let (next_cursor, keys) = ks.scan_proto_find(
-                *cursor,
-                *count,
-                pattern.as_deref(),
-                type_name.as_deref(),
-                field_path,
-                field_value,
+                crate::keyspace::ProtoFindOpts {
+                    cursor: *cursor,
+                    count: *count,
+                    pattern: pattern.as_deref(),
+                    type_name: type_name.as_deref(),
+                    field_path,
+                    field_value,
+                },
                 &reg,
             );
             ShardResponse::Scan {
