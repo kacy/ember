@@ -1,5 +1,7 @@
 #[cfg(feature = "protobuf")]
 use super::*;
+#[cfg(feature = "protobuf")]
+use crate::schema::SchemaRegistry;
 
 #[cfg(feature = "protobuf")]
 impl Keyspace {
@@ -82,6 +84,83 @@ impl Keyspace {
             }
             None => Ok(None),
         }
+    }
+
+    /// Scans all proto keys, returning those where the given field equals the
+    /// given value. Walks the keyspace using the same position-cursor logic as
+    /// `scan_proto_keys`. Skips keys where field decoding fails (e.g. wrong
+    /// type, nested/repeated field) rather than returning an error.
+    ///
+    /// `field_value` is compared against the field's string representation:
+    /// booleans as `"true"/"false"`, integers and floats as their decimal
+    /// string, strings verbatim.
+    pub fn scan_proto_find(
+        &self,
+        cursor: u64,
+        count: usize,
+        pattern: Option<&str>,
+        type_name: Option<&str>,
+        field_path: &str,
+        field_value: &str,
+        registry: &SchemaRegistry,
+    ) -> (u64, Vec<String>) {
+        let mut keys = Vec::with_capacity(count);
+        let mut position = 0u64;
+        let target_count = if count == 0 { 10 } else { count };
+        let compiled = pattern.map(GlobPattern::new);
+
+        for (key, entry) in self.entries.iter() {
+            if entry.is_expired() {
+                continue;
+            }
+
+            if position < cursor {
+                position += 1;
+                continue;
+            }
+
+            let (entry_type, data) = match &entry.value {
+                Value::Proto { type_name: t, data } => (t.as_str(), data.as_ref()),
+                _ => {
+                    position += 1;
+                    continue;
+                }
+            };
+
+            // optional type filter
+            if let Some(wanted) = type_name {
+                if entry_type != wanted {
+                    position += 1;
+                    continue;
+                }
+            }
+
+            // optional key pattern
+            if let Some(ref pat) = compiled {
+                if !pat.matches(key) {
+                    position += 1;
+                    continue;
+                }
+            }
+
+            // field value comparison — skip on any error (wrong type,
+            // non-scalar field, field not found, decode error, etc.)
+            let matches = registry
+                .get_field_str(entry_type, data, field_path)
+                .map(|v| v == field_value)
+                .unwrap_or(false);
+
+            if matches {
+                keys.push(String::from(&**key));
+            }
+            position += 1;
+
+            if keys.len() >= target_count {
+                return (position, keys);
+            }
+        }
+
+        (0, keys)
     }
 
     /// Returns the protobuf message type name for a key, or `None` if

@@ -270,6 +270,165 @@ pub(in crate::connection) async fn proto_del_field(
     }
 }
 
+#[cfg(feature = "protobuf")]
+pub(in crate::connection) async fn proto_scan(
+    cursor: u64,
+    pattern: Option<String>,
+    count: Option<usize>,
+    type_name: Option<String>,
+    cx: &ExecCtx<'_>,
+) -> Frame {
+    if cx.engine.schema_registry().is_none() {
+        return Frame::Error("ERR protobuf support is not enabled".into());
+    }
+
+    // cursor encoding: (shard_id << 48) | position_within_shard — same as SCAN
+    let shard_count = cx.engine.shard_count();
+    let count = count.unwrap_or(10);
+
+    let (shard_id, position) = if cursor == 0 {
+        (0usize, 0u64)
+    } else {
+        let shard_id = (cursor >> 48) as usize;
+        let position = cursor & 0xFFFF_FFFF_FFFF;
+        if shard_id >= shard_count {
+            return Frame::Array(vec![Frame::Bulk(Bytes::from("0")), Frame::Array(vec![])]);
+        }
+        (shard_id, position)
+    };
+
+    let mut all_keys = Vec::new();
+    let mut current_shard = shard_id;
+    let mut current_pos = position;
+
+    while all_keys.len() < count && current_shard < shard_count {
+        let req = ShardRequest::ProtoScan {
+            cursor: current_pos,
+            count: count.saturating_sub(all_keys.len()),
+            pattern: pattern.clone(),
+            type_name: type_name.clone(),
+        };
+        match cx.engine.send_to_shard(current_shard, req).await {
+            Ok(ShardResponse::Scan {
+                cursor: next_pos,
+                keys,
+            }) => {
+                all_keys.extend(keys);
+                if next_pos == 0 {
+                    current_shard += 1;
+                    current_pos = 0;
+                } else {
+                    current_pos = next_pos;
+                    break;
+                }
+            }
+            Ok(other) => {
+                return Frame::Error(format!("ERR unexpected shard response: {other:?}"));
+            }
+            Err(e) => {
+                return Frame::Error(format!("ERR {e}"));
+            }
+        }
+    }
+
+    let next_cursor = if current_shard >= shard_count {
+        0
+    } else {
+        ((current_shard as u64) << 48) | current_pos
+    };
+
+    let cursor_str = next_cursor.to_string();
+    let keys_frames: Vec<Frame> = all_keys
+        .into_iter()
+        .map(|k| Frame::Bulk(Bytes::from(k)))
+        .collect();
+    Frame::Array(vec![
+        Frame::Bulk(Bytes::from(cursor_str)),
+        Frame::Array(keys_frames),
+    ])
+}
+
+#[cfg(feature = "protobuf")]
+pub(in crate::connection) async fn proto_find(
+    cursor: u64,
+    field_path: String,
+    field_value: String,
+    pattern: Option<String>,
+    type_name: Option<String>,
+    count: Option<usize>,
+    cx: &ExecCtx<'_>,
+) -> Frame {
+    if cx.engine.schema_registry().is_none() {
+        return Frame::Error("ERR protobuf support is not enabled".into());
+    }
+
+    let shard_count = cx.engine.shard_count();
+    let count = count.unwrap_or(10);
+
+    let (shard_id, position) = if cursor == 0 {
+        (0usize, 0u64)
+    } else {
+        let shard_id = (cursor >> 48) as usize;
+        let position = cursor & 0xFFFF_FFFF_FFFF;
+        if shard_id >= shard_count {
+            return Frame::Array(vec![Frame::Bulk(Bytes::from("0")), Frame::Array(vec![])]);
+        }
+        (shard_id, position)
+    };
+
+    let mut all_keys = Vec::new();
+    let mut current_shard = shard_id;
+    let mut current_pos = position;
+
+    while all_keys.len() < count && current_shard < shard_count {
+        let req = ShardRequest::ProtoFind {
+            cursor: current_pos,
+            count: count.saturating_sub(all_keys.len()),
+            pattern: pattern.clone(),
+            type_name: type_name.clone(),
+            field_path: field_path.clone(),
+            field_value: field_value.clone(),
+        };
+        match cx.engine.send_to_shard(current_shard, req).await {
+            Ok(ShardResponse::Scan {
+                cursor: next_pos,
+                keys,
+            }) => {
+                all_keys.extend(keys);
+                if next_pos == 0 {
+                    current_shard += 1;
+                    current_pos = 0;
+                } else {
+                    current_pos = next_pos;
+                    break;
+                }
+            }
+            Ok(other) => {
+                return Frame::Error(format!("ERR unexpected shard response: {other:?}"));
+            }
+            Err(e) => {
+                return Frame::Error(format!("ERR {e}"));
+            }
+        }
+    }
+
+    let next_cursor = if current_shard >= shard_count {
+        0
+    } else {
+        ((current_shard as u64) << 48) | current_pos
+    };
+
+    let cursor_str = next_cursor.to_string();
+    let keys_frames: Vec<Frame> = all_keys
+        .into_iter()
+        .map(|k| Frame::Bulk(Bytes::from(k)))
+        .collect();
+    Frame::Array(vec![
+        Frame::Bulk(Bytes::from(cursor_str)),
+        Frame::Array(keys_frames),
+    ])
+}
+
 /// Returns an error when protobuf support is not compiled in.
 #[cfg(not(feature = "protobuf"))]
 pub(in crate::connection) fn not_compiled() -> Frame {

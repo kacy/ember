@@ -1119,6 +1119,152 @@ async fn execute_concurrent(
             }
         }
 
+        #[cfg(feature = "protobuf")]
+        Command::ProtoScan {
+            cursor,
+            pattern,
+            count,
+            type_name,
+        } => {
+            if _engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let shard_count = _engine.shard_count();
+            let count = count.unwrap_or(10);
+            let (shard_id, position) = if cursor == 0 {
+                (0usize, 0u64)
+            } else {
+                let sid = (cursor >> 48) as usize;
+                let pos = cursor & 0xFFFF_FFFF_FFFF;
+                if sid >= shard_count {
+                    return Frame::Array(vec![
+                        Frame::Bulk(Bytes::from("0")),
+                        Frame::Array(vec![]),
+                    ]);
+                }
+                (sid, pos)
+            };
+            let mut all_keys = Vec::new();
+            let mut current_shard = shard_id;
+            let mut current_pos = position;
+            while all_keys.len() < count && current_shard < shard_count {
+                let req = ember_core::ShardRequest::ProtoScan {
+                    cursor: current_pos,
+                    count: count.saturating_sub(all_keys.len()),
+                    pattern: pattern.clone(),
+                    type_name: type_name.clone(),
+                };
+                match _engine.send_to_shard(current_shard, req).await {
+                    Ok(ember_core::ShardResponse::Scan {
+                        cursor: next_pos,
+                        keys,
+                    }) => {
+                        all_keys.extend(keys);
+                        if next_pos == 0 {
+                            current_shard += 1;
+                            current_pos = 0;
+                        } else {
+                            current_pos = next_pos;
+                            break;
+                        }
+                    }
+                    Ok(other) => {
+                        return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                    }
+                    Err(e) => return Frame::Error(format!("ERR {e}")),
+                }
+            }
+            let next_cursor = if current_shard >= shard_count {
+                0
+            } else {
+                ((current_shard as u64) << 48) | current_pos
+            };
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from(next_cursor.to_string())),
+                Frame::Array(
+                    all_keys
+                        .into_iter()
+                        .map(|k| Frame::Bulk(Bytes::from(k)))
+                        .collect(),
+                ),
+            ])
+        }
+
+        #[cfg(feature = "protobuf")]
+        Command::ProtoFind {
+            cursor,
+            field_path,
+            field_value,
+            pattern,
+            type_name,
+            count,
+        } => {
+            if _engine.schema_registry().is_none() {
+                return Frame::Error("ERR protobuf support is not enabled".into());
+            }
+            let shard_count = _engine.shard_count();
+            let count = count.unwrap_or(10);
+            let (shard_id, position) = if cursor == 0 {
+                (0usize, 0u64)
+            } else {
+                let sid = (cursor >> 48) as usize;
+                let pos = cursor & 0xFFFF_FFFF_FFFF;
+                if sid >= shard_count {
+                    return Frame::Array(vec![
+                        Frame::Bulk(Bytes::from("0")),
+                        Frame::Array(vec![]),
+                    ]);
+                }
+                (sid, pos)
+            };
+            let mut all_keys = Vec::new();
+            let mut current_shard = shard_id;
+            let mut current_pos = position;
+            while all_keys.len() < count && current_shard < shard_count {
+                let req = ember_core::ShardRequest::ProtoFind {
+                    cursor: current_pos,
+                    count: count.saturating_sub(all_keys.len()),
+                    pattern: pattern.clone(),
+                    type_name: type_name.clone(),
+                    field_path: field_path.clone(),
+                    field_value: field_value.clone(),
+                };
+                match _engine.send_to_shard(current_shard, req).await {
+                    Ok(ember_core::ShardResponse::Scan {
+                        cursor: next_pos,
+                        keys,
+                    }) => {
+                        all_keys.extend(keys);
+                        if next_pos == 0 {
+                            current_shard += 1;
+                            current_pos = 0;
+                        } else {
+                            current_pos = next_pos;
+                            break;
+                        }
+                    }
+                    Ok(other) => {
+                        return Frame::Error(format!("ERR unexpected shard response: {other:?}"))
+                    }
+                    Err(e) => return Frame::Error(format!("ERR {e}")),
+                }
+            }
+            let next_cursor = if current_shard >= shard_count {
+                0
+            } else {
+                ((current_shard as u64) << 48) | current_pos
+            };
+            Frame::Array(vec![
+                Frame::Bulk(Bytes::from(next_cursor.to_string())),
+                Frame::Array(
+                    all_keys
+                        .into_iter()
+                        .map(|k| Frame::Bulk(Bytes::from(k)))
+                        .collect(),
+                ),
+            ])
+        }
+
         #[cfg(not(feature = "protobuf"))]
         Command::ProtoRegister { .. }
         | Command::ProtoSet { .. }
@@ -1128,7 +1274,9 @@ async fn execute_concurrent(
         | Command::ProtoDescribe { .. }
         | Command::ProtoGetField { .. }
         | Command::ProtoSetField { .. }
-        | Command::ProtoDelField { .. } => {
+        | Command::ProtoDelField { .. }
+        | Command::ProtoScan { .. }
+        | Command::ProtoFind { .. } => {
             Frame::Error("ERR unknown command (protobuf support not compiled)".into())
         }
 

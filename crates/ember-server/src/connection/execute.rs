@@ -558,6 +558,25 @@ pub(super) async fn execute(
         Command::ProtoDelField { key, field_path } => {
             exec::protobuf::proto_del_field(key, field_path, &cx).await
         }
+        #[cfg(feature = "protobuf")]
+        Command::ProtoScan {
+            cursor,
+            pattern,
+            count,
+            type_name,
+        } => exec::protobuf::proto_scan(cursor, pattern, count, type_name, &cx).await,
+        #[cfg(feature = "protobuf")]
+        Command::ProtoFind {
+            cursor,
+            field_path,
+            field_value,
+            pattern,
+            type_name,
+            count,
+        } => {
+            exec::protobuf::proto_find(cursor, field_path, field_value, pattern, type_name, count, &cx)
+                .await
+        }
         #[cfg(not(feature = "protobuf"))]
         Command::ProtoRegister { .. }
         | Command::ProtoSet { .. }
@@ -567,7 +586,9 @@ pub(super) async fn execute(
         | Command::ProtoDescribe { .. }
         | Command::ProtoGetField { .. }
         | Command::ProtoSetField { .. }
-        | Command::ProtoDelField { .. } => exec::protobuf::not_compiled(),
+        | Command::ProtoDelField { .. }
+        | Command::ProtoScan { .. }
+        | Command::ProtoFind { .. } => exec::protobuf::not_compiled(),
 
         Command::Quit => Frame::Simple("OK".into()),
         Command::Asking => Frame::Simple("OK".into()),

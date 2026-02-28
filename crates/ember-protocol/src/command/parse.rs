@@ -233,6 +233,8 @@ impl Command {
             "PROTO.GETFIELD" => parse_proto_getfield(&frames[1..]),
             "PROTO.SETFIELD" => parse_proto_setfield(&frames[1..]),
             "PROTO.DELFIELD" => parse_proto_delfield(&frames[1..]),
+            "PROTO.SCAN" => parse_proto_scan(&frames[1..]),
+            "PROTO.FIND" => parse_proto_find(&frames[1..]),
             "TIME" => parse_no_args("TIME", &frames[1..], Command::Time),
             "LASTSAVE" => parse_no_args("LASTSAVE", &frames[1..], Command::LastSave),
             "ROLE" => parse_no_args("ROLE", &frames[1..], Command::Role),
@@ -3383,6 +3385,131 @@ fn parse_proto_delfield(args: &[Frame]) -> Result<Command, ProtocolError> {
     let key = extract_string(&args[0])?;
     let field_path = extract_string(&args[1])?;
     Ok(Command::ProtoDelField { key, field_path })
+}
+
+fn parse_proto_scan(args: &[Frame]) -> Result<Command, ProtocolError> {
+    if args.is_empty() {
+        return Err(wrong_arity("PROTO.SCAN"));
+    }
+    let cursor = parse_u64(&args[0], "PROTO.SCAN")?;
+    let mut pattern = None;
+    let mut count = None;
+    let mut type_name = None;
+    let mut idx = 1;
+
+    while idx < args.len() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
+            "MATCH" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity("PROTO.SCAN"));
+                }
+                pattern = Some(extract_string(&args[idx])?);
+                idx += 1;
+            }
+            "COUNT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity("PROTO.SCAN"));
+                }
+                let n = parse_u64(&args[idx], "PROTO.SCAN")?;
+                if n > MAX_SCAN_COUNT {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "PROTO.SCAN COUNT {n} exceeds max {MAX_SCAN_COUNT}"
+                    )));
+                }
+                count = Some(n as usize);
+                idx += 1;
+            }
+            "TYPE" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity("PROTO.SCAN"));
+                }
+                type_name = Some(extract_string(&args[idx])?);
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported PROTO.SCAN option '{flag}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::ProtoScan {
+        cursor,
+        pattern,
+        count,
+        type_name,
+    })
+}
+
+fn parse_proto_find(args: &[Frame]) -> Result<Command, ProtocolError> {
+    // minimum: cursor field_path value
+    if args.len() < 3 {
+        return Err(wrong_arity("PROTO.FIND"));
+    }
+    let cursor = parse_u64(&args[0], "PROTO.FIND")?;
+    let field_path = extract_string(&args[1])?;
+    let field_value = extract_string(&args[2])?;
+    let mut pattern = None;
+    let mut type_name = None;
+    let mut count = None;
+    let mut idx = 3;
+
+    while idx < args.len() {
+        let mut kw = [0u8; MAX_KEYWORD_LEN];
+        let flag = uppercase_arg(&args[idx], &mut kw)?;
+        match flag {
+            "MATCH" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity("PROTO.FIND"));
+                }
+                pattern = Some(extract_string(&args[idx])?);
+                idx += 1;
+            }
+            "TYPE" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity("PROTO.FIND"));
+                }
+                type_name = Some(extract_string(&args[idx])?);
+                idx += 1;
+            }
+            "COUNT" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err(wrong_arity("PROTO.FIND"));
+                }
+                let n = parse_u64(&args[idx], "PROTO.FIND")?;
+                if n > MAX_SCAN_COUNT {
+                    return Err(ProtocolError::InvalidCommandFrame(format!(
+                        "PROTO.FIND COUNT {n} exceeds max {MAX_SCAN_COUNT}"
+                    )));
+                }
+                count = Some(n as usize);
+                idx += 1;
+            }
+            _ => {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "unsupported PROTO.FIND option '{flag}'"
+                )));
+            }
+        }
+    }
+
+    Ok(Command::ProtoFind {
+        cursor,
+        field_path,
+        field_value,
+        pattern,
+        type_name,
+        count,
+    })
 }
 
 fn parse_auth(args: &[Frame]) -> Result<Command, ProtocolError> {

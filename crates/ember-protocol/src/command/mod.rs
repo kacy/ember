@@ -790,6 +790,26 @@ pub enum Command {
     /// PROTO.DELFIELD `key` `field_path`. Clears a field to its default value.
     ProtoDelField { key: String, field_path: String },
 
+    /// PROTO.SCAN `cursor` \[MATCH pattern\] \[COUNT count\] \[TYPE typename\].
+    /// Cursor-based scan of proto keys, optionally filtered by message type.
+    ProtoScan {
+        cursor: u64,
+        pattern: Option<String>,
+        count: Option<usize>,
+        type_name: Option<String>,
+    },
+
+    /// PROTO.FIND `cursor` `field_path` `value` \[MATCH pattern\] \[TYPE typename\] \[COUNT count\].
+    /// Scans proto keys, returning those where the given field equals the given value.
+    ProtoFind {
+        cursor: u64,
+        field_path: String,
+        field_value: String,
+        pattern: Option<String>,
+        type_name: Option<String>,
+        count: Option<usize>,
+    },
+
     // --- client commands ---
     /// CLIENT ID. Returns the unique ID of the current connection.
     ClientId,
