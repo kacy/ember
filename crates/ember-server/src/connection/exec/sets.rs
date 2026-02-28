@@ -1,6 +1,5 @@
 //! Set command handlers.
 
-use bytes::Bytes;
 use ember_core::{ShardRequest, ShardResponse};
 use ember_protocol::Frame;
 
@@ -16,18 +15,16 @@ pub(in crate::connection) async fn sadd(
         key: key.clone(),
         members,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => {
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::Len(n) => {
             if n > 0 {
                 cx.notify_write(crate::keyspace_notifications::FLAG_S, "sadd", &key);
             }
             Frame::Integer(n as i64)
         }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn srem(
@@ -37,28 +34,13 @@ pub(in crate::connection) async fn srem(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SRem { key, members };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_len).await
 }
 
 pub(in crate::connection) async fn smembers(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SMembers { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::StringArray(members)) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_array).await
 }
 
 pub(in crate::connection) async fn sismember(
@@ -68,74 +50,34 @@ pub(in crate::connection) async fn sismember(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SIsMember { key, member };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(b)) => Frame::Integer(if b { 1 } else { 0 }),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_bool_int).await
 }
 
 pub(in crate::connection) async fn scard(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SCard { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Len(n)) => Frame::Integer(n as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_len).await
 }
 
 pub(in crate::connection) async fn sunion(keys: Vec<String>, cx: &ExecCtx<'_>) -> Frame {
     let key = keys.first().cloned().unwrap_or_default();
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SUnion { keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::StringArray(members)) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_array).await
 }
 
 pub(in crate::connection) async fn sinter(keys: Vec<String>, cx: &ExecCtx<'_>) -> Frame {
     let key = keys.first().cloned().unwrap_or_default();
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SInter { keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::StringArray(members)) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_array).await
 }
 
 pub(in crate::connection) async fn sdiff(keys: Vec<String>, cx: &ExecCtx<'_>) -> Frame {
     let key = keys.first().cloned().unwrap_or_default();
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SDiff { keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::StringArray(members)) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_array).await
 }
 
 pub(in crate::connection) async fn sunionstore(
@@ -145,13 +87,11 @@ pub(in crate::connection) async fn sunionstore(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&dest);
     let req = ShardRequest::SUnionStore { dest, keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::SetStoreResult { count, .. }) => Frame::Integer(count as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::SetStoreResult { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn sinterstore(
@@ -161,13 +101,11 @@ pub(in crate::connection) async fn sinterstore(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&dest);
     let req = ShardRequest::SInterStore { dest, keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::SetStoreResult { count, .. }) => Frame::Integer(count as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::SetStoreResult { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn sdiffstore(
@@ -177,13 +115,11 @@ pub(in crate::connection) async fn sdiffstore(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&dest);
     let req = ShardRequest::SDiffStore { dest, keys };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::SetStoreResult { count, .. }) => Frame::Integer(count as i64),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::SetStoreResult { count, .. } => Frame::Integer(count as i64),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn srandmember(
@@ -194,33 +130,13 @@ pub(in crate::connection) async fn srandmember(
     let count = count.unwrap_or(1);
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SRandMember { key, count };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::StringArray(members)) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_array).await
 }
 
 pub(in crate::connection) async fn spop(key: String, count: usize, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SPop { key, count };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::StringArray(members)) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_string_array).await
 }
 
 pub(in crate::connection) async fn smismember(
@@ -230,16 +146,15 @@ pub(in crate::connection) async fn smismember(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::SMisMember { key, members };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::BoolArray(arr)) => Frame::Array(
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::BoolArray(arr) => Frame::Array(
             arr.into_iter()
                 .map(|b| Frame::Integer(i64::from(b)))
                 .collect(),
         ),
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn smove(

@@ -12,15 +12,11 @@ pub(in crate::connection) async fn expire(key: String, seconds: u64, cx: &ExecCt
         key: key.clone(),
         seconds,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(true)) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_G, "expire", &key);
-            Frame::Integer(1)
-        }
-        Ok(ShardResponse::Bool(false)) => Frame::Integer(0),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, super::resp_bool_int).await;
+    if matches!(frame, Frame::Integer(1)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_G, "expire", &key);
     }
+    frame
 }
 
 pub(in crate::connection) async fn expireat(
@@ -33,15 +29,11 @@ pub(in crate::connection) async fn expireat(
         key: key.clone(),
         timestamp,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(true)) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_G, "expireat", &key);
-            Frame::Integer(1)
-        }
-        Ok(ShardResponse::Bool(false)) => Frame::Integer(0),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, super::resp_bool_int).await;
+    if matches!(frame, Frame::Integer(1)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_G, "expireat", &key);
     }
+    frame
 }
 
 pub(in crate::connection) async fn pexpire(
@@ -51,11 +43,7 @@ pub(in crate::connection) async fn pexpire(
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Pexpire { key, milliseconds };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_bool_int).await
 }
 
 pub(in crate::connection) async fn pexpireat(
@@ -68,69 +56,53 @@ pub(in crate::connection) async fn pexpireat(
         key: key.clone(),
         timestamp_ms,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(true)) => {
-            cx.notify_write(crate::keyspace_notifications::FLAG_G, "pexpireat", &key);
-            Frame::Integer(1)
-        }
-        Ok(ShardResponse::Bool(false)) => Frame::Integer(0),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    let frame = super::route_to_shard(cx, idx, req, super::resp_bool_int).await;
+    if matches!(frame, Frame::Integer(1)) {
+        cx.notify_write(crate::keyspace_notifications::FLAG_G, "pexpireat", &key);
     }
+    frame
 }
 
 pub(in crate::connection) async fn ttl(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Ttl { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Ttl(TtlResult::Seconds(s))) => Frame::Integer(s as i64),
-        Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
-        Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::Ttl(TtlResult::Seconds(s)) => Frame::Integer(s as i64),
+        ShardResponse::Ttl(TtlResult::NoExpiry) => Frame::Integer(-1),
+        ShardResponse::Ttl(TtlResult::NotFound) => Frame::Integer(-2),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn pttl(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Pttl { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Ttl(TtlResult::Milliseconds(ms))) => Frame::Integer(ms as i64),
-        Ok(ShardResponse::Ttl(TtlResult::NoExpiry)) => Frame::Integer(-1),
-        Ok(ShardResponse::Ttl(TtlResult::NotFound)) => Frame::Integer(-2),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => Frame::Integer(ms as i64),
+        ShardResponse::Ttl(TtlResult::NoExpiry) => Frame::Integer(-1),
+        ShardResponse::Ttl(TtlResult::NotFound) => Frame::Integer(-2),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn persist(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Persist { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_bool_int).await
 }
 
 pub(in crate::connection) async fn expiretime(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Expiretime { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_integer).await
 }
 
 pub(in crate::connection) async fn pexpiretime(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Pexpiretime { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_integer).await
 }
 
 pub(in crate::connection) async fn del(keys: Vec<String>, cx: &ExecCtx<'_>) -> Frame {
@@ -265,13 +237,13 @@ pub(in crate::connection) async fn rename(key: String, newkey: String, cx: &Exec
         return Frame::Error("ERR source and destination keys must hash to the same shard".into());
     }
     let idx = cx.engine.shard_for_key(&key);
-    let req = ShardRequest::Rename { key, newkey };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Ok) => Frame::Simple("OK".into()),
-        Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(
+        cx,
+        idx,
+        ShardRequest::Rename { key, newkey },
+        super::resp_ok,
+    )
+    .await
 }
 
 pub(in crate::connection) async fn copy(
@@ -289,13 +261,7 @@ pub(in crate::connection) async fn copy(
         destination,
         replace,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(b)) => Frame::Integer(i64::from(b)),
-        Ok(ShardResponse::Err(msg)) => Frame::Error(msg),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_bool_int).await
 }
 
 pub(in crate::connection) async fn randomkey(cx: &ExecCtx<'_>) -> Frame {
@@ -375,55 +341,48 @@ pub(in crate::connection) async fn sort_no_store(
         alpha,
         limit,
     };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Array(items)) => {
-            Frame::Array(items.into_iter().map(Frame::Bulk).collect())
-        }
-        Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, super::resp_bulk_array).await
 }
 
 pub(in crate::connection) async fn type_cmd(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Type { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::TypeName(name)) => Frame::Simple(name.into()),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::TypeName(name) => Frame::Simple(name.into()),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn object_encoding(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::ObjectEncoding { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::EncodingName(Some(name))) => Frame::Bulk(Bytes::from(name)),
-        Ok(ShardResponse::EncodingName(None)) => Frame::Null,
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::EncodingName(Some(name)) => Frame::Bulk(Bytes::from(name)),
+        ShardResponse::EncodingName(None) => Frame::Null,
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn object_refcount(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::Exists { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Bool(true)) => Frame::Integer(1),
-        Ok(ShardResponse::Bool(false)) => Frame::Null,
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::Bool(true) => Frame::Integer(1),
+        ShardResponse::Bool(false) => Frame::Null,
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
 
 pub(in crate::connection) async fn memory_usage(key: String, cx: &ExecCtx<'_>) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
     let req = ShardRequest::MemoryUsage { key };
-    match cx.engine.send_to_shard(idx, req).await {
-        Ok(ShardResponse::Integer(-1)) => Frame::Null,
-        Ok(ShardResponse::Integer(n)) => Frame::Integer(n),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    super::route_to_shard(cx, idx, req, |resp| match resp {
+        ShardResponse::Integer(-1) => Frame::Null,
+        ShardResponse::Integer(n) => Frame::Integer(n),
+        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+    })
+    .await
 }
