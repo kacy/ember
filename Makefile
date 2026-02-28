@@ -14,7 +14,7 @@ release:
 	cargo build --release
 
 test:
-	cargo test --workspace --features protobuf,grpc
+	cargo test --workspace --features protobuf,grpc -- --test-threads=1
 
 fmt:
 	cargo fmt --all
