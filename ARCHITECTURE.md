@@ -1,415 +1,296 @@
 # architecture
 
-this document describes the internal design of ember: the decisions that were made, the alternatives that were considered, and the trade-offs that were accepted. it is intended for contributors, auditors, and anyone who wants to understand how the system actually works.
+this doc explains how ember is put together today: which crates own which parts of the system, how requests move through the server, and where the main trade-offs live.
 
-for a high-level introduction, see the [readme](README.md).
+if you only need the user-facing overview, start with the [readme](README.md).
 
 ---
 
 ## table of contents
 
-1. [execution model](#1-execution-model)
-2. [protocol layer](#2-protocol-layer)
-3. [shard main loop](#3-shard-main-loop)
-4. [data model](#4-data-model)
-5. [memory management](#5-memory-management)
-6. [connection handling](#6-connection-handling)
-7. [persistence](#7-persistence)
-8. [cluster layer](#8-cluster-layer)
-9. [optional features](#9-optional-features)
-10. [background subsystems](#10-background-subsystems)
-11. [compile-time features](#11-compile-time-features)
+1. [crate map](#crate-map)
+2. [request flow](#request-flow)
+3. [sharded engine](#sharded-engine)
+4. [keyspace and data types](#keyspace-and-data-types)
+5. [expiration, memory, and eviction](#expiration-memory-and-eviction)
+6. [protocol and connection handling](#protocol-and-connection-handling)
+7. [persistence and recovery](#persistence-and-recovery)
+8. [clustering and replication](#clustering-and-replication)
+9. [optional features](#optional-features)
+10. [background work](#background-work)
 
 ---
 
-## 1. execution model
+## crate map
 
-ember assigns one tokio task to each logical CPU core, and each task owns an exclusive partition of the keyspace. there is no locking on the hot path — commands are routed to the correct shard over a bounded mpsc channel, processed, and replied to via a oneshot.
+ember is split into a few crates with fairly clear boundaries:
 
-**key routing** uses FNV-1a 64-bit hashing rather than the xxhash family. the reason is determinism across restarts: FNV-1a uses fixed constants (`offset = 0xcbf29ce484222325`, `prime = 0x100000001b3`) whereas xxhash seeds itself per-process. since AOF and snapshot recovery must route recovered keys to the exact same shard they were written from, a non-deterministic hash would corrupt the keyspace on startup.
-
-the channel buffer per shard is `SHARD_BUFFER = 256`. this is large enough to absorb pipelined command bursts without meaningful back-pressure on connections, but small enough that a stalled shard becomes visible quickly.
-
-`Engine::with_available_cores()` queries `std::thread::available_parallelism()` and creates one shard per logical core, falling back to one shard if the count can't be determined.
-
-the routing api on `Engine` has five methods:
-
-| method | purpose |
+| crate | role |
 |---|---|
-| `route(key, req)` | single-key commands (GET, SET, ZADD, etc.) |
-| `route_multi(keys, req_fn)` | multi-key commands (DEL, EXISTS) |
-| `broadcast(req_fn)` | fan-out to all shards (DBSIZE, INFO, FLUSHDB) |
-| `send_to_shard(idx, req)` | direct shard access by index (SCAN) |
-| `dispatch_to_shard(idx, req)` | non-blocking dispatch returning a oneshot receiver |
+| `crates/ember-protocol` | RESP3 parsing, frame types, and command decoding |
+| `crates/ember-core` | sharded engine, keyspace, data types, memory tracking, expiration |
+| `crates/ember-persistence` | AOF, snapshots, recovery, and optional encryption-at-rest support |
+| `crates/ember-cluster` | slot routing, gossip, Raft state, migration machinery |
+| `crates/ember-server` | TCP/TLS listeners, auth, ACL, connection handlers, metrics, replication, cluster integration |
+| `crates/ember-cli` | interactive client and benchmark tool |
+| `crates/ember-client` | reusable client-side helpers used by other binaries and tools |
 
-all five data types and all 190+ commands are supported.
+the split is intentional: `ember-core` does not know about sockets or RESP, and `ember-protocol` does not know about the keyspace.
 
----
+## request flow
 
-## 2. protocol layer
+the common RESP path looks like this:
 
-**location:** `crates/ember-protocol/src/`
+1. a connection handler reads bytes from TCP or TLS into a reusable buffer.
+2. `ember-protocol` parses one or more RESP3 frames.
+3. `ember-server` handles auth, ACL checks, command limits, pub/sub mode, and command dispatch.
+4. `ember-core` routes the request to one shard, many shards, or all shards.
+5. the shard updates its local keyspace, writes AOF records if needed, emits replication events, and returns a typed response.
+6. the connection handler turns that response back into a RESP frame and writes it out.
 
-### parser
+that flow is the default "sharded engine" mode. there is also a special concurrent mode for string-heavy workloads, covered below.
 
-the parser operates on a buffered byte slice. it uses a `Cursor<&[u8]>` to track position through the input without consuming or copying it — the caller retains ownership of the buffer and can retry once more data arrives from the network.
+## sharded engine
 
-earlier versions used a two-pass approach: a `check()` function to verify that a complete frame existed, followed by a separate `parse()` call to build the `Frame` value. this scanned every byte twice. the current single-pass design builds `Frame` values directly, returning `Incomplete` if the buffer runs short. this eliminates the redundant scan.
+**main code:** `crates/ember-core/src/engine.rs`, `crates/ember-core/src/shard/mod.rs`
 
-`\r` scanning inside bulk strings uses `memchr::memchr`, which uses SIMD instructions on supported platforms (16–32 bytes per cycle vs. 1 byte naive). for typical command framing this is a small but measurable win.
+ember's default execution model is shared-nothing sharding:
 
-four security limits prevent amplification attacks:
+- one shard owns one partition of the keyspace
+- each shard processes requests serially
+- the hot path does not take locks inside the shard
+- callers talk to shards through bounded channels
 
-| constant | value | reason |
+by default, `Engine::with_available_cores()` uses `std::thread::available_parallelism()` and creates one shard per logical CPU. `Engine::prepare()` exists for thread-per-core deployment where each OS thread runs its own single-threaded Tokio runtime and one shard.
+
+single-key routing uses deterministic FNV-1a hashing. that matters because persistence recovery has to send a key back to the same shard after restart. cluster slot routing is a separate layer and uses CRC16, not the engine hash.
+
+the engine exposes a small set of routing primitives:
+
+| method | use |
+|---|---|
+| `route()` | single-key commands like `GET`, `SET`, `HGET`, `ZADD` |
+| `route_multi()` | multi-key commands that dispatch to several shards |
+| `broadcast()` | fan-out commands like `DBSIZE`, `INFO`, or `FLUSHDB` |
+| `send_to_shard()` | direct shard access, mainly for shard-aware scans |
+| `dispatch_to_shard()` / `dispatch_batch_to_shard()` | non-blocking dispatch used by the connection layer |
+
+inside each shard, the main loop waits on three kinds of work:
+
+- inbound requests from the engine
+- active expiry ticks
+- periodic fsync ticks when AOF is running in `everysec` mode
+
+after the loop wakes up for a request, it drains as much queued work as it can before going back to `select!`. that is a simple optimization, but it matters a lot for pipelined clients.
+
+the other important optimization lives one layer up: the RESP connection handler groups commands by target shard and uses `dispatch_batch_to_shard()` when several commands in the same pipeline hit the same shard. that keeps deep pipelines from burning one channel slot per command.
+
+## keyspace and data types
+
+**main code:** `crates/ember-core/src/keyspace/`, `crates/ember-core/src/types/`
+
+each shard owns a `Keyspace`, which is mostly an `AHashMap<CompactString, Entry>`.
+
+an `Entry` stores:
+
+- the `Value`
+- `expires_at_ms`
+- `cached_value_size`
+- `last_access_secs`
+
+that cached size is there so write-heavy operations can update memory accounting without re-walking the whole value every time.
+
+WATCH support does not store a version counter on every key. instead, `Keyspace` keeps a lazy side table of watched-key versions. if nobody has watched a key, mutations do not pay for version tracking.
+
+the value enum covers the Redis-style core types plus optional feature-gated ones:
+
+| type | backing structure | notes |
 |---|---|---|
-| `MAX_NESTING_DEPTH` | 64 | prevents stack overflow from deeply nested frames |
-| `MAX_ARRAY_ELEMENTS` | 1,048,576 | prevents memory amplification (claimed count × sizeof allocation) |
-| `MAX_BULK_LEN` | 512 MB | matches redis, prevents absurd single-value allocations |
-| `PREALLOC_CAP` | 1,024 | caps `Vec::with_capacity` so a declared element count of 1M costs at most ~72KB upfront |
+| string | `Bytes` | cheap cloning and slicing |
+| list | `VecDeque<Bytes>` | efficient push/pop at both ends |
+| sorted set | boxed `SortedSet` | custom structure, exposed as `zset` |
+| hash | boxed `HashValue` | packed representation for small hashes, hashmap for larger ones |
+| set | boxed `HashSet<String>` | plain hash set storage |
+| vector | `VectorSet` | only when `--features vector` is enabled |
+| proto | `{ type_name, data }` | only when `--features protobuf` is enabled |
 
-### serializer
+the hash implementation is worth calling out. small hashes stay in a compact packed layout for better locality and lower overhead, then promote to a full hashmap once they grow. that keeps common cases like user-profile style hashes cheap.
 
-the serializer writes frames directly into a `BytesMut` buffer with no intermediate allocations. integer-to-string conversion uses the `itoa` crate, which formats on the stack rather than allocating a temporary string.
+## expiration, memory, and eviction
 
-hot-path responses are pre-cached as static byte slices:
+**main code:** `crates/ember-core/src/expiry.rs`, `crates/ember-core/src/memory.rs`, `crates/ember-core/src/keyspace/mod.rs`
 
-- `OK` → `+OK\r\n`
-- `PONG` → `+PONG\r\n`
-- `NULL` → `$-1\r\n`
-- integers 0, 1, -1 → `:0\r\n`, `:1\r\n`, `:-1\r\n`
+expiration happens in two ways:
 
-these cover the vast majority of GET misses, SET replies, and boolean results without any formatting work.
+- **lazy expiration**: any access checks whether the key has expired and removes it on the spot
+- **active expiration**: every shard runs a periodic sampler that checks a small random set of keys and deletes expired ones in the background
 
----
+the active expiry code uses the same general idea Redis uses: random sampling instead of a global time wheel or sorted expiry heap. it is boring, but it keeps the write path simple and avoids an extra index for every TTL-bearing key.
 
-## 3. shard main loop
+memory accounting is explicit. `MemoryTracker` updates on every mutation and keeps a running total of estimated bytes used by the shard. there is no full keyspace scan in the normal path.
 
-**location:** `crates/ember-core/src/shard.rs`
+the memory numbers are estimates, not allocator-trace precision. to keep that safe, ember applies a 90% safety margin to configured memory limits before it starts rejecting writes or evicting keys.
 
-each shard runs a `tokio::select!` loop over three events:
+the only eviction policy today is approximate `allkeys-lru`. when a shard is over its effective limit, it samples a small number of keys and evicts the least recently accessed one from that sample. this keeps eviction cost predictable.
 
-1. incoming message from the mpsc channel
-2. expiry tick every 100ms (`EXPIRY_TICK`)
-3. fsync tick every 1 second (`FSYNC_INTERVAL`, only active with `EverySec` policy)
+large collections are also freed lazily. if dropping a value would be expensive, the shard hands it to a background drop thread instead of doing destructor work inline.
 
-both ticks use `MissedTickBehavior::Skip`. under heavy load a tick will be missed rather than queued. this prevents ticks from piling up during bursts and then flooding the loop afterward.
+## protocol and connection handling
 
-**burst drain**: after the first message is received from `select!`, the loop immediately tries `try_recv()` in a tight inner loop, processing messages without re-entering `select!` until the channel is empty. this amortizes the overhead of the select mechanism across entire pipeline batches rather than paying it per command.
+**main code:** `crates/ember-protocol/src/parse.rs`, `crates/ember-server/src/connection/`, `crates/ember-server/src/connection_common.rs`
 
-some requests (snapshot, aof rewrite, async flush) need to execute outside the normal request/response path. these are identified by the `RequestKind` enum and handled with `continue` — they send their response through a different path and skip the normal response machinery.
+the RESP3 parser is single-pass and can work in zero-copy mode when the caller has a `Bytes` buffer. it also has hard limits for nesting depth, array size, and bulk string size so malformed input cannot force absurd allocations.
 
----
+the sharded RESP handler in `crates/ember-server/src/connection/mod.rs` follows a two-phase pattern:
 
-## 4. data model
-
-**location:** `crates/ember-core/src/types/`, `crates/ember-core/src/keyspace.rs`
-
-### value types
-
-```
-Value::String(Bytes)
-Value::List(VecDeque<Bytes>)
-Value::SortedSet(SortedSet)
-Value::Hash(HashMap<String, Bytes>)
-Value::Set(HashSet<String>)
-```
-
-`Bytes` is an arc-backed reference-counted buffer from the `bytes` crate. passing a value between shard and connection never copies the underlying data — only the arc pointer is cloned.
-
-`List` uses `VecDeque` for O(1) push and pop at both ends. a plain `Vec` was considered but rejected because `push_front` is O(n).
-
-`SortedSet` is backed by a `BTreeMap` keyed by `(ordered_float::OrderedFloat, member_string)`. this naturally maintains score order. a skip list would allow O(log n) rank queries, but `BTreeMap` is simpler, correct, and fast enough for current workloads. the skip list is noted as a future improvement if rank queries become a bottleneck.
-
-### entry struct
-
-each keyspace entry holds:
-
-```
-expires_at_ms: u64   // monotonic ms timestamp; 0 = no expiry
-last_access_ms: u64  // for LRU approximation
-value: Value
-```
-
-`expires_at_ms` is `u64` with 0 as sentinel rather than `Option<Instant>`. this saves 8 bytes per entry (no option discriminant, no padding for niche optimization failures) and is a common trade-off in hot-path data structures.
-
-### expiration
-
-**lazy expiration**: every key access checks `expires_at_ms` against the current monotonic time. expired keys are removed immediately and treated as absent. there is zero overhead when no TTL is set.
-
-**active expiration**: a background sampling cycle runs every 100ms (`EXPIRY_TICK`). each cycle randomly samples up to `SAMPLE_SIZE = 20` keys and removes any that are expired. if more than 25% (`EXPIRED_THRESHOLD`) of the sample was expired, the cycle runs again immediately, up to `MAX_ROUNDS = 3` times per tick. this is the same algorithm redis uses — it is simple, requires no auxiliary data structure, and works across all TTL ranges.
-
-the alternative (a time wheel or sorted expiry index) would give O(1) expiry in the best case but adds per-entry memory and write-path overhead. the sampling approach stays efficient as long as the expired fraction is not extremely high.
-
----
-
-## 5. memory management
-
-**location:** `crates/ember-core/src/memory.rs`
-
-memory usage is tracked incrementally via `MemoryTracker` — callers call `add`, `remove`, or `replace` on every mutation. there is no periodic full scan.
-
-**per-entry overhead** is estimated at `ENTRY_OVERHEAD = 128` bytes. this accounts for:
-- the `String` key struct: 24 bytes (pointer + length + capacity) on 64-bit
-- the `Entry` struct fields: value enum tag + inline `Bytes` struct + two `u64` timestamps
-- hashbrown bookkeeping: 1 control byte per slot plus ~12.5% empty slot waste at 87.5% load factor
-
-the constant is calibrated for 64-bit x86-64 and aarch64. on 32-bit systems, estimates would be smaller; the effect is earlier eviction, not incorrect behavior. overestimating is preferred.
-
-**effective memory limit**: the configured `max_memory` is multiplied by `MEMORY_SAFETY_MARGIN_PERCENT = 90` before being used as the write limit. a server configured with 1 GB starts evicting at ~922 MB of estimated usage. the 10% headroom absorbs allocator fragmentation and estimation error so the process doesn't OOM before eviction has a chance to kick in.
-
-**lru eviction**: when the effective limit is reached, the keyspace samples `EVICTION_SAMPLE_SIZE = 16` random keys and evicts the one with the oldest `last_access_ms`. this is O(1) per eviction. a sorted eviction queue would give O(log n) but costs per-write overhead to maintain. the sampling trade-off — approximate lru accuracy for guaranteed constant eviction cost — is the same approach redis uses.
-
-**lazy free**: collections with more than `LAZY_FREE_THRESHOLD = 64` elements are sent to a background drop thread rather than freed on the shard. this is covered in [background subsystems](#10-background-subsystems).
-
----
-
-## 6. connection handling
-
-**location:** `crates/ember-server/src/connection.rs`, `crates/ember-server/src/connection_common.rs`
-
-### buffers and limits
-
-| constant | value | meaning |
-|---|---|---|
-| `BUF_CAPACITY` | 4 KB | initial read and write buffer size |
-| `MAX_BUF_SIZE` | 64 MB | read buffer disconnect threshold |
-| `IDLE_TIMEOUT` | 300s | matches redis 6.2+ defaults |
-| `MAX_PIPELINE_DEPTH` | 10,000 | max commands buffered before forced flush |
-| `MAX_AUTH_FAILURES` | 10 | disconnect after this many failed auth attempts |
-| `MAX_SUBSCRIPTIONS_PER_CONN` | 10,000 | cap on pub/sub subscriptions per connection |
-| `MAX_PATTERN_LEN` | 256 | max pattern length for PSUBSCRIBE |
-
-### pipelining
-
-the connection handler uses a dispatch-collect pattern to handle pipelined commands:
-
-1. parse all frames available in the read buffer
-2. for each command, dispatch it to the appropriate shard non-blocking (sends to the mpsc channel and holds the oneshot receiver)
-3. once all commands are dispatched, collect responses in order
-4. serialize all responses into the write buffer
+1. parse as many complete frames as are available
+2. prepare and dispatch each command
+3. collect shard replies in input order
+4. serialize all responses into one output buffer
 5. flush
 
-this allows all shards involved in a pipeline batch to execute concurrently. a batch touching four different shards processes all four in parallel rather than serially.
+that is why pipelining scales well even when a batch touches several shards.
 
-if more than `MAX_PIPELINE_DEPTH` frames are pending, the handler flushes early to bound memory usage.
+authentication is handled before full command execution. ember supports:
 
-### response shaping
+- `requirepass` style password auth
+- ACL-backed auth with per-user permissions
+- constant-time password comparisons on the hot paths that matter
 
-`ResponseTag` is a lightweight enum (~40 variants) that encodes how a `ShardResponse` should be converted to a wire `Frame`. rather than keeping the full `Command` alive while waiting for a shard reply, the handler stores just the tag. this centralizes all response-shaping logic and avoids cloning command data.
+pub/sub is handled in a dedicated subscriber mode. once a connection subscribes, the handler parks in a loop that multiplexes incoming subscription messages and unsubscribe commands until the connection leaves subscriber mode.
 
-### authentication
+monitor mode is similar: the connection subscribes to a broadcast stream of observed commands and stays there until disconnect.
 
-password comparison uses `subtle::ConstantTimeEq` to prevent timing side-channels. after `MAX_AUTH_FAILURES = 10` failed attempts, the connection is terminated.
+TLS is not a separate server architecture. it uses the same connection machinery after the TLS handshake.
 
----
+### concurrent mode
 
-## 7. persistence
+**main code:** `crates/ember-server/src/concurrent_handler.rs`
 
-**location:** `crates/ember-persistence/src/`
+ember also has an optional concurrent path that bypasses shard channels for basic string operations. it uses `ConcurrentKeyspace` and direct concurrent access for `GET`/`SET` style workloads.
 
-### append-only file (aof)
+this mode is faster for that narrow case, but it is not the general execution model. the sharded engine is still the main design and the one the rest of the system is built around.
 
-each shard writes its own AOF file (`shard-{id}.aof`). file layout:
+## persistence and recovery
 
-```
-[EAOF magic: 4B][version: 1B]
-[record]*
-```
+**main code:** `crates/ember-persistence/src/aof.rs`, `crates/ember-persistence/src/snapshot.rs`, `crates/ember-persistence/src/recovery.rs`
 
-each record:
+persistence is per-shard:
 
-```
-[tag: 1B][payload...][crc32: 4B]
-```
+- each shard has its own AOF file
+- each shard has its own snapshot file
+- recovery can run shard-by-shard in parallel
 
-the CRC32 (crc32fast) covers the tag and payload bytes. a corrupt record aborts replay gracefully rather than silently loading bad data.
+the AOF format is binary and append-only. every record has a stable tag plus a CRC32 checksum. snapshots are also binary, include a header and footer checksum, and are written by streaming the live keyspace once.
 
-tag values are stable and never reassigned. there are 26 defined tags covering all mutations:
+both snapshot writes and AOF rewrites use the usual safe pattern:
 
-- string: SET, INCR, DECR, INCRBY, DECRBY, APPEND
-- list: LPUSH, RPUSH, LPOP, RPOP
-- sorted set: ZADD, ZREM
-- hash: HSET, HDEL, HINCRBY
-- set: SADD, SREM
-- key lifecycle: DEL, EXPIRE, PERSIST, PEXPIRE, RENAME
-- optional (vector): VADD, VREM
-- optional (protobuf): PROTO_SET, PROTO_REGISTER
+1. write a temporary file next to the real one
+2. flush and fsync it
+3. atomically rename it into place
 
-three fsync modes are supported: `Always` (fsync after every write), `EverySec` (background thread wakes every second), `No` (OS buffer only).
+that way a crash during the write does not corrupt the last good file.
 
-format versions: v1 was strings only, v2 added type-tagged records, v3 adds AES-256-GCM encryption (requires `--features encryption`).
+recovery is straightforward:
 
-### snapshot
+1. load the snapshot if one exists
+2. replay the AOF on top
+3. drop entries whose TTL expired while the server was down
+4. if a file is corrupt, warn and recover what can be recovered
 
-each shard writes its own snapshot file (`shard-{id}.snap`). file layout:
-
-```
-[ESNP magic: 4B][version: 1B][shard_id: 2B][entry_count: 4B]
-[entries...]
-[footer_crc32: 4B]
-```
-
-each entry:
-
-```
-[key_len: 4B][key][type_tag: 1B][type-specific payload][expire_ms: 8B]
-```
-
-seven type tags (0–6): string, list, sorted set, hash, set, proto, vector.
-
-`expire_ms` stores the remaining TTL in milliseconds, or -1 for no expiry. this allows the recovery path to filter entries whose TTL expired while the server was down.
-
-writes go to a `.tmp` file and are atomically renamed on completion. a partial or crashed snapshot write never corrupts the existing snapshot.
-
-### recovery
-
-on startup, each shard:
-
-1. loads its snapshot (bulk restore)
-2. replays its AOF tail on top
-3. filters out entries whose TTL has already expired
-4. if neither file exists, starts empty
-5. if a file is corrupt, logs a warning and starts with whatever data could be read
-
-because each shard has its own files and uses deterministic key routing (FNV-1a), shards can replay in parallel on multi-core systems.
+`BGREWRITEAOF` works by writing a fresh snapshot of the current shard state and then truncating the shard's AOF back to just its header before new writes continue.
 
 ### encryption at rest
 
-enabled with `--features encryption`. each record (AOF or snapshot entry) is independently encrypted with AES-256-GCM and a random 12-byte OS-generated nonce. overhead per record: 12 bytes nonce + 16 bytes authentication tag.
+when the `encryption` feature is enabled, AOF records and snapshot entries can be stored in v3 encrypted form using AES-256-GCM.
 
-per-record nonces allow individual records to be read without decrypting the whole file, which matters for incremental AOF replay.
+encryption is done per record, not per file. that keeps incremental replay simple and avoids decrypting an entire file just to read one record.
 
-the encryption key is stored as `[u8; 32]` — no heap allocation. on drop, the key bytes are zeroed using `write_volatile` to prevent the compiler from eliminating the zeroing as a dead store.
+## clustering and replication
 
-the key file is either 32 raw bytes or 64 hex characters.
+**main code:** `crates/ember-cluster/src/`, `crates/ember-server/src/cluster.rs`, `crates/ember-server/src/replication.rs`
 
----
+the cluster layer sits above the local shard engine.
 
-## 8. cluster layer
+### hash slots and routing
 
-**location:** `crates/ember-cluster/src/`
+cluster routing follows the Redis Cluster model:
 
-### hash slots
+- 16,384 hash slots
+- CRC16 slot calculation
+- hash tags with `{...}` for colocating related keys
+- `MOVED` and `ASK` redirects during topology changes
 
-the cluster divides the keyspace into 16,384 slots (the redis cluster standard). a key's slot is `crc16(hash_input) mod 16384`, using the XMODEM polynomial — the same as redis.
+slot ownership is tracked separately from local shard ownership. first a request has to land on the right node, then the node's local engine sends it to the right shard.
 
-**hash tags**: if a key contains `{...}`, only the content between the first `{` and the first `}` is hashed. this lets clients co-locate keys: `user:{123}:profile` and `session:{123}` land on the same slot. an empty tag (`foo{}bar`) falls back to hashing the full key.
+### membership and topology changes
 
-`SlotMap` is stored as `Box<[Option<NodeId>; 16384]>`. boxing avoids placing 128KB on the stack when the type is initialized.
+membership and failure detection use SWIM-style gossip. topology changes such as adding nodes, removing nodes, assigning slots, or promoting replicas go through Raft.
 
-### node identity
+that split is deliberate:
 
-each node has a `NodeId(Uuid)` generated at startup (UUID v4). `Display` shows the first 8 characters, similar to git short hashes, for readability in logs and CLI output. the full UUID string is used as a key in BTreeMap-backed storage.
+- gossip is fast and cheap for "who is alive?"
+- Raft is slower but gives a single agreed view for "who owns what?"
 
-### gossip / SWIM failure detection
+the data path does not go through Raft. normal reads and writes stay local to the node that owns the slot.
 
-ember uses the SWIM protocol for failure detection and membership management.
+`crates/ember-server/src/cluster.rs` is the bridge between the generic cluster crate and the running server. it owns the local `ClusterState`, the gossip engine, migration manager, and optional attached `RaftNode`.
 
-each protocol period (default 1 second):
+### replication
 
-1. pick a random node and send PING
-2. if no ACK within `probe_timeout` (500ms), send PING-REQ to `indirect_probes = 3` random nodes asking them to probe on our behalf
-3. if still no ACK, mark the node SUSPECT
-4. after `suspicion_mult × protocol_period` (5 seconds by default), promote to DEAD
+replication is a primary-to-replica stream built on top of the same persistence primitives used for local durability:
 
-a node can refute its own suspicion by incrementing its incarnation number and gossiping an `Alive` message. `MAX_INCARNATION = u64::MAX / 2` caps incarnation values — a malicious node sending max values would permanently disable refutation.
+1. a replica connects and performs a handshake
+2. the primary sends one in-memory snapshot per shard plus the current offset
+3. the replica loads those snapshots
+4. the primary streams incremental `AofRecord` updates
 
-up to `max_piggyback = 10` state updates are piggybacked on every message to converge cluster state without dedicated gossip rounds.
-
-**wire format**: compact binary, little-endian. five message types: PING (1), PING-REQ (2), ACK (3), JOIN (4), WELCOME (5). read helpers (`safe_get_u8`, `safe_get_u16_le`, `safe_get_u64_le`) return `io::Error` on truncated input rather than panicking. decoded arrays are capped at `MAX_COLLECTION_COUNT = 1024` elements to prevent allocation bombs.
-
-### raft
-
-a single openraft group manages cluster configuration changes: adding or removing nodes, assigning slots, promoting replicas, and tracking migrations. the data path is not routed through raft.
-
-the raft log uses in-memory structures (`BTreeMap<u64, Entry>` behind `RwLock`) with optional disk persistence via `RaftDisk`. when a data directory is configured, vote, log entries, and snapshots are persisted to a `raft/` subdirectory using CRC32-checksummed binary records. on restart the node recovers from disk instead of re-bootstrapping. atomic rewrites (write `.tmp`, fsync, rename) protect metadata and snapshot files from corruption during crashes.
-
-commands through raft: `AddNode`, `RemoveNode`, `AssignSlots`, `PromoteReplica`, `BeginMigration`, `CompleteMigration`.
+successful mutations inside a shard emit `ReplicationEvent`s with monotonically increasing per-shard offsets. the replication server uses those offsets for streaming and for the `WAIT` command's acknowledgement tracking.
 
 ### slot migration
 
-live resharding moves slots from one node to another without downtime. the migration FSM has five states:
+live resharding moves slots between nodes without taking the cluster offline. while a slot is in motion, the source and target coordinate with migration state plus `ASK` redirects. once the move is final, clients see `MOVED` and can update their slot map permanently.
 
-```
-Importing → Migrating → Streaming → Finalizing → Complete
-```
+## optional features
 
-during migration:
-- reads are served from the source. if the key has already moved, a `MOVED` or `ASK` redirect is returned to the client.
-- writes to a migrating slot get an `ASK` redirect to the target.
+ember keeps several subsystems behind compile-time features so the default binary stays smaller and simpler.
 
-`MOVED` means the slot is permanently at the new node. `ASK` means the key might still be at the source — the client should try the redirect but not update its slot map.
+| feature | effect |
+|---|---|
+| `vector` | adds HNSW-backed vector similarity search and the `V*` command family |
+| `protobuf` | adds schema-aware protobuf storage and `PROTO.*` commands |
+| `grpc` | exposes the engine through a tonic gRPC service in addition to RESP |
+| `encryption` | enables encrypted persistence files |
 
-`MigrationId(u64)` is generated as `timestamp_ns XOR slot XOR random(16-bit)`. the random component handles clock granularity collisions.
+these features are wired through the same engine rather than creating a separate execution path.
 
----
+for example:
 
-## 9. optional features
+- vector commands still route through `ShardRequest` and the normal shard loop
+- protobuf values still live in the same keyspace as other values
+- gRPC translates requests into the same engine operations the RESP path uses
 
-these features are disabled by default and compiled away entirely when not enabled. binary size and hot-path performance are unaffected.
+## background work
 
-### vector similarity search (`--features vector`)
+a few subsystems run off the main request path:
 
-adds `Value::Vector(VectorSet)` and the `VEC.*` command family. the HNSW index is provided by the `usearch` crate (C++ library via FFI), which ships battle-tested SIMD implementations for distance computation.
+| subsystem | purpose |
+|---|---|
+| drop thread | frees large collections without stalling a shard |
+| fsync thread | handles `appendfsync everysec` work |
+| metrics tasks | collect stats for Prometheus and health endpoints |
+| keyspace notification task | listens for expired-key broadcasts when enabled |
+| gossip / cluster tasks | drive membership, reconciliation, and failover work |
+| replication server | streams snapshots and AOF records to replicas |
 
-supported distance metrics: cosine, l2 (squared euclidean), inner product.
-
-supported quantization: f32 (4 bytes/element), f16 (2 bytes/element), i8 (1 byte/element).
-
-HNSW parameters `M` (connectivity, default 12, max 1024) and `ef_construction` (default 32, max 1024) are locked after the first insert — dimension, metric, quantization, and graph structure cannot change once data exists.
-
-### protobuf storage (`--features protobuf`)
-
-adds `Value::Proto { type_name, data: Bytes }` and the `PROTO.*` command family.
-
-clients register schemas via `PROTO.REGISTER` (a compiled `FileDescriptorSet`). the server can then decode, mutate specific fields, and re-encode protobuf values without the client needing to include protobuf libraries for simple field operations. `PROTO.GETFIELD` and `PROTO.SETFIELD` use dot-notation paths for nested fields.
-
-### grpc (`--features grpc`)
-
-exposes the same engine through a `tonic` gRPC service. the gRPC layer translates proto requests into `ShardRequest` values internally — the routing and shard execution paths are identical to RESP3.
-
-auth is via the `authorization` metadata header with constant-time comparison.
-
-input limits: keys ≤ 512 KB, values ≤ 512 MB, vector dimensions ≤ 65,536, batch counts ≤ 10,000. max message size 4 MB.
-
-### encryption at rest (`--features encryption`)
-
-covered in the [persistence section](#7-persistence).
+the general pattern in ember is consistent: keep the shard loop focused on request execution, and push blocking or cleanup-heavy work to dedicated background tasks when that makes latency more predictable.
 
 ---
 
-## 10. background subsystems
+if you are tracing a bug through the stack, the usual starting points are:
 
-### drop thread (`crates/ember-core/src/dropper.rs`)
-
-dropping large collections (lists with thousands of elements, large hash maps) is CPU-bound work. running it on a shard's event loop would stall command processing for the duration of the destructor call.
-
-`DropHandle` sends large values to a dedicated `std::thread` (named `ember-drop`) over a bounded `std::sync::mpsc` channel with capacity `DROP_CHANNEL_CAPACITY = 4096`. the thread simply drains the channel — receiving each item and letting its destructor run.
-
-`try_send` is used rather than blocking send. if the channel is full (drop thread is behind), the value is dropped inline on the shard rather than blocking the hot path. this is the same lazyfree strategy redis uses.
-
-a `DropHandle` is shared across all shards. when the last handle is dropped, the channel closes and the thread exits.
-
-only large values are deferred. strings (`Bytes`) are always dropped inline because `Bytes::drop` is O(1) reference count decrement. collections are considered large when they exceed `LAZY_FREE_THRESHOLD = 64` elements.
-
-### fsync thread
-
-when `appendfsync = everysec`, a per-shard background thread wakes every `FSYNC_INTERVAL = 1` second and calls `fsync` on the AOF file. writes are batched into this thread rather than blocking on the shard, keeping the command loop unaffected by disk latency.
-
-### stats poller
-
-when `--metrics-port` is configured, a background task periodically polls per-shard stats atomically for prometheus exposition. the poller is separate from the shard loops so the metrics scrape does not add latency to command processing.
-
----
-
-## 11. compile-time features
-
-features are additive — disabling a feature compiles away its code entirely. there is no dead code or unused allocation in the binary for disabled features.
-
-feature propagation: `ember-server` features flow down to `emberkv-core`, which flows to `ember-persistence`. enabling `encryption` on the server binary enables it through the whole stack.
-
-`jemalloc` is a default feature on the server binary. it substitutes the system allocator with jemalloc, which has better fragmentation characteristics under concurrent allocation patterns. disabling it falls back to the system allocator.
-
----
-
-*updated to reflect the current state of the codebase.*
+- `crates/ember-server/src/connection/` for command parsing and dispatch
+- `crates/ember-core/src/shard/mod.rs` for shard execution
+- `crates/ember-core/src/keyspace/` for data structure behavior
+- `crates/ember-persistence/src/` for durability and replay
+- `crates/ember-server/src/cluster.rs` and `crates/ember-cluster/src/` for distributed behavior

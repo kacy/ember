@@ -1,136 +1,168 @@
 # performance tuning
 
-this guide covers the knobs and trade-offs you can use to get the most out of ember. most defaults are reasonable for general workloads, but understanding how the engine works will help you tune for your specific case.
+most ember deployments do not need heroic tuning. the defaults are reasonable. when performance is off, the usual culprits are pipeline depth, connection behavior, key layout, or a memory limit that was set without much margin.
+
+this guide focuses on the knobs that actually matter first.
 
 ---
 
-## shard count vs cpu cores
+## start with the default shard count
 
-by default, ember auto-detects the number of cpu cores and creates one shard per core. this is almost always the right starting point.
+by default, ember uses one shard per available CPU core. that is usually the right place to start.
 
-to override:
+override it only when you have a specific reason:
 
-```
-# cli flag
+```bash
+# cli
 ember-server --shards 8
 
 # config file
 shards = 8
 ```
 
-**rule of thumb: one shard per core.** the shard count directly controls parallelism — each shard owns a partition of the keyspace and runs on its own thread.
+practical advice:
 
-- **fewer shards than cores**: lower overhead but you leave parallelism on the table. reasonable if your workload is not cpu-bound.
-- **more shards than cores**: increases context switching overhead with no throughput gain. avoid this.
+- if the host has 8 real cores available to ember, start with 8 shards
+- if you run inside a container with a CPU limit, set `shards` explicitly
+- do not crank the shard count above the cores you can actually use and expect a free win
 
-if you're running ember inside a container with a cgroup cpu limit, set `--shards` explicitly to match the allocated cores — the auto-detect reads the full host core count and will over-provision.
+more shards than cores usually just buys you more scheduler noise. fewer shards than cores can be fine for light workloads, but it leaves throughput on the table once the server gets busy.
 
----
+## pipeline depth is the biggest lever
 
-## pipeline depth
+if you care about throughput, pipeline depth matters more than almost anything else.
 
-pipelining lets a client send multiple commands without waiting for each response. it is the single most effective lever for throughput.
+one command at a time is easy to reason about, but it leaves a lot of performance sitting on the floor. once you start batching commands, ember can keep shards busy instead of waiting on round trips.
 
-| pipeline depth | typical set throughput | notes |
+illustrative numbers from the repo benchmarks:
+
+| pipeline depth | typical SET throughput | notes |
 |---|---|---|
-| P=1 | ~133k ops/sec | lowest latency (~0.7ms p99) |
-| P=8 | ~900k ops/sec | good balance |
-| P=16 | ~1.76M ops/sec | throughput sweet spot |
-| P=64+ | diminishing returns | higher memory pressure per connection |
+| `P=1` | ~133k ops/sec | lowest latency |
+| `P=8` | ~900k ops/sec | good general-purpose setting |
+| `P=16` | ~1.76M ops/sec | common throughput sweet spot |
+| `P=64+` | diminishing returns | more in-flight memory, smaller gains |
 
-**recommendations:**
+good defaults:
 
-- use P=16 for throughput-focused workloads (batch ingestion, cache warming)
-- use P=1 for latency-sensitive workloads (interactive sessions, real-time lookups)
-- avoid pushing P much above 32 unless you've measured a benefit — the increased in-flight state raises memory usage without proportional gains
+- use `P=1` when latency matters more than raw throughput
+- use `P=8` or `P=16` for bulk writes, cache warmups, and batch-heavy services
+- be skeptical of very deep pipelines unless you measured a real gain
 
-the `max-pipeline-depth` config option caps the number of in-flight commands per connection. the default is permissive; lower it if you see runaway memory growth from misbehaving clients.
+`max-pipeline-depth` exists to keep one noisy client from buffering an absurd amount of work on a single connection. leave it alone unless you have a reason to tighten it.
 
----
+## connection behavior matters more than people expect
 
-## connection management
+ember can handle a lot of clients, but lots of bad client behavior still adds up.
 
-**maxclients** (default: 10000) sets the ceiling on simultaneous connections. connections beyond this limit are rejected with an error. each accepted connection holds a read buffer (4KB default) and a write buffer, so thousands of idle connections carry real memory cost.
+the basics:
 
-tips for managing connections well:
+- reuse connections
+- use a bounded client-side pool
+- stop opening one connection per request
+- close dead or idle clients with `idle-timeout-secs` if your environment tends to leak them
 
-- **use connection pooling in your client.** a pool of 20-50 connections per application process is usually enough. opening a new connection per request is expensive — tcp handshake overhead adds up fast.
-- **set `idle-timeout-secs`** (recommended: 300) to automatically close stale connections and reclaim their buffers. this is especially important in environments where application processes come and go.
-- **watch the `connected_clients` metric** in `INFO stats` or the `/metrics` prometheus endpoint. a steady climb without a corresponding traffic increase usually indicates a connection leak.
+`maxclients` defaults to `10000`. that is generous, but it is not free. idle clients still hold buffers, and thousands of pointless connections are just wasted memory.
 
----
+watch these when things look odd:
 
-## memory overhead per data type
+- `INFO clients` for current connection counts
+- `/metrics` for `ember_connected_clients`
+- `/metrics` for `ember_rejected_connections_total`
 
-understanding per-key overhead helps size your cluster and interpret memory stats.
+if connection count keeps climbing while traffic does not, assume a leak until proven otherwise.
 
-| data type | approximate overhead |
-|---|---|
-| string | ~128 bytes (entry metadata + key + value) |
-| list | ~72 bytes base + VecDeque backing array + element bytes |
-| set | ~216 bytes base + element bytes per member |
-| hash | ~216 bytes base + field-value pairs; smaller for compact hashes |
-| sorted set | ~120 bytes base + member bytes + 8 bytes per score |
+## memory tuning starts with key shape
 
-these are rough figures for 64-byte values on a 64-bit system. actual usage depends on key length and value size. use `INFO memory` or the prometheus `memory_used_bytes` gauge per shard to measure real usage in your workload.
+the easiest memory win is usually shorter keys, not a different server setting.
 
-the biggest lever for reducing memory is **shorter keys**. a key that is 8 bytes vs 64 bytes saves 56 bytes per entry — at 100M keys that is over 5GB.
+an 8-byte key and a 64-byte key both point to the same value, but the longer one keeps costing you memory on every entry. at scale, that difference is real.
 
----
+rough rules of thumb:
 
-## key design
+- strings are the cheapest data type
+- lists, sets, hashes, and sorted sets have extra container overhead
+- hashes are pretty efficient when you have a handful of related fields
+- very large collections are convenient, but they are not cheap
 
-a few design habits that compound at scale:
+the exact number depends on key length, value length, and data type, so treat any fixed "bytes per key" number as a ballpark figure, not gospel.
 
-**keep keys short.** key length is part of every entry's allocation. `u:{uid}:sess` is meaningfully cheaper than `user:{user_id}:session` at millions of keys.
+what to do in practice:
 
-**use hash tags for co-location.** keys with `{tag}` in the name hash on the tag, not the full key. this lets you group related keys onto the same shard, which enables multi-key operations without cross-shard coordination:
+- keep keys short and boring
+- pack related fields into hashes when it makes sense
+- avoid giant one-key collections if you care about memory or latency
+- validate your assumptions with `INFO memory` and `ember_memory_used_bytes`
 
+## design keys for the execution model
+
+ember is sharded. if related keys always land on different shards, some operations get more expensive than they need to be.
+
+use hash tags when you want related keys to stay together:
+
+```text
+{user:1234}:profile
+{user:1234}:prefs
+{user:1234}:sessions
 ```
-SET {user:1234}:profile ...
-SET {user:1234}:prefs ...
-MGET {user:1234}:profile {user:1234}:prefs   # same shard, no fan-out
-```
 
-**avoid very large collections.** commands like `SMEMBERS`, `LRANGE 0 -1`, or `HGETALL` on collections with 100k+ members block the shard thread for the duration of serialization. break large collections up, or paginate with `SSCAN`, `HSCAN`, `ZSCAN`.
+that keeps those keys on the same shard and helps commands like `MGET` avoid extra fan-out.
 
-**set TTLs on ephemeral data.** ember's active expiry sampler continuously evicts expired keys, but only if TTLs are set. without TTLs, old data accumulates and the eviction policy falls back to LRU under memory pressure, which is less precise.
+two more habits help a lot:
 
----
+- set TTLs on data that is supposed to expire
+- paginate large collections instead of reading them all in one command
 
-## benchmarking tips
+`SMEMBERS`, `HGETALL`, and `LRANGE 0 -1` are fine on small collections. they are a bad surprise on huge ones.
 
-ember's built-in benchmark tool is the fastest way to test your specific configuration:
+if a collection can grow without a hard ceiling, plan on using:
+
+- `SSCAN`
+- `HSCAN`
+- `ZSCAN`
+
+## benchmark like you mean it
+
+the built-in benchmark command is the fastest way to get a feel for how your setup behaves:
 
 ```bash
-# baseline GET/SET with pipeline depth 16, 50 connections
+# simple GET/SET run
 ember-cli benchmark -t set,get -P 16 -c 50
 
-# test non-string data types
+# mix in other data types
 ember-cli benchmark -t lpush,sadd,zadd,hset,hget -P 16
 
-# simulate larger values (1KB)
+# larger payloads
 ember-cli benchmark -d 1024 -P 16
 
-# test a realistic keyspace (avoids hot-key distortion)
+# avoid hammering the same tiny keyset
 ember-cli benchmark -t get,set --keyspace 1000000
 ```
 
-for comparison against redis, `redis-benchmark` works directly against ember (full RESP3 compatibility):
+`redis-benchmark` also works directly against ember:
 
 ```bash
 redis-benchmark -h 127.0.0.1 -p 6379 -n 1000000 -c 50 -P 16 -t set,get
 ```
 
-for stress testing eviction and connection storms:
+when reading results:
 
-```bash
-./bench/bench-stress.sh
-```
+- warm the keyspace before judging read performance
+- use a realistic keyspace size so one hot key does not fake a great result
+- compare on the same hardware, not across random machines
+- care about p99, not just average latency
 
-**a few things to keep in mind when reading results:**
+if you only remember one thing from this section, make it this: benchmark the shape of traffic you actually have, not the traffic that makes the graph look nicest.
 
-- always warm the keyspace before measuring reads — a cold cache will show artificially low GET throughput
-- use `--keyspace` to avoid all requests hitting the same key, which collapses to a single-key hot spot
-- run benchmarks on the same hardware and jemalloc configuration as production for comparable numbers
-- p99 latency matters more than mean for most applications — check the latency histogram, not just ops/sec
+## a short checklist
+
+if ember is slower than you expected, check these in order:
+
+1. are clients pipelining at all?
+2. are you using one shard per available core?
+3. are clients reusing connections instead of reconnecting constantly?
+4. are large collections or all-at-once reads blocking shards?
+5. are keys longer than they need to be?
+6. are you benchmarking a real keyspace or one hot key?
+
+that usually gets you to the answer faster than hunting for obscure kernel flags.

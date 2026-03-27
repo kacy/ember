@@ -1,256 +1,295 @@
 # client integration guide
 
-Ember speaks RESP3 on the same default port as Redis (`6379`). If you have a working Redis setup, connecting to Ember is usually a one-line change.
+for most applications, using ember from a client looks exactly like using redis: point your client at ember's host and port, then keep the rest of your code the same.
+
+ember listens on `6379` by default, speaks the redis wire protocol, and works with normal redis clients. if a client prefers RESP3, that's fine. if it stays on RESP2, that's usually fine too.
 
 ---
 
-## node.js — ioredis
+## quick rules
+
+- use your existing redis client first before looking for an ember-specific one
+- reuse connections or a shared client object instead of reconnecting per request
+- if you enable `--requirepass`, set the password in the client config and let the library handle `AUTH`
+- if you enable TLS, connect to the TLS port, not the plain TCP port
+- in cluster mode, use a client that understands `MOVED` and `ASK` redirects
+
+## node.js
+
+### ioredis
 
 ```javascript
 import Redis from 'ioredis';
 
 const client = new Redis({
-  host: 'localhost',
+  host: '127.0.0.1',
   port: 6379,
 });
 
 await client.set('hello', 'world');
-const val = await client.get('hello');
-console.log(val); // "world"
+console.log(await client.get('hello')); // "world"
 ```
 
-ioredis auto-negotiates RESP3 on newer versions and falls back to RESP2 transparently. No configuration needed for this.
+`ioredis` is a good default if you want solid cluster support and familiar redis semantics.
 
----
-
-## node.js — node-redis
+### node-redis
 
 ```javascript
 import { createClient } from 'redis';
 
 const client = createClient({
-  socket: { host: 'localhost', port: 6379 },
+  socket: {
+    host: '127.0.0.1',
+    port: 6379,
+  },
 });
 
 await client.connect();
 await client.set('hello', 'world');
-const val = await client.get('hello');
-console.log(val); // "world"
+console.log(await client.get('hello')); // "world"
 ```
 
-node-redis v4+ uses RESP3 by default. Ember is fully compatible.
+`node-redis` works well for straightforward app integration. if you already use it with redis, ember usually does not need any special handling.
 
----
+## python
 
-## python — redis-py
+### redis-py
 
 ```python
 import redis
 
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
 
-r.set('hello', 'world')
-val = r.get('hello')
-print(val)  # "world"
+r.set("hello", "world")
+print(r.get("hello"))  # "world"
 ```
 
-redis-py supports RESP3 via the `RESP3Protocol` class on newer versions. The default RESP2 mode works fine with Ember either way.
-
-For async usage:
+async usage:
 
 ```python
 import redis.asyncio as redis
 
 async def main():
-    r = redis.Redis(host='localhost', port=6379, decode_responses=True)
-    await r.set('hello', 'world')
-    val = await r.get('hello')
-    print(val)
+    r = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
+    await r.set("hello", "world")
+    print(await r.get("hello"))
 ```
 
----
+if you already use `redis-py`, start with the same settings you use for redis. only add ember-specific changes when you actually need them.
 
-## go — go-redis/v9
+## go
+
+### go-redis
 
 ```go
 package main
 
 import (
-    "context"
-    "fmt"
-    "github.com/redis/go-redis/v9"
+	"context"
+	"fmt"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
-    rdb := redis.NewClient(&redis.Options{
-        Addr: "localhost:6379",
-    })
+	ctx := context.Background()
 
-    ctx := context.Background()
-    err := rdb.Set(ctx, "hello", "world", 0).Err()
-    if err != nil {
-        panic(err)
-    }
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "127.0.0.1:6379",
+	})
 
-    val, err := rdb.Get(ctx, "hello").Result()
-    if err != nil {
-        panic(err)
-    }
-    fmt.Println(val) // "world"
+	if err := rdb.Set(ctx, "hello", "world", 0).Err(); err != nil {
+		panic(err)
+	}
+
+	val, err := rdb.Get(ctx, "hello").Result()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(val) // world
 }
 ```
 
-go-redis/v9 sends a HELLO command on connect to negotiate RESP3. Ember responds correctly.
+for services, keep one shared `*redis.Client` per process unless you have a reason to do something more complex.
 
----
+## ruby
 
-## ruby — redis-rb
+### redis-rb
 
 ```ruby
-require 'redis'
+require "redis"
 
-redis = Redis.new(host: 'localhost', port: 6379)
+redis = Redis.new(host: "127.0.0.1", port: 6379)
 
-redis.set('hello', 'world')
-val = redis.get('hello')
-puts val  # "world"
+redis.set("hello", "world")
+puts redis.get("hello") # "world"
 ```
 
-redis-rb 5.x defaults to RESP3. Ember is fully compatible with both RESP2 and RESP3 modes.
+## java
 
----
-
-## java — jedis
+### jedis
 
 ```java
 import redis.clients.jedis.Jedis;
 
-try (Jedis jedis = new Jedis("localhost", 6379)) {
+try (Jedis jedis = new Jedis("127.0.0.1", 6379)) {
     jedis.set("hello", "world");
-    String val = jedis.get("hello");
-    System.out.println(val); // "world"
+    System.out.println(jedis.get("hello"));
 }
 ```
 
-For production use with connection pooling:
+with pooling:
 
 ```java
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 
-JedisPool pool = new JedisPool(new JedisPoolConfig(), "localhost", 6379);
+JedisPool pool = new JedisPool(new JedisPoolConfig(), "127.0.0.1", 6379);
 
 try (Jedis jedis = pool.getResource()) {
     jedis.set("hello", "world");
-    String val = jedis.get("hello");
-    System.out.println(val);
+    System.out.println(jedis.get("hello"));
 }
 ```
 
----
+## c#
 
-## c# — StackExchange.Redis
+### StackExchange.Redis
 
 ```csharp
 using StackExchange.Redis;
 
-var connection = await ConnectionMultiplexer.ConnectAsync("localhost:6379");
-var db = connection.GetDatabase();
+var mux = await ConnectionMultiplexer.ConnectAsync("127.0.0.1:6379");
+var db = mux.GetDatabase();
 
 await db.StringSetAsync("hello", "world");
-var val = await db.StringGetAsync("hello");
-Console.WriteLine(val); // "world"
+Console.WriteLine(await db.StringGetAsync("hello")); // world
 ```
 
-StackExchange.Redis uses connection multiplexing by default. One `ConnectionMultiplexer` instance is typically shared across the application. The library probes server capabilities on connect; Ember responds to those probes correctly.
+one `ConnectionMultiplexer` per application is the normal pattern here. do not create one per request.
 
----
+## tls
 
-## connecting with tls
+ember serves TLS on a separate port that you choose with `--tls-port`.
 
-Ember supports TLS on a separate port (default offset `6379 + tls_port`). Start the server with:
+example server:
 
+```bash
+ember-server \
+  --tls-port 6380 \
+  --tls-cert-file server.crt \
+  --tls-key-file server.key
 ```
-ember-server --tls-port 6380 --tls-cert-file server.crt --tls-key-file server.key
-```
 
-**ioredis + tls**
+### ioredis over tls
 
 ```javascript
 import Redis from 'ioredis';
 import { readFileSync } from 'fs';
 
 const client = new Redis({
-  host: 'localhost',
+  host: '127.0.0.1',
   port: 6380,
   tls: {
-    ca: readFileSync('ca.crt'),    // omit if using a trusted CA
+    ca: readFileSync('ca.crt'),
     rejectUnauthorized: true,
   },
 });
 ```
 
-**redis-py + tls**
+### redis-py over tls
 
 ```python
 import redis
-import ssl
 
 r = redis.Redis(
-    host='localhost',
+    host="127.0.0.1",
     port=6380,
     ssl=True,
-    ssl_ca_certs='ca.crt',   # omit if using a trusted CA
+    ssl_ca_certs="ca.crt",
     decode_responses=True,
 )
-
-r.set('hello', 'world')
 ```
 
-For mutual TLS (mTLS), start the server with `--tls-ca-cert-file ca.crt --tls-auth-clients yes` and pass client cert/key files in the client config.
-
----
-
-## redis-cli
-
-`redis-cli` connects to Ember without any changes:
-
-```
-redis-cli -h localhost -p 6379
-```
-
-With authentication:
-
-```
-redis-cli -h localhost -p 6379 -a yourpassword
-```
-
-With TLS:
-
-```
-redis-cli -h localhost -p 6380 --tls --cacert ca.crt
-```
-
-The `ember-cli` tool ships with Ember and adds syntax highlighting, autocomplete, and inline help. It also understands cluster topology natively. Use it when you want a richer terminal experience.
-
----
+for mTLS, start ember with `--tls-ca-cert-file` and `--tls-auth-clients yes`, then pass the client certificate and key in your library's TLS settings.
 
 ## authentication
 
-When the server is started with `--requirepass`, clients must send `AUTH` before any data commands:
+if you start the server with `--requirepass`, set the password in the client config and let the library send `AUTH` for you.
+
+examples:
 
 ```javascript
 // ioredis
-const client = new Redis({ host: 'localhost', port: 6379, password: 'secret' });
+const client = new Redis({
+  host: '127.0.0.1',
+  port: 6379,
+  password: 'secret',
+});
 
 // node-redis
-const client = createClient({ socket: { host: 'localhost', port: 6379 }, password: 'secret' });
-
-// redis-py
-r = redis.Redis(host='localhost', port=6379, password='secret', decode_responses=True)
-
-// go-redis
-rdb := redis.NewClient(&redis.Options{Addr: 'localhost:6379', Password: 'secret'})
+const client = createClient({
+  socket: { host: '127.0.0.1', port: 6379 },
+  password: 'secret',
+});
 ```
 
-All clients handle AUTH automatically when a password is configured.
+```python
+r = redis.Redis(
+    host="127.0.0.1",
+    port=6379,
+    password="secret",
+    decode_responses=True,
+)
+```
+
+```go
+rdb := redis.NewClient(&redis.Options{
+	Addr:     "127.0.0.1:6379",
+	Password: "secret",
+})
+```
+
+if you are using ACL users instead of a single password, use the client library's username + password fields.
+
+## cluster mode
+
+in cluster mode, the important requirement is not "an ember client." it is "a redis client that understands cluster redirects."
+
+good rule of thumb:
+
+- if the client already works with redis cluster, it is the right place to start
+- if the client does not follow `MOVED` and `ASK`, it will be painful in cluster mode
+
+`ember-cli` and `redis-cli --cluster` are both useful for local testing and operational work.
+
+## redis-cli and ember-cli
+
+plain `redis-cli` works against ember:
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379
+redis-cli -h 127.0.0.1 -p 6379 -a secret
+redis-cli -h 127.0.0.1 -p 6380 --tls --cacert ca.crt
+```
+
+`ember-cli` is the nicer option when you want autocomplete, inline help, and cluster-aware subcommands:
+
+```bash
+ember-cli
+ember-cli -a secret
+ember-cli cluster info
+ember-cli cluster nodes
+```
+
+## troubleshooting
+
+if a client connects but commands fail, check these first:
+
+1. wrong port: plain TCP and TLS use different ports
+2. auth mismatch: `NOAUTH` usually means the password was not configured in the client
+3. cluster-unaware client: look for `MOVED` errors
+4. certificate trust issues: common when testing TLS with self-signed certs
+
+if you need more detail, see [troubleshooting](troubleshooting.md) and [migration from redis](migration-from-redis.md).
