@@ -3,7 +3,7 @@ module github.com/kacy/ember-go
 go 1.25.6
 
 require (
-	google.golang.org/grpc v1.79.1
+	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 )
 
