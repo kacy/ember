@@ -5,7 +5,7 @@ import warnings
 
 from ember.proto.ember.v1 import ember_pb2 as ember_dot_v1_dot_ember__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class EmberCacheStub(object):
+class EmberCacheStub:
     """EmberCache provides a gRPC interface to ember's key-value store.
     all commands route through the same engine as RESP3, so behavior
     is identical regardless of protocol.
@@ -598,6 +598,91 @@ class EmberCacheStub(object):
                 request_serializer=ember_dot_v1_dot_ember__pb2.LastSaveRequest.SerializeToString,
                 response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
                 _registered_method=True)
+        self.Expiretime = channel.unary_unary(
+                '/ember.v1.EmberCache/Expiretime',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ExpiretimeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Pexpiretime = channel.unary_unary(
+                '/ember.v1.EmberCache/Pexpiretime',
+                request_serializer=ember_dot_v1_dot_ember__pb2.PexpiretimeRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Expireat = channel.unary_unary(
+                '/ember.v1.EmberCache/Expireat',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ExpireatRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+                _registered_method=True)
+        self.Pexpireat = channel.unary_unary(
+                '/ember.v1.EmberCache/Pexpireat',
+                request_serializer=ember_dot_v1_dot_ember__pb2.PexpireatRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+                _registered_method=True)
+        self.Getset = channel.unary_unary(
+                '/ember.v1.EmberCache/Getset',
+                request_serializer=ember_dot_v1_dot_ember__pb2.GetsetRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+                _registered_method=True)
+        self.Msetnx = channel.unary_unary(
+                '/ember.v1.EmberCache/Msetnx',
+                request_serializer=ember_dot_v1_dot_ember__pb2.MsetnxRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+                _registered_method=True)
+        self.Getbit = channel.unary_unary(
+                '/ember.v1.EmberCache/Getbit',
+                request_serializer=ember_dot_v1_dot_ember__pb2.GetbitRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Setbit = channel.unary_unary(
+                '/ember.v1.EmberCache/Setbit',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SetbitRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Bitcount = channel.unary_unary(
+                '/ember.v1.EmberCache/Bitcount',
+                request_serializer=ember_dot_v1_dot_ember__pb2.BitcountRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Bitpos = channel.unary_unary(
+                '/ember.v1.EmberCache/Bitpos',
+                request_serializer=ember_dot_v1_dot_ember__pb2.BitposRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Bitop = channel.unary_unary(
+                '/ember.v1.EmberCache/Bitop',
+                request_serializer=ember_dot_v1_dot_ember__pb2.BitopRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Smove = channel.unary_unary(
+                '/ember.v1.EmberCache/Smove',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SmoveRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+                _registered_method=True)
+        self.Sintercard = channel.unary_unary(
+                '/ember.v1.EmberCache/Sintercard',
+                request_serializer=ember_dot_v1_dot_ember__pb2.SintercardRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+                _registered_method=True)
+        self.Lmpop = channel.unary_unary(
+                '/ember.v1.EmberCache/Lmpop',
+                request_serializer=ember_dot_v1_dot_ember__pb2.LmpopRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.LmpopResponse.FromString,
+                _registered_method=True)
+        self.Zmpop = channel.unary_unary(
+                '/ember.v1.EmberCache/Zmpop',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZmpopRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ZmpopResponse.FromString,
+                _registered_method=True)
+        self.Hrandfield = channel.unary_unary(
+                '/ember.v1.EmberCache/Hrandfield',
+                request_serializer=ember_dot_v1_dot_ember__pb2.HrandfieldRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+                _registered_method=True)
+        self.Zrandmember = channel.unary_unary(
+                '/ember.v1.EmberCache/Zrandmember',
+                request_serializer=ember_dot_v1_dot_ember__pb2.ZrandmemberRequest.SerializeToString,
+                response_deserializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+                _registered_method=True)
         self.Pipeline = channel.stream_stream(
                 '/ember.v1.EmberCache/Pipeline',
                 request_serializer=ember_dot_v1_dot_ember__pb2.PipelineRequest.SerializeToString,
@@ -605,7 +690,7 @@ class EmberCacheStub(object):
                 _registered_method=True)
 
 
-class EmberCacheServicer(object):
+class EmberCacheServicer:
     """EmberCache provides a gRPC interface to ember's key-value store.
     all commands route through the same engine as RESP3, so behavior
     is identical regardless of protocol.
@@ -1319,6 +1404,124 @@ class EmberCacheServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Expiretime(self, request, context):
+        """--- keys (new) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Pexpiretime(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Expireat(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Pexpireat(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Getset(self, request, context):
+        """--- strings (new) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Msetnx(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Getbit(self, request, context):
+        """--- bitmaps ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Setbit(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Bitcount(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Bitpos(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Bitop(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Smove(self, request, context):
+        """--- sets (new) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Sintercard(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Lmpop(self, request, context):
+        """--- lists (new) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Zmpop(self, request, context):
+        """--- sorted sets (new) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Hrandfield(self, request, context):
+        """--- hash (new) ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Zrandmember(self, request, context):
+        """--- sorted set random ---
+
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def Pipeline(self, request_iterator, context):
         """--- streaming ---
         bidirectional streaming for batch operations, matching RESP3 pipelining.
@@ -1891,6 +2094,91 @@ def add_EmberCacheServicer_to_server(servicer, server):
                     request_deserializer=ember_dot_v1_dot_ember__pb2.LastSaveRequest.FromString,
                     response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
             ),
+            'Expiretime': grpc.unary_unary_rpc_method_handler(
+                    servicer.Expiretime,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ExpiretimeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Pexpiretime': grpc.unary_unary_rpc_method_handler(
+                    servicer.Pexpiretime,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.PexpiretimeRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Expireat': grpc.unary_unary_rpc_method_handler(
+                    servicer.Expireat,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ExpireatRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.BoolResponse.SerializeToString,
+            ),
+            'Pexpireat': grpc.unary_unary_rpc_method_handler(
+                    servicer.Pexpireat,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.PexpireatRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.BoolResponse.SerializeToString,
+            ),
+            'Getset': grpc.unary_unary_rpc_method_handler(
+                    servicer.Getset,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.GetsetRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.GetResponse.SerializeToString,
+            ),
+            'Msetnx': grpc.unary_unary_rpc_method_handler(
+                    servicer.Msetnx,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.MsetnxRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.BoolResponse.SerializeToString,
+            ),
+            'Getbit': grpc.unary_unary_rpc_method_handler(
+                    servicer.Getbit,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.GetbitRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Setbit': grpc.unary_unary_rpc_method_handler(
+                    servicer.Setbit,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SetbitRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Bitcount': grpc.unary_unary_rpc_method_handler(
+                    servicer.Bitcount,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.BitcountRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Bitpos': grpc.unary_unary_rpc_method_handler(
+                    servicer.Bitpos,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.BitposRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Bitop': grpc.unary_unary_rpc_method_handler(
+                    servicer.Bitop,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.BitopRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Smove': grpc.unary_unary_rpc_method_handler(
+                    servicer.Smove,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SmoveRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.BoolResponse.SerializeToString,
+            ),
+            'Sintercard': grpc.unary_unary_rpc_method_handler(
+                    servicer.Sintercard,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.SintercardRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.IntResponse.SerializeToString,
+            ),
+            'Lmpop': grpc.unary_unary_rpc_method_handler(
+                    servicer.Lmpop,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.LmpopRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.LmpopResponse.SerializeToString,
+            ),
+            'Zmpop': grpc.unary_unary_rpc_method_handler(
+                    servicer.Zmpop,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZmpopRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ZmpopResponse.SerializeToString,
+            ),
+            'Hrandfield': grpc.unary_unary_rpc_method_handler(
+                    servicer.Hrandfield,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.HrandfieldRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.SerializeToString,
+            ),
+            'Zrandmember': grpc.unary_unary_rpc_method_handler(
+                    servicer.Zrandmember,
+                    request_deserializer=ember_dot_v1_dot_ember__pb2.ZrandmemberRequest.FromString,
+                    response_serializer=ember_dot_v1_dot_ember__pb2.ArrayResponse.SerializeToString,
+            ),
             'Pipeline': grpc.stream_stream_rpc_method_handler(
                     servicer.Pipeline,
                     request_deserializer=ember_dot_v1_dot_ember__pb2.PipelineRequest.FromString,
@@ -1904,7 +2192,7 @@ def add_EmberCacheServicer_to_server(servicer, server):
 
 
  # This class is part of an EXPERIMENTAL API.
-class EmberCache(object):
+class EmberCache:
     """EmberCache provides a gRPC interface to ember's key-value store.
     all commands route through the same engine as RESP3, so behavior
     is identical regardless of protocol.
@@ -4925,6 +5213,465 @@ class EmberCache(object):
             '/ember.v1.EmberCache/LastSave',
             ember_dot_v1_dot_ember__pb2.LastSaveRequest.SerializeToString,
             ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Expiretime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Expiretime',
+            ember_dot_v1_dot_ember__pb2.ExpiretimeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Pexpiretime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Pexpiretime',
+            ember_dot_v1_dot_ember__pb2.PexpiretimeRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Expireat(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Expireat',
+            ember_dot_v1_dot_ember__pb2.ExpireatRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Pexpireat(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Pexpireat',
+            ember_dot_v1_dot_ember__pb2.PexpireatRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Getset(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Getset',
+            ember_dot_v1_dot_ember__pb2.GetsetRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.GetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Msetnx(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Msetnx',
+            ember_dot_v1_dot_ember__pb2.MsetnxRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Getbit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Getbit',
+            ember_dot_v1_dot_ember__pb2.GetbitRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Setbit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Setbit',
+            ember_dot_v1_dot_ember__pb2.SetbitRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Bitcount(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Bitcount',
+            ember_dot_v1_dot_ember__pb2.BitcountRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Bitpos(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Bitpos',
+            ember_dot_v1_dot_ember__pb2.BitposRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Bitop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Bitop',
+            ember_dot_v1_dot_ember__pb2.BitopRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Smove(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Smove',
+            ember_dot_v1_dot_ember__pb2.SmoveRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.BoolResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Sintercard(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Sintercard',
+            ember_dot_v1_dot_ember__pb2.SintercardRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.IntResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Lmpop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Lmpop',
+            ember_dot_v1_dot_ember__pb2.LmpopRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.LmpopResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Zmpop(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Zmpop',
+            ember_dot_v1_dot_ember__pb2.ZmpopRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ZmpopResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Hrandfield(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Hrandfield',
+            ember_dot_v1_dot_ember__pb2.HrandfieldRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Zrandmember(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ember.v1.EmberCache/Zrandmember',
+            ember_dot_v1_dot_ember__pb2.ZrandmemberRequest.SerializeToString,
+            ember_dot_v1_dot_ember__pb2.ArrayResponse.FromString,
             options,
             channel_credentials,
             insecure,
