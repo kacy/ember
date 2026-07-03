@@ -1,5 +1,15 @@
 # changelog
 
+## unreleased
+
+### deprecations
+- concurrent mode (`--concurrent` / `EMBER_CONCURRENT`) is deprecated and will be removed in a future release; the server now logs a warning on startup. it only accelerates string commands and is mutually exclusive with cluster mode — the default sharded engine is the supported path
+
+### internal
+- moved `key_slot`/`SLOT_COUNT` slot-hashing primitives from ember-cluster to ember-protocol; ember-core no longer depends on ember-cluster (and thus no longer compiles openraft and its dependency tree). ember-cluster re-exports both names, so downstream code is unaffected
+
+---
+
 ## 0.4.9 (2026-02-27)
 
 ### features

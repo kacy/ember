@@ -24,6 +24,7 @@ pub mod command;
 pub mod error;
 pub mod parse;
 mod serialize;
+pub mod slots;
 pub mod types;
 
 pub use command::{Command, SetExpire, ZAddFlags};

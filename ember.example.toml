@@ -11,7 +11,7 @@
 # bind = "127.0.0.1"              # address to listen on
 # port = 6379                     # data port
 # shards = 0                      # worker threads (0 = auto-detect CPU cores)
-# concurrent = false              # use DashMap-backed keyspace (experimental)
+# concurrent = false              # use DashMap-backed keyspace (deprecated, will be removed)
 # requirepass = ""                # require AUTH before commands (empty = disabled)
 # data-dir = ""                   # directory for AOF/snapshot files
 

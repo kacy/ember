@@ -16,6 +16,7 @@ ember:
   evictionPolicy: noeviction
   appendonly: false
   appendfsync: everysec
+  # deprecated: concurrent mode will be removed in a future release
   concurrent: false
   # auth password. when set, the chart stores it in a Secret and mounts it
   # into the pod as a file (EMBER_REQUIREPASS_FILE) — it is never exposed as

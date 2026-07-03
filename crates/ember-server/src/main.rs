@@ -97,6 +97,7 @@ struct Args {
     shards: Option<usize>,
 
     /// use concurrent keyspace (DashMap) instead of sharded channels.
+    /// deprecated: will be removed in a future release.
     /// experimental: bypasses channel overhead for GET/SET commands.
     #[arg(long, env = "EMBER_CONCURRENT")]
     concurrent: bool,
@@ -853,6 +854,11 @@ async fn main() {
     let config_path = args.config.clone();
 
     if cfg.concurrent {
+        tracing::warn!(
+            "concurrent mode is deprecated and will be removed in a future release; \
+             it only accelerates string commands and lacks cluster support — use the \
+             default sharded mode instead"
+        );
         let result = server::run_concurrent(
             addr,
             shard_count,
