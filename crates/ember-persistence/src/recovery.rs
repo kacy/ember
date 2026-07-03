@@ -158,8 +158,16 @@ fn recover_shard_impl(
     }
 
     // step 2: replay AOF
+    //
+    // Replay mutates `map` in place, so a mid-file failure (e.g. CRC
+    // mismatch) would otherwise leave a partially-applied prefix that can
+    // be internally inconsistent (a SET applied, a later DEL lost). Keep
+    // the pre-replay state so recovery can fall back to it atomically.
     let aof_path = aof::aof_path(data_dir, shard_id);
     if aof_path.exists() {
+        let snapshot_state = map.clone();
+        #[cfg(feature = "protobuf")]
+        let snapshot_schemas = schema_map.clone();
         match replay_aof(
             &aof_path,
             &mut map,
@@ -173,9 +181,16 @@ fn recover_shard_impl(
                 }
             }
             Err(e) => {
+                map = snapshot_state;
+                #[cfg(feature = "protobuf")]
+                {
+                    schema_map = snapshot_schemas;
+                }
                 warn!(
                     shard_id,
-                    "failed to replay aof, using snapshot state only: {e}"
+                    "aof is corrupt mid-file; discarded all post-snapshot writes and \
+                     recovered snapshot state only (writes since the last snapshot are \
+                     lost): {e}"
                 );
             }
         }
@@ -997,6 +1012,122 @@ mod tests {
         let result = recover_shard(dir.path(), 0);
         assert!(!result.loaded_snapshot);
         assert!(result.entries.is_empty());
+    }
+
+    /// Writes `records` to shard 0's AOF, returning the file offset at which
+    /// each record starts (after the magic header).
+    fn write_aof_with_offsets(dir: &Path, records: &[AofRecord]) -> Vec<u64> {
+        let path = aof::aof_path(dir, 0);
+        let mut writer = AofWriter::open(&path).unwrap();
+        writer.sync().unwrap();
+        let mut offsets = Vec::new();
+        for record in records {
+            offsets.push(std::fs::metadata(&path).unwrap().len());
+            writer.write_record(record).unwrap();
+            writer.sync().unwrap();
+        }
+        offsets
+    }
+
+    fn set_record(key: &str, value: &str) -> AofRecord {
+        AofRecord::Set {
+            key: key.into(),
+            value: Bytes::copy_from_slice(value.as_bytes()),
+            expire_ms: -1,
+        }
+    }
+
+    /// Flips the last byte of the record that ends at `record_end` — its
+    /// stored CRC — so reading it fails the checksum. Length fields are
+    /// untouched and the file length is unchanged, so this is detectable
+    /// mid-file corruption, not a truncated tail (which is treated as EOF).
+    fn corrupt_crc_of_record_ending_at(dir: &Path, record_end: u64) {
+        let path = aof::aof_path(dir, 0);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let target = record_end as usize - 1;
+        bytes[target] ^= 0xFF;
+        std::fs::write(&path, bytes).unwrap();
+    }
+
+    #[test]
+    fn mid_file_aof_corruption_falls_back_to_snapshot() {
+        let dir = temp_dir();
+
+        {
+            let path = snapshot::snapshot_path(dir.path(), 0);
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            writer
+                .write_entry(&SnapEntry {
+                    key: "base".into(),
+                    value: SnapValue::String(Bytes::from("snap")),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer.finish().unwrap();
+        }
+
+        let offsets = write_aof_with_offsets(
+            dir.path(),
+            &[
+                set_record("k1", "v1"),
+                set_record("k2", "v2"),
+                set_record("k3", "v3"),
+            ],
+        );
+        // corrupt record 2's CRC (record 2 ends where record 3 begins)
+        corrupt_crc_of_record_ending_at(dir.path(), offsets[2]);
+
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.loaded_snapshot);
+        assert!(!result.replayed_aof);
+        // The valid prefix (k1) must not leak through: recovery either
+        // applies the whole AOF or none of it.
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].key, "base");
+        assert!(
+            matches!(&result.entries[0].value, RecoveredValue::String(b) if b == &Bytes::from("snap"))
+        );
+    }
+
+    #[test]
+    fn corrupt_aof_does_not_leave_inconsistent_prefix() {
+        let dir = temp_dir();
+
+        {
+            let path = snapshot::snapshot_path(dir.path(), 0);
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            writer
+                .write_entry(&SnapEntry {
+                    key: "victim".into(),
+                    value: SnapValue::String(Bytes::from("snap")),
+                    expire_ms: -1,
+                })
+                .unwrap();
+            writer.finish().unwrap();
+        }
+
+        // The AOF overwrites "victim", then (past the corruption point)
+        // deletes it. Keeping the overwrite while losing the delete would
+        // fabricate a state that never existed.
+        let offsets = write_aof_with_offsets(
+            dir.path(),
+            &[
+                set_record("victim", "overwritten"),
+                set_record("filler", "x"),
+                AofRecord::Del {
+                    key: "victim".into(),
+                },
+            ],
+        );
+        // corrupt the middle record's CRC (it ends where the DEL begins)
+        corrupt_crc_of_record_ending_at(dir.path(), offsets[2]);
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].key, "victim");
+        assert!(
+            matches!(&result.entries[0].value, RecoveredValue::String(b) if b == &Bytes::from("snap"))
+        );
     }
 
     #[test]

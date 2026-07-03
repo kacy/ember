@@ -46,9 +46,9 @@ spec:
             - name: EMBER_CONCURRENT
               value: "true"
             {{- end }}
-            {{- if .Values.ember.requirepass }}
-            - name: EMBER_REQUIREPASS
-              value: {{ .Values.ember.requirepass | quote }}
+            {{- if or .Values.ember.requirepass .Values.ember.existingSecret }}
+            - name: EMBER_REQUIREPASS_FILE
+              value: /etc/ember/auth/requirepass
             {{- end }}
           ports:
             - name: cache
@@ -84,6 +84,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
+            {{- if or .Values.ember.requirepass .Values.ember.existingSecret }}
+            - name: auth
+              mountPath: /etc/ember/auth
+              readOnly: true
+            {{- end }}
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -98,3 +103,8 @@ spec:
           # enable persistence.enabled=true for production deployments.
           emptyDir: {}
           {{- end }}
+        {{- if or .Values.ember.requirepass .Values.ember.existingSecret }}
+        - name: auth
+          secret:
+            secretName: {{ .Values.ember.existingSecret | default (printf "%s-auth" (include "ember.fullname" .)) }}
+        {{- end }}
