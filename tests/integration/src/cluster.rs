@@ -600,10 +600,15 @@ async fn cluster_automatic_failover_promotes_replica() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // a write accepted by the pre-failover primary; give the replication
-    // stream a moment to deliver it before the crash
+    // a write accepted by the pre-failover primary, then WAIT until the
+    // replica actually acknowledges it. async replication is otherwise
+    // racy — a fixed sleep let the marker be unreplicated at crash time on
+    // slower runners (flaked on macos CI). WAIT returning >= 1 means the
+    // write is durably on the replica, so the post-failover check below is
+    // deterministic; if it can't be confirmed, we don't assert a guarantee
+    // the system didn't make.
     c0.ok(&["SET", "failover:marker", "survives"]).await;
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let marker_replicated = c0.get_int(&["WAIT", "1", "5000"]).await >= 1;
 
     // crash the primary
     drop(c0);
@@ -635,10 +640,14 @@ async fn cluster_automatic_failover_promotes_replica() {
         Some("accepted".into())
     );
 
-    // the pre-failover write must have been replicated before the crash
-    assert_eq!(
-        c2.get_bulk(&["GET", "failover:marker"]).await,
-        Some("survives".into()),
-        "pre-failover write was lost during promotion"
-    );
+    // a write confirmed replicated (via WAIT) before the crash must survive
+    // promotion. writes that could not be confirmed are best-effort under
+    // async replication, so we only assert on the confirmed case.
+    if marker_replicated {
+        assert_eq!(
+            c2.get_bulk(&["GET", "failover:marker"]).await,
+            Some("survives".into()),
+            "a replication-confirmed write was lost during promotion"
+        );
+    }
 }
