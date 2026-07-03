@@ -5,6 +5,9 @@ import type { AppendRequest as _ember_v1_AppendRequest, AppendRequest__Output as
 import type { ArrayResponse as _ember_v1_ArrayResponse, ArrayResponse__Output as _ember_v1_ArrayResponse__Output } from '../../ember/v1/ArrayResponse';
 import type { BgRewriteAofRequest as _ember_v1_BgRewriteAofRequest, BgRewriteAofRequest__Output as _ember_v1_BgRewriteAofRequest__Output } from '../../ember/v1/BgRewriteAofRequest';
 import type { BgSaveRequest as _ember_v1_BgSaveRequest, BgSaveRequest__Output as _ember_v1_BgSaveRequest__Output } from '../../ember/v1/BgSaveRequest';
+import type { BitcountRequest as _ember_v1_BitcountRequest, BitcountRequest__Output as _ember_v1_BitcountRequest__Output } from '../../ember/v1/BitcountRequest';
+import type { BitopRequest as _ember_v1_BitopRequest, BitopRequest__Output as _ember_v1_BitopRequest__Output } from '../../ember/v1/BitopRequest';
+import type { BitposRequest as _ember_v1_BitposRequest, BitposRequest__Output as _ember_v1_BitposRequest__Output } from '../../ember/v1/BitposRequest';
 import type { BoolArrayResponse as _ember_v1_BoolArrayResponse, BoolArrayResponse__Output as _ember_v1_BoolArrayResponse__Output } from '../../ember/v1/BoolArrayResponse';
 import type { BoolResponse as _ember_v1_BoolResponse, BoolResponse__Output as _ember_v1_BoolResponse__Output } from '../../ember/v1/BoolResponse';
 import type { CopyRequest as _ember_v1_CopyRequest, CopyRequest__Output as _ember_v1_CopyRequest__Output } from '../../ember/v1/CopyRequest';
@@ -17,6 +20,8 @@ import type { EchoRequest as _ember_v1_EchoRequest, EchoRequest__Output as _embe
 import type { EchoResponse as _ember_v1_EchoResponse, EchoResponse__Output as _ember_v1_EchoResponse__Output } from '../../ember/v1/EchoResponse';
 import type { ExistsRequest as _ember_v1_ExistsRequest, ExistsRequest__Output as _ember_v1_ExistsRequest__Output } from '../../ember/v1/ExistsRequest';
 import type { ExpireRequest as _ember_v1_ExpireRequest, ExpireRequest__Output as _ember_v1_ExpireRequest__Output } from '../../ember/v1/ExpireRequest';
+import type { ExpireatRequest as _ember_v1_ExpireatRequest, ExpireatRequest__Output as _ember_v1_ExpireatRequest__Output } from '../../ember/v1/ExpireatRequest';
+import type { ExpiretimeRequest as _ember_v1_ExpiretimeRequest, ExpiretimeRequest__Output as _ember_v1_ExpiretimeRequest__Output } from '../../ember/v1/ExpiretimeRequest';
 import type { FloatResponse as _ember_v1_FloatResponse, FloatResponse__Output as _ember_v1_FloatResponse__Output } from '../../ember/v1/FloatResponse';
 import type { FlushDbRequest as _ember_v1_FlushDbRequest, FlushDbRequest__Output as _ember_v1_FlushDbRequest__Output } from '../../ember/v1/FlushDbRequest';
 import type { GetDelRequest as _ember_v1_GetDelRequest, GetDelRequest__Output as _ember_v1_GetDelRequest__Output } from '../../ember/v1/GetDelRequest';
@@ -24,6 +29,8 @@ import type { GetExRequest as _ember_v1_GetExRequest, GetExRequest__Output as _e
 import type { GetRangeRequest as _ember_v1_GetRangeRequest, GetRangeRequest__Output as _ember_v1_GetRangeRequest__Output } from '../../ember/v1/GetRangeRequest';
 import type { GetRequest as _ember_v1_GetRequest, GetRequest__Output as _ember_v1_GetRequest__Output } from '../../ember/v1/GetRequest';
 import type { GetResponse as _ember_v1_GetResponse, GetResponse__Output as _ember_v1_GetResponse__Output } from '../../ember/v1/GetResponse';
+import type { GetbitRequest as _ember_v1_GetbitRequest, GetbitRequest__Output as _ember_v1_GetbitRequest__Output } from '../../ember/v1/GetbitRequest';
+import type { GetsetRequest as _ember_v1_GetsetRequest, GetsetRequest__Output as _ember_v1_GetsetRequest__Output } from '../../ember/v1/GetsetRequest';
 import type { HDelRequest as _ember_v1_HDelRequest, HDelRequest__Output as _ember_v1_HDelRequest__Output } from '../../ember/v1/HDelRequest';
 import type { HExistsRequest as _ember_v1_HExistsRequest, HExistsRequest__Output as _ember_v1_HExistsRequest__Output } from '../../ember/v1/HExistsRequest';
 import type { HGetAllRequest as _ember_v1_HGetAllRequest, HGetAllRequest__Output as _ember_v1_HGetAllRequest__Output } from '../../ember/v1/HGetAllRequest';
@@ -37,6 +44,7 @@ import type { HScanResponse as _ember_v1_HScanResponse, HScanResponse__Output as
 import type { HSetRequest as _ember_v1_HSetRequest, HSetRequest__Output as _ember_v1_HSetRequest__Output } from '../../ember/v1/HSetRequest';
 import type { HValsRequest as _ember_v1_HValsRequest, HValsRequest__Output as _ember_v1_HValsRequest__Output } from '../../ember/v1/HValsRequest';
 import type { HashResponse as _ember_v1_HashResponse, HashResponse__Output as _ember_v1_HashResponse__Output } from '../../ember/v1/HashResponse';
+import type { HrandfieldRequest as _ember_v1_HrandfieldRequest, HrandfieldRequest__Output as _ember_v1_HrandfieldRequest__Output } from '../../ember/v1/HrandfieldRequest';
 import type { IncrByFloatRequest as _ember_v1_IncrByFloatRequest, IncrByFloatRequest__Output as _ember_v1_IncrByFloatRequest__Output } from '../../ember/v1/IncrByFloatRequest';
 import type { IncrByRequest as _ember_v1_IncrByRequest, IncrByRequest__Output as _ember_v1_IncrByRequest__Output } from '../../ember/v1/IncrByRequest';
 import type { IncrRequest as _ember_v1_IncrRequest, IncrRequest__Output as _ember_v1_IncrRequest__Output } from '../../ember/v1/IncrRequest';
@@ -57,16 +65,21 @@ import type { LRemRequest as _ember_v1_LRemRequest, LRemRequest__Output as _embe
 import type { LSetRequest as _ember_v1_LSetRequest, LSetRequest__Output as _ember_v1_LSetRequest__Output } from '../../ember/v1/LSetRequest';
 import type { LTrimRequest as _ember_v1_LTrimRequest, LTrimRequest__Output as _ember_v1_LTrimRequest__Output } from '../../ember/v1/LTrimRequest';
 import type { LastSaveRequest as _ember_v1_LastSaveRequest, LastSaveRequest__Output as _ember_v1_LastSaveRequest__Output } from '../../ember/v1/LastSaveRequest';
+import type { LmpopRequest as _ember_v1_LmpopRequest, LmpopRequest__Output as _ember_v1_LmpopRequest__Output } from '../../ember/v1/LmpopRequest';
+import type { LmpopResponse as _ember_v1_LmpopResponse, LmpopResponse__Output as _ember_v1_LmpopResponse__Output } from '../../ember/v1/LmpopResponse';
 import type { MGetRequest as _ember_v1_MGetRequest, MGetRequest__Output as _ember_v1_MGetRequest__Output } from '../../ember/v1/MGetRequest';
 import type { MGetResponse as _ember_v1_MGetResponse, MGetResponse__Output as _ember_v1_MGetResponse__Output } from '../../ember/v1/MGetResponse';
 import type { MSetRequest as _ember_v1_MSetRequest, MSetRequest__Output as _ember_v1_MSetRequest__Output } from '../../ember/v1/MSetRequest';
 import type { MSetResponse as _ember_v1_MSetResponse, MSetResponse__Output as _ember_v1_MSetResponse__Output } from '../../ember/v1/MSetResponse';
+import type { MsetnxRequest as _ember_v1_MsetnxRequest, MsetnxRequest__Output as _ember_v1_MsetnxRequest__Output } from '../../ember/v1/MsetnxRequest';
 import type { OptionalArrayResponse as _ember_v1_OptionalArrayResponse, OptionalArrayResponse__Output as _ember_v1_OptionalArrayResponse__Output } from '../../ember/v1/OptionalArrayResponse';
 import type { OptionalFloatResponse as _ember_v1_OptionalFloatResponse, OptionalFloatResponse__Output as _ember_v1_OptionalFloatResponse__Output } from '../../ember/v1/OptionalFloatResponse';
 import type { OptionalIntResponse as _ember_v1_OptionalIntResponse, OptionalIntResponse__Output as _ember_v1_OptionalIntResponse__Output } from '../../ember/v1/OptionalIntResponse';
 import type { PExpireRequest as _ember_v1_PExpireRequest, PExpireRequest__Output as _ember_v1_PExpireRequest__Output } from '../../ember/v1/PExpireRequest';
 import type { PTtlRequest as _ember_v1_PTtlRequest, PTtlRequest__Output as _ember_v1_PTtlRequest__Output } from '../../ember/v1/PTtlRequest';
 import type { PersistRequest as _ember_v1_PersistRequest, PersistRequest__Output as _ember_v1_PersistRequest__Output } from '../../ember/v1/PersistRequest';
+import type { PexpireatRequest as _ember_v1_PexpireatRequest, PexpireatRequest__Output as _ember_v1_PexpireatRequest__Output } from '../../ember/v1/PexpireatRequest';
+import type { PexpiretimeRequest as _ember_v1_PexpiretimeRequest, PexpiretimeRequest__Output as _ember_v1_PexpiretimeRequest__Output } from '../../ember/v1/PexpiretimeRequest';
 import type { PingRequest as _ember_v1_PingRequest, PingRequest__Output as _ember_v1_PingRequest__Output } from '../../ember/v1/PingRequest';
 import type { PingResponse as _ember_v1_PingResponse, PingResponse__Output as _ember_v1_PingResponse__Output } from '../../ember/v1/PingResponse';
 import type { PipelineRequest as _ember_v1_PipelineRequest, PipelineRequest__Output as _ember_v1_PipelineRequest__Output } from '../../ember/v1/PipelineRequest';
@@ -101,10 +114,13 @@ import type { ScanResponse as _ember_v1_ScanResponse, ScanResponse__Output as _e
 import type { SetRangeRequest as _ember_v1_SetRangeRequest, SetRangeRequest__Output as _ember_v1_SetRangeRequest__Output } from '../../ember/v1/SetRangeRequest';
 import type { SetRequest as _ember_v1_SetRequest, SetRequest__Output as _ember_v1_SetRequest__Output } from '../../ember/v1/SetRequest';
 import type { SetResponse as _ember_v1_SetResponse, SetResponse__Output as _ember_v1_SetResponse__Output } from '../../ember/v1/SetResponse';
+import type { SetbitRequest as _ember_v1_SetbitRequest, SetbitRequest__Output as _ember_v1_SetbitRequest__Output } from '../../ember/v1/SetbitRequest';
+import type { SintercardRequest as _ember_v1_SintercardRequest, SintercardRequest__Output as _ember_v1_SintercardRequest__Output } from '../../ember/v1/SintercardRequest';
 import type { SlowLogGetRequest as _ember_v1_SlowLogGetRequest, SlowLogGetRequest__Output as _ember_v1_SlowLogGetRequest__Output } from '../../ember/v1/SlowLogGetRequest';
 import type { SlowLogGetResponse as _ember_v1_SlowLogGetResponse, SlowLogGetResponse__Output as _ember_v1_SlowLogGetResponse__Output } from '../../ember/v1/SlowLogGetResponse';
 import type { SlowLogLenRequest as _ember_v1_SlowLogLenRequest, SlowLogLenRequest__Output as _ember_v1_SlowLogLenRequest__Output } from '../../ember/v1/SlowLogLenRequest';
 import type { SlowLogResetRequest as _ember_v1_SlowLogResetRequest, SlowLogResetRequest__Output as _ember_v1_SlowLogResetRequest__Output } from '../../ember/v1/SlowLogResetRequest';
+import type { SmoveRequest as _ember_v1_SmoveRequest, SmoveRequest__Output as _ember_v1_SmoveRequest__Output } from '../../ember/v1/SmoveRequest';
 import type { StatusResponse as _ember_v1_StatusResponse, StatusResponse__Output as _ember_v1_StatusResponse__Output } from '../../ember/v1/StatusResponse';
 import type { StrlenRequest as _ember_v1_StrlenRequest, StrlenRequest__Output as _ember_v1_StrlenRequest__Output } from '../../ember/v1/StrlenRequest';
 import type { SubscribeEvent as _ember_v1_SubscribeEvent, SubscribeEvent__Output as _ember_v1_SubscribeEvent__Output } from '../../ember/v1/SubscribeEvent';
@@ -148,11 +164,17 @@ import type { ZScanRequest as _ember_v1_ZScanRequest, ZScanRequest__Output as _e
 import type { ZScanResponse as _ember_v1_ZScanResponse, ZScanResponse__Output as _ember_v1_ZScanResponse__Output } from '../../ember/v1/ZScanResponse';
 import type { ZScoreRequest as _ember_v1_ZScoreRequest, ZScoreRequest__Output as _ember_v1_ZScoreRequest__Output } from '../../ember/v1/ZScoreRequest';
 import type { ZUnionRequest as _ember_v1_ZUnionRequest, ZUnionRequest__Output as _ember_v1_ZUnionRequest__Output } from '../../ember/v1/ZUnionRequest';
+import type { ZmpopRequest as _ember_v1_ZmpopRequest, ZmpopRequest__Output as _ember_v1_ZmpopRequest__Output } from '../../ember/v1/ZmpopRequest';
+import type { ZmpopResponse as _ember_v1_ZmpopResponse, ZmpopResponse__Output as _ember_v1_ZmpopResponse__Output } from '../../ember/v1/ZmpopResponse';
+import type { ZrandmemberRequest as _ember_v1_ZrandmemberRequest, ZrandmemberRequest__Output as _ember_v1_ZrandmemberRequest__Output } from '../../ember/v1/ZrandmemberRequest';
 
 export interface EmberCacheDefinition {
   Append: MethodDefinition<_ember_v1_AppendRequest, _ember_v1_IntResponse, _ember_v1_AppendRequest__Output, _ember_v1_IntResponse__Output>
   BgRewriteAof: MethodDefinition<_ember_v1_BgRewriteAofRequest, _ember_v1_StatusResponse, _ember_v1_BgRewriteAofRequest__Output, _ember_v1_StatusResponse__Output>
   BgSave: MethodDefinition<_ember_v1_BgSaveRequest, _ember_v1_StatusResponse, _ember_v1_BgSaveRequest__Output, _ember_v1_StatusResponse__Output>
+  Bitcount: MethodDefinition<_ember_v1_BitcountRequest, _ember_v1_IntResponse, _ember_v1_BitcountRequest__Output, _ember_v1_IntResponse__Output>
+  Bitop: MethodDefinition<_ember_v1_BitopRequest, _ember_v1_IntResponse, _ember_v1_BitopRequest__Output, _ember_v1_IntResponse__Output>
+  Bitpos: MethodDefinition<_ember_v1_BitposRequest, _ember_v1_IntResponse, _ember_v1_BitposRequest__Output, _ember_v1_IntResponse__Output>
   Copy: MethodDefinition<_ember_v1_CopyRequest, _ember_v1_BoolResponse, _ember_v1_CopyRequest__Output, _ember_v1_BoolResponse__Output>
   DbSize: MethodDefinition<_ember_v1_DbSizeRequest, _ember_v1_IntResponse, _ember_v1_DbSizeRequest__Output, _ember_v1_IntResponse__Output>
   Decr: MethodDefinition<_ember_v1_DecrRequest, _ember_v1_IntResponse, _ember_v1_DecrRequest__Output, _ember_v1_IntResponse__Output>
@@ -161,11 +183,15 @@ export interface EmberCacheDefinition {
   Echo: MethodDefinition<_ember_v1_EchoRequest, _ember_v1_EchoResponse, _ember_v1_EchoRequest__Output, _ember_v1_EchoResponse__Output>
   Exists: MethodDefinition<_ember_v1_ExistsRequest, _ember_v1_IntResponse, _ember_v1_ExistsRequest__Output, _ember_v1_IntResponse__Output>
   Expire: MethodDefinition<_ember_v1_ExpireRequest, _ember_v1_BoolResponse, _ember_v1_ExpireRequest__Output, _ember_v1_BoolResponse__Output>
+  Expireat: MethodDefinition<_ember_v1_ExpireatRequest, _ember_v1_BoolResponse, _ember_v1_ExpireatRequest__Output, _ember_v1_BoolResponse__Output>
+  Expiretime: MethodDefinition<_ember_v1_ExpiretimeRequest, _ember_v1_IntResponse, _ember_v1_ExpiretimeRequest__Output, _ember_v1_IntResponse__Output>
   FlushDb: MethodDefinition<_ember_v1_FlushDbRequest, _ember_v1_StatusResponse, _ember_v1_FlushDbRequest__Output, _ember_v1_StatusResponse__Output>
   Get: MethodDefinition<_ember_v1_GetRequest, _ember_v1_GetResponse, _ember_v1_GetRequest__Output, _ember_v1_GetResponse__Output>
   GetDel: MethodDefinition<_ember_v1_GetDelRequest, _ember_v1_GetResponse, _ember_v1_GetDelRequest__Output, _ember_v1_GetResponse__Output>
   GetEx: MethodDefinition<_ember_v1_GetExRequest, _ember_v1_GetResponse, _ember_v1_GetExRequest__Output, _ember_v1_GetResponse__Output>
   GetRange: MethodDefinition<_ember_v1_GetRangeRequest, _ember_v1_GetResponse, _ember_v1_GetRangeRequest__Output, _ember_v1_GetResponse__Output>
+  Getbit: MethodDefinition<_ember_v1_GetbitRequest, _ember_v1_IntResponse, _ember_v1_GetbitRequest__Output, _ember_v1_IntResponse__Output>
+  Getset: MethodDefinition<_ember_v1_GetsetRequest, _ember_v1_GetResponse, _ember_v1_GetsetRequest__Output, _ember_v1_GetResponse__Output>
   HDel: MethodDefinition<_ember_v1_HDelRequest, _ember_v1_IntResponse, _ember_v1_HDelRequest__Output, _ember_v1_IntResponse__Output>
   HExists: MethodDefinition<_ember_v1_HExistsRequest, _ember_v1_BoolResponse, _ember_v1_HExistsRequest__Output, _ember_v1_BoolResponse__Output>
   HGet: MethodDefinition<_ember_v1_HGetRequest, _ember_v1_GetResponse, _ember_v1_HGetRequest__Output, _ember_v1_GetResponse__Output>
@@ -177,6 +203,7 @@ export interface EmberCacheDefinition {
   HScan: MethodDefinition<_ember_v1_HScanRequest, _ember_v1_HScanResponse, _ember_v1_HScanRequest__Output, _ember_v1_HScanResponse__Output>
   HSet: MethodDefinition<_ember_v1_HSetRequest, _ember_v1_IntResponse, _ember_v1_HSetRequest__Output, _ember_v1_IntResponse__Output>
   HVals: MethodDefinition<_ember_v1_HValsRequest, _ember_v1_ArrayResponse, _ember_v1_HValsRequest__Output, _ember_v1_ArrayResponse__Output>
+  Hrandfield: MethodDefinition<_ember_v1_HrandfieldRequest, _ember_v1_ArrayResponse, _ember_v1_HrandfieldRequest__Output, _ember_v1_ArrayResponse__Output>
   Incr: MethodDefinition<_ember_v1_IncrRequest, _ember_v1_IntResponse, _ember_v1_IncrRequest__Output, _ember_v1_IntResponse__Output>
   IncrBy: MethodDefinition<_ember_v1_IncrByRequest, _ember_v1_IntResponse, _ember_v1_IncrByRequest__Output, _ember_v1_IntResponse__Output>
   IncrByFloat: MethodDefinition<_ember_v1_IncrByFloatRequest, _ember_v1_FloatResponse, _ember_v1_IncrByFloatRequest__Output, _ember_v1_FloatResponse__Output>
@@ -194,11 +221,15 @@ export interface EmberCacheDefinition {
   LSet: MethodDefinition<_ember_v1_LSetRequest, _ember_v1_StatusResponse, _ember_v1_LSetRequest__Output, _ember_v1_StatusResponse__Output>
   LTrim: MethodDefinition<_ember_v1_LTrimRequest, _ember_v1_StatusResponse, _ember_v1_LTrimRequest__Output, _ember_v1_StatusResponse__Output>
   LastSave: MethodDefinition<_ember_v1_LastSaveRequest, _ember_v1_IntResponse, _ember_v1_LastSaveRequest__Output, _ember_v1_IntResponse__Output>
+  Lmpop: MethodDefinition<_ember_v1_LmpopRequest, _ember_v1_LmpopResponse, _ember_v1_LmpopRequest__Output, _ember_v1_LmpopResponse__Output>
   MGet: MethodDefinition<_ember_v1_MGetRequest, _ember_v1_MGetResponse, _ember_v1_MGetRequest__Output, _ember_v1_MGetResponse__Output>
   MSet: MethodDefinition<_ember_v1_MSetRequest, _ember_v1_MSetResponse, _ember_v1_MSetRequest__Output, _ember_v1_MSetResponse__Output>
+  Msetnx: MethodDefinition<_ember_v1_MsetnxRequest, _ember_v1_BoolResponse, _ember_v1_MsetnxRequest__Output, _ember_v1_BoolResponse__Output>
   PExpire: MethodDefinition<_ember_v1_PExpireRequest, _ember_v1_BoolResponse, _ember_v1_PExpireRequest__Output, _ember_v1_BoolResponse__Output>
   PTtl: MethodDefinition<_ember_v1_PTtlRequest, _ember_v1_TtlResponse, _ember_v1_PTtlRequest__Output, _ember_v1_TtlResponse__Output>
   Persist: MethodDefinition<_ember_v1_PersistRequest, _ember_v1_BoolResponse, _ember_v1_PersistRequest__Output, _ember_v1_BoolResponse__Output>
+  Pexpireat: MethodDefinition<_ember_v1_PexpireatRequest, _ember_v1_BoolResponse, _ember_v1_PexpireatRequest__Output, _ember_v1_BoolResponse__Output>
+  Pexpiretime: MethodDefinition<_ember_v1_PexpiretimeRequest, _ember_v1_IntResponse, _ember_v1_PexpiretimeRequest__Output, _ember_v1_IntResponse__Output>
   Ping: MethodDefinition<_ember_v1_PingRequest, _ember_v1_PingResponse, _ember_v1_PingRequest__Output, _ember_v1_PingResponse__Output>
   Pipeline: MethodDefinition<_ember_v1_PipelineRequest, _ember_v1_PipelineResponse, _ember_v1_PipelineRequest__Output, _ember_v1_PipelineResponse__Output>
   PubSubChannels: MethodDefinition<_ember_v1_PubSubChannelsRequest, _ember_v1_KeysResponse, _ember_v1_PubSubChannelsRequest__Output, _ember_v1_KeysResponse__Output>
@@ -227,9 +258,12 @@ export interface EmberCacheDefinition {
   Scan: MethodDefinition<_ember_v1_ScanRequest, _ember_v1_ScanResponse, _ember_v1_ScanRequest__Output, _ember_v1_ScanResponse__Output>
   Set: MethodDefinition<_ember_v1_SetRequest, _ember_v1_SetResponse, _ember_v1_SetRequest__Output, _ember_v1_SetResponse__Output>
   SetRange: MethodDefinition<_ember_v1_SetRangeRequest, _ember_v1_IntResponse, _ember_v1_SetRangeRequest__Output, _ember_v1_IntResponse__Output>
+  Setbit: MethodDefinition<_ember_v1_SetbitRequest, _ember_v1_IntResponse, _ember_v1_SetbitRequest__Output, _ember_v1_IntResponse__Output>
+  Sintercard: MethodDefinition<_ember_v1_SintercardRequest, _ember_v1_IntResponse, _ember_v1_SintercardRequest__Output, _ember_v1_IntResponse__Output>
   SlowLogGet: MethodDefinition<_ember_v1_SlowLogGetRequest, _ember_v1_SlowLogGetResponse, _ember_v1_SlowLogGetRequest__Output, _ember_v1_SlowLogGetResponse__Output>
   SlowLogLen: MethodDefinition<_ember_v1_SlowLogLenRequest, _ember_v1_IntResponse, _ember_v1_SlowLogLenRequest__Output, _ember_v1_IntResponse__Output>
   SlowLogReset: MethodDefinition<_ember_v1_SlowLogResetRequest, _ember_v1_StatusResponse, _ember_v1_SlowLogResetRequest__Output, _ember_v1_StatusResponse__Output>
+  Smove: MethodDefinition<_ember_v1_SmoveRequest, _ember_v1_BoolResponse, _ember_v1_SmoveRequest__Output, _ember_v1_BoolResponse__Output>
   Strlen: MethodDefinition<_ember_v1_StrlenRequest, _ember_v1_IntResponse, _ember_v1_StrlenRequest__Output, _ember_v1_IntResponse__Output>
   Subscribe: MethodDefinition<_ember_v1_SubscribeRequest, _ember_v1_SubscribeEvent, _ember_v1_SubscribeRequest__Output, _ember_v1_SubscribeEvent__Output>
   Time: MethodDefinition<_ember_v1_TimeRequest, _ember_v1_TimeResponse, _ember_v1_TimeRequest__Output, _ember_v1_TimeResponse__Output>
@@ -263,4 +297,6 @@ export interface EmberCacheDefinition {
   ZScan: MethodDefinition<_ember_v1_ZScanRequest, _ember_v1_ZScanResponse, _ember_v1_ZScanRequest__Output, _ember_v1_ZScanResponse__Output>
   ZScore: MethodDefinition<_ember_v1_ZScoreRequest, _ember_v1_OptionalFloatResponse, _ember_v1_ZScoreRequest__Output, _ember_v1_OptionalFloatResponse__Output>
   ZUnion: MethodDefinition<_ember_v1_ZUnionRequest, _ember_v1_ZRangeResponse, _ember_v1_ZUnionRequest__Output, _ember_v1_ZRangeResponse__Output>
+  Zmpop: MethodDefinition<_ember_v1_ZmpopRequest, _ember_v1_ZmpopResponse, _ember_v1_ZmpopRequest__Output, _ember_v1_ZmpopResponse__Output>
+  Zrandmember: MethodDefinition<_ember_v1_ZrandmemberRequest, _ember_v1_ArrayResponse, _ember_v1_ZrandmemberRequest__Output, _ember_v1_ArrayResponse__Output>
 }

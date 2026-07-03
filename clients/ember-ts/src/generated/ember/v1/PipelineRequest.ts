@@ -110,6 +110,23 @@ import type { ZScanRequest as _ember_v1_ZScanRequest, ZScanRequest__Output as _e
 import type { SScanRequest as _ember_v1_SScanRequest, SScanRequest__Output as _ember_v1_SScanRequest__Output } from '../../ember/v1/SScanRequest';
 import type { TimeRequest as _ember_v1_TimeRequest, TimeRequest__Output as _ember_v1_TimeRequest__Output } from '../../ember/v1/TimeRequest';
 import type { LastSaveRequest as _ember_v1_LastSaveRequest, LastSaveRequest__Output as _ember_v1_LastSaveRequest__Output } from '../../ember/v1/LastSaveRequest';
+import type { ExpiretimeRequest as _ember_v1_ExpiretimeRequest, ExpiretimeRequest__Output as _ember_v1_ExpiretimeRequest__Output } from '../../ember/v1/ExpiretimeRequest';
+import type { PexpiretimeRequest as _ember_v1_PexpiretimeRequest, PexpiretimeRequest__Output as _ember_v1_PexpiretimeRequest__Output } from '../../ember/v1/PexpiretimeRequest';
+import type { ExpireatRequest as _ember_v1_ExpireatRequest, ExpireatRequest__Output as _ember_v1_ExpireatRequest__Output } from '../../ember/v1/ExpireatRequest';
+import type { PexpireatRequest as _ember_v1_PexpireatRequest, PexpireatRequest__Output as _ember_v1_PexpireatRequest__Output } from '../../ember/v1/PexpireatRequest';
+import type { GetsetRequest as _ember_v1_GetsetRequest, GetsetRequest__Output as _ember_v1_GetsetRequest__Output } from '../../ember/v1/GetsetRequest';
+import type { MsetnxRequest as _ember_v1_MsetnxRequest, MsetnxRequest__Output as _ember_v1_MsetnxRequest__Output } from '../../ember/v1/MsetnxRequest';
+import type { GetbitRequest as _ember_v1_GetbitRequest, GetbitRequest__Output as _ember_v1_GetbitRequest__Output } from '../../ember/v1/GetbitRequest';
+import type { SetbitRequest as _ember_v1_SetbitRequest, SetbitRequest__Output as _ember_v1_SetbitRequest__Output } from '../../ember/v1/SetbitRequest';
+import type { BitcountRequest as _ember_v1_BitcountRequest, BitcountRequest__Output as _ember_v1_BitcountRequest__Output } from '../../ember/v1/BitcountRequest';
+import type { BitposRequest as _ember_v1_BitposRequest, BitposRequest__Output as _ember_v1_BitposRequest__Output } from '../../ember/v1/BitposRequest';
+import type { BitopRequest as _ember_v1_BitopRequest, BitopRequest__Output as _ember_v1_BitopRequest__Output } from '../../ember/v1/BitopRequest';
+import type { SmoveRequest as _ember_v1_SmoveRequest, SmoveRequest__Output as _ember_v1_SmoveRequest__Output } from '../../ember/v1/SmoveRequest';
+import type { SintercardRequest as _ember_v1_SintercardRequest, SintercardRequest__Output as _ember_v1_SintercardRequest__Output } from '../../ember/v1/SintercardRequest';
+import type { LmpopRequest as _ember_v1_LmpopRequest, LmpopRequest__Output as _ember_v1_LmpopRequest__Output } from '../../ember/v1/LmpopRequest';
+import type { ZmpopRequest as _ember_v1_ZmpopRequest, ZmpopRequest__Output as _ember_v1_ZmpopRequest__Output } from '../../ember/v1/ZmpopRequest';
+import type { HrandfieldRequest as _ember_v1_HrandfieldRequest, HrandfieldRequest__Output as _ember_v1_HrandfieldRequest__Output } from '../../ember/v1/HrandfieldRequest';
+import type { ZrandmemberRequest as _ember_v1_ZrandmemberRequest, ZrandmemberRequest__Output as _ember_v1_ZrandmemberRequest__Output } from '../../ember/v1/ZrandmemberRequest';
 import type { Long } from '@grpc/proto-loader';
 
 export interface PipelineRequest {
@@ -224,7 +241,24 @@ export interface PipelineRequest {
   'sscan'?: (_ember_v1_SScanRequest | null);
   'time'?: (_ember_v1_TimeRequest | null);
   'lastSave'?: (_ember_v1_LastSaveRequest | null);
-  'command'?: "get"|"set"|"del"|"exists"|"incr"|"incrBy"|"decrBy"|"incrByFloat"|"append"|"strlen"|"expire"|"pexpire"|"persist"|"ttl"|"pttl"|"type"|"lpush"|"rpush"|"lpop"|"rpop"|"lrange"|"llen"|"hset"|"hget"|"hgetall"|"hdel"|"hexists"|"hlen"|"hincrBy"|"hkeys"|"hvals"|"hmget"|"sadd"|"srem"|"smembers"|"sismember"|"scard"|"zadd"|"zrem"|"zscore"|"zrank"|"zcard"|"zrange"|"vadd"|"vsim"|"vrem"|"vget"|"vcard"|"vdim"|"vinfo"|"ping"|"flushdb"|"dbsize"|"mget"|"mset"|"keys"|"rename"|"scan"|"echo"|"decr"|"unlink"|"bgsave"|"bgrewriteaof"|"slowlogGet"|"slowlogLen"|"slowlogReset"|"publish"|"pubsubChannels"|"pubsubNumsub"|"pubsubNumpat"|"vaddBatch"|"getDel"|"getEx"|"getRange"|"setRange"|"copy"|"randomKey"|"touch"|"lindex"|"lset"|"ltrim"|"linsert"|"lrem"|"lpos"|"lmove"|"sunion"|"sinter"|"sdiff"|"sunionStore"|"sinterStore"|"sdiffStore"|"srandMember"|"spop"|"smismember"|"hscan"|"zrevRank"|"zrevRange"|"zcount"|"zincrby"|"zrangeByScore"|"zrevRangeByScore"|"zpopmin"|"zpopmax"|"zdiff"|"zinter"|"zunion"|"zscan"|"sscan"|"time"|"lastSave";
+  'expiretime'?: (_ember_v1_ExpiretimeRequest | null);
+  'pexpiretime'?: (_ember_v1_PexpiretimeRequest | null);
+  'expireat'?: (_ember_v1_ExpireatRequest | null);
+  'pexpireat'?: (_ember_v1_PexpireatRequest | null);
+  'getset'?: (_ember_v1_GetsetRequest | null);
+  'msetnx'?: (_ember_v1_MsetnxRequest | null);
+  'getbit'?: (_ember_v1_GetbitRequest | null);
+  'setbit'?: (_ember_v1_SetbitRequest | null);
+  'bitcount'?: (_ember_v1_BitcountRequest | null);
+  'bitpos'?: (_ember_v1_BitposRequest | null);
+  'bitop'?: (_ember_v1_BitopRequest | null);
+  'smove'?: (_ember_v1_SmoveRequest | null);
+  'sintercard'?: (_ember_v1_SintercardRequest | null);
+  'lmpop'?: (_ember_v1_LmpopRequest | null);
+  'zmpop'?: (_ember_v1_ZmpopRequest | null);
+  'hrandfield'?: (_ember_v1_HrandfieldRequest | null);
+  'zrandmember'?: (_ember_v1_ZrandmemberRequest | null);
+  'command'?: "get"|"set"|"del"|"exists"|"incr"|"incrBy"|"decrBy"|"incrByFloat"|"append"|"strlen"|"expire"|"pexpire"|"persist"|"ttl"|"pttl"|"type"|"lpush"|"rpush"|"lpop"|"rpop"|"lrange"|"llen"|"hset"|"hget"|"hgetall"|"hdel"|"hexists"|"hlen"|"hincrBy"|"hkeys"|"hvals"|"hmget"|"sadd"|"srem"|"smembers"|"sismember"|"scard"|"zadd"|"zrem"|"zscore"|"zrank"|"zcard"|"zrange"|"vadd"|"vsim"|"vrem"|"vget"|"vcard"|"vdim"|"vinfo"|"ping"|"flushdb"|"dbsize"|"mget"|"mset"|"keys"|"rename"|"scan"|"echo"|"decr"|"unlink"|"bgsave"|"bgrewriteaof"|"slowlogGet"|"slowlogLen"|"slowlogReset"|"publish"|"pubsubChannels"|"pubsubNumsub"|"pubsubNumpat"|"vaddBatch"|"getDel"|"getEx"|"getRange"|"setRange"|"copy"|"randomKey"|"touch"|"lindex"|"lset"|"ltrim"|"linsert"|"lrem"|"lpos"|"lmove"|"sunion"|"sinter"|"sdiff"|"sunionStore"|"sinterStore"|"sdiffStore"|"srandMember"|"spop"|"smismember"|"hscan"|"zrevRank"|"zrevRange"|"zcount"|"zincrby"|"zrangeByScore"|"zrevRangeByScore"|"zpopmin"|"zpopmax"|"zdiff"|"zinter"|"zunion"|"zscan"|"sscan"|"time"|"lastSave"|"expiretime"|"pexpiretime"|"expireat"|"pexpireat"|"getset"|"msetnx"|"getbit"|"setbit"|"bitcount"|"bitpos"|"bitop"|"smove"|"sintercard"|"lmpop"|"zmpop"|"hrandfield"|"zrandmember";
 }
 
 export interface PipelineRequest__Output {
@@ -339,4 +373,21 @@ export interface PipelineRequest__Output {
   'sscan'?: (_ember_v1_SScanRequest__Output);
   'time'?: (_ember_v1_TimeRequest__Output);
   'lastSave'?: (_ember_v1_LastSaveRequest__Output);
+  'expiretime'?: (_ember_v1_ExpiretimeRequest__Output);
+  'pexpiretime'?: (_ember_v1_PexpiretimeRequest__Output);
+  'expireat'?: (_ember_v1_ExpireatRequest__Output);
+  'pexpireat'?: (_ember_v1_PexpireatRequest__Output);
+  'getset'?: (_ember_v1_GetsetRequest__Output);
+  'msetnx'?: (_ember_v1_MsetnxRequest__Output);
+  'getbit'?: (_ember_v1_GetbitRequest__Output);
+  'setbit'?: (_ember_v1_SetbitRequest__Output);
+  'bitcount'?: (_ember_v1_BitcountRequest__Output);
+  'bitpos'?: (_ember_v1_BitposRequest__Output);
+  'bitop'?: (_ember_v1_BitopRequest__Output);
+  'smove'?: (_ember_v1_SmoveRequest__Output);
+  'sintercard'?: (_ember_v1_SintercardRequest__Output);
+  'lmpop'?: (_ember_v1_LmpopRequest__Output);
+  'zmpop'?: (_ember_v1_ZmpopRequest__Output);
+  'hrandfield'?: (_ember_v1_HrandfieldRequest__Output);
+  'zrandmember'?: (_ember_v1_ZrandmemberRequest__Output);
 }
