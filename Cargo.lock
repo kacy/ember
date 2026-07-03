@@ -854,6 +854,7 @@ version = "0.4.9"
 dependencies = [
  "bytes",
  "crc32fast",
+ "ember-protocol",
  "hmac",
  "openraft",
  "postcard",
@@ -979,7 +980,6 @@ dependencies = [
  "compact_str",
  "criterion",
  "dashmap",
- "ember-cluster",
  "ember-persistence",
  "ember-protocol",
  "metrics",

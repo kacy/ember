@@ -171,6 +171,8 @@ ember also has an optional concurrent path that bypasses shard channels for basi
 
 this mode is faster for that narrow case, but it is not the general execution model. the sharded engine is still the main design and the one the rest of the system is built around.
 
+**deprecated:** concurrent mode is deprecated and will be removed in a future release. it only covers string commands, is mutually exclusive with cluster mode, and maintains a parallel connection handler. the server logs a warning on startup when `--concurrent` is set.
+
 ## persistence and recovery
 
 **main code:** `crates/ember-persistence/src/aof.rs`, `crates/ember-persistence/src/snapshot.rs`, `crates/ember-persistence/src/recovery.rs`

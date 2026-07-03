@@ -1084,7 +1084,7 @@ impl Keyspace {
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
-            .filter(|(key, _)| ember_cluster::key_slot(key.as_bytes()) == slot)
+            .filter(|(key, _)| ember_protocol::slots::key_slot(key.as_bytes()) == slot)
             .count()
     }
 
@@ -1095,7 +1095,7 @@ impl Keyspace {
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
-            .filter(|(key, _)| ember_cluster::key_slot(key.as_bytes()) == slot)
+            .filter(|(key, _)| ember_protocol::slots::key_slot(key.as_bytes()) == slot)
             .take(count)
             .map(|(key, _)| String::from(&**key))
             .collect()
@@ -2543,7 +2543,7 @@ mod tests {
         ks.set("b".into(), Bytes::from("2"), None, false, false);
         ks.set("c".into(), Bytes::from("3"), None, false, false);
 
-        let slot_a = ember_cluster::key_slot(b"a");
+        let slot_a = ember_protocol::slots::key_slot(b"a");
         let count = ks.count_keys_in_slot(slot_a);
         // at minimum, "a" should be in its own slot
         assert!(count >= 1);
@@ -2552,7 +2552,7 @@ mod tests {
     #[test]
     fn count_keys_in_slot_skips_expired() {
         let mut ks = Keyspace::new();
-        let slot = ember_cluster::key_slot(b"temp");
+        let slot = ember_protocol::slots::key_slot(b"temp");
         ks.set(
             "temp".into(),
             Bytes::from("gone"),
@@ -2571,7 +2571,7 @@ mod tests {
         ks.set("x".into(), Bytes::from("1"), None, false, false);
         ks.set("y".into(), Bytes::from("2"), None, false, false);
 
-        let slot_x = ember_cluster::key_slot(b"x");
+        let slot_x = ember_protocol::slots::key_slot(b"x");
         let keys = ks.get_keys_in_slot(slot_x, 100);
         assert!(keys.contains(&"x".to_string()));
     }
