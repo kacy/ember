@@ -2,8 +2,8 @@ apiVersion: v2
 name: ember
 description: a low-latency, memory-efficient distributed cache
 type: application
-version: 0.1.1
-appVersion: "latest"
+version: 0.1.2
+appVersion: "0.4.9"
 keywords:
   - cache
   - redis

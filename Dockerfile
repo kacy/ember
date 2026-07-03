@@ -42,6 +42,6 @@ LABEL org.opencontainers.image.title="ember" \
       org.opencontainers.image.source="https://github.com/kacy/ember"
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost:9100/health || exit 1
+  CMD ["ember-server", "--healthcheck"]
 
 ENTRYPOINT ["ember-server"]

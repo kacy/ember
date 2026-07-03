@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ember
+  repository: ghcr.io/kacy/ember
   tag: latest
   pullPolicy: IfNotPresent
 
@@ -17,7 +17,13 @@ ember:
   appendonly: false
   appendfsync: everysec
   concurrent: false
+  # auth password. when set, the chart stores it in a Secret and mounts it
+  # into the pod as a file (EMBER_REQUIREPASS_FILE) — it is never exposed as
+  # a plaintext env var.
   requirepass: ""
+  # use an existing Secret instead of creating one from requirepass above.
+  # the Secret must contain a key named "requirepass".
+  existingSecret: ""
 
 resources: {}
   # limits:
