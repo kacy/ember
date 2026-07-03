@@ -997,7 +997,9 @@ async fn run_shard(
 
     // flush AOF on clean shutdown
     if let Some(ref mut writer) = aof_writer {
-        let _ = writer.sync();
+        if let Err(e) = writer.sync() {
+            error!(shard_id, "final aof sync failed on shutdown, writes since the last successful sync may be lost: {e}");
+        }
     }
 }
 
