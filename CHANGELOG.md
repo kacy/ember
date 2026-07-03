@@ -1,5 +1,37 @@
 # changelog
 
+## 0.4.9 (2026-02-27)
+
+### features
+- bitmap commands: `GETBIT`, `SETBIT`, `BITCOUNT`, `BITPOS`, `BITOP` (#316, #330)
+- `LMPOP` / `ZMPOP` multi-key pops (#317)
+- `EXPIREAT`, `PEXPIREAT`, `EXPIRETIME`, `PEXPIRETIME`, `GETSET`, `MSETNX`, `SMOVE`, `SINTERCARD`, count args for `LPOP`/`RPOP` (#315, #318)
+- `HRANDFIELD` and `ZRANDMEMBER` (#319)
+- Redis 6.2+ commands: `LMOVE`, `GETDEL`, `GETEX`, `ZDIFF`, `ZINTER`, `ZUNION` (#299)
+- `COMMAND`, `HINCRBYFLOAT`, `ZDIFFSTORE`/`ZINTERSTORE`/`ZUNIONSTORE`, `FLUSHALL`, `MEMORY USAGE`, `WAIT` (#312, #324, #331)
+- keyspace notifications (`__keyevent@0__:expired` and write events) (#313)
+- automatic snapshot scheduling (#300)
+- `CONFIG SET` live-apply for maxmemory and maxmemory-policy (#312)
+- ember-client: typed async RESP3 API with pipelining; CLI now reuses it (#297, #302, #303)
+- ember-ts client with full API parity; npm package renamed to `emberdb` with OIDC trusted publishing (#308, #309, #332)
+- grpc: 39 new rpcs closing the RESP/gRPC api gap; 17 new commands surfaced across cli, grpc, and clients (#306, #320)
+- CLI watch mode and batch mode (#298)
+
+### fixes
+- BITOP cross-shard correctness (#330)
+- cluster reports `cluster_state:ok` on bootstrap (#339)
+- eliminated production panics in client decoder and server startup (#322)
+- auth failure metrics, command memory budget, migration progress reporting (#323)
+- replication send-failure counter; go client subscribe error propagation (#325)
+- raft log persistence switched from bincode to postcard; dropped atomic-polyfill (#296, #329)
+- prometheus counters, crash recovery hardening, TLS tests (#314)
+- go client: regenerated protobuf stubs for the 17 new rpcs (#337)
+
+### docs
+- command count updated to 190+; compatibility guide refreshed (#335)
+
+---
+
 ## 0.4.8 (2026-02-25)
 
 ### performance
@@ -13,7 +45,7 @@
 - rate-limited ENOSPC handling for AOF writes (#249)
 
 ### docs
-- removed concurrent mode references — sharded is now the only execution mode (#275, #291)
+- pruned concurrent mode from the docs (#275, #291) — correction: the mode itself was not removed and is still available behind `--concurrent`; sharded remains the default execution mode
 - refreshed all benchmark numbers from 2026-02-25 GCP run (#288-290)
 - added documentation section, code of conduct, performance tuning guide, production checklist (#270, #281-282)
 

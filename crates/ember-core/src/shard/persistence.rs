@@ -429,8 +429,9 @@ mod tests {
             // drop handle to shut down shard
         }
 
-        // give it a moment to flush
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // the final AOF sync runs in the shard task after the handle drops;
+        // wait generously so a loaded runner can't observe a partial flush
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         // start a new shard with the same config — should recover
         {

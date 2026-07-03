@@ -343,7 +343,9 @@ pub(in crate::connection) async fn msetnx(pairs: Vec<(String, Bytes)>, cx: &Exec
     // but matches Redis cluster semantics where MSETNX pairs must
     // share a hash slot. For single-node mode it is correct.
     if pairs.is_empty() {
-        return Frame::Error("ERR wrong number of arguments for 'MSETNX'".into());
+        // unreachable in practice (the parser enforces arity); message kept
+        // in the canonical WrongArity format for consistency
+        return Frame::Error("ERR wrong number of arguments for 'MSETNX' command".into());
     }
 
     let keys: Vec<String> = pairs.iter().map(|(k, _)| k.clone()).collect();
