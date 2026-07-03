@@ -27,9 +27,9 @@ jobs:
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --workspace --features protobuf,grpc -- -D warnings
+        run: cargo clippy --workspace --features protobuf,grpc,vector -- -D warnings
       - name: check
-        run: cargo check --workspace --features protobuf,grpc
+        run: cargo check --workspace --features protobuf,grpc,vector
 
   test:
     name: test
