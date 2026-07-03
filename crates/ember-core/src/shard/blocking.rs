@@ -180,12 +180,10 @@ mod tests {
             })
             .await;
 
-        // give the shard a moment to process
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        let result = rx.try_recv();
-        assert!(result.is_ok());
-        let (key, data) = result.unwrap();
+        // recv with a generous timeout instead of a fixed sleep so a busy
+        // runner can't flake the test
+        let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        let (key, data) = result.expect("timed out waiting for BLPop").unwrap();
         assert_eq!(key, "mylist");
         assert_eq!(data, Bytes::from("hello"));
     }
@@ -267,8 +265,8 @@ mod tests {
             })
             .await;
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let (key, data) = rx.try_recv().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
+        let (key, data) = result.expect("timed out waiting for BRPop").unwrap();
         assert_eq!(key, "mylist");
         assert_eq!(data, Bytes::from("b"));
     }

@@ -93,6 +93,9 @@ impl SortedSet {
 
     /// Adds or updates a member with ZADD flag semantics.
     pub fn add_with_flags(&mut self, member: &str, score: f64, flags: &ZAddFlags) -> AddResult {
+        // the unwraps below rely on the score map and sorted vec staying in
+        // lockstep; catch any desync early in debug/test builds
+        debug_assert_eq!(self.scores.len(), self.sorted.len());
         let new_score = OrderedFloat(score);
 
         if let Some(&old_score) = self.scores.get(member) {
@@ -137,6 +140,7 @@ impl SortedSet {
 
     /// Removes a member from the sorted set. Returns `true` if it existed.
     pub fn remove(&mut self, member: &str) -> bool {
+        debug_assert_eq!(self.scores.len(), self.sorted.len());
         if let Some((name, score)) = self.scores.remove_entry(member) {
             let idx = self.search_idx(score, &name).unwrap();
             self.sorted.remove(idx);
