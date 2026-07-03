@@ -513,3 +513,132 @@ async fn cluster_redirect_followthrough() {
     let val = c_owner.get_bulk(&["GET", "testkey"]).await;
     assert_eq!(val, Some("value".into()));
 }
+
+// -- automatic failover --
+
+/// End-to-end automatic failover: a 3-node cluster where node 0 owns all
+/// slots, node 2 replicates it, and node 1 is a slotless primary whose vote
+/// forms the election quorum. Killing node 0 must promote node 2 and restore
+/// write availability.
+///
+/// Generously timed: failure confirmation + election + promotion involve
+/// gossip rounds, so every step polls under a deadline instead of sleeping
+/// a fixed amount.
+#[tokio::test]
+async fn cluster_automatic_failover_promotes_replica() {
+    use std::time::{Duration, Instant};
+
+    // Fast failure detection so the test converges quickly.
+    let opts = || ServerOptions {
+        cluster_enabled: true,
+        cluster_node_timeout_ms: Some(1500),
+        ..Default::default()
+    };
+    let mut primary = TestServer::start_with(ServerOptions {
+        cluster_bootstrap: true,
+        ..opts()
+    });
+    let voter = TestServer::start_with(opts());
+    let replica = TestServer::start_with(opts());
+
+    let mut c0 = primary.connect().await;
+    let mut c2 = replica.connect().await;
+
+    let primary_id = c0
+        .get_bulk(&["CLUSTER", "MYID"])
+        .await
+        .expect("MYID on primary");
+
+    // form an explicit full mesh. slotless nodes are not announced through
+    // transitive gossip (slot claims are the propagation vehicle), so the
+    // voter and the replica must also MEET each other directly — the
+    // replica needs the voter in its primary count for the election quorum,
+    // and the voter must know the candidate to grant it a vote.
+    let mut cv = voter.connect().await;
+    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &voter.port.to_string()])
+        .await;
+    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+        .await;
+    cv.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+        .await;
+    drop(cv);
+
+    // wait until gossip has delivered the primary's identity to the
+    // replica, then attach it (REPLICATE rejects unknown node ids)
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let resp = c2.cmd(&["CLUSTER", "REPLICATE", &primary_id]).await;
+        match resp {
+            Frame::Simple(_) => break,
+            _ if Instant::now() > deadline => {
+                panic!("replica never learned about the primary: {resp:?}")
+            }
+            _ => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    }
+
+    // wait until gossip has fully converged from the replica's point of
+    // view: it must know all 3 nodes and the primary's ownership of all
+    // 16384 slots. killing the primary earlier leaves the replica without
+    // a slot table to inherit and without the voter as a failure-detection
+    // relay, so no election would ever start.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let resp = c2.cmd(&["CLUSTER", "INFO"]).await;
+        if let Frame::Bulk(ref data) = resp {
+            let text = String::from_utf8_lossy(data);
+            if text.contains("cluster_known_nodes:3")
+                && text.contains("cluster_slots_assigned:16384")
+            {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "gossip never converged on the replica; last CLUSTER INFO: {resp:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // a write accepted by the pre-failover primary; give the replication
+    // stream a moment to deliver it before the crash
+    c0.ok(&["SET", "failover:marker", "survives"]).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+
+    // crash the primary
+    drop(c0);
+    primary.kill();
+
+    // the replica must detect the failure, win the election (the slotless
+    // voter grants the quorum vote), promote itself, and take over all
+    // slots — after which the cluster reports ok and accepts writes again
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let resp = c2.cmd(&["CLUSTER", "INFO"]).await;
+        if let Frame::Bulk(ref data) = resp {
+            let text = String::from_utf8_lossy(data);
+            if text.contains("cluster_state:ok") {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "replica was not promoted within 60s; last CLUSTER INFO: {resp:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // promoted node must accept writes for slots the dead primary owned
+    c2.ok(&["SET", "failover:after", "accepted"]).await;
+    assert_eq!(
+        c2.get_bulk(&["GET", "failover:after"]).await,
+        Some("accepted".into())
+    );
+
+    // the pre-failover write must have been replicated before the crash
+    assert_eq!(
+        c2.get_bulk(&["GET", "failover:marker"]).await,
+        Some("survives".into()),
+        "pre-failover write was lost during promotion"
+    );
+}

@@ -42,10 +42,13 @@ pub struct ServerOptions {
     pub shards: Option<usize>,
     /// Use concurrent (DashMap) mode instead of sharded channels.
     pub concurrent: bool,
-    /// PEM certificate file for the TLS listener (requires tls_key_file).
+    /// PEM certificate file for the TLS listener (requires tls_cert_file).
     pub tls_cert_file: Option<PathBuf>,
     /// PEM private key file for the TLS listener (requires tls_cert_file).
     pub tls_key_file: Option<PathBuf>,
+    /// Failure-detection timeout in ms (--cluster-node-timeout).
+    /// Lower values make failover tests converge faster.
+    pub cluster_node_timeout_ms: Option<u64>,
 }
 
 impl TestServer {
@@ -109,6 +112,10 @@ impl TestServer {
         };
         if opts.cluster_bootstrap {
             cmd.arg("--cluster-bootstrap");
+        }
+        if let Some(timeout_ms) = opts.cluster_node_timeout_ms {
+            cmd.arg("--cluster-node-timeout")
+                .arg(timeout_ms.to_string());
         }
 
         let data_dir = if opts.appendonly || opts.cluster_enabled {
@@ -248,6 +255,13 @@ impl TestServer {
     /// Connects a test client to this server.
     pub async fn connect(&self) -> TestClient {
         TestClient::connect(self.port).await
+    }
+
+    /// Kills the server process immediately (SIGKILL), simulating a crash.
+    /// Used by failover tests; Drop remains a no-op afterwards.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
