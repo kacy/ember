@@ -33,6 +33,8 @@ import type { HScanResponse as _ember_v1_HScanResponse, HScanResponse__Output as
 import type { ZScanResponse as _ember_v1_ZScanResponse, ZScanResponse__Output as _ember_v1_ZScanResponse__Output } from '../../ember/v1/ZScanResponse';
 import type { SScanResponse as _ember_v1_SScanResponse, SScanResponse__Output as _ember_v1_SScanResponse__Output } from '../../ember/v1/SScanResponse';
 import type { TimeResponse as _ember_v1_TimeResponse, TimeResponse__Output as _ember_v1_TimeResponse__Output } from '../../ember/v1/TimeResponse';
+import type { LmpopResponse as _ember_v1_LmpopResponse, LmpopResponse__Output as _ember_v1_LmpopResponse__Output } from '../../ember/v1/LmpopResponse';
+import type { ZmpopResponse as _ember_v1_ZmpopResponse, ZmpopResponse__Output as _ember_v1_ZmpopResponse__Output } from '../../ember/v1/ZmpopResponse';
 import type { Long } from '@grpc/proto-loader';
 
 export interface PipelineResponse {
@@ -70,7 +72,9 @@ export interface PipelineResponse {
   'zscan'?: (_ember_v1_ZScanResponse | null);
   'sscan'?: (_ember_v1_SScanResponse | null);
   'timeResp'?: (_ember_v1_TimeResponse | null);
-  'result'?: "get"|"set"|"del"|"intVal"|"boolVal"|"floatVal"|"status"|"ttl"|"type"|"array"|"hash"|"optionalArray"|"keys"|"scan"|"optionalFloat"|"optionalInt"|"zrange"|"vsim"|"vget"|"vinfo"|"mget"|"mset"|"ping"|"error"|"info"|"echo"|"slowlogGet"|"pubsubNumsub"|"boolArray"|"hscan"|"zscan"|"sscan"|"timeResp";
+  'lmpop'?: (_ember_v1_LmpopResponse | null);
+  'zmpop'?: (_ember_v1_ZmpopResponse | null);
+  'result'?: "get"|"set"|"del"|"intVal"|"boolVal"|"floatVal"|"status"|"ttl"|"type"|"array"|"hash"|"optionalArray"|"keys"|"scan"|"optionalFloat"|"optionalInt"|"zrange"|"vsim"|"vget"|"vinfo"|"mget"|"mset"|"ping"|"error"|"info"|"echo"|"slowlogGet"|"pubsubNumsub"|"boolArray"|"hscan"|"zscan"|"sscan"|"timeResp"|"lmpop"|"zmpop";
 }
 
 export interface PipelineResponse__Output {
@@ -108,4 +112,6 @@ export interface PipelineResponse__Output {
   'zscan'?: (_ember_v1_ZScanResponse__Output);
   'sscan'?: (_ember_v1_SScanResponse__Output);
   'timeResp'?: (_ember_v1_TimeResponse__Output);
+  'lmpop'?: (_ember_v1_LmpopResponse__Output);
+  'zmpop'?: (_ember_v1_ZmpopResponse__Output);
 }

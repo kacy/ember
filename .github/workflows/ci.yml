@@ -102,6 +102,62 @@ jobs:
         working-directory: clients/ember-go
         run: go test ./...
 
+  msrv:
+    name: msrv (1.93)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.93'
+      - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: '28.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: check
+        run: cargo check --workspace --features protobuf,grpc
+
+  python-client:
+    name: python client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: install
+        working-directory: clients/ember-py
+        run: pip install -e ".[dev]"
+      - name: test
+        working-directory: clients/ember-py
+        run: pytest -v
+
+  ts-client:
+    name: ts client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: clients/ember-ts/package-lock.json
+      - name: install
+        working-directory: clients/ember-ts
+        run: npm ci
+      - name: build
+        working-directory: clients/ember-ts
+        run: npm run build
+
+  proto-drift:
+    name: client proto drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check clients against canonical proto
+        run: ./scripts/check-client-drift.sh
+
   security:
     name: security
     runs-on: ubuntu-latest

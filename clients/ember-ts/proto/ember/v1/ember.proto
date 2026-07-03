@@ -174,6 +174,47 @@ service EmberCache {
   rpc Time(TimeRequest) returns (TimeResponse);
   rpc LastSave(LastSaveRequest) returns (IntResponse);
 
+  // --- keys (new) ---
+
+  rpc Expiretime(ExpiretimeRequest)   returns (IntResponse);
+  rpc Pexpiretime(PexpiretimeRequest) returns (IntResponse);
+  rpc Expireat(ExpireatRequest)       returns (BoolResponse);
+  rpc Pexpireat(PexpireatRequest)     returns (BoolResponse);
+
+  // --- strings (new) ---
+
+  rpc Getset(GetsetRequest)           returns (GetResponse);
+  rpc Msetnx(MsetnxRequest)           returns (BoolResponse);
+
+  // --- bitmaps ---
+
+  rpc Getbit(GetbitRequest)           returns (IntResponse);
+  rpc Setbit(SetbitRequest)           returns (IntResponse);
+  rpc Bitcount(BitcountRequest)       returns (IntResponse);
+  rpc Bitpos(BitposRequest)           returns (IntResponse);
+  rpc Bitop(BitopRequest)             returns (IntResponse);
+
+  // --- sets (new) ---
+
+  rpc Smove(SmoveRequest)             returns (BoolResponse);
+  rpc Sintercard(SintercardRequest)   returns (IntResponse);
+
+  // --- lists (new) ---
+
+  rpc Lmpop(LmpopRequest)             returns (LmpopResponse);
+
+  // --- sorted sets (new) ---
+
+  rpc Zmpop(ZmpopRequest)             returns (ZmpopResponse);
+
+  // --- hash (new) ---
+
+  rpc Hrandfield(HrandfieldRequest)   returns (ArrayResponse);
+
+  // --- sorted set random ---
+
+  rpc Zrandmember(ZrandmemberRequest) returns (ArrayResponse);
+
   // --- streaming ---
   // bidirectional streaming for batch operations, matching RESP3 pipelining.
 
@@ -320,6 +361,51 @@ message SetRangeRequest {
   bytes value = 3;
 }
 
+message GetsetRequest {
+  string key = 1;
+  bytes value = 2;
+}
+
+message MsetnxRequest {
+  repeated KeyValue pairs = 1;
+}
+
+message GetbitRequest {
+  string key = 1;
+  uint64 offset = 2;
+}
+
+message SetbitRequest {
+  string key = 1;
+  uint64 offset = 2;
+  uint32 value = 3;
+}
+
+message BitcountRequest {
+  string key = 1;
+  bool has_range = 2;
+  int64 start = 3;
+  int64 end = 4;
+  // "BYTE" or "BIT" (only used when has_range is true)
+  string unit = 5;
+}
+
+message BitposRequest {
+  string key = 1;
+  uint32 bit = 2;
+  bool has_range = 3;
+  int64 start = 4;
+  int64 end = 5;
+  string unit = 6;
+}
+
+message BitopRequest {
+  // "AND", "OR", "XOR", or "NOT"
+  string op = 1;
+  string dest = 2;
+  repeated string keys = 3;
+}
+
 // ---------------------------------------------------------------------------
 // keys
 // ---------------------------------------------------------------------------
@@ -398,6 +484,24 @@ message RandomKeyRequest {}
 
 message TouchRequest {
   repeated string keys = 1;
+}
+
+message ExpiretimeRequest {
+  string key = 1;
+}
+
+message PexpiretimeRequest {
+  string key = 1;
+}
+
+message ExpireatRequest {
+  string key = 1;
+  uint64 timestamp = 2;
+}
+
+message PexpireatRequest {
+  string key = 1;
+  uint64 timestamp_ms = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +588,19 @@ message LMoveRequest {
   bool dst_left = 4;
 }
 
+message LmpopRequest {
+  repeated string keys = 1;
+  // true = LEFT, false = RIGHT
+  bool left = 2;
+  uint32 count = 3;
+}
+
+message LmpopResponse {
+  bool found = 1;
+  string key = 2;
+  repeated bytes elements = 3;
+}
+
 // ---------------------------------------------------------------------------
 // hashes
 // ---------------------------------------------------------------------------
@@ -561,6 +678,13 @@ message HScanResponse {
   repeated FieldValue fields = 2;
 }
 
+message HrandfieldRequest {
+  string key = 1;
+  bool has_count = 2;
+  int32 count = 3;
+  bool with_values = 4;
+}
+
 // ---------------------------------------------------------------------------
 // sets
 // ---------------------------------------------------------------------------
@@ -629,6 +753,18 @@ message SPopRequest {
 message SMisMemberRequest {
   string key = 1;
   repeated string members = 2;
+}
+
+message SmoveRequest {
+  string source = 1;
+  string destination = 2;
+  string member = 3;
+}
+
+message SintercardRequest {
+  repeated string keys = 1;
+  // 0 means no limit
+  uint64 limit = 2;
 }
 
 message SScanRequest {
@@ -768,6 +904,26 @@ message ZInterRequest {
 message ZUnionRequest {
   repeated string keys = 1;
   bool with_scores = 2;
+}
+
+message ZmpopRequest {
+  repeated string keys = 1;
+  // true = MIN, false = MAX
+  bool min = 2;
+  uint32 count = 3;
+}
+
+message ZmpopResponse {
+  bool found = 1;
+  string key = 2;
+  repeated ScoreMember members = 3;
+}
+
+message ZrandmemberRequest {
+  string key = 1;
+  bool has_count = 2;
+  int32 count = 3;
+  bool with_scores = 4;
 }
 
 message ZScanRequest {
@@ -1124,6 +1280,39 @@ message PipelineRequest {
     // extended server
     TimeRequest time = 110;
     LastSaveRequest last_save = 111;
+
+    // new keys
+    ExpiretimeRequest expiretime = 112;
+    PexpiretimeRequest pexpiretime = 113;
+    ExpireatRequest expireat = 114;
+    PexpireatRequest pexpireat = 115;
+
+    // new strings
+    GetsetRequest getset = 116;
+    MsetnxRequest msetnx = 117;
+
+    // bitmaps
+    GetbitRequest getbit = 118;
+    SetbitRequest setbit = 119;
+    BitcountRequest bitcount = 120;
+    BitposRequest bitpos = 121;
+    BitopRequest bitop = 122;
+
+    // new sets
+    SmoveRequest smove = 123;
+    SintercardRequest sintercard = 124;
+
+    // new lists
+    LmpopRequest lmpop = 125;
+
+    // new sorted sets
+    ZmpopRequest zmpop = 126;
+
+    // new hash
+    HrandfieldRequest hrandfield = 127;
+
+    // sorted set random
+    ZrandmemberRequest zrandmember = 128;
   }
 }
 
@@ -1163,6 +1352,8 @@ message PipelineResponse {
     ZScanResponse zscan = 32;
     SScanResponse sscan = 33;
     TimeResponse time_resp = 34;
+    LmpopResponse lmpop = 35;
+    ZmpopResponse zmpop = 36;
   }
 }
 
