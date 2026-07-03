@@ -12,14 +12,15 @@ use bytes::Bytes;
 use ember_core::{ShardRequest, ShardResponse};
 
 #[cfg(feature = "vector")]
+#[allow(clippy::too_many_arguments)]
 pub(in crate::connection) async fn vadd(
     key: String,
     element: String,
     vector: Vec<f32>,
-    metric: ember_core::VectorMetric,
-    quantization: ember_core::VectorQuantization,
-    connectivity: Option<usize>,
-    expansion_add: Option<usize>,
+    metric: u8,
+    quantization: u8,
+    connectivity: u32,
+    expansion_add: u32,
     cx: &ExecCtx<'_>,
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
@@ -43,14 +44,15 @@ pub(in crate::connection) async fn vadd(
 }
 
 #[cfg(feature = "vector")]
+#[allow(clippy::too_many_arguments)]
 pub(in crate::connection) async fn vaddbatch(
     key: String,
     entries: Vec<(String, Vec<f32>)>,
     dim: usize,
-    metric: ember_core::VectorMetric,
-    quantization: ember_core::VectorQuantization,
-    connectivity: Option<usize>,
-    expansion_add: Option<usize>,
+    metric: u8,
+    quantization: u8,
+    connectivity: u32,
+    expansion_add: u32,
     cx: &ExecCtx<'_>,
 ) -> Frame {
     let idx = cx.engine.shard_for_key(&key);
@@ -78,9 +80,9 @@ pub(in crate::connection) async fn vaddbatch(
 #[cfg(feature = "vector")]
 pub(in crate::connection) async fn vsim(
     key: String,
-    query: ember_core::VectorQuery,
+    query: Vec<f32>,
     count: usize,
-    ef_search: Option<usize>,
+    ef_search: usize,
     with_scores: bool,
     cx: &ExecCtx<'_>,
 ) -> Frame {
