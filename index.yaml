@@ -2,6 +2,22 @@ apiVersion: v1
 entries:
   ember:
   - apiVersion: v2
+    appVersion: 0.4.10
+    created: "2026-07-04T13:24:49.227428809Z"
+    description: a low-latency, memory-efficient distributed cache
+    digest: ccb83699312e90e4410a75b3b8f5e942e4c95ecd79c5f12472a065b24d4d0650
+    keywords:
+    - cache
+    - redis
+    - distributed
+    - rust
+    - kv
+    name: ember
+    type: application
+    urls:
+    - https://github.com/kacy/ember/releases/download/ember-0.1.3/ember-0.1.3.tgz
+    version: 0.1.3
+  - apiVersion: v2
     appVersion: 0.4.9
     created: "2026-07-03T16:14:40.481335359Z"
     description: a low-latency, memory-efficient distributed cache
@@ -33,4 +49,4 @@ entries:
     urls:
     - https://github.com/kacy/ember/releases/download/ember-0.1.1/ember-0.1.1.tgz
     version: 0.1.1
-generated: "2026-07-03T16:14:40.481344423Z"
+generated: "2026-07-04T13:24:49.227444532Z"
