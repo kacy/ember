@@ -29,7 +29,7 @@ helm uninstall my-ember
 | parameter | description | default |
 |-----------|-------------|---------|
 | `replicaCount` | number of pod replicas | `1` |
-| `image.repository` | container image name | `ember` |
+| `image.repository` | container image name | `ghcr.io/kacy/ember` |
 | `image.tag` | image tag | `latest` |
 | `image.pullPolicy` | image pull policy | `IfNotPresent` |
 | `service.type` | kubernetes service type | `ClusterIP` |
@@ -40,7 +40,9 @@ helm uninstall my-ember
 | `ember.evictionPolicy` | eviction policy when memory is full | `noeviction` |
 | `ember.appendonly` | enable AOF persistence | `false` |
 | `ember.appendfsync` | AOF fsync policy (`always`, `everysec`, `no`) | `everysec` |
-| `ember.requirepass` | require password for client connections | `""` (disabled) |
+| `ember.concurrent` | use the DashMap keyspace instead of sharded channels (**deprecated**, will be removed) | `false` |
+| `ember.requirepass` | client auth password; stored in a Secret and mounted as `EMBER_REQUIREPASS_FILE` (never a plaintext env var) | `""` (disabled) |
+| `ember.existingSecret` | use an existing Secret (with a `requirepass` key) instead of `ember.requirepass` | `""` |
 | `resources` | CPU/memory resource requests and limits | `{}` |
 | `serviceAccount.create` | create a service account | `true` |
 | `serviceAccount.name` | override service account name | `""` |

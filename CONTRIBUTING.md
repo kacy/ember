@@ -26,14 +26,48 @@ make check
    make check  # runs fmt, clippy, and tests
    ```
 
-4. **commit** with clear messages:
+   `make check` uses `--features protobuf,grpc`. CI additionally builds with
+   the `vector` feature enabled, so if you touch vector code (`V*` commands),
+   also run:
+   ```bash
+   cargo clippy --workspace --features protobuf,grpc,vector -- -D warnings
+   ```
+
+4. **regenerate clients if you changed the proto.** The canonical gRPC schema
+   is `proto/ember/v1/ember.proto`. If you change it, regenerate all three
+   client stubs or the `client proto drift` CI job will fail your PR:
+   ```bash
+   make -C clients/ember-go proto-gen
+   make -C clients/ember-py proto-gen
+   make -C clients/ember-ts proto-gen
+   ```
+   (`scripts/check-client-drift.sh` verifies every rpc in the proto is present
+   in each client.)
+
+5. **commit** with clear messages:
    - use lowercase, present tense: `add pubsub support`, `fix memory tracking bug`
    - keep commits atomic and focused
 
-5. **open a pull request** against `main`
+6. **open a pull request** against `main`
    - include a summary of changes
    - describe what was tested
    - note any design considerations
+
+## continuous integration
+
+Every PR runs the following jobs (see `.github/workflows/ci.yml`); they must
+pass before merge:
+
+- **check** — `cargo fmt --check`, `clippy -D warnings`, and `cargo check`,
+  all with `--features protobuf,grpc,vector`
+- **test** — unit and integration tests on Ubuntu and macOS
+- **build** — release build + binary artifact
+- **msrv (1.93)** — builds against the pinned minimum supported Rust version
+- **go / python / ts client** — build and test each client library
+- **client proto drift** — asserts the clients are regenerated from the proto
+- **helm lint**, **docker build**, and a **security** advisory audit
+
+Run `make check` locally to cover the core Rust checks before pushing.
 
 ## code standards
 
