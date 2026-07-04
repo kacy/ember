@@ -1,12 +1,28 @@
 # changelog
 
-## unreleased
+## 0.4.10 (2026-07-04)
+
+### features
+- `PROTO.SCAN` and `PROTO.FIND` commands for the protobuf schema registry (#341)
+
+### fixes
+- AOF recovery: on mid-file corruption, roll back to the snapshot state instead of silently keeping a partially-applied (and possibly internally inconsistent) AOF prefix while logging "snapshot state only" (#355)
+- the `vector` cargo feature (`VADD`/`VSIM`/`VADD_BATCH`/`VREM`/`VGET`/`VCARD`/`VDIM`/`VINFO`) failed to compile and is now fixed and built in CI so it can't rot again (#360)
+- Dockerfile `HEALTHCHECK` fixed — the previous check used `wget` (not installed) against the metrics port (disabled by default); now uses `ember-server --healthcheck` (#355)
+- helm: `requirepass` is now stored in a Secret and mounted as a file via `EMBER_REQUIREPASS_FILE` instead of a plaintext env var; added `ember.existingSecret` (#355)
+- log the final AOF sync error on clean shutdown instead of swallowing it (#355)
+- cluster test flakiness and a missing ember-cli binary in test builds (#343)
+- security: bump `aws-lc-sys` to 0.42.0, clearing RUSTSEC-2026-0045/0047/0048 (and two more) (#363)
 
 ### deprecations
-- concurrent mode (`--concurrent` / `EMBER_CONCURRENT`) is deprecated and will be removed in a future release; the server now logs a warning on startup. it only accelerates string commands and is mutually exclusive with cluster mode — the default sharded engine is the supported path
+- concurrent mode (`--concurrent` / `EMBER_CONCURRENT`) is deprecated and will be removed in a future release; the server now logs a warning on startup. it only accelerates string commands and is mutually exclusive with cluster mode — the default sharded engine is the supported path (#358)
 
 ### internal
-- moved `key_slot`/`SLOT_COUNT` slot-hashing primitives from ember-cluster to ember-protocol; ember-core no longer depends on ember-cluster (and thus no longer compiles openraft and its dependency tree). ember-cluster re-exports both names, so downstream code is unaffected
+- regenerated the stale Python and TypeScript client stubs (were 17 rpcs behind the proto) and added CI gates: MSRV (1.93), python/ts client builds, a client proto-drift check, and a `vector`-feature build (#356, #360)
+- moved `key_slot`/`SLOT_COUNT` slot-hashing to ember-protocol; ember-core no longer depends on ember-cluster (no longer compiles openraft). ember-cluster re-exports both names, so downstream code is unaffected (#358)
+- split `execute.rs` into `exec/` sub-modules, moved `COMMAND_TABLE` to ember-protocol, and reduced command-wiring boilerplate via macros (#340, #344)
+- split the 4,200-line `grpc.rs` into per-command-family modules and added an end-to-end cluster failover integration test (#359, #361)
+- rewrote the architecture and docs guides; refreshed helm/compatibility/contributing docs (#362)
 
 ---
 
