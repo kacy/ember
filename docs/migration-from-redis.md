@@ -15,7 +15,7 @@ Ember speaks RESP3, so the first thing to know is that your existing Redis clien
 
 ## command compatibility
 
-Ember implements over 150 Redis commands. The tables below show what's supported, what's missing, and any behavioral differences worth knowing about.
+Ember implements 190+ Redis commands. The tables below show what's supported, what's missing, and any behavioral differences worth knowing about. See [compatibility.md](compatibility.md) for the authoritative per-command status.
 
 Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 
@@ -196,18 +196,18 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | SLOWLOG GET | ✓ | optional count argument |
 | SLOWLOG LEN | ✓ | |
 | SLOWLOG RESET | ✓ | |
-| FLUSHALL | ✗ | use FLUSHDB instead |
+| FLUSHALL | ✓ | |
 | SAVE | ✗ | use BGSAVE instead |
 | SHUTDOWN | ✗ | send SIGTERM to the process |
 | DEBUG | ✗ | not implemented |
-| COMMAND | ✗ | not implemented |
-| COMMAND COUNT | ✗ | not implemented |
-| COMMAND INFO | ✗ | not implemented |
-| COMMAND DOCS | ✗ | not implemented |
+| COMMAND | ✓ | also COUNT, INFO, DOCS, GETKEYS, LIST subcommands |
+| COMMAND COUNT | ✓ | |
+| COMMAND INFO | ✓ | |
+| COMMAND DOCS | ✓ | |
 | REPLICAOF | ✗ | use CLUSTER REPLICATE instead |
 | SLAVEOF | ✗ | use CLUSTER REPLICATE instead |
 | LATENCY | ✗ | use the Prometheus /metrics endpoint instead |
-| MEMORY USAGE | ✗ | not implemented |
+| MEMORY USAGE | ✓ | SAMPLES argument accepted but ignored (uses the cached value size) |
 | MEMORY STATS | ✗ | not implemented |
 
 ### connection

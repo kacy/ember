@@ -289,7 +289,7 @@ CONFIG GET "*"          -- dump all settings
 
 **Prometheus metrics**
 
-if the metrics endpoint is enabled (default `/metrics` on port 9090), you get labeled histograms for command latency, counters for hits/misses, and gauges for memory and connection state. this is the best way to understand behavior over time rather than point-in-time snapshots.
+if the metrics endpoint is enabled (default `/metrics` on port 9100), you get labeled histograms for command latency, counters for hits/misses, and gauges for memory and connection state. this is the best way to understand behavior over time rather than point-in-time snapshots.
 
 ---
 
