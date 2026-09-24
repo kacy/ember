@@ -36,7 +36,7 @@ impl Keyspace {
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_size);
 
-        if !self.enforce_memory_limit(net_increase) {
+        if !self.enforce_memory_limit(&key, net_increase) {
             return SetResult::OutOfMemory;
         }
 

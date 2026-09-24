@@ -3768,3 +3768,90 @@ fn sort_is_not_write_without_store() {
     };
     assert!(!cmd.is_write());
 }
+
+// --- numkeys ---
+
+#[test]
+fn numkeys_commands_parse_keys_and_trailing_options() {
+    assert_eq!(
+        Command::from_frame(cmd(&["LMPOP", "2", "a", "b", "left", "COUNT", "3"])).unwrap(),
+        Command::Lmpop {
+            keys: vec!["a".into(), "b".into()],
+            left: true,
+            count: 3,
+        },
+    );
+    assert_eq!(
+        Command::from_frame(cmd(&["ZMPOP", "1", "z", "MAX"])).unwrap(),
+        Command::Zmpop {
+            keys: vec!["z".into()],
+            min: false,
+            count: 1,
+        },
+    );
+    assert_eq!(
+        Command::from_frame(cmd(&["SINTERCARD", "2", "a", "b", "LIMIT", "5"])).unwrap(),
+        Command::SInterCard {
+            keys: vec!["a".into(), "b".into()],
+            limit: 5,
+        },
+    );
+    assert_eq!(
+        Command::from_frame(cmd(&["ZINTER", "2", "a", "b", "WITHSCORES"])).unwrap(),
+        Command::ZInter {
+            keys: vec!["a".into(), "b".into()],
+            with_scores: true,
+        },
+    );
+    assert_eq!(
+        Command::from_frame(cmd(&["ZUNIONSTORE", "d", "2", "a", "b"])).unwrap(),
+        Command::ZUnionStore {
+            dest: "d".into(),
+            keys: vec!["a".into(), "b".into()],
+        },
+    );
+}
+
+#[test]
+fn numkeys_larger_than_argument_count_is_rejected() {
+    // u64::MAX used to overflow `1 + numkeys`, which aborts the server
+    let huge = u64::MAX.to_string();
+    let cases: &[&[&str]] = &[
+        &["SINTERCARD", &huge, "a"],
+        &["LMPOP", &huge, "a", "LEFT"],
+        &["ZMPOP", &huge, "a", "MIN"],
+        &["ZDIFF", &huge, "a"],
+        &["ZINTER", &huge, "a"],
+        &["ZUNION", &huge, "a"],
+        &["ZDIFFSTORE", "d", &huge, "a"],
+        &["ZINTERSTORE", "d", &huge, "a"],
+        &["ZUNIONSTORE", "d", &huge, "a"],
+        &["ZINTER", "3", "a", "b"],
+        &["ZINTER", "0", "a"],
+    ];
+    for parts in cases {
+        let err = Command::from_frame(cmd(parts)).unwrap_err();
+        assert!(
+            matches!(err, ProtocolError::InvalidCommandFrame(_)),
+            "{parts:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn blocking_pop_rejects_non_finite_timeout() {
+    for timeout in ["nan", "inf", "-inf", "infinity"] {
+        for command in ["BLPOP", "BRPOP"] {
+            let err = Command::from_frame(cmd(&[command, "k", timeout])).unwrap_err();
+            assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+        }
+    }
+}
+
+#[test]
+fn score_bound_rejects_nan() {
+    for bound in ["nan", "(nan", "NaN"] {
+        let err = Command::from_frame(cmd(&["ZCOUNT", "z", bound, "10"])).unwrap_err();
+        assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
+    }
+}

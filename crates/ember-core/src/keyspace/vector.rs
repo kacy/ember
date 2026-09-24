@@ -44,7 +44,7 @@ impl Keyspace {
         } else {
             per_vector
         };
-        if !self.enforce_memory_limit(estimated_increase) {
+        if !self.enforce_memory_limit(key, estimated_increase) {
             return Err(VectorWriteError::OutOfMemory);
         }
 
@@ -153,7 +153,7 @@ impl Keyspace {
         } else {
             vectors_cost
         };
-        if !self.enforce_memory_limit(estimated_increase) {
+        if !self.enforce_memory_limit(key, estimated_increase) {
             return Err(VectorWriteError::OutOfMemory);
         }
 

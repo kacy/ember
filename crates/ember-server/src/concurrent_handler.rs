@@ -573,9 +573,12 @@ async fn execute_concurrent(
             Err(e) => Frame::Error(e.to_string()),
         },
 
-        Command::DecrBy { key, delta } => match keyspace.incr_by(&key, -delta) {
-            Ok(val) => Frame::Integer(val),
-            Err(e) => Frame::Error(e.to_string()),
+        Command::DecrBy { key, delta } => match delta.checked_neg() {
+            Some(neg) => match keyspace.incr_by(&key, neg) {
+                Ok(val) => Frame::Integer(val),
+                Err(e) => Frame::Error(e.to_string()),
+            },
+            None => Frame::Error("ERR increment or decrement would overflow".into()),
         },
 
         Command::IncrByFloat { key, delta } => match keyspace.incr_by_float(&key, delta) {

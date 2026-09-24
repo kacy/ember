@@ -1273,6 +1273,39 @@ fn store_set_response(result: Result<(usize, Vec<String>), WriteError>) -> Shard
     }
 }
 
+/// Largest string SETRANGE and SETBIT may build: 512 MB, the same as the
+/// largest bulk string a client can send.
+const MAX_STRING_LEN: usize = 512 * 1024 * 1024;
+
+/// Largest reply SRANDMEMBER, ZRANDMEMBER and HRANDFIELD may return. A
+/// negative count allows repeats, so the collection size does not bound it.
+const MAX_RANDOM_COUNT: u64 = 10_000_000;
+
+/// Returns an error message for requests whose arguments would make the shard
+/// allocate without bound. Both RESP and gRPC build shard requests, so the
+/// limits live here.
+fn limit_error(req: &ShardRequest) -> Option<&'static str> {
+    let msg = match req {
+        ShardRequest::SetRange { offset, value, .. }
+            if offset.saturating_add(value.len()) > MAX_STRING_LEN =>
+        {
+            "ERR string exceeds maximum allowed size (512MB)"
+        }
+        ShardRequest::SetBit { offset, .. } if *offset >= MAX_STRING_LEN as u64 * 8 => {
+            "ERR bit offset is not an integer or out of range"
+        }
+        ShardRequest::SRandMember { count, .. }
+        | ShardRequest::ZRandMember {
+            count: Some(count), ..
+        }
+        | ShardRequest::HRandField {
+            count: Some(count), ..
+        } if count.unsigned_abs() > MAX_RANDOM_COUNT => "ERR value is out of range",
+        _ => return None,
+    };
+    Some(msg)
+}
+
 /// Routes a request to the appropriate keyspace operation and returns a response.
 ///
 /// This is the hot path — every read and write goes through here.
@@ -1281,6 +1314,9 @@ fn dispatch(
     req: &mut ShardRequest,
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardResponse {
+    if let Some(msg) = limit_error(req) {
+        return ShardResponse::Err(msg.into());
+    }
     match req {
         ShardRequest::Get { key } => match ks.get_string(key) {
             Ok(val) => ShardResponse::Value(val.map(Value::String)),
@@ -2194,6 +2230,41 @@ mod tests {
             #[cfg(feature = "protobuf")]
             &None,
         )
+    }
+
+    #[test]
+    fn dispatch_rejects_arguments_that_would_allocate_without_bound() {
+        let mut ks = Keyspace::new();
+        let requests = [
+            ShardRequest::SetRange {
+                key: "s".into(),
+                offset: usize::MAX,
+                value: Bytes::from("x"),
+            },
+            ShardRequest::SetBit {
+                key: "b".into(),
+                offset: u64::MAX,
+                value: 1,
+            },
+            ShardRequest::SRandMember {
+                key: "set".into(),
+                count: i64::MIN,
+            },
+            ShardRequest::ZRandMember {
+                key: "z".into(),
+                count: Some(i64::MIN),
+                with_scores: false,
+            },
+            ShardRequest::HRandField {
+                key: "h".into(),
+                count: Some(i64::MIN),
+                with_values: false,
+            },
+        ];
+        for req in requests {
+            assert!(matches!(test_dispatch(&mut ks, req), ShardResponse::Err(_)));
+        }
+        assert_eq!(ks.len(), 0);
     }
 
     #[test]

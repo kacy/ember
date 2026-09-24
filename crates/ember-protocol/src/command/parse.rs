@@ -351,6 +351,26 @@ fn parse_usize(frame: &Frame, cmd: &str) -> Result<usize, ProtocolError> {
     })
 }
 
+/// Parses a `numkeys` argument and the key names that follow it.
+///
+/// `args` starts at the `numkeys` frame. Returns the keys and the remaining
+/// arguments. Zero is rejected, and so is any count larger than the number of
+/// arguments left, so an oversized `numkeys` cannot overflow the index math.
+fn parse_numkeys<'a>(
+    args: &'a [Frame],
+    cmd: &'static str,
+) -> Result<(Vec<String>, &'a [Frame]), ProtocolError> {
+    let (numkeys, rest) = args.split_first().ok_or_else(|| wrong_arity(cmd))?;
+    let numkeys = parse_u64(numkeys, cmd)?;
+    if numkeys == 0 || numkeys > rest.len() as u64 {
+        return Err(ProtocolError::InvalidCommandFrame(format!(
+            "numkeys must be positive and match the number of keys for '{cmd}'"
+        )));
+    }
+    let (keys, rest) = rest.split_at(numkeys as usize);
+    Ok((extract_strings(keys)?, rest))
+}
+
 /// Parses an unsigned integer directly from a byte slice.
 fn parse_u64_bytes(buf: &[u8]) -> Option<u64> {
     if buf.is_empty() {
@@ -633,7 +653,7 @@ fn parse_setrange(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("SETRANGE"));
     }
     let key = extract_string(&args[0])?;
-    let offset = parse_u64(&args[1], "SETRANGE")? as usize;
+    let offset = parse_usize(&args[1], "SETRANGE")?;
     let value = extract_bytes(&args[2])?;
     Ok(Command::SetRange { key, offset, value })
 }
@@ -956,29 +976,18 @@ fn parse_sintercard(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 2 {
         return Err(wrong_arity("SINTERCARD"));
     }
-    let numkeys = parse_u64(&args[0], "SINTERCARD")? as usize;
-    if numkeys == 0 || args.len() < 1 + numkeys {
-        return Err(ProtocolError::InvalidCommandFrame(
-            "SINTERCARD numkeys must be positive and match the number of keys provided".into(),
-        ));
-    }
-    let keys: Vec<String> = args[1..=numkeys]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
-    // optional LIMIT n
-    let limit = if args.len() == numkeys + 3 {
-        let tag = extract_string(&args[numkeys + 1])?.to_ascii_uppercase();
-        if tag != "LIMIT" {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "SINTERCARD: expected LIMIT keyword".into(),
-            ));
+    let (keys, rest) = parse_numkeys(args, "SINTERCARD")?;
+    let limit = match rest {
+        [] => 0,
+        [tag, n] => {
+            if !extract_string(tag)?.eq_ignore_ascii_case("LIMIT") {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "SINTERCARD: expected LIMIT keyword".into(),
+                ));
+            }
+            parse_usize(n, "SINTERCARD")?
         }
-        parse_u64(&args[numkeys + 2], "SINTERCARD")? as usize
-    } else if args.len() == numkeys + 1 {
-        0
-    } else {
-        return Err(wrong_arity("SINTERCARD"));
+        _ => return Err(wrong_arity("SINTERCARD")),
     };
     Ok(Command::SInterCard { keys, limit })
 }
@@ -1467,17 +1476,7 @@ fn parse_lpos(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// Extracts the timeout argument for BLPOP/BRPOP. Redis accepts integer or
 /// float seconds; negative values are an error.
 fn parse_timeout(frame: &Frame, cmd: &str) -> Result<f64, ProtocolError> {
-    let bytes = extract_raw_bytes(frame)?;
-    let s = std::str::from_utf8(bytes).map_err(|_| {
-        ProtocolError::InvalidCommandFrame(format!(
-            "timeout is not a float or out of range for '{cmd}'"
-        ))
-    })?;
-    let val: f64 = s.parse().map_err(|_| {
-        ProtocolError::InvalidCommandFrame(format!(
-            "timeout is not a float or out of range for '{cmd}'"
-        ))
-    })?;
+    let val = parse_f64(frame, cmd)?;
     if val < 0.0 {
         return Err(ProtocolError::InvalidCommandFrame(format!(
             "timeout is negative for '{cmd}'"
@@ -1694,21 +1693,23 @@ fn parse_score_bound(frame: &Frame, cmd: &str) -> Result<ScoreBound, ProtocolErr
         ProtocolError::InvalidCommandFrame(format!("invalid score bound for '{cmd}'"))
     })?;
 
+    // NaN has no place in a score range, so reject it with the parse errors
+    let parse = |s: &str| {
+        s.parse::<f64>()
+            .ok()
+            .filter(|v| !v.is_nan())
+            .ok_or_else(|| {
+                ProtocolError::InvalidCommandFrame(format!("min or max is not a float for '{cmd}'"))
+            })
+    };
+
     match s {
         "-inf" => Ok(ScoreBound::NegInf),
         "+inf" | "inf" => Ok(ScoreBound::PosInf),
-        _ if s.starts_with('(') => {
-            let val = s[1..].parse::<f64>().map_err(|_| {
-                ProtocolError::InvalidCommandFrame(format!("min or max is not a float for '{cmd}'"))
-            })?;
-            Ok(ScoreBound::Exclusive(val))
-        }
-        _ => {
-            let val = s.parse::<f64>().map_err(|_| {
-                ProtocolError::InvalidCommandFrame(format!("min or max is not a float for '{cmd}'"))
-            })?;
-            Ok(ScoreBound::Inclusive(val))
-        }
+        _ => match s.strip_prefix('(') {
+            Some(rest) => parse(rest).map(ScoreBound::Exclusive),
+            None => parse(s).map(ScoreBound::Inclusive),
+        },
     }
 }
 
@@ -1860,45 +1861,8 @@ fn parse_lmpop(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 3 {
         return Err(wrong_arity("LMPOP"));
     }
-    let numkeys = parse_u64(&args[0], "LMPOP")? as usize;
-    if numkeys == 0 || args.len() < 1 + numkeys + 1 {
-        return Err(ProtocolError::InvalidCommandFrame(
-            "LMPOP numkeys must match key count".into(),
-        ));
-    }
-    let keys: Vec<String> = args[1..=numkeys]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
-    let dir = extract_string(&args[numkeys + 1])?.to_ascii_uppercase();
-    let left = match dir.as_str() {
-        "LEFT" => true,
-        "RIGHT" => false,
-        _ => {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "LMPOP: direction must be LEFT or RIGHT".into(),
-            ))
-        }
-    };
-    let count = if args.len() == numkeys + 4 {
-        let tag = extract_string(&args[numkeys + 2])?.to_ascii_uppercase();
-        if tag != "COUNT" {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "LMPOP: expected COUNT".into(),
-            ));
-        }
-        let n = parse_u64(&args[numkeys + 3], "LMPOP")? as usize;
-        if n == 0 {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "LMPOP: COUNT must be positive".into(),
-            ));
-        }
-        n
-    } else if args.len() == numkeys + 2 {
-        1
-    } else {
-        return Err(wrong_arity("LMPOP"));
-    };
+    let (keys, rest) = parse_numkeys(args, "LMPOP")?;
+    let (left, count) = parse_mpop_tail(rest, "LMPOP", "LEFT", "RIGHT")?;
     Ok(Command::Lmpop { keys, left, count })
 }
 
@@ -1907,46 +1871,49 @@ fn parse_zmpop(args: &[Frame]) -> Result<Command, ProtocolError> {
     if args.len() < 3 {
         return Err(wrong_arity("ZMPOP"));
     }
-    let numkeys = parse_u64(&args[0], "ZMPOP")? as usize;
-    if numkeys == 0 || args.len() < 1 + numkeys + 1 {
-        return Err(ProtocolError::InvalidCommandFrame(
-            "ZMPOP numkeys must match key count".into(),
-        ));
-    }
-    let keys: Vec<String> = args[1..=numkeys]
-        .iter()
-        .map(extract_string)
-        .collect::<Result<_, _>>()?;
-    let order = extract_string(&args[numkeys + 1])?.to_ascii_uppercase();
-    let min = match order.as_str() {
-        "MIN" => true,
-        "MAX" => false,
-        _ => {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "ZMPOP: order must be MIN or MAX".into(),
-            ))
-        }
-    };
-    let count = if args.len() == numkeys + 4 {
-        let tag = extract_string(&args[numkeys + 2])?.to_ascii_uppercase();
-        if tag != "COUNT" {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "ZMPOP: expected COUNT".into(),
-            ));
-        }
-        let n = parse_u64(&args[numkeys + 3], "ZMPOP")? as usize;
-        if n == 0 {
-            return Err(ProtocolError::InvalidCommandFrame(
-                "ZMPOP: COUNT must be positive".into(),
-            ));
-        }
-        n
-    } else if args.len() == numkeys + 2 {
-        1
-    } else {
-        return Err(wrong_arity("ZMPOP"));
-    };
+    let (keys, rest) = parse_numkeys(args, "ZMPOP")?;
+    let (min, count) = parse_mpop_tail(rest, "ZMPOP", "MIN", "MAX")?;
     Ok(Command::Zmpop { keys, min, count })
+}
+
+/// Parses the `<side> [COUNT n]` tail shared by LMPOP and ZMPOP.
+///
+/// Returns `true` when the side is `first` (LEFT or MIN), and the count,
+/// which defaults to 1.
+fn parse_mpop_tail(
+    rest: &[Frame],
+    cmd: &'static str,
+    first: &str,
+    second: &str,
+) -> Result<(bool, usize), ProtocolError> {
+    let (side, count) = match rest {
+        [side] => (side, 1),
+        [side, tag, n] => {
+            if !extract_string(tag)?.eq_ignore_ascii_case("COUNT") {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "{cmd}: expected COUNT"
+                )));
+            }
+            let n = parse_usize(n, cmd)?;
+            if n == 0 {
+                return Err(ProtocolError::InvalidCommandFrame(format!(
+                    "{cmd}: COUNT must be positive"
+                )));
+            }
+            (side, n)
+        }
+        _ => return Err(wrong_arity(cmd)),
+    };
+    let side = extract_string(side)?;
+    if side.eq_ignore_ascii_case(first) {
+        Ok((true, count))
+    } else if side.eq_ignore_ascii_case(second) {
+        Ok((false, count))
+    } else {
+        Err(ProtocolError::InvalidCommandFrame(format!(
+            "{cmd}: expected {first} or {second}"
+        )))
+    }
 }
 
 // --- hash commands ---
@@ -2163,14 +2130,9 @@ fn parse_srandmember(args: &[Frame]) -> Result<Command, ProtocolError> {
         return Err(wrong_arity("SRANDMEMBER"));
     }
     let key = extract_string(&args[0])?;
-    let count = if args.len() == 2 {
-        let s = extract_string(&args[1])?;
-        let n: i64 = s.parse().map_err(|_| {
-            ProtocolError::InvalidCommandFrame("ERR value is not an integer or out of range".into())
-        })?;
-        Some(n)
-    } else {
-        None
+    let count = match args.get(1) {
+        Some(frame) => Some(parse_i64(frame, "SRANDMEMBER")?),
+        None => None,
     };
     Ok(Command::SRandMember { key, count })
 }
@@ -3736,19 +3698,10 @@ fn parse_zset_multi(cmd: &'static str, args: &[Frame]) -> Result<Command, Protoc
     if args.is_empty() {
         return Err(wrong_arity(cmd));
     }
-    let numkeys = parse_u64(&args[0], cmd)? as usize;
-    if numkeys == 0 {
-        return Err(ProtocolError::InvalidCommandFrame(format!(
-            "{cmd}: numkeys must be positive"
-        )));
-    }
-    if args.len() < 1 + numkeys {
-        return Err(wrong_arity(cmd));
-    }
-    let keys = extract_strings(&args[1..1 + numkeys])?;
+    let (keys, rest) = parse_numkeys(args, cmd)?;
 
     let mut with_scores = false;
-    for frame in &args[1 + numkeys..] {
+    for frame in rest {
         let mut kw = [0u8; MAX_KEYWORD_LEN];
         if let Ok("WITHSCORES") = uppercase_arg(frame, &mut kw) {
             with_scores = true;
@@ -3770,16 +3723,7 @@ fn parse_zset_store(cmd: &'static str, args: &[Frame]) -> Result<Command, Protoc
         return Err(wrong_arity(cmd));
     }
     let dest = extract_string(&args[0])?;
-    let numkeys = parse_u64(&args[1], cmd)? as usize;
-    if numkeys == 0 {
-        return Err(ProtocolError::InvalidCommandFrame(format!(
-            "{cmd}: numkeys must be positive"
-        )));
-    }
-    if args.len() < 2 + numkeys {
-        return Err(wrong_arity(cmd));
-    }
-    let keys = extract_strings(&args[2..2 + numkeys])?;
+    let (keys, _) = parse_numkeys(&args[1..], cmd)?;
 
     match cmd {
         "ZDIFFSTORE" => Ok(Command::ZDiffStore { dest, keys }),

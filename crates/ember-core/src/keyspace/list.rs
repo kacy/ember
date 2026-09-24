@@ -59,38 +59,32 @@ impl Keyspace {
     /// `Ok(Some(items))` with 1–count elements otherwise. Removes the key
     /// when the list becomes empty. Returns `Err(WrongType)` on type mismatch.
     pub fn lpop_count(&mut self, key: &str, count: usize) -> Result<Option<Vec<Bytes>>, WrongType> {
-        let mut items = Vec::with_capacity(count);
-        for _ in 0..count {
-            match self.lpop(key)? {
-                Some(v) => items.push(v),
-                None => break,
-            }
-        }
-        if items.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(items))
-        }
+        self.pop_count(key, count, true)
     }
 
-    /// Pops up to `count` values from the tail of a list.
-    ///
-    /// Returns `Ok(None)` if the key doesn't exist or is empty. Returns
-    /// `Ok(Some(items))` with 1–count elements otherwise. Removes the key
-    /// when the list becomes empty. Returns `Err(WrongType)` on type mismatch.
+    /// Pops up to `count` values from the tail of a list. Same contract as
+    /// [`lpop_count`](Self::lpop_count).
     pub fn rpop_count(&mut self, key: &str, count: usize) -> Result<Option<Vec<Bytes>>, WrongType> {
-        let mut items = Vec::with_capacity(count);
-        for _ in 0..count {
-            match self.rpop(key)? {
+        self.pop_count(key, count, false)
+    }
+
+    /// Pops from one end until the list is empty or `count` values are
+    /// collected. The vec grows as values arrive because `count` comes from
+    /// the client and can be far larger than the list.
+    fn pop_count(
+        &mut self,
+        key: &str,
+        count: usize,
+        left: bool,
+    ) -> Result<Option<Vec<Bytes>>, WrongType> {
+        let mut items = Vec::new();
+        while items.len() < count {
+            match self.list_pop(key, left)? {
                 Some(v) => items.push(v),
                 None => break,
             }
         }
-        if items.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(items))
-        }
+        Ok((!items.is_empty()).then_some(items))
     }
 
     /// Returns a range of elements from a list by index.
@@ -300,7 +294,7 @@ impl Keyspace {
         };
 
         let element_cost = memory::VECDEQUE_ELEMENT_OVERHEAD + value.len();
-        if !self.enforce_memory_limit(element_cost) {
+        if !self.enforce_memory_limit(key, element_cost) {
             return Err(WriteError::OutOfMemory);
         }
 
@@ -1415,6 +1409,41 @@ mod tests {
         assert_eq!(result, Some(vec![Bytes::from("x"), Bytes::from("y")]));
         // key deleted after emptied
         assert!(!ks.exists("l"));
+    }
+
+    #[test]
+    fn pop_count_accepts_counts_far_beyond_list_size() {
+        let mut ks = Keyspace::new();
+        ks.rpush("l", &[Bytes::from("x"), Bytes::from("y")])
+            .unwrap();
+        assert_eq!(
+            ks.lpop_count("l", usize::MAX).unwrap(),
+            Some(vec![Bytes::from("x"), Bytes::from("y")])
+        );
+        ks.rpush("l", &[Bytes::from("z")]).unwrap();
+        assert_eq!(
+            ks.rpop_count("l", usize::MAX).unwrap(),
+            Some(vec![Bytes::from("z")])
+        );
+    }
+
+    #[test]
+    fn push_under_lru_never_evicts_the_target_list() {
+        // with one list and allkeys-lru, eviction's only candidate is the
+        // list being pushed to. the push must fail with OOM instead.
+        let config = ShardConfig {
+            max_memory: Some(2048),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+        let value = Bytes::from(vec![b'x'; 64]);
+        let mut pushed = 0;
+        while ks.rpush("q", std::slice::from_ref(&value)).is_ok() {
+            pushed += 1;
+            assert!(pushed < 1000, "memory limit never reached");
+        }
+        assert_eq!(ks.llen("q").unwrap(), pushed);
     }
 
     #[test]
