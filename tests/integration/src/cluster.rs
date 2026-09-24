@@ -601,9 +601,7 @@ async fn cluster_automatic_failover_promotes_replica() {
 
     // a write accepted by the pre-failover primary. wait until the replica
     // can serve it before crashing the primary, so the check after the
-    // failover is deterministic. this reads the replica directly rather
-    // than trusting WAIT, whose offset accounting can report a write as
-    // replicated before the replica has applied it.
+    // failover is deterministic.
     c0.ok(&["SET", "failover:marker", "survives"]).await;
     let deadline = Instant::now() + Duration::from_secs(10);
     while c2.get_bulk(&["GET", "failover:marker"]).await.is_none() {
@@ -681,4 +679,62 @@ async fn cluster_automatic_failover_promotes_replica() {
         Some("survives".into()),
         "a replicated write was lost during promotion"
     );
+}
+
+#[tokio::test]
+async fn replica_matches_primary_and_wait_confirms_writes() {
+    use std::time::{Duration, Instant};
+
+    let opts = || ServerOptions {
+        cluster_enabled: true,
+        ..Default::default()
+    };
+    let primary = TestServer::start_with(ServerOptions {
+        cluster_bootstrap: true,
+        ..opts()
+    });
+    let replica = TestServer::start_with(opts());
+    let mut c0 = primary.connect().await;
+    let mut c1 = replica.connect().await;
+
+    // data that exists before the replica attaches arrives in the snapshot
+    c0.get_int(&["RPUSH", "list", "a", "b", "c"]).await;
+    c0.ok(&["SET", "counter", "5"]).await;
+
+    let primary_id = c0
+        .get_bulk(&["CLUSTER", "MYID"])
+        .await
+        .expect("MYID on primary");
+    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+        .await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(
+        c1.cmd(&["CLUSTER", "REPLICATE", &primary_id]).await,
+        Frame::Simple(_)
+    ) {
+        assert!(
+            Instant::now() <= deadline,
+            "replica never learned the primary"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // wait for the full sync, then write through the stream
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while c1.get_bulk(&["GET", "counter"]).await.is_none() {
+        assert!(Instant::now() <= deadline, "full sync never arrived");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    c0.get_int(&["INCR", "counter"]).await;
+    c0.get_int(&["RPUSH", "list", "d"]).await;
+
+    // once WAIT counts the replica, it must already serve both writes
+    assert_eq!(c0.get_int(&["WAIT", "1", "5000"]).await, 1);
+    assert_eq!(c1.get_bulk(&["GET", "counter"]).await, Some("6".into()));
+    let list = c1.cmd(&["LRANGE", "list", "0", "-1"]).await;
+    let expected: Vec<Frame> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|v| Frame::Bulk(bytes::Bytes::from(*v)))
+        .collect();
+    assert_eq!(list, Frame::Array(expected));
 }
