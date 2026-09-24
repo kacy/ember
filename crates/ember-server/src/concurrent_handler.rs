@@ -25,7 +25,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
     frame_to_monitor_args, get_rss_bytes, human_bytes, is_allowed_before_auth, is_auth_frame,
-    is_monitor_frame, validate_command_sizes, MonitorEvent, Session, TransactionState,
+    is_command_frame, is_monitor_frame, validate_command_sizes, MonitorEvent, Session,
+    TransactionState,
 };
 use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
@@ -58,6 +59,9 @@ where
 
     let mut buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
     let mut out = BytesMut::with_capacity(ctx.limits.buf_capacity);
+    // set when the last batch stopped at the pipeline depth limit with
+    // frames still in `buf`, so the next one runs them before reading
+    let mut skip_read = false;
 
     loop {
         if buf.len() > ctx.limits.max_buf_size {
@@ -68,11 +72,13 @@ where
             return Ok(());
         }
 
-        match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
-            Ok(Ok(0)) => return Ok(()),
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => return Ok(()),
+        if !skip_read {
+            match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
+                Ok(Ok(0)) => return Ok(()),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => return Ok(()),
+            }
         }
 
         // pick up ACL SETUSER/DELUSER changes to this connection's user
@@ -94,6 +100,14 @@ where
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     pipeline_count += 1;
+
+                    // QUIT closes the connection once the replies before it
+                    // are written. commands after it never run.
+                    if is_command_frame(&frame, &[b"QUIT"]) {
+                        Frame::Simple("OK".into()).serialize(&mut out);
+                        let _ = stream.write_all(&out).await;
+                        return Ok(());
+                    }
 
                     // AUTH always goes through the session, so on an
                     // authenticated connection it switches the user
@@ -177,6 +191,7 @@ where
             }
         }
         // unconsumed bytes remain in buf for the next read — no copy needed
+        skip_read = pipeline_count >= ctx.limits.max_pipeline_depth;
 
         if !out.is_empty() {
             stream.write_all(&out).await?;
