@@ -4,7 +4,7 @@
 //! connections and waits for in-flight requests to drain before exiting.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -439,7 +439,7 @@ pub async fn run_concurrent(
 
     info!("listening on {addr} with concurrent keyspace (max {max_conn} connections)");
 
-    let shutdown = tokio::signal::ctrl_c();
+    let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
     // helper to accept from TLS listener or pend forever if disabled
@@ -466,7 +466,7 @@ pub async fn run_concurrent(
             result = listener.accept() => {
                 let (stream, peer) = result?;
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -494,7 +494,7 @@ pub async fn run_concurrent(
             result = tls_accept() => {
                 let (stream, peer, acceptor) = result?;
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -822,7 +822,7 @@ pub async fn run_threaded(
     );
 
     // await shutdown signal on the management runtime
-    let _ = tokio::signal::ctrl_c().await;
+    shutdown_signal().await;
     info!("shutdown signal received, stopping workers...");
     shutdown.notify_waiters();
 
@@ -909,7 +909,7 @@ async fn worker_main(
                     }
                 };
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -941,7 +941,7 @@ async fn worker_main(
                     }
                 };
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -1010,12 +1010,89 @@ async fn setup_tls_listener(
 /// 1. No password is configured (requirepass is None)
 /// 2. The server is bound to a non-loopback address (e.g. 0.0.0.0)
 /// 3. The connecting client is from a non-loopback address
-fn is_protected_mode_violation(ctx: &ServerContext, peer: &SocketAddr) -> bool {
-    if ctx.requirepass.is_some() {
+///
+/// Both the RESP listeners and the gRPC service call this. A `None` peer
+/// (address unknown) is treated as remote. Addresses are canonicalized
+/// first, so an IPv4-mapped `::ffff:127.0.0.1` counts as loopback.
+pub(crate) fn is_protected_mode_violation(ctx: &ServerContext, peer: Option<IpAddr>) -> bool {
+    protected_mode_rejects(ctx.requirepass.is_some(), ctx.bind_addr.ip(), peer)
+}
+
+fn protected_mode_rejects(has_password: bool, bind: IpAddr, peer: Option<IpAddr>) -> bool {
+    if has_password || bind.to_canonical().is_loopback() {
         return false;
     }
-    if ctx.bind_addr.ip().is_loopback() {
-        return false;
+    !peer.is_some_and(|ip| ip.to_canonical().is_loopback())
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM on Unix. `docker stop` and Kubernetes
+/// send SIGTERM, so without it the server skipped its graceful shutdown and
+/// the final AOF flush.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                warn!("cannot listen for SIGTERM, only Ctrl-C will stop the server: {e}");
+                ctrl_c.await;
+            }
+        }
     }
-    !peer.ip().is_loopback()
+
+    #[cfg(not(unix))]
+    ctrl_c.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protected_mode_rejects;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn protected_mode_rejects_only_remote_clients_without_a_password() {
+        let any = ip("0.0.0.0");
+        assert!(protected_mode_rejects(false, any, Some(ip("10.0.0.5"))));
+        assert!(!protected_mode_rejects(false, any, Some(ip("127.0.0.1"))));
+        assert!(!protected_mode_rejects(true, any, Some(ip("10.0.0.5"))));
+        assert!(!protected_mode_rejects(
+            false,
+            ip("127.0.0.1"),
+            Some(ip("10.0.0.5"))
+        ));
+    }
+
+    #[test]
+    fn protected_mode_treats_ipv4_mapped_loopback_as_loopback() {
+        let dual_stack = ip("::");
+        assert!(!protected_mode_rejects(
+            false,
+            dual_stack,
+            Some(ip("::ffff:127.0.0.1"))
+        ));
+        assert!(!protected_mode_rejects(
+            false,
+            ip("::ffff:127.0.0.1"),
+            Some(ip("10.0.0.5"))
+        ));
+    }
+
+    #[test]
+    fn protected_mode_treats_an_unknown_peer_as_remote() {
+        assert!(protected_mode_rejects(false, ip("0.0.0.0"), None));
+    }
 }

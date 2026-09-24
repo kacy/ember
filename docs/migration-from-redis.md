@@ -443,7 +443,7 @@ collections with more than 64 elements are freed in the background via `UNLINK`-
 
 ### protected mode
 
-ember runs in protected mode by default. if `bind` is not set to a non-loopback address and `requirepass` is empty, ember will refuse connections from outside localhost. to disable: set `requirepass` to a non-empty value or explicitly bind to your network interface.
+ember runs in protected mode when `requirepass` is empty and `bind` is a non-loopback address. it then refuses RESP and gRPC connections from anywhere except localhost. to accept remote clients, set `requirepass`. binding to `127.0.0.1` also turns protected mode off, but only local clients can reach that address.
 
 ### no multi-database support
 

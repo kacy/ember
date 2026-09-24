@@ -215,19 +215,21 @@ pub struct ReplicationServer {
 }
 
 impl ReplicationServer {
-    /// Binds the TCP listener and starts accepting replica connections.
+    /// Binds the TCP listener on `addr` and starts accepting replica
+    /// connections. `addr` uses the server's configured bind IP, so a
+    /// server bound to loopback does not expose its dataset on every
+    /// interface.
     ///
     /// Runs indefinitely in the background; returns immediately after
     /// spawning the accept loop task.
     pub async fn start(
         engine: Arc<Engine>,
         primary_id: String,
-        port: u16,
+        addr: SocketAddr,
         tracker: Arc<ReplicaTracker>,
     ) -> std::io::Result<()> {
-        let bind_addr = format!("0.0.0.0:{port}");
-        let listener = TcpListener::bind(&bind_addr).await?;
-        info!(port, "replication server listening");
+        let listener = TcpListener::bind(addr).await?;
+        info!(%addr, "replication server listening");
 
         let server = Arc::new(Self {
             engine,

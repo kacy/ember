@@ -8,7 +8,7 @@ common problems and how to fix them.
 
 **"DENIED: protected mode is enabled"**
 
-ember runs in protected mode by default when no password is set and no explicit bind address is configured. this prevents accidental exposure on public interfaces.
+ember turns on protected mode when no password is set and the server is bound to a non-loopback address such as `0.0.0.0`. it then accepts RESP and gRPC connections from loopback clients only, so a server without a password is not exposed on a public interface by accident.
 
 fix: either set a password with `requirepass <password>` in your config, or explicitly bind to the loopback interface with `bind 127.0.0.1`.
 
