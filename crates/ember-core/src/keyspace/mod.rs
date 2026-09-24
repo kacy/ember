@@ -543,7 +543,7 @@ impl Keyspace {
         } else {
             element_increase
         };
-        if self.enforce_memory_limit(estimated_increase) {
+        if self.enforce_memory_limit(key, estimated_increase) {
             Ok(())
         } else {
             Err(WriteError::OutOfMemory)
@@ -589,16 +589,13 @@ impl Keyspace {
         }
     }
 
-    /// Tries to evict one key using LRU approximation.
+    /// Tries to evict one key using an approximate LRU.
     ///
-    /// Randomly samples `EVICTION_SAMPLE_SIZE` keys and removes the one
-    /// with the oldest `last_access` time. Returns `true` if a key was
-    /// evicted, `false` if the keyspace is empty.
-    ///
-    /// Uses reservoir sampling with k=1 to avoid allocating a Vec on
-    /// every eviction attempt. The victim key index is remembered
-    /// rather than cloned, eliminating a heap allocation on the hot path.
-    fn try_evict(&mut self) -> bool {
+    /// Samples up to `EVICTION_SAMPLE_SIZE` keys and removes the one with the
+    /// oldest `last_access` time. The sample is drawn by reservoir sampling
+    /// so no Vec is allocated. `protect` is never chosen, because the caller
+    /// is about to write to it. Returns `false` if no other key exists.
+    fn try_evict(&mut self, protect: &str) -> bool {
         if self.entries.is_empty() {
             return false;
         }
@@ -613,6 +610,9 @@ impl Keyspace {
         let mut seen = 0usize;
 
         for (key, entry) in &self.entries {
+            if key.as_str() == protect {
+                continue;
+            }
             // reservoir sampling: include this item with probability
             // EVICTION_SAMPLE_SIZE / (seen + 1), capped once we have
             // enough candidates
@@ -651,11 +651,14 @@ impl Keyspace {
     /// usage by `estimated_increase` bytes. Attempts eviction if the
     /// policy allows it. Returns `true` if the write can proceed.
     ///
+    /// `protect` is the key being written. Eviction skips it, so the caller
+    /// can rely on the entry it already checked still being there.
+    ///
     /// The comparison uses [`memory::effective_limit`] rather than the raw
     /// configured maximum. This reserves headroom for allocator overhead
     /// and fragmentation that our per-entry estimates can't account for,
     /// preventing the OS from OOM-killing us before eviction triggers.
-    fn enforce_memory_limit(&mut self, estimated_increase: usize) -> bool {
+    fn enforce_memory_limit(&mut self, protect: &str, estimated_increase: usize) -> bool {
         if let Some(max) = self.config.max_memory {
             let limit = memory::effective_limit(max);
             while self.memory.used_bytes() + estimated_increase > limit {
@@ -675,7 +678,7 @@ impl Keyspace {
                         return false;
                     }
                     EvictionPolicy::AllKeysLru => {
-                        if !self.try_evict() {
+                        if !self.try_evict(protect) {
                             self.oom_rejections += 1;
                             if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000)
                             {
@@ -1168,7 +1171,7 @@ impl Keyspace {
             .map(|e| e.entry_size(dest))
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_dest_size);
-        if !self.enforce_memory_limit(net_increase) {
+        if !self.enforce_memory_limit(dest, net_increase) {
             return Err(CopyError::OutOfMemory);
         }
 

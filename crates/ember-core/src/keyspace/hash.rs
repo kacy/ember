@@ -171,7 +171,7 @@ impl Keyspace {
             field.len() + val_str_len + memory::PACKED_HASH_ENTRY_OVERHEAD
         };
 
-        if !self.enforce_memory_limit(estimated_increase) {
+        if !self.enforce_memory_limit(key, estimated_increase) {
             return Err(IncrError::OutOfMemory);
         }
 
@@ -244,7 +244,7 @@ impl Keyspace {
             field.len() + val_str_len + memory::PACKED_HASH_ENTRY_OVERHEAD
         };
 
-        if !self.enforce_memory_limit(estimated_increase) {
+        if !self.enforce_memory_limit(key, estimated_increase) {
             return Err(IncrFloatError::OutOfMemory);
         }
 
