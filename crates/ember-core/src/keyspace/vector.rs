@@ -291,7 +291,7 @@ impl Keyspace {
 
             if is_empty {
                 self.memory.remove_with_size(new_size);
-                self.entries.remove(key);
+                self.entries.swap_remove(key);
             }
         }
 

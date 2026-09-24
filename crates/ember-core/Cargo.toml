@@ -18,6 +18,7 @@ vector = ["usearch", "ember-persistence/vector"]
 name = "ember_core"
 
 [dependencies]
+indexmap = "2"
 ember-protocol = { workspace = true }
 ember-persistence = { workspace = true }
 thiserror = { workspace = true }
