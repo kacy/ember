@@ -175,7 +175,7 @@ this mode is faster for that narrow case, but it is not the general execution mo
 
 ## persistence and recovery
 
-**main code:** `crates/ember-persistence/src/aof.rs`, `crates/ember-persistence/src/snapshot.rs`, `crates/ember-persistence/src/recovery.rs`
+**main code:** `crates/ember-persistence/src/aof.rs`, `crates/ember-persistence/src/snapshot.rs`, `crates/ember-persistence/src/recovery.rs`, `crates/ember-core/src/shard/persistence.rs`
 
 persistence is per-shard:
 
@@ -193,12 +193,14 @@ both snapshot writes and AOF rewrites use the usual safe pattern:
 
 that way a crash during the write does not corrupt the last good file.
 
-recovery is straightforward:
+recovery reads the files in `ember-persistence` and writes into the shard's keyspace in `ember-core` (`shard/persistence.rs`):
 
-1. load the snapshot if one exists
-2. replay the AOF on top
-3. drop entries whose TTL expired while the server was down
-4. if a file is corrupt, warn and recover what can be recovered
+1. load the snapshot if one exists, leaving out keys whose TTL ran out while the server was down
+2. read the whole AOF once without applying anything, to find where replay starts and to catch corruption
+3. replay the AOF on top. each record becomes the request that wrote it and runs through the shard's normal dispatch, so replay behaves exactly like the original commands
+4. if the snapshot is corrupt, start from the AOF alone. if the AOF is corrupt partway through, skip it entirely rather than apply a prefix of it
+
+memory limits are off during replay, since every recovered key was stored once already.
 
 `BGREWRITEAOF` works by writing a fresh snapshot of the current shard state and then truncating the shard's AOF back to its header before new writes continue. the truncated AOF starts with a checkpoint record that names the snapshot by its footer CRC. if the server stops after the snapshot is saved but before the AOF is truncated, recovery sees that the AOF's checkpoint names an older snapshot and skips it instead of applying its writes a second time.
 
