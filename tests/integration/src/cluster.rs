@@ -525,8 +525,6 @@ async fn cluster_redirect_followthrough() {
 /// gossip rounds, so every step polls under a deadline instead of sleeping
 /// a fixed amount.
 #[tokio::test]
-#[ignore = "automatic failover never starts: the node that detects the \
-            primary's failure does not act on it. re-enable with that fix"]
 async fn cluster_automatic_failover_promotes_replica() {
     use std::time::{Duration, Instant};
 
@@ -563,7 +561,6 @@ async fn cluster_automatic_failover_promotes_replica() {
         .await;
     cv.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
         .await;
-    drop(cv);
 
     // wait until gossip has delivered the primary's identity to the
     // replica, then attach it (REPLICATE rejects unknown node ids)
@@ -602,15 +599,20 @@ async fn cluster_automatic_failover_promotes_replica() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // a write accepted by the pre-failover primary, then WAIT until the
-    // replica actually acknowledges it. async replication is otherwise
-    // racy — a fixed sleep let the marker be unreplicated at crash time on
-    // slower runners (flaked on macos CI). WAIT returning >= 1 means the
-    // write is durably on the replica, so the post-failover check below is
-    // deterministic; if it can't be confirmed, we don't assert a guarantee
-    // the system didn't make.
+    // a write accepted by the pre-failover primary. wait until the replica
+    // can serve it before crashing the primary, so the check after the
+    // failover is deterministic. this reads the replica directly rather
+    // than trusting WAIT, whose offset accounting can report a write as
+    // replicated before the replica has applied it.
     c0.ok(&["SET", "failover:marker", "survives"]).await;
-    let marker_replicated = c0.get_int(&["WAIT", "1", "5000"]).await >= 1;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while c2.get_bulk(&["GET", "failover:marker"]).await.is_none() {
+        assert!(
+            Instant::now() <= deadline,
+            "the marker never reached the replica"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // crash the primary
     drop(c0);
@@ -640,6 +642,31 @@ async fn cluster_automatic_failover_promotes_replica() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
+    // the voter must learn about the promotion too, or it would keep
+    // redirecting clients to the dead primary
+    let replica_id = c2
+        .get_bulk(&["CLUSTER", "MYID"])
+        .await
+        .expect("MYID on replica");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let nodes = match cv.cmd(&["CLUSTER", "NODES"]).await {
+            Frame::Bulk(data) => String::from_utf8_lossy(&data).into_owned(),
+            other => panic!("unexpected CLUSTER NODES reply: {other:?}"),
+        };
+        let promoted_seen = nodes
+            .lines()
+            .any(|line| line.starts_with(&replica_id) && line.contains("master"));
+        if promoted_seen {
+            break;
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "voter never saw the promotion; CLUSTER NODES:\n{nodes}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     // promoted node must accept writes for slots the dead primary owned
     c2.ok(&["SET", "failover:after", "accepted"]).await;
     assert_eq!(
@@ -647,14 +674,11 @@ async fn cluster_automatic_failover_promotes_replica() {
         Some("accepted".into())
     );
 
-    // a write confirmed replicated (via WAIT) before the crash must survive
-    // promotion. writes that could not be confirmed are best-effort under
-    // async replication, so we only assert on the confirmed case.
-    if marker_replicated {
-        assert_eq!(
-            c2.get_bulk(&["GET", "failover:marker"]).await,
-            Some("survives".into()),
-            "a replication-confirmed write was lost during promotion"
-        );
-    }
+    // a write the replica already held before the crash must survive
+    // its promotion
+    assert_eq!(
+        c2.get_bulk(&["GET", "failover:marker"]).await,
+        Some("survives".into()),
+        "a replicated write was lost during promotion"
+    );
 }

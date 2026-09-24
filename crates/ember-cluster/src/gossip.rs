@@ -139,8 +139,10 @@ pub struct GossipEngine {
     next_seq: u64,
     /// Pending probes awaiting acknowledgment.
     pending_probes: HashMap<u64, PendingProbe>,
-    /// Channel for emitting events.
+    /// Channel the events go to. See [`GossipEngine::take_events`].
     event_tx: mpsc::Sender<GossipEvent>,
+    /// Events produced since the last `take_events` call.
+    pending_events: Vec<GossipEvent>,
     /// Slot ranges owned by the local node, included in Welcome replies.
     local_slots: Vec<SlotRange>,
     /// Active PingReq relays waiting for an Ack from the target.
@@ -181,6 +183,7 @@ impl GossipEngine {
             next_seq: 1,
             pending_probes: HashMap::new(),
             event_tx,
+            pending_events: Vec::new(),
             local_slots: Vec::new(),
             relay_pending: HashMap::new(),
         }
@@ -193,6 +196,16 @@ impl GossipEngine {
 
     /// Returns the local node's incarnation number.
     pub fn local_incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
+    /// Increments the local incarnation and returns the new value.
+    ///
+    /// Peers apply an update about this node only when its incarnation is
+    /// newer than the last one they saw, so a change to this node's own role
+    /// or slots must bump it first.
+    pub fn bump_incarnation(&mut self) -> u64 {
+        self.incarnation += 1;
         self.incarnation
     }
 
@@ -313,7 +326,7 @@ impl GossipEngine {
     /// produce a single reply back to `from`, but PingReq forwards a Ping
     /// to a different host, and relayed Acks route back to the original
     /// requester.
-    pub async fn handle_message(
+    pub fn handle_message(
         &mut self,
         msg: GossipMessage,
         from: SocketAddr,
@@ -325,7 +338,7 @@ impl GossipEngine {
                 updates,
             } => {
                 trace!("received ping seq={} from {}", seq, sender);
-                self.apply_updates(&updates).await;
+                self.apply_updates(&updates);
                 self.ensure_member(sender, from);
 
                 // Reply with ACK
@@ -383,7 +396,7 @@ impl GossipEngine {
                 updates,
             } => {
                 trace!("received ack seq={} from {}", seq, sender);
-                self.apply_updates(&updates).await;
+                self.apply_updates(&updates);
                 self.ensure_member(sender, from);
 
                 let mut outgoing = Vec::new();
@@ -394,7 +407,7 @@ impl GossipEngine {
                         == Some(MemberStatus::Suspect)
                     {
                         // Node recovered from suspicion
-                        self.mark_alive(probe.target).await;
+                        self.mark_alive(probe.target);
                     }
                 }
 
@@ -421,8 +434,7 @@ impl GossipEngine {
                 let sender_is_new = !self.members.contains_key(&sender);
                 self.ensure_member(sender, sender_addr);
                 if sender_is_new {
-                    self.emit(GossipEvent::MemberJoined(sender, sender_addr, Vec::new()))
-                        .await;
+                    self.emit(GossipEvent::MemberJoined(sender, sender_addr, Vec::new()));
                 }
 
                 // Broadcast alive update
@@ -478,8 +490,7 @@ impl GossipEngine {
                         .get(&sender)
                         .map(|m| m.slots.clone())
                         .unwrap_or_default();
-                    self.emit(GossipEvent::MemberJoined(sender, from, sender_slots))
-                        .await;
+                    self.emit(GossipEvent::MemberJoined(sender, from, sender_slots));
                 }
 
                 for member in members {
@@ -500,8 +511,7 @@ impl GossipEngine {
                             replicates: None,
                             slots: slots.clone(),
                         });
-                        self.emit(GossipEvent::MemberJoined(member.id, member.addr, slots))
-                            .await;
+                        self.emit(GossipEvent::MemberJoined(member.id, member.addr, slots));
                     }
                 }
                 vec![]
@@ -518,8 +528,7 @@ impl GossipEngine {
                     node: sender,
                     incarnation,
                     slots,
-                }])
-                .await;
+                }]);
                 vec![]
             }
         }
@@ -619,18 +628,27 @@ impl GossipEngine {
         });
     }
 
-    /// Sends a gossip event to the external event channel.
+    /// Records an event for the next [`take_events`](Self::take_events).
+    fn emit(&mut self, event: GossipEvent) {
+        self.pending_events.push(event);
+    }
+
+    /// Takes the events produced since the last call, with the channel they
+    /// go to.
     ///
-    /// Logs a warning when the channel is closed (receiver dropped). This
-    /// normally only happens during shutdown, so seeing the message in steady
-    /// state indicates a bug in the event consumer.
-    async fn emit(&self, event: GossipEvent) {
-        if self.event_tx.send(event).await.is_err() {
-            warn!("gossip event channel closed, dropping event");
+    /// The engine never sends events itself. Callers hold its lock while
+    /// they call `tick` or `handle_message`, and the event consumer takes
+    /// the same lock, so sending while locked could deadlock once the
+    /// channel fills. Callers release the lock, then call
+    /// [`PendingEvents::send`].
+    pub fn take_events(&mut self) -> PendingEvents {
+        PendingEvents {
+            tx: self.event_tx.clone(),
+            events: std::mem::take(&mut self.pending_events),
         }
     }
 
-    async fn apply_updates(&mut self, updates: &[NodeUpdate]) {
+    fn apply_updates(&mut self, updates: &[NodeUpdate]) {
         for update in updates {
             match update {
                 NodeUpdate::Alive {
@@ -664,7 +682,7 @@ impl GossipEngine {
                             if member.state != MemberStatus::Alive {
                                 member.state = MemberStatus::Alive;
                                 member.state_change = Instant::now();
-                                self.emit(GossipEvent::MemberAlive(*node)).await;
+                                self.emit(GossipEvent::MemberAlive(*node));
                             }
                         }
                     } else {
@@ -681,8 +699,7 @@ impl GossipEngine {
                                 slots: Vec::new(),
                             },
                         );
-                        self.emit(GossipEvent::MemberJoined(*node, *addr, Vec::new()))
-                            .await;
+                        self.emit(GossipEvent::MemberJoined(*node, *addr, Vec::new()));
                     }
                 }
 
@@ -711,7 +728,7 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Suspect;
                             member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberSuspected(*node)).await;
+                            self.emit(GossipEvent::MemberSuspected(*node));
                         }
                     }
                 }
@@ -739,7 +756,7 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Dead;
                             member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberFailed(*node)).await;
+                            self.emit(GossipEvent::MemberFailed(*node));
                         }
                     }
                 }
@@ -752,7 +769,7 @@ impl GossipEngine {
                         if member.state != MemberStatus::Left {
                             member.state = MemberStatus::Left;
                             member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberLeft(*node)).await;
+                            self.emit(GossipEvent::MemberLeft(*node));
                         }
                     }
                 }
@@ -786,7 +803,7 @@ impl GossipEngine {
                         false
                     };
                     if should_emit {
-                        self.emit(GossipEvent::SlotsChanged(*node, owned)).await;
+                        self.emit(GossipEvent::SlotsChanged(*node, owned));
                     }
                 }
 
@@ -812,8 +829,7 @@ impl GossipEngine {
                             member.incarnation = *incarnation;
                             member.is_primary = *is_primary;
                             member.replicates = *replicates;
-                            self.emit(GossipEvent::RoleChanged(*node, *is_primary, *replicates))
-                                .await;
+                            self.emit(GossipEvent::RoleChanged(*node, *is_primary, *replicates));
                         }
                     }
                 }
@@ -830,8 +846,7 @@ impl GossipEngine {
                             candidate: *candidate,
                             epoch: *epoch,
                             offset: *offset,
-                        })
-                        .await;
+                        });
                     }
                 }
 
@@ -844,19 +859,18 @@ impl GossipEngine {
                         from: *from,
                         candidate: *candidate,
                         epoch: *epoch,
-                    })
-                    .await;
+                    });
                 }
             }
         }
     }
 
-    async fn mark_alive(&mut self, node: NodeId) {
+    fn mark_alive(&mut self, node: NodeId) {
         if let Some(member) = self.members.get_mut(&node) {
             if member.state == MemberStatus::Suspect {
                 member.state = MemberStatus::Alive;
                 member.state_change = Instant::now();
-                self.emit(GossipEvent::MemberAlive(node)).await;
+                self.emit(GossipEvent::MemberAlive(node));
             }
         }
     }
@@ -906,6 +920,7 @@ impl GossipEngine {
                     node: target,
                     incarnation: inc,
                 });
+                self.emit(GossipEvent::MemberSuspected(target));
             }
         }
 
@@ -941,6 +956,7 @@ impl GossipEngine {
                     node: target,
                     incarnation,
                 });
+                self.emit(GossipEvent::MemberSuspected(target));
                 continue;
             }
 
@@ -1017,6 +1033,9 @@ impl GossipEngine {
                     node: id,
                     incarnation,
                 });
+                // this node reached the verdict itself, so act on it here
+                // rather than wait for a peer's Dead update to come back
+                self.emit(GossipEvent::MemberFailed(id));
             }
         }
     }
@@ -1036,6 +1055,26 @@ impl GossipEngine {
     fn collect_updates(&mut self) -> Vec<NodeUpdate> {
         let count = self.pending_updates.len().min(self.config.max_piggyback);
         self.pending_updates.drain(..count).collect()
+    }
+}
+
+/// Events taken from a [`GossipEngine`], ready to send once its lock is
+/// released.
+pub struct PendingEvents {
+    tx: mpsc::Sender<GossipEvent>,
+    events: Vec<GossipEvent>,
+}
+
+impl PendingEvents {
+    /// Sends the events in order. A closed channel normally means shutdown;
+    /// in steady state it points to a bug in the event consumer.
+    pub async fn send(self) {
+        for event in self.events {
+            if self.tx.send(event).await.is_err() {
+                warn!("gossip event channel closed, dropping event");
+                return;
+            }
+        }
     }
 }
 
@@ -1079,7 +1118,7 @@ mod tests {
             updates: vec![],
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
         assert_eq!(responses.len(), 1);
         assert!(matches!(responses[0].1, GossipMessage::Ack { .. }));
         assert_eq!(responses[0].0.port(), 6380);
@@ -1098,7 +1137,7 @@ mod tests {
             sender_addr: test_addr(6380),
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
         assert_eq!(responses.len(), 1);
         assert!(matches!(responses[0].1, GossipMessage::Welcome { .. }));
         assert_eq!(engine.alive_count(), 1);
@@ -1170,13 +1209,14 @@ mod tests {
             sender: remote,
             updates,
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // member should have updated slots
         let member = engine.members.get(&remote).unwrap();
         assert_eq!(member.slots, slots);
 
         // should have emitted a SlotsChanged event
+        engine.take_events().send().await;
         let event = rx.try_recv().unwrap();
         assert!(matches!(event, GossipEvent::SlotsChanged(id, _) if id == remote));
     }
@@ -1213,13 +1253,14 @@ mod tests {
                 slots: vec![],
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // slots should NOT have been cleared
         let member = engine.members.get(&remote).unwrap();
         assert_eq!(member.slots.len(), 1);
 
         // no SlotsChanged event should have been emitted
+        engine.take_events().send().await;
         assert!(rx.try_recv().is_err());
     }
 
@@ -1237,7 +1278,7 @@ mod tests {
             sender_addr: test_addr(6380),
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
         assert_eq!(responses.len(), 1);
         match &responses[0].1 {
             GossipMessage::Welcome { members, .. } => {
@@ -1270,7 +1311,7 @@ mod tests {
             }],
         };
 
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // member should be added with slots
         let member = engine.members.get(&member_id).unwrap();
@@ -1280,6 +1321,7 @@ mod tests {
         // then for each new member in the members list.
         // Drain until we find the one for member_id.
         let mut found = false;
+        engine.take_events().send().await;
         while let Ok(event) = rx.try_recv() {
             if let GossipEvent::MemberJoined(id, _, s) = event {
                 if id == member_id {
@@ -1346,7 +1388,7 @@ mod tests {
             target_addr,
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
 
         // should forward a Ping to the target address
         assert_eq!(responses.len(), 1);
@@ -1375,7 +1417,7 @@ mod tests {
             target,
             target_addr,
         };
-        let responses = engine.handle_message(msg, requester_addr).await;
+        let responses = engine.handle_message(msg, requester_addr);
         let relay_seq = match &responses[0].1 {
             GossipMessage::Ping { seq, .. } => *seq,
             other => panic!("expected Ping, got {other:?}"),
@@ -1388,7 +1430,7 @@ mod tests {
             sender: target_sender,
             updates: vec![],
         };
-        let responses = engine.handle_message(ack, target_addr).await;
+        let responses = engine.handle_message(ack, target_addr);
 
         // should forward an Ack with the original seq back to the requester
         assert_eq!(responses.len(), 1);
@@ -1481,7 +1523,7 @@ mod tests {
                 replicates: Some(primary),
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         let member = engine.members.get(&remote).unwrap();
         assert!(!member.is_primary);
@@ -1490,6 +1532,7 @@ mod tests {
 
         // should have emitted RoleChanged
         let mut found = false;
+        engine.take_events().send().await;
         while let Ok(event) = rx.try_recv() {
             if let GossipEvent::RoleChanged(id, is_primary, replicates) = event {
                 if id == remote {
@@ -1535,7 +1578,7 @@ mod tests {
                 replicates: None,
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // member should still be primary
         let member = engine.members.get(&remote).unwrap();
@@ -1543,6 +1586,7 @@ mod tests {
 
         // drain events (MemberAlive from the Ping sender, but no RoleChanged)
         let mut role_changed = false;
+        engine.take_events().send().await;
         while let Ok(event) = rx.try_recv() {
             if matches!(event, GossipEvent::RoleChanged(..)) {
                 role_changed = true;
@@ -1574,7 +1618,7 @@ mod tests {
                 incarnation: MAX_INCARNATION_JUMP + 1,
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // incarnation should NOT have changed
         let member = engine.members.get(&remote).unwrap();
@@ -1603,7 +1647,7 @@ mod tests {
                 incarnation: MAX_INCARNATION_JUMP,
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         let member = engine.members.get(&remote).unwrap();
         assert_eq!(

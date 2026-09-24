@@ -858,14 +858,13 @@ impl ClusterCoordinator {
             state.update_health();
         }
 
-        // queue role change for epidemic dissemination
-        let incarnation = {
+        // queue the role change for gossip, under a new incarnation so
+        // peers do not discard it as already seen
+        {
             let mut gossip = self.gossip.lock().await;
-            let inc = gossip.local_incarnation();
-            gossip.queue_role_update(self.local_id, inc, false, Some(primary_id));
-            inc
-        };
-        let _ = incarnation; // used only to hold the lock briefly
+            let incarnation = gossip.bump_incarnation();
+            gossip.queue_role_update(self.local_id, incarnation, false, Some(primary_id));
+        }
 
         self.save_config().await;
 
@@ -1197,11 +1196,25 @@ impl ClusterCoordinator {
         Frame::Simple("OK".into())
     }
 
-    /// Queues a role-change gossip announcement marking this node as primary.
+    /// Tells the cluster this node is now a primary and which slots it owns.
+    ///
+    /// The incarnation is bumped first: peers had already seen the current
+    /// one on this node's earlier role update and would ignore a new update
+    /// that reused it. The slots go straight to every peer as well, so no
+    /// peer keeps routing them to the old primary.
     async fn announce_promotion(&self) {
-        let mut gossip = self.gossip.lock().await;
-        let inc = gossip.local_incarnation();
-        gossip.queue_role_update(self.local_id, inc, true, None);
+        let slots = self
+            .state
+            .read()
+            .await
+            .slot_map
+            .slots_for_node(self.local_id);
+        {
+            let mut gossip = self.gossip.lock().await;
+            let incarnation = gossip.bump_incarnation();
+            gossip.queue_role_update(self.local_id, incarnation, true, None);
+        }
+        self.broadcast_local_slots(slots).await;
     }
 
     /// Attaches the engine so replication can start on demand.
@@ -1413,8 +1426,14 @@ impl ClusterCoordinator {
             loop {
                 tokio::select! {
                     _ = tick_interval.tick() => {
-                        let mut gossip = coordinator.gossip.lock().await;
-                        for (target_addr, msg) in gossip.tick() {
+                        // take events while locked, send them after the lock
+                        // is released: the event consumer takes this lock too
+                        let (outgoing, events) = {
+                            let mut gossip = coordinator.gossip.lock().await;
+                            (gossip.tick(), gossip.take_events())
+                        };
+                        events.send().await;
+                        for (target_addr, msg) in outgoing {
                             let encoded = match &coordinator.secret {
                                 Some(s) => msg.encode_authenticated(s),
                                 None => msg.encode(),
@@ -1434,8 +1453,12 @@ impl ClusterCoordinator {
                                 };
                                 match decode_result {
                                     Ok(msg) => {
-                                        let mut gossip = coordinator.gossip.lock().await;
-                                        for (addr, reply) in gossip.handle_message(msg, from).await {
+                                        let (replies, events) = {
+                                            let mut gossip = coordinator.gossip.lock().await;
+                                            (gossip.handle_message(msg, from), gossip.take_events())
+                                        };
+                                        events.send().await;
+                                        for (addr, reply) in replies {
                                             let encoded = match &coordinator.secret {
                                                 Some(s) => reply.encode_authenticated(s),
                                                 None => reply.encode(),
