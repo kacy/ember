@@ -75,6 +75,18 @@ pub(super) fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
     }
 }
 
+/// Drops waiters whose clients timed out or disconnected, and the keys left
+/// with none. Waiters are otherwise only cleaned up when their key gets a
+/// push, so clients blocking on keys that never receive one would pile up.
+pub(super) fn prune_waiters(
+    waiters: &mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
+) {
+    waiters.retain(|_, queue| {
+        queue.retain(|waiter| !waiter.is_closed());
+        !queue.is_empty()
+    });
+}
+
 /// Pops one element into a blocked client's reserved slot and logs the pop
 /// to the AOF and replication stream. Returns `false`, sending nothing,
 /// when the list is empty or holds another type.
@@ -120,6 +132,23 @@ fn pop_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prune_waiters_drops_closed_clients_and_empty_keys() {
+        let mut waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
+        let (live, _live_rx) = mpsc::channel(1);
+        let (gone, gone_rx) = mpsc::channel(1);
+        drop(gone_rx);
+        waiters
+            .entry("kept".into())
+            .or_default()
+            .extend([live, gone.clone()]);
+        waiters.entry("dropped".into()).or_default().push_back(gone);
+
+        prune_waiters(&mut waiters);
+        assert_eq!(waiters.len(), 1);
+        assert_eq!(waiters["kept"].len(), 1);
+    }
 
     #[tokio::test]
     async fn blpop_immediate_when_list_has_data() {
@@ -206,6 +235,49 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(resp, ShardResponse::Len(1)), "{resp:?}");
+    }
+
+    #[tokio::test]
+    async fn lmove_into_a_waited_key_wakes_the_client() {
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+        let (tx, mut rx) = mpsc::channel(1);
+        let _ = handle
+            .dispatch(ShardRequest::BLPop {
+                key: "dst".into(),
+                waiter: tx,
+            })
+            .await;
+        handle
+            .send(ShardRequest::RPush {
+                key: "src".into(),
+                values: vec![Bytes::from("job")],
+            })
+            .await
+            .unwrap();
+        handle
+            .send(ShardRequest::LMove {
+                source: "src".into(),
+                destination: "dst".into(),
+                src_left: true,
+                dst_left: false,
+            })
+            .await
+            .unwrap();
+
+        let (key, data) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("LMOVE did not wake the blocked client")
+            .unwrap();
+        assert_eq!((key.as_str(), data), ("dst", Bytes::from("job")));
     }
 
     #[tokio::test]
