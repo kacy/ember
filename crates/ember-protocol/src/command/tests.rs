@@ -3314,6 +3314,35 @@ fn primary_key_returns_first_key() {
     assert_eq!(Command::DbSize.primary_key(), None);
 }
 
+#[test]
+fn keys_lists_every_key_in_argument_order() {
+    let keys = |parts: &[&str]| -> Vec<String> {
+        Command::from_frame(cmd(parts))
+            .unwrap()
+            .keys()
+            .iter()
+            .map(str::to_owned)
+            .collect()
+    };
+    // commands the old hand-written lists missed
+    assert_eq!(keys(&["SETBIT", "b", "7", "1"]), ["b"]);
+    assert_eq!(keys(&["GETDEL", "k"]), ["k"]);
+    assert_eq!(
+        keys(&["LMOVE", "src", "dst", "LEFT", "RIGHT"]),
+        ["src", "dst"]
+    );
+    assert_eq!(keys(&["BITOP", "AND", "d", "a", "b"]), ["d", "a", "b"]);
+    assert_eq!(keys(&["SUNIONSTORE", "d", "a", "b"]), ["d", "a", "b"]);
+    assert_eq!(keys(&["ZINTER", "2", "a", "b"]), ["a", "b"]);
+    assert_eq!(keys(&["MSET", "a", "1", "b", "2"]), ["a", "b"]);
+    assert_eq!(keys(&["SORT", "l", "STORE", "out"]), ["l", "out"]);
+    assert_eq!(keys(&["WATCH", "a", "b"]), ["a", "b"]);
+    // keyless commands, including one that only names a key
+    assert!(keys(&["PING"]).is_empty());
+    assert!(keys(&["CLUSTER", "KEYSLOT", "k"]).is_empty());
+    assert!(keys(&["KEYS", "*"]).is_empty());
+}
+
 // --- client ---
 
 #[test]

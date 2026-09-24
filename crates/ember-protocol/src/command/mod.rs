@@ -1000,6 +1000,7 @@ pub struct ZAddFlags {
 impl Eq for ZAddFlags {}
 
 mod attributes;
+pub use attributes::CommandKeys;
 mod parse;
 pub mod table;
 #[cfg(test)]
