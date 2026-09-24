@@ -64,18 +64,33 @@ where
     R: AsyncReadExt + Unpin,
     T: for<'de> Deserialize<'de>,
 {
-    let mut len_buf = [0u8; 4];
-    r.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
+    let data = read_body(r).await?;
+    postcard::from_bytes(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Reads a frame's length prefix and body. The buffer grows as bytes
+/// arrive instead of being sized from the prefix, so a peer that claims a
+/// large frame and sends nothing costs no memory.
+async fn read_body<R>(r: &mut R) -> io::Result<Vec<u8>>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let len = r.read_u32().await? as usize;
     if len > MAX_RAFT_FRAME_SIZE {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("raft frame size {len} exceeds limit {MAX_RAFT_FRAME_SIZE}"),
         ));
     }
-    let mut data = vec![0u8; len];
-    r.read_exact(&mut data).await?;
-    postcard::from_bytes(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    let mut body = Vec::new();
+    r.take(len as u64).read_to_end(&mut body).await?;
+    if body.len() < len {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "raft frame ended early",
+        ));
+    }
+    Ok(body)
 }
 
 /// Writes a length-prefixed frame with an appended HMAC-SHA256 tag.
@@ -110,25 +125,14 @@ where
     R: AsyncReadExt + Unpin,
     T: for<'de> Deserialize<'de>,
 {
-    let mut len_buf = [0u8; 4];
-    r.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > MAX_RAFT_FRAME_SIZE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("raft frame size {len} exceeds limit {MAX_RAFT_FRAME_SIZE}"),
-        ));
-    }
-    if len < TAG_LEN {
+    let buf = read_body(r).await?;
+    let Some(payload_len) = buf.len().checked_sub(TAG_LEN) else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "raft frame too short for auth tag",
         ));
-    }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
-
-    let (payload, tag) = buf.split_at(len - TAG_LEN);
+    };
+    let (payload, tag) = buf.split_at(payload_len);
     if !secret.verify(payload, tag) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -136,4 +140,35 @@ where
         ));
     }
     postcard::from_bytes(payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frame_round_trips() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &(7u64, "vote".to_string()))
+            .await
+            .unwrap();
+        let got: (u64, String) = read_frame(&mut buf.as_slice()).await.unwrap();
+        assert_eq!(got, (7, "vote".to_string()));
+    }
+
+    #[tokio::test]
+    async fn frame_shorter_than_its_length_fails() {
+        // claims the largest allowed frame, then sends three bytes
+        let mut buf = (MAX_RAFT_FRAME_SIZE as u32).to_be_bytes().to_vec();
+        buf.extend_from_slice(b"abc");
+        let err = read_frame::<_, u64>(&mut buf.as_slice()).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn oversized_frame_is_rejected() {
+        let buf = (MAX_RAFT_FRAME_SIZE as u32 + 1).to_be_bytes();
+        let err = read_frame::<_, u64>(&mut buf.as_slice()).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
 }

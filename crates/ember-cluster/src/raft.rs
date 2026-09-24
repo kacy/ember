@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use openraft::error::{
     ClientWriteError, InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable,
@@ -27,7 +28,7 @@ use openraft::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, RwLock, Semaphore};
 use tracing::{debug, warn};
 
 use crate::raft_log::{RaftDisk, RaftDiskError};
@@ -760,6 +761,15 @@ impl RaftNetworkFactoryTrait<TypeConfig> for RaftNetworkFactory {
 /// Reads one `RaftRpc` frame, dispatches to the local Raft instance,
 /// writes one `RaftRpcResponse` frame, then closes the connection.
 /// When `secret` is `Some`, authenticated framing is used.
+/// Most Raft connections served at once. Each carries one RPC, and a
+/// cluster needs a few per peer, so more than this points to a flood.
+const MAX_RAFT_CONNECTIONS: usize = 64;
+
+/// How long a peer has to send its request before the connection is
+/// dropped. Snapshots can be up to 10 MB, which takes well under this on
+/// any link a cluster should run on.
+const RAFT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) fn spawn_raft_listener(
     raft: Raft<TypeConfig>,
     bind_addr: SocketAddr,
@@ -775,6 +785,7 @@ pub(crate) fn spawn_raft_listener(
         };
 
         tracing::info!("raft listener on {bind_addr}");
+        let permits = Arc::new(Semaphore::new(MAX_RAFT_CONNECTIONS));
 
         loop {
             let (mut stream, peer) = match listener.accept().await {
@@ -784,25 +795,31 @@ pub(crate) fn spawn_raft_listener(
                     continue;
                 }
             };
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
+                debug!("too many raft connections, dropping {peer}");
+                continue;
+            };
 
             let raft = raft.clone();
             let secret = secret.clone();
             tokio::spawn(async move {
-                let rpc: RaftRpc = match &secret {
-                    Some(s) => match read_frame_authenticated(&mut stream, s).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            debug!("raft auth/read error from {peer}: {e}");
-                            return;
-                        }
-                    },
-                    None => match read_frame(&mut stream).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            debug!("raft read error from {peer}: {e}");
-                            return;
-                        }
-                    },
+                let _permit = permit;
+                let read = async {
+                    match &secret {
+                        Some(s) => read_frame_authenticated(&mut stream, s).await,
+                        None => read_frame(&mut stream).await,
+                    }
+                };
+                let rpc: RaftRpc = match tokio::time::timeout(RAFT_READ_TIMEOUT, read).await {
+                    Ok(Ok(rpc)) => rpc,
+                    Ok(Err(e)) => {
+                        debug!("raft read error from {peer}: {e}");
+                        return;
+                    }
+                    Err(_) => {
+                        debug!("raft request from {peer} timed out");
+                        return;
+                    }
                 };
 
                 let response = match rpc {
