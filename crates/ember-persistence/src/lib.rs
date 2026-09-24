@@ -7,5 +7,6 @@ pub mod aof;
 #[cfg(feature = "encryption")]
 pub mod encryption;
 pub mod format;
+pub mod manifest;
 pub mod recovery;
 pub mod snapshot;
