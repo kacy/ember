@@ -101,6 +101,10 @@ pub struct RecoveryResult {
     pub loaded_snapshot: bool,
     /// Whether an AOF was replayed.
     pub replayed_aof: bool,
+    /// The AOF was written before the loaded snapshot, so it was skipped.
+    /// The caller must rewrite it before appending: otherwise the next
+    /// recovery would skip the new writes too.
+    pub stale_aof: bool,
     /// Schemas found in the AOF, deduplicated by name (last wins).
     /// Each entry is `(schema_name, descriptor_bytes)`.
     #[cfg(feature = "protobuf")]
@@ -138,18 +142,21 @@ fn recover_shard_impl(
     let mut map: HashMap<String, (RecoveredValue, i64)> = HashMap::new();
     let mut loaded_snapshot = false;
     let mut replayed_aof = false;
+    let mut stale_aof = false;
     #[cfg(feature = "protobuf")]
     let mut schema_map: HashMap<String, Bytes> = HashMap::new();
 
     // step 1: load snapshot
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
+    let mut snapshot_crc = None;
     if snap_path.exists() {
         match load_snapshot(&snap_path, shard_id, encryption_key) {
-            Ok(entries) => {
+            Ok((entries, crc)) => {
                 for (key, value, ttl_ms) in entries {
                     map.insert(key, (RecoveredValue::from(value), ttl_ms));
                 }
                 loaded_snapshot = true;
+                snapshot_crc = Some(crc);
             }
             Err(e) => {
                 warn!(shard_id, "failed to load snapshot, starting empty: {e}");
@@ -171,14 +178,14 @@ fn recover_shard_impl(
         match replay_aof(
             &aof_path,
             &mut map,
+            (&snapshot_state, snapshot_crc),
             encryption_key,
             #[cfg(feature = "protobuf")]
             &mut schema_map,
         ) {
-            Ok(count) => {
-                if count > 0 {
-                    replayed_aof = true;
-                }
+            Ok(replay) => {
+                replayed_aof = replay.count > 0;
+                stale_aof = replay.stale;
             }
             Err(e) => {
                 map = snapshot_state;
@@ -220,18 +227,22 @@ fn recover_shard_impl(
         entries,
         loaded_snapshot,
         replayed_aof,
+        stale_aof,
         #[cfg(feature = "protobuf")]
         schemas: schema_map.into_iter().collect(),
     }
 }
 
-/// Loads entries from a snapshot file.
-/// Returns (key, value, ttl_ms) where ttl_ms is -1 for no expiry.
+/// A snapshot entry as (key, value, ttl_ms), where ttl_ms is -1 for no expiry.
+type LoadedEntry = (String, SnapValue, i64);
+
+/// Loads entries from a snapshot file. Also returns the snapshot's footer
+/// CRC, which the AOF's checkpoint record refers to.
 fn load_snapshot(
     path: &Path,
     expected_shard_id: u16,
     #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
-) -> Result<Vec<(String, SnapValue, i64)>, FormatError> {
+) -> Result<(Vec<LoadedEntry>, u32), FormatError> {
     #[cfg(feature = "encryption")]
     let mut reader = if let Some(key) = encryption_key {
         SnapshotReader::open_encrypted(path, key.clone())?
@@ -267,8 +278,8 @@ fn load_snapshot(
         entries.push((entry.key, entry.value, ttl));
     }
 
-    reader.verify_footer()?;
-    Ok(entries)
+    let crc = reader.verify_footer()?;
+    Ok((entries, crc))
 }
 
 /// Applies an increment/decrement to a recovered entry. If the key doesn't
@@ -309,12 +320,34 @@ fn apply_incr(map: &mut HashMap<String, (RecoveredValue, i64)>, key: String, del
 
 /// Replays AOF records into the in-memory map. Returns the number of
 /// records replayed. TTL is stored as remaining ms (-1 = no expiry).
+/// What [`replay_aof`] did.
+struct Replay {
+    /// Records applied.
+    count: usize,
+    /// The AOF came before the snapshot and was skipped.
+    stale: bool,
+}
+
+/// Recovered keys: name to (value, ttl_ms).
+type RecoveredMap = HashMap<String, (RecoveredValue, i64)>;
+
+/// Replays the AOF on top of the snapshot state in `map`. `snapshot` is
+/// that state and the snapshot's CRC, used when the AOF has checkpoints:
+///
+/// - A checkpoint for the loaded snapshot means the records before it are
+///   already in the snapshot, so `map` goes back to the snapshot state.
+/// - An AOF that starts with a checkpoint for another snapshot, and never
+///   reaches one for the loaded snapshot, came before it. A crash hit
+///   after the snapshot was saved and before the AOF was truncated.
 fn replay_aof(
     path: &Path,
-    map: &mut HashMap<String, (RecoveredValue, i64)>,
+    map: &mut RecoveredMap,
+    snapshot: (&RecoveredMap, Option<u32>),
     #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
     #[cfg(feature = "protobuf")] schema_map: &mut HashMap<String, Bytes>,
-) -> Result<usize, FormatError> {
+) -> Result<Replay, FormatError> {
+    let (snapshot_state, snapshot_crc) = snapshot;
+    let mut stale = false;
     #[cfg(feature = "encryption")]
     let mut reader = if let Some(key) = encryption_key {
         AofReader::open_encrypted(path, key.clone())?
@@ -698,6 +731,14 @@ fn replay_aof(
                 }
             },
             AofRecord::FlushAll => map.clear(),
+            AofRecord::Checkpoint { snapshot_crc: crc } => match snapshot_crc {
+                Some(loaded) if loaded == crc => {
+                    map.clone_from(snapshot_state);
+                    stale = false;
+                }
+                Some(_) if count == 0 => stale = true,
+                _ => {}
+            },
             AofRecord::Restore { key, ttl_ms, data } => {
                 let value = snapshot::deserialize_snap_value(&data)?;
                 let ttl = if ttl_ms == 0 {
@@ -849,7 +890,11 @@ fn replay_aof(
     }
 
     truncate_torn_tail(path, reader.valid_len())?;
-    Ok(count)
+    if stale {
+        warn!("aof was written before the snapshot; skipping its records");
+        map.clone_from(snapshot_state);
+    }
+    Ok(Replay { count, stale })
 }
 
 /// Cuts off a partial record left at the end of the AOF by a crash.
@@ -992,6 +1037,74 @@ mod tests {
         assert_eq!(sorted_keys(&result), ["kept"]);
         let ttl = result.entries[0].ttl.expect("kept has a ttl");
         assert!(ttl <= Duration::from_secs(60) && ttl > Duration::from_secs(50));
+    }
+
+    /// Writes a snapshot of `n = 10` for shard 0 and returns its CRC.
+    fn write_counter_snapshot(dir: &Path) -> u32 {
+        let mut writer = SnapshotWriter::create(snapshot::snapshot_path(dir, 0), 0).unwrap();
+        writer
+            .write_entry(&SnapEntry {
+                key: "n".into(),
+                value: SnapValue::String(Bytes::from("10")),
+                expire_ms: -1,
+            })
+            .unwrap();
+        writer.finish().unwrap()
+    }
+
+    fn counter(result: &RecoveryResult) -> Bytes {
+        match &result.entries.iter().find(|e| e.key == "n").unwrap().value {
+            RecoveredValue::String(b) => b.clone(),
+            other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    fn incr() -> AofRecord {
+        AofRecord::Incr { key: "n".into() }
+    }
+
+    fn checkpoint(snapshot_crc: u32) -> AofRecord {
+        AofRecord::Checkpoint { snapshot_crc }
+    }
+
+    #[test]
+    fn aof_after_its_snapshot_is_replayed() {
+        let dir = temp_dir();
+        let crc = write_counter_snapshot(dir.path());
+        write_aof(dir.path(), &[checkpoint(crc), incr()]);
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(counter(&result), "11");
+        assert!(!result.stale_aof);
+    }
+
+    #[test]
+    fn aof_from_before_the_snapshot_is_skipped() {
+        // the snapshot was saved, then the server stopped before the AOF
+        // was truncated. its INCR is already in the snapshot.
+        let dir = temp_dir();
+        let crc = write_counter_snapshot(dir.path());
+        write_aof(dir.path(), &[checkpoint(crc ^ 1), incr()]);
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(counter(&result), "10");
+        assert!(result.stale_aof);
+    }
+
+    #[test]
+    fn checkpoint_mid_file_drops_the_records_before_it() {
+        // truncating failed after the snapshot, so a checkpoint was
+        // appended to the old AOF instead
+        let dir = temp_dir();
+        let crc = write_counter_snapshot(dir.path());
+        write_aof(
+            dir.path(),
+            &[checkpoint(crc ^ 1), incr(), checkpoint(crc), incr()],
+        );
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(counter(&result), "11");
+        assert!(!result.stale_aof);
     }
 
     #[test]

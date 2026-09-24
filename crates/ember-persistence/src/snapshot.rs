@@ -531,8 +531,9 @@ impl SnapshotWriter {
     }
 
     /// Finalizes the snapshot: writes the footer CRC, flushes, and
-    /// atomically renames the temp file to the final path.
-    pub fn finish(mut self) -> Result<(), FormatError> {
+    /// atomically renames the temp file to the final path. Returns the
+    /// footer CRC, which identifies this snapshot.
+    pub fn finish(mut self) -> Result<u32, FormatError> {
         // write footer CRC — clone the hasher so we don't move out of self
         let checksum = self.hasher.clone().finalize();
         format::write_u32(&mut self.writer, checksum)?;
@@ -563,7 +564,7 @@ impl SnapshotWriter {
         }
 
         self.finished = true;
-        Ok(())
+        Ok(checksum)
     }
 }
 
@@ -885,13 +886,14 @@ impl SnapshotReader {
         }))
     }
 
-    /// Verifies the footer CRC32 after all entries have been read.
-    /// Must be called after reading all entries.
-    pub fn verify_footer(self) -> Result<(), FormatError> {
+    /// Verifies the footer CRC32 after all entries have been read, and
+    /// returns it. Must be called after reading all entries.
+    pub fn verify_footer(self) -> Result<u32, FormatError> {
         let expected = self.hasher.finalize();
         let mut reader = self.reader;
         let stored = format::read_u32(&mut reader)?;
-        format::verify_crc32_values(expected, stored)
+        format::verify_crc32_values(expected, stored)?;
+        Ok(stored)
     }
 }
 

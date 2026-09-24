@@ -808,6 +808,7 @@ async fn run_shard(prepared: PreparedShard) {
     }
 
     // -- recovery --
+    let mut stale_aof = false;
     if let Some(ref pcfg) = persistence {
         #[cfg(feature = "encryption")]
         let result = if let Some(ref key) = pcfg.encryption_key {
@@ -817,6 +818,7 @@ async fn run_shard(prepared: PreparedShard) {
         };
         #[cfg(not(feature = "encryption"))]
         let result = recovery::recover_shard(&pcfg.data_dir, shard_id);
+        stale_aof = result.stale_aof;
         let count = result.entries.len();
         for entry in result.entries {
             let value = match entry.value {
@@ -921,11 +923,12 @@ async fn run_shard(prepared: PreparedShard) {
         _ => None,
     };
 
-    // encryption was turned on or off since the AOF was written. recovery
-    // already loaded its contents, so save them as a snapshot and start the
-    // AOF over in the new format before anything is appended.
-    if aof_writer.as_ref().is_some_and(AofWriter::needs_rewrite) {
-        info!(shard_id, "aof format changed, rewriting it from a snapshot");
+    // the AOF is in another format, since encryption was turned on or off,
+    // or recovery skipped it as older than the snapshot. either way its
+    // contents are loaded, so save them as a snapshot and start the AOF
+    // over before anything is appended.
+    if stale_aof || aof_writer.as_ref().is_some_and(AofWriter::needs_rewrite) {
+        info!(shard_id, "rewriting the aof from a snapshot");
         if let ShardResponse::Err(e) = persistence::handle_snapshot(
             &keyspace,
             &persistence,
@@ -934,10 +937,7 @@ async fn run_shard(prepared: PreparedShard) {
             #[cfg(feature = "protobuf")]
             &schema_registry,
         ) {
-            error!(
-                shard_id,
-                "aof rewrite after a format change failed, not writing to it: {e}"
-            );
+            error!(shard_id, "aof rewrite failed, not writing to it: {e}");
             aof_writer = None;
         }
     }

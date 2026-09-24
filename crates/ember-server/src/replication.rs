@@ -891,6 +891,8 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             replace: *replace,
         }),
         AofRecord::FlushAll => Some(ShardRequest::FlushDb),
+        // only written to AOF files, never sent to replicas
+        AofRecord::Checkpoint { .. } => None,
         AofRecord::Restore { key, ttl_ms, data } => Some(ShardRequest::RestoreKey {
             key: key.clone(),
             ttl_ms: *ttl_ms,
