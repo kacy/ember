@@ -628,6 +628,7 @@ pub async fn run_threaded(
         coordinator
             .start_replication_server(Arc::clone(&replica_tracker))
             .await;
+        coordinator.resume_replication().await;
     }
 
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);

@@ -605,15 +605,15 @@ pub(super) fn log_aof_error(
 pub(super) fn broadcast_replication(
     record: AofRecord,
     replication_tx: &Option<broadcast::Sender<ReplicationEvent>>,
-    replication_offset: &mut u64,
+    replication_offset: &AtomicU64,
     shard_id: u16,
 ) {
     if let Some(ref tx) = *replication_tx {
-        *replication_offset += 1;
+        let offset = replication_offset.fetch_add(1, Ordering::Release) + 1;
         if tx
             .send(ReplicationEvent {
                 shard_id,
-                offset: *replication_offset,
+                offset,
                 record,
             })
             .is_err()

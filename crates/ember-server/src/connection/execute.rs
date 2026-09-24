@@ -178,7 +178,7 @@ pub(super) async fn execute(
         Command::Wait {
             numreplicas,
             timeout_ms,
-        } => exec::server::handle_wait(ctx, numreplicas, timeout_ms).await,
+        } => exec::server::handle_wait(ctx, engine, numreplicas, timeout_ms).await,
         Command::FlushDb { async_mode } => exec::server::flushdb(async_mode, &cx).await,
         Command::FlushAll { async_mode } => exec::server::flushall(async_mode, &cx).await,
         Command::SlowLogGet { count } => exec::server::slowlog_get(count, &cx),

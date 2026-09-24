@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ember_core::{KeyspaceStats, ShardRequest, ShardResponse};
+use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse};
 use ember_protocol::Frame;
 
 use crate::connection_common::{get_rss_bytes, human_bytes};
@@ -186,10 +186,10 @@ pub(in crate::connection) fn slowlog_reset(cx: &ExecCtx<'_>) -> Frame {
 /// immediately without sleeping.
 pub(in crate::connection) async fn handle_wait(
     ctx: &Arc<ServerContext>,
+    engine: &Engine,
     numreplicas: u64,
     timeout_ms: u64,
 ) -> Frame {
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     let needed = numreplicas as usize;
@@ -200,10 +200,12 @@ pub(in crate::connection) async fn handle_wait(
         return Frame::Integer(0);
     }
 
-    let target = tracker.write_offset.load(Ordering::Relaxed);
+    // every write this client has had a reply for is already counted in
+    // the shards' offsets, so reaching them means those writes arrived
+    let target = engine.replication_offsets();
 
     // fast path: already satisfied or no timeout needed
-    let count = tracker.count_at_or_above(target);
+    let count = tracker.count_caught_up(&target);
     if count >= needed || timeout_ms == 0 {
         return Frame::Integer(count as i64);
     }
@@ -212,7 +214,7 @@ pub(in crate::connection) async fn handle_wait(
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
-        let c = tracker.count_at_or_above(target);
+        let c = tracker.count_caught_up(&target);
         if c >= needed || tokio::time::Instant::now() >= deadline {
             return Frame::Integer(c as i64);
         }

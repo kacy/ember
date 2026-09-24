@@ -24,9 +24,15 @@
 //! // Incremental records (unbounded stream):
 //! [MSG_RECORD: 1B][shard_id: 2B][offset: 8B][record_len: 4B][record_bytes]
 //!
+//! // Replica → primary, after applying each record:
+//! [MSG_ACK: 1B][shard_id: 2B][offset: 8B]
+//!
 //! // When replica falls behind (broadcast lag):
 //! [MSG_RESYNC: 1B]    primary closes the connection; replica reconnects
 //! ```
+//!
+//! Offsets count replication events per shard. A snapshot's offset is the
+//! last event it contains, so the replica skips records at or below it.
 
 use std::collections::HashMap;
 use std::io;
@@ -38,7 +44,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use ember_core::{Engine, ShardRequest, ShardResponse};
 use ember_persistence::aof::AofRecord;
-use ember_persistence::snapshot::{self, SnapValue};
+use ember_persistence::snapshot;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast;
@@ -46,7 +52,8 @@ use tracing::{debug, error, info, warn};
 
 // -- protocol constants --
 
-const REPL_VERSION: u8 = 1;
+/// Version 2 sends real snapshot offsets and acknowledges `(shard, offset)`.
+const REPL_VERSION: u8 = 2;
 const STATUS_OK: u8 = 0;
 const STATUS_SHARD_MISMATCH: u8 = 1;
 
@@ -56,81 +63,87 @@ const MSG_RECORD: u8 = 4;
 const MSG_RESYNC: u8 = 5;
 const MSG_ACK: u8 = 6;
 
-/// Tracks per-replica acknowledged write offsets for the WAIT command.
+/// Tracks each replica's acknowledged offset per shard for WAIT.
 ///
-/// The primary increments `write_offset` for each record forwarded to
-/// replicas. Each replica sends back MSG_ACK frames reporting its
-/// current offset. WAIT polls `count_at_or_above(target)` with a
-/// deadline to determine when enough replicas are in sync.
+/// A replica starts at the offsets of the snapshot it received and moves
+/// forward as it acknowledges records. WAIT compares these against the
+/// shards' current offsets from [`Engine::replication_offsets`].
 #[derive(Debug)]
 pub struct ReplicaTracker {
-    /// Monotonically increasing counter of records forwarded by this primary.
-    pub write_offset: AtomicU64,
-    /// Per-replica last acknowledged offset. Keyed by a u64 replica ID
-    /// assigned sequentially at connection time.
-    offsets: Mutex<HashMap<u64, u64>>,
-    /// Next replica ID to assign.
+    /// Acknowledged offset of each shard, per replica. Keyed by an id
+    /// assigned when the replica connects.
+    acked: Mutex<HashMap<u64, Vec<u64>>>,
     next_id: AtomicU64,
 }
 
 impl ReplicaTracker {
     pub fn new() -> Self {
         Self {
-            write_offset: AtomicU64::new(0),
-            offsets: Mutex::new(HashMap::new()),
+            acked: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
         }
     }
 
-    /// Registers a new replica connection. Returns its unique ID.
-    pub fn register(&self) -> u64 {
+    /// Registers a replica that loaded snapshots at `snapshot_offsets`.
+    /// Returns its id.
+    pub fn register(&self, snapshot_offsets: Vec<u64>) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        if let Ok(mut map) = self.offsets.lock() {
-            map.insert(id, 0);
+        if let Ok(mut map) = self.acked.lock() {
+            map.insert(id, snapshot_offsets);
         }
         id
     }
 
     /// Removes a replica connection from tracking.
     pub fn remove(&self, replica_id: u64) {
-        if let Ok(mut map) = self.offsets.lock() {
+        if let Ok(mut map) = self.acked.lock() {
             map.remove(&replica_id);
         }
     }
 
-    /// Updates the acknowledged offset for a replica.
-    ///
-    /// Only advances forward — never decrements.
-    pub fn update(&self, replica_id: u64, offset: u64) {
-        if let Ok(mut map) = self.offsets.lock() {
-            let entry = map.entry(replica_id).or_insert(0);
-            if offset > *entry {
-                *entry = offset;
+    /// Records that a replica applied `shard`'s events up to `offset`.
+    /// Offsets only move forward.
+    pub fn update(&self, replica_id: u64, shard: usize, offset: u64) {
+        if let Ok(mut map) = self.acked.lock() {
+            if let Some(acked) = map.get_mut(&replica_id).and_then(|a| a.get_mut(shard)) {
+                *acked = (*acked).max(offset);
             }
         }
     }
 
-    /// Returns the number of replicas whose acked offset is >= `target`.
-    pub fn count_at_or_above(&self, target: u64) -> usize {
-        self.offsets
+    /// Returns how many replicas have reached `target` on every shard.
+    pub fn count_caught_up(&self, target: &[u64]) -> usize {
+        self.acked
             .lock()
-            .map(|map| map.values().filter(|&&v| v >= target).count())
+            .map(|map| {
+                map.values()
+                    .filter(|acked| acked.iter().zip(target).all(|(a, t)| a >= t))
+                    .count()
+            })
             .unwrap_or(0)
     }
 
     /// Returns the total number of currently connected replicas.
     pub fn connected_count(&self) -> usize {
-        self.offsets.lock().map(|map| map.len()).unwrap_or(0)
+        self.acked.lock().map(|map| map.len()).unwrap_or(0)
     }
 
-    /// Returns the record lag for each connected replica.
-    ///
-    /// Lag is `write_offset - acked_offset`. A lag of 0 means fully caught up.
-    pub fn replica_lags(&self) -> Vec<u64> {
-        let write = self.write_offset.load(Ordering::Relaxed);
-        self.offsets
+    /// Returns how many events each replica is behind `current`, summed
+    /// over all shards. A lag of 0 means fully caught up.
+    pub fn replica_lags(&self, current: &[u64]) -> Vec<u64> {
+        self.acked
             .lock()
-            .map(|map| map.values().map(|&ack| write.saturating_sub(ack)).collect())
+            .map(|map| {
+                map.values()
+                    .map(|acked| {
+                        acked
+                            .iter()
+                            .zip(current)
+                            .map(|(a, c)| c.saturating_sub(*a))
+                            .sum()
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
@@ -305,6 +318,7 @@ impl ReplicationServer {
         };
 
         // --- full sync ---
+        let mut snapshot_offsets = Vec::with_capacity(self.engine.shard_count());
         for shard_idx in 0..self.engine.shard_count() {
             let resp = self
                 .engine
@@ -314,8 +328,12 @@ impl ReplicationServer {
                     std::io::Error::other(format!("shard {shard_idx} serialize failed: {e:?}"))
                 })?;
 
-            let (shard_id, data) = match resp {
-                ShardResponse::SnapshotData { shard_id, data } => (shard_id, data),
+            let (shard_id, offset, data) = match resp {
+                ShardResponse::SnapshotData {
+                    shard_id,
+                    offset,
+                    data,
+                } => (shard_id, offset, data),
                 other => {
                     return Err(std::io::Error::other(format!(
                         "unexpected shard response: {other:?}"
@@ -334,7 +352,8 @@ impl ReplicationServer {
 
             write_u8(&mut stream, MSG_SHARD_OFFSET).await?;
             write_u16_le(&mut stream, shard_id).await?;
-            write_u64_le(&mut stream, 0u64).await?;
+            write_u64_le(&mut stream, offset).await?;
+            snapshot_offsets.push(offset);
         }
 
         stream.flush().await?;
@@ -347,17 +366,24 @@ impl ReplicationServer {
         let mut writer = BufWriter::with_capacity(65536, write_inner);
 
         // Register this replica and spawn an ACK reader task.
-        let replica_id = self.tracker.register();
+        let replica_id = self.tracker.register(snapshot_offsets);
         let tracker = Arc::clone(&self.tracker);
         let mut ack_reader = read_half;
 
         let ack_task = tokio::spawn(async move {
             loop {
                 match read_u8(&mut ack_reader).await {
-                    Ok(MSG_ACK) => match read_u64_le(&mut ack_reader).await {
-                        Ok(offset) => tracker.update(replica_id, offset),
-                        Err(_) => break,
-                    },
+                    Ok(MSG_ACK) => {
+                        let ack = async {
+                            let shard = read_u16_le(&mut ack_reader).await?;
+                            let offset = read_u64_le(&mut ack_reader).await?;
+                            std::io::Result::Ok((shard, offset))
+                        };
+                        match ack.await {
+                            Ok((shard, offset)) => tracker.update(replica_id, shard.into(), offset),
+                            Err(_) => break,
+                        }
+                    }
                     Ok(_) => {} // unknown or future message types — ignore
                     Err(_) => break,
                 }
@@ -397,10 +423,6 @@ impl ReplicationServer {
                     write_u32_le(writer, record_len).await?;
                     writer.write_all(&record_bytes).await?;
                     writer.flush().await?;
-
-                    // advance the primary's write offset AFTER successfully
-                    // flushing to the replica's TCP buffer
-                    self.tracker.write_offset.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(broadcast::error::RecvError::Lagged(count)) => {
                     warn!("replication stream lagged by {count} events; triggering resync");
@@ -419,6 +441,9 @@ impl ReplicationServer {
 
 // -- replica-side client --
 
+const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 /// Connects to a primary's replication port and applies the incoming
 /// snapshot and incremental record stream to the local engine.
 ///
@@ -432,25 +457,26 @@ impl ReplicationClient {
     /// Starts the replication client in a background task.
     ///
     /// Connects to `primary_addr` and applies the stream indefinitely,
-    /// reconnecting with backoff on any error.
-    pub fn start(engine: Arc<Engine>, primary_addr: SocketAddr) {
-        let client = Arc::new(Self {
+    /// reconnecting with backoff on any error. The caller must abort the
+    /// returned task when this node stops replicating that primary, or it
+    /// keeps pulling the old primary's data in.
+    pub fn start(engine: Arc<Engine>, primary_addr: SocketAddr) -> tokio::task::JoinHandle<()> {
+        let client = Self {
             engine,
             primary_addr,
-        });
+        };
         tokio::spawn(async move {
             client.run().await;
-        });
+        })
     }
 
     async fn run(&self) {
-        let mut backoff = Duration::from_millis(500);
-        const MAX_BACKOFF: Duration = Duration::from_secs(30);
+        let mut backoff = INITIAL_BACKOFF;
 
         loop {
             info!(primary = %self.primary_addr, "connecting to primary for replication");
             match TcpStream::connect(self.primary_addr).await {
-                Ok(stream) => match self.sync(stream).await {
+                Ok(stream) => match self.sync(stream, &mut backoff).await {
                     Ok(()) => {
                         info!("replication connection ended cleanly");
                     }
@@ -470,7 +496,9 @@ impl ReplicationClient {
     }
 
     /// Performs full sync + incremental stream for one connection session.
-    async fn sync(&self, mut stream: TcpStream) -> std::io::Result<()> {
+    /// Resets `backoff` once the handshake succeeds, so a replica that ran
+    /// fine for hours does not wait the maximum delay after one drop.
+    async fn sync(&self, mut stream: TcpStream, backoff: &mut Duration) -> std::io::Result<()> {
         let our_shards = self.engine.shard_count() as u16;
 
         // send handshake
@@ -503,8 +531,17 @@ impl ReplicationClient {
         }
 
         info!(primary_id = %primary_id, "handshake ok, loading full sync");
+        *backoff = INITIAL_BACKOFF;
 
-        // receive per-shard snapshots
+        // a full sync replaces everything: keys the primary no longer has
+        // must not survive it
+        self.engine
+            .broadcast(|| ShardRequest::FlushDb)
+            .await
+            .map_err(|e| std::io::Error::other(format!("flush before sync failed: {e:?}")))?;
+
+        // receive per-shard snapshots and the offset each one covers
+        let mut snapshot_offsets = vec![0u64; usize::from(primary_shards)];
         let mut snap_buf = Vec::new();
         for _ in 0..primary_shards {
             expect_tag(&mut stream, MSG_SHARD_SYNC, "MSG_SHARD_SYNC").await?;
@@ -514,26 +551,25 @@ impl ReplicationClient {
             snap_buf.clear();
             snap_buf.resize(snap_len, 0);
             stream.read_exact(&mut snap_buf).await?;
-
-            // apply snapshot to the engine
             self.apply_snapshot(shard_id, &snap_buf).await?;
 
-            // read (and ignore for now) the shard offset tag
             expect_tag(&mut stream, MSG_SHARD_OFFSET, "MSG_SHARD_OFFSET").await?;
-            let _recv_shard_id = read_u16_le(&mut stream).await?;
-            let _recv_offset = read_u64_le(&mut stream).await?;
+            let offset_shard = read_u16_le(&mut stream).await?;
+            let offset = read_u64_le(&mut stream).await?;
+            if let Some(slot) = snapshot_offsets.get_mut(usize::from(offset_shard)) {
+                *slot = offset;
+            }
         }
 
         info!("full sync applied, starting incremental replay");
 
         // incremental stream
-        let mut local_offset: u64 = 0;
         loop {
             let msg = read_u8(&mut stream).await?;
             match msg {
                 MSG_RECORD => {
                     let shard_id = read_u16_le(&mut stream).await?;
-                    let _offset = read_u64_le(&mut stream).await?;
+                    let offset = read_u64_le(&mut stream).await?;
                     let record_len = read_u32_le(&mut stream).await? as usize;
                     let mut record_bytes = vec![0u8; record_len];
                     stream.read_exact(&mut record_bytes).await?;
@@ -545,19 +581,30 @@ impl ReplicationClient {
                         )
                     })?;
 
+                    // the primary subscribed before taking the snapshots, so
+                    // the stream repeats events a snapshot already holds.
+                    // applying them again would double INCRs and pushes.
+                    let in_snapshot = snapshot_offsets
+                        .get(usize::from(shard_id))
+                        .is_some_and(|&snapshot| offset <= snapshot);
+
                     // the handshake checked that both sides have the same shard
                     // count, so the primary's shard id picks the same shard a
                     // key lookup would, and it also covers keyless records
-                    if let Some(request) = aof_record_to_shard_request(&record) {
-                        if let Err(e) = self.engine.send_to_shard(shard_id.into(), request).await {
-                            warn!("replication apply failed: {e:?}");
+                    if !in_snapshot {
+                        if let Some(request) = aof_record_to_shard_request(&record) {
+                            if let Err(e) =
+                                self.engine.send_to_shard(shard_id.into(), request).await
+                            {
+                                warn!("replication apply failed: {e:?}");
+                            }
                         }
                     }
 
-                    // acknowledge this record to the primary so WAIT can count us
-                    local_offset += 1;
+                    // acknowledge the record so WAIT can count this replica
                     write_u8(&mut stream, MSG_ACK).await?;
-                    write_u64_le(&mut stream, local_offset).await?;
+                    write_u16_le(&mut stream, shard_id).await?;
+                    write_u64_le(&mut stream, offset).await?;
                 }
                 MSG_RESYNC => {
                     info!("primary requested resync; reconnecting");
@@ -573,8 +620,11 @@ impl ReplicationClient {
         }
     }
 
-    /// Applies a snapshot blob to the local engine for the given shard.
-    async fn apply_snapshot(&self, _shard_id: u16, data: &[u8]) -> std::io::Result<()> {
+    /// Loads a snapshot blob into the given shard.
+    ///
+    /// Each entry goes in through RESTORE, which replaces the key with the
+    /// snapshot's value as is, for every value type.
+    async fn apply_snapshot(&self, shard_id: u16, data: &[u8]) -> std::io::Result<()> {
         let (_, entries) = snapshot::read_snapshot_from_bytes(data).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -582,127 +632,33 @@ impl ReplicationClient {
             )
         })?;
 
-        // flush the existing shard state before loading the snapshot
-        // we route by key so route() picks the right shard automatically
         for entry in entries {
-            let value: Bytes = match &entry.value {
-                SnapValue::String(data) => data.clone(),
-                // for non-string types, reconstruct via the appropriate request
-                _ => {
-                    self.apply_snap_entry(entry).await;
-                    continue;
-                }
+            // expire_ms is the time left, or negative for no expiry
+            let ttl_ms = match entry.expire_ms {
+                ms if ms < 0 => 0,
+                0 => continue, // expired while the snapshot was in flight
+                ms => ms as u64,
             };
-
-            let request = ShardRequest::Set {
-                key: entry.key.clone(),
-                value,
-                expire: expire_from_ms(entry.expire_ms),
-                nx: false,
-                xx: false,
+            let data = snapshot::serialize_snap_value(&entry.value)
+                .map_err(|e| std::io::Error::other(format!("snapshot value encode failed: {e}")))?;
+            let request = ShardRequest::RestoreKey {
+                key: entry.key,
+                ttl_ms,
+                data: Bytes::from(data),
+                replace: true,
             };
-            if let Err(e) = self.engine.route(&entry.key, request).await {
-                warn!(key = %entry.key, "snapshot restore failed: {e:?}");
+            if let Err(e) = self.engine.send_to_shard(shard_id.into(), request).await {
+                warn!("snapshot restore failed: {e:?}");
             }
         }
-
         Ok(())
-    }
-
-    /// Restores a non-string snapshot entry by converting it to the
-    /// appropriate write request(s).
-    async fn apply_snap_entry(&self, entry: ember_persistence::snapshot::SnapEntry) {
-        use ember_persistence::snapshot::SnapValue;
-
-        let key = entry.key.clone();
-        let expire = expire_from_ms(entry.expire_ms);
-
-        match entry.value {
-            SnapValue::List(deque) => {
-                let values: Vec<Bytes> = deque.into_iter().collect();
-                let req = ShardRequest::RPush {
-                    key: key.clone(),
-                    values,
-                };
-                if let Err(e) = self.engine.route(&key, req).await {
-                    warn!(%key, "list restore failed: {e:?}");
-                }
-            }
-            SnapValue::SortedSet(members) => {
-                let req = ShardRequest::ZAdd {
-                    key: key.clone(),
-                    members,
-                    nx: false,
-                    xx: false,
-                    gt: false,
-                    lt: false,
-                    ch: false,
-                };
-                if let Err(e) = self.engine.route(&key, req).await {
-                    warn!(%key, "sorted set restore failed: {e:?}");
-                }
-            }
-            SnapValue::Hash(map) => {
-                let fields: Vec<(String, Bytes)> = map.into_iter().collect();
-                let req = ShardRequest::HSet {
-                    key: key.clone(),
-                    fields,
-                };
-                if let Err(e) = self.engine.route(&key, req).await {
-                    warn!(%key, "hash restore failed: {e:?}");
-                }
-            }
-            SnapValue::Set(set) => {
-                let members: Vec<String> = set.into_iter().collect();
-                let req = ShardRequest::SAdd {
-                    key: key.clone(),
-                    members,
-                };
-                if let Err(e) = self.engine.route(&key, req).await {
-                    warn!(%key, "set restore failed: {e:?}");
-                }
-            }
-            // strings are handled by the caller
-            SnapValue::String(_) => {}
-            #[cfg(feature = "vector")]
-            SnapValue::Vector { .. } => {
-                // vector restoration is complex; skip for now
-                warn!(%key, "vector snapshot restore not yet supported in replication");
-            }
-            #[cfg(feature = "protobuf")]
-            SnapValue::Proto { type_name: _, data } => {
-                // proto values serialize to Set (raw bytes)
-                let req = ShardRequest::Set {
-                    key: key.clone(),
-                    value: data,
-                    expire,
-                    nx: false,
-                    xx: false,
-                };
-                if let Err(e) = self.engine.route(&key, req).await {
-                    warn!(%key, "proto snapshot restore failed: {e:?}");
-                }
-            }
-        }
-
-        // apply TTL if any
-        if let Some(expire_duration) = expire {
-            let ms = expire_duration.as_millis() as u64;
-            let req = ShardRequest::Pexpire {
-                key: key.clone(),
-                milliseconds: ms,
-            };
-            if let Err(e) = self.engine.route(&key, req).await {
-                warn!(%key, "pexpire after restore failed: {e:?}");
-            }
-        }
     }
 }
 
 /// Converts a millisecond expiry field to an `Option<Duration>`.
 ///
-/// AOF and snapshot records store `-1` (or any non-positive value) to
-/// indicate "no expiry". A positive `ms` becomes `Some(Duration)`.
+/// AOF records store `-1` (or any non-positive value) to indicate "no
+/// expiry". A positive `ms` becomes `Some(Duration)`.
 fn expire_from_ms(ms: i64) -> Option<Duration> {
     (ms > 0).then(|| Duration::from_millis(ms as u64))
 }
@@ -917,6 +873,25 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
 mod tests {
     use super::*;
     use bytes::Bytes;
+
+    #[test]
+    fn tracker_counts_replicas_that_reached_every_shard() {
+        let tracker = ReplicaTracker::new();
+        let a = tracker.register(vec![3, 0]);
+        let b = tracker.register(vec![3, 0]);
+        tracker.update(a, 1, 2);
+        // a replica that is ahead on one shard but behind on another does not count
+        tracker.update(b, 0, 9);
+
+        assert_eq!(tracker.count_caught_up(&[3, 2]), 1);
+        let mut lags = tracker.replica_lags(&[3, 2]);
+        lags.sort();
+        assert_eq!(lags, [0, 2]);
+        tracker.update(a, 1, 1); // offsets never move backward
+        assert_eq!(tracker.count_caught_up(&[3, 2]), 1);
+        tracker.remove(a);
+        assert_eq!(tracker.count_caught_up(&[3, 2]), 0);
+    }
 
     #[test]
     fn aof_set_roundtrip() {
