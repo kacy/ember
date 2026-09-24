@@ -360,6 +360,14 @@ where
     }
 }
 
+/// How subscriber mode ended.
+pub(super) enum SubscriberExit {
+    /// The client dropped its last subscription and is back in normal mode.
+    Unsubscribed,
+    /// The connection is finished: closed, idle too long, or broken.
+    Close,
+}
+
 /// In this mode the connection can only process SUBSCRIBE, UNSUBSCRIBE,
 /// PSUBSCRIBE, PUNSUBSCRIBE, and PING. All other commands return an error.
 /// Returns to the caller when all subscriptions are removed or the client
@@ -372,7 +380,7 @@ pub(super) async fn handle_subscriber_mode<S>(
     pubsub: &Arc<PubSubManager>,
     session: &Session,
     initial_frames: Vec<Frame>,
-) -> Result<(), Box<dyn std::error::Error>>
+) -> Result<SubscriberExit, Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -391,8 +399,9 @@ where
 
     // process the initial subscribe commands
     for frame in initial_frames {
-        if let Ok(cmd) = Command::from_frame(frame) {
-            handle_sub_command(cmd, ctx, pubsub, channel_rxs, pattern_rxs, out);
+        match Command::from_frame(frame) {
+            Ok(cmd) => handle_sub_command(cmd, ctx, pubsub, channel_rxs, pattern_rxs, out),
+            Err(e) => Frame::Error(format!("ERR {e}")).serialize(out),
         }
     }
 
@@ -405,8 +414,8 @@ where
     loop {
         let total_subs = channel_rxs.len() + pattern_rxs.len();
         if total_subs == 0 {
-            // no more subscriptions — exit subscriber mode
-            return Ok(());
+            // no more subscriptions: back to normal mode, as in Redis
+            return Ok(SubscriberExit::Unsubscribed);
         }
 
         tokio::select! {
@@ -425,17 +434,17 @@ where
                     Ok(inner) => inner,
                     Err(_) => {
                         // idle timeout — clean up and close
-                        return Ok(());
+                        return Ok(SubscriberExit::Close);
                     }
                 };
                 // guard against unbounded buffer growth
                 if buf.len() > ctx.limits.max_buf_size {
-                    return Ok(());
+                    return Ok(SubscriberExit::Close);
                 }
                 match result {
                     Ok(0) => {
                         // client disconnected — clean up subscriptions
-                        return Ok(());
+                        return Ok(SubscriberExit::Close);
                     }
                     Ok(_) => {
                         // parse and handle subscriber commands
@@ -482,7 +491,7 @@ where
                                 Err(e) => {
                                     Frame::Error(format!("ERR protocol error: {e}")).serialize(out);
                                     stream.write_all(out).await?;
-                                    return Ok(());
+                                    return Ok(SubscriberExit::Close);
                                 }
                             }
                         }

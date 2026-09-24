@@ -110,3 +110,17 @@ async fn unsubscribe_leaves_other_subscribers_on_the_channel() {
         other => panic!("expected message frame, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn unsubscribing_from_everything_returns_to_normal_mode() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.cmd(&["SUBSCRIBE", "news"]).await;
+    c.cmd(&["UNSUBSCRIBE", "news"]).await;
+
+    let resp = c.cmd(&["PING"]).await;
+    assert!(
+        matches!(resp, Frame::Simple(ref s) if s == "PONG"),
+        "{resp:?}"
+    );
+}
