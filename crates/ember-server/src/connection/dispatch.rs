@@ -4,8 +4,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::acl;
-use crate::connection_common::{frame_to_monitor_args, validate_command_sizes, MonitorEvent};
+use crate::connection_common::{
+    frame_to_monitor_args, validate_command_sizes, MonitorEvent, Session,
+};
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -30,8 +31,7 @@ pub(super) async fn process(
     asking: &mut bool,
     peer_addr: &str,
     client_id: u64,
-    acl_user: &Option<Arc<acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> Frame {
     // broadcast to MONITOR subscribers
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -53,18 +53,12 @@ pub(super) async fn process(
         Ok(cmd) => {
             // ACL WHOAMI needs per-connection state
             if matches!(cmd, Command::AclWhoAmI) {
-                return Frame::Bulk(Bytes::from(current_username.to_string()));
+                return Frame::Bulk(Bytes::from(session.username().to_owned()));
             }
 
             // permission check — fast path: skip when unrestricted
-            if let Some(ref user) = acl_user {
-                if !user.allcommands || !user.allkeys {
-                    if let Some(err) =
-                        acl::check_permission(user, &cmd, cmd.command_name(), cmd.acl_categories())
-                    {
-                        return err;
-                    }
-                }
+            if let Some(err) = session.check(&cmd) {
+                return err;
             }
 
             // handle ASKING: set the flag and return OK immediately
@@ -123,8 +117,7 @@ pub(super) async fn prepare_command(
     asking: &mut bool,
     peer_addr: &str,
     client_id: u64,
-    acl_user: &Option<Arc<acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> PreparedDispatch {
     // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
     if ctx.monitor_tx.receiver_count() > 0 {
@@ -164,19 +157,13 @@ pub(super) async fn prepare_command(
     // ACL WHOAMI needs per-connection state
     if matches!(cmd, Command::AclWhoAmI) {
         return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Bulk(Bytes::from(
-            current_username.to_string(),
+            session.username().to_owned(),
         ))));
     }
 
     // permission check — fast path: skip when unrestricted
-    if let Some(ref user) = acl_user {
-        if !user.allcommands || !user.allkeys {
-            if let Some(err) =
-                acl::check_permission(user, &cmd, cmd.command_name(), cmd.acl_categories())
-            {
-                return PreparedDispatch::Immediate(PendingResponse::Immediate(err));
-            }
-        }
+    if let Some(err) = session.check(&cmd) {
+        return PreparedDispatch::Immediate(PendingResponse::Immediate(err));
     }
 
     // handle ASKING: set the flag and return OK immediately

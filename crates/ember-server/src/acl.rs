@@ -6,7 +6,8 @@
 //! command and key skips the detailed checks through two boolean flags.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard};
 
 use ember_protocol::types::Frame;
 use sha2::{Digest, Sha256};
@@ -690,9 +691,43 @@ fn sorted_set(set: &HashSet<String>) -> Vec<&str> {
 // convenience type alias
 // ---------------------------------------------------------------------------
 
-/// The shared ACL state: a read lock on AUTH, a write lock on
-/// SETUSER/DELUSER.
-pub type SharedAclState = Arc<RwLock<AclState>>;
+/// The ACL users shared by every connection, plus a generation number that
+/// changes whenever a user is added, changed or deleted. Connections compare
+/// the generation, a single atomic load, to learn that their copy of their
+/// user is stale.
+#[derive(Debug)]
+pub struct Acl {
+    users: RwLock<AclState>,
+    generation: AtomicU64,
+}
+
+impl Acl {
+    pub fn new(users: AclState) -> Self {
+        Self {
+            users: RwLock::new(users),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, AclState>> {
+        self.users.read()
+    }
+
+    /// Changes the users under the write lock and bumps the generation.
+    /// Returns `None` if the lock is poisoned.
+    fn modify<T>(&self, change: impl FnOnce(&mut AclState) -> T) -> Option<T> {
+        let mut users = self.users.write().ok()?;
+        let result = change(&mut users);
+        self.generation.fetch_add(1, Ordering::Release);
+        Some(result)
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+}
+
+pub type SharedAclState = Arc<Acl>;
 
 const WRONGPASS: &str = "WRONGPASS invalid username-password pair or user is disabled.";
 const LOCK_POISONED: &str = "ERR ACL state lock poisoned";
@@ -734,20 +769,16 @@ pub fn run_admin_command(acl: &SharedAclState, cmd: ember_protocol::Command) -> 
                 .unwrap_or_else(|| Frame::Error(format!("ERR no such user '{username}'")))
         }),
         Command::AclSetUser { username, rules } => {
-            acl.write()
-                .ok()
-                .map(|mut state| match state.set_user(&username, &rules) {
-                    Ok(()) => Frame::Simple("OK".into()),
-                    Err(msg) => Frame::Error(msg),
-                })
+            acl.modify(|state| match state.set_user(&username, &rules) {
+                Ok(()) => Frame::Simple("OK".into()),
+                Err(msg) => Frame::Error(msg),
+            })
         }
         Command::AclDelUser { usernames } => {
-            acl.write()
-                .ok()
-                .map(|mut state| match state.del_users(&usernames) {
-                    Ok(count) => Frame::Integer(count as i64),
-                    Err(msg) => Frame::Error(msg),
-                })
+            acl.modify(|state| match state.del_users(&usernames) {
+                Ok(count) => Frame::Integer(count as i64),
+                Err(msg) => Frame::Error(msg),
+            })
         }
         Command::AclCat { category } => Some(handle_acl_cat(category.as_deref())),
         other => Some(Frame::Error(format!(
@@ -1357,7 +1388,7 @@ mod tests {
         let open = AclState::new(None);
         assert!(open.get_user("default").unwrap().nopass);
 
-        let acl: SharedAclState = Arc::new(RwLock::new(AclState::new(Some("secret"))));
+        let acl: SharedAclState = Arc::new(Acl::new(AclState::new(Some("secret"))));
         assert!(authenticate(&acl, "default", "secret").is_ok());
         assert!(authenticate(&acl, "default", "wrong").is_err());
     }
@@ -1368,7 +1399,7 @@ mod tests {
         state
             .load_file("# comment\n\nuser app on >pw +get ~app:*\n")
             .unwrap();
-        let acl: SharedAclState = Arc::new(RwLock::new(state));
+        let acl: SharedAclState = Arc::new(Acl::new(state));
         let app = authenticate(&acl, "app", "pw").unwrap();
         assert_eq!(app.key_patterns, vec!["app:*"]);
 

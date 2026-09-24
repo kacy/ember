@@ -338,7 +338,7 @@ fn build_acl_state(cfg: &EmberConfig) -> acl::SharedAclState {
         }
         info!(path = %cfg.aclfile, "loaded ACL users");
     }
-    std::sync::Arc::new(std::sync::RwLock::new(state))
+    Arc::new(acl::Acl::new(state))
 }
 
 /// Resolves the password from either `--requirepass` or `--requirepass-file`.

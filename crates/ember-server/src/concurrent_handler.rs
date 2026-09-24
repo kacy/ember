@@ -24,9 +24,8 @@ use ember_protocol::{parse_frame, Command, Frame, SetExpire};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    frame_to_monitor_args, get_rss_bytes, human_bytes, initial_acl_user, is_allowed_before_auth,
-    is_auth_frame, is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent,
-    TransactionState,
+    frame_to_monitor_args, get_rss_bytes, human_bytes, is_allowed_before_auth, is_auth_frame,
+    is_monitor_frame, validate_command_sizes, MonitorEvent, Session, TransactionState,
 };
 use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
@@ -51,8 +50,7 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let (mut acl_user, mut current_username) = initial_acl_user(ctx);
-    let mut authenticated = acl_user.is_some();
+    let mut session = Session::new(ctx);
     let mut auth_failures: u32 = 0;
     let mut tx_state = TransactionState::None;
 
@@ -75,6 +73,9 @@ where
             Err(_) => return Ok(()),
         }
 
+        // pick up ACL SETUSER/DELUSER changes to this connection's user
+        session.refresh(ctx);
+
         // parse frames using split_to — O(1) pointer adjustment, no
         // memcpy for unconsumed data. bulk strings are copied during
         // parsing rather than zero-copy sliced from a frozen buffer.
@@ -92,15 +93,13 @@ where
                     let _ = buf.split_to(consumed);
                     pipeline_count += 1;
 
-                    if !authenticated {
+                    // AUTH always goes through the session, so on an
+                    // authenticated connection it switches the user
+                    if !session.is_authenticated() || is_auth_frame(&frame) {
                         if is_auth_frame(&frame) {
-                            let result = try_auth(frame, ctx);
-                            result.response.serialize(&mut out);
-                            if result.success() {
-                                authenticated = true;
-                                acl_user = result.user;
-                                current_username = result.username;
-                            } else {
+                            let (reply, ok) = session.auth(frame, ctx);
+                            reply.serialize(&mut out);
+                            if !ok {
                                 auth_failures = auth_failures.saturating_add(1);
                                 if auth_failures >= ctx.limits.max_auth_failures {
                                     Frame::Error(
@@ -113,15 +112,8 @@ where
                             }
                         } else if is_allowed_before_auth(&frame) {
                             let response = process(
-                                frame,
-                                &keyspace,
-                                &engine,
-                                ctx,
-                                slow_log,
-                                pubsub,
-                                client_id,
-                                &acl_user,
-                                &current_username,
+                                frame, &keyspace, &engine, ctx, slow_log, pubsub, client_id,
+                                &session,
                             )
                             .await;
                             response.serialize(&mut out);
@@ -131,12 +123,16 @@ where
                                 .serialize(&mut out);
                         }
                     } else if is_monitor_frame(&frame) {
-                        // enter monitor mode
-                        Frame::Simple("OK".into()).serialize(&mut out);
-                        stream.write_all(&out).await?;
-                        out.clear();
-                        handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
-                        return Ok(());
+                        if let Some(err) = session.check_frame(&frame) {
+                            err.serialize(&mut out);
+                        } else {
+                            // enter monitor mode
+                            Frame::Simple("OK".into()).serialize(&mut out);
+                            stream.write_all(&out).await?;
+                            out.clear();
+                            handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
+                            return Ok(());
+                        }
                     } else {
                         // broadcast to MONITOR subscribers
                         if ctx.monitor_tx.receiver_count() > 0 {
@@ -163,8 +159,7 @@ where
                             slow_log,
                             pubsub,
                             client_id,
-                            &acl_user,
-                            &current_username,
+                            &session,
                         )
                         .await;
                         response.serialize(&mut out);
@@ -245,8 +240,7 @@ async fn process(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     client_id: u64,
-    acl_user: &Option<Arc<crate::acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
@@ -261,22 +255,13 @@ async fn process(
             }
 
             // ACL permission check
-            if let Some(ref user) = acl_user {
-                if !user.allcommands || !user.allkeys {
-                    if let Some(err) = crate::acl::check_permission(
-                        user,
-                        &cmd,
-                        cmd.command_name(),
-                        cmd.acl_categories(),
-                    ) {
-                        return err;
-                    }
-                }
+            if let Some(err) = session.check(&cmd) {
+                return err;
             }
 
             // intercept AclWhoAmI — needs per-connection username
             if matches!(cmd, Command::AclWhoAmI) {
-                return Frame::Bulk(Bytes::from(current_username.to_owned()));
+                return Frame::Bulk(Bytes::from(session.username().to_owned()));
             }
 
             let cmd_name = cmd.command_name();
@@ -317,8 +302,7 @@ async fn handle_frame_with_tx(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     client_id: u64,
-    acl_user: &Option<Arc<crate::acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> Frame {
     let cmd_name = peek_command_name(&frame);
 
@@ -346,15 +330,7 @@ async fn handle_frame_with_tx(
                 Frame::Simple("OK".into())
             } else {
                 process(
-                    frame,
-                    keyspace,
-                    engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    client_id,
-                    acl_user,
-                    current_username,
+                    frame, keyspace, engine, ctx, slow_log, pubsub, client_id, session,
                 )
                 .await
             }
@@ -383,8 +359,7 @@ async fn handle_frame_with_tx(
                             slow_log,
                             pubsub,
                             client_id,
-                            acl_user,
-                            current_username,
+                            session,
                         )
                         .await;
                         results.push(response);
@@ -402,15 +377,7 @@ async fn handle_frame_with_tx(
                 Ok(cmd) => {
                     if matches!(cmd, Command::Auth { .. } | Command::Quit) {
                         process(
-                            frame,
-                            keyspace,
-                            engine,
-                            ctx,
-                            slow_log,
-                            pubsub,
-                            client_id,
-                            acl_user,
-                            current_username,
+                            frame, keyspace, engine, ctx, slow_log, pubsub, client_id, session,
                         )
                         .await
                     } else {

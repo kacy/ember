@@ -75,3 +75,67 @@ async fn acl_users_created_at_runtime_are_enforced() {
         .await;
     assert!(err.starts_with("WRONGPASS"), "{err}");
 }
+
+/// Starts a server with an admin password and a `reader` user limited to
+/// GET on `cache:*`. Returns the server and an admin connection.
+async fn server_with_reader() -> (TestServer, crate::helpers::TestClient) {
+    let server = TestServer::start_with(ServerOptions {
+        requirepass: Some("admin-pass".into()),
+        ..Default::default()
+    });
+    let mut admin = server.connect().await;
+    admin.ok(&["AUTH", "admin-pass"]).await;
+    admin
+        .ok(&[
+            "ACL",
+            "SETUSER",
+            "reader",
+            "on",
+            ">reader-pass",
+            "+get",
+            "~cache:*",
+        ])
+        .await;
+    (server, admin)
+}
+
+#[tokio::test]
+async fn auth_on_an_authenticated_connection_switches_user() {
+    let (server, _admin) = server_with_reader().await;
+    let mut c = server.connect().await;
+    c.ok(&["AUTH", "admin-pass"]).await;
+    c.ok(&["SET", "cache:1", "v"]).await;
+
+    c.ok(&["AUTH", "reader", "reader-pass"]).await;
+    assert_eq!(c.get_bulk(&["ACL", "WHOAMI"]).await, Some("reader".into()));
+    let err = c.err(&["SET", "cache:1", "v"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+}
+
+#[tokio::test]
+async fn acl_changes_reach_open_connections() {
+    let (server, mut admin) = server_with_reader().await;
+    let mut reader = server.connect().await;
+    reader.ok(&["AUTH", "reader", "reader-pass"]).await;
+    assert_eq!(reader.get_bulk(&["GET", "cache:1"]).await, None);
+
+    admin.ok(&["ACL", "SETUSER", "reader", "-get"]).await;
+    let err = reader.err(&["GET", "cache:1"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+
+    admin.get_int(&["ACL", "DELUSER", "reader"]).await;
+    let err = reader.err(&["GET", "cache:1"]).await;
+    assert!(err.starts_with("NOAUTH"), "{err}");
+}
+
+#[tokio::test]
+async fn monitor_needs_permission() {
+    let (server, _admin) = server_with_reader().await;
+    let mut reader = server.connect().await;
+    reader.ok(&["AUTH", "reader", "reader-pass"]).await;
+
+    let err = reader.err(&["MONITOR"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+    // the connection stays in normal mode
+    assert_eq!(reader.get_bulk(&["GET", "cache:1"]).await, None);
+}

@@ -11,8 +11,9 @@ use ember_protocol::{parse_frame, Command, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::acl;
-use crate::connection_common::{format_monitor_event, validate_command_sizes, TransactionState};
+use crate::connection_common::{
+    format_monitor_event, validate_command_sizes, Session, TransactionState,
+};
 use crate::pubsub::{PubMessage, PubSubManager};
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -35,8 +36,7 @@ pub(super) async fn handle_frame_with_tx(
     asking: &mut bool,
     peer_addr: &str,
     client_id: u64,
-    acl_user: &Option<Arc<acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> Frame {
     // peek at the command name without consuming the frame
     let cmd_name = super::peek_command_name(&frame);
@@ -85,16 +85,7 @@ pub(super) async fn handle_frame_with_tx(
             } else {
                 // normal dispatch path (process() increments commands_processed)
                 super::dispatch::process(
-                    frame,
-                    engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    asking,
-                    peer_addr,
-                    client_id,
-                    acl_user,
-                    current_username,
+                    frame, engine, ctx, slow_log, pubsub, asking, peer_addr, client_id, session,
                 )
                 .await
             }
@@ -138,8 +129,7 @@ pub(super) async fn handle_frame_with_tx(
                                 asking,
                                 peer_addr,
                                 client_id,
-                                acl_user,
-                                current_username,
+                                session,
                             )
                             .await;
                             results.push(response);
@@ -166,16 +156,8 @@ pub(super) async fn handle_frame_with_tx(
                             // AUTH and QUIT execute immediately, not queued
                             if matches!(cmd, Command::Auth { .. } | Command::Quit) {
                                 super::dispatch::process(
-                                    frame,
-                                    engine,
-                                    ctx,
-                                    slow_log,
-                                    pubsub,
-                                    asking,
-                                    peer_addr,
-                                    client_id,
-                                    acl_user,
-                                    current_username,
+                                    frame, engine, ctx, slow_log, pubsub, asking, peer_addr,
+                                    client_id, session,
                                 )
                                 .await
                             } else {
@@ -388,6 +370,7 @@ pub(super) async fn handle_subscriber_mode<S>(
     out: &mut BytesMut,
     ctx: &Arc<ServerContext>,
     pubsub: &Arc<PubSubManager>,
+    session: &Session,
     initial_frames: Vec<Frame>,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -466,10 +449,16 @@ where
                                             | Command::Unsubscribe { .. }
                                             | Command::PSubscribe { .. }
                                             | Command::PUnsubscribe { .. } => {
-                                                handle_sub_command(
-                                                    cmd, ctx, pubsub, channel_rxs,
-                                                    pattern_rxs, out,
-                                                );
+                                                // the caller checked the frames that
+                                                // started subscriber mode; later ones
+                                                // are checked here
+                                                match session.check(&cmd) {
+                                                    Some(err) => err.serialize(out),
+                                                    None => handle_sub_command(
+                                                        cmd, ctx, pubsub, channel_rxs,
+                                                        pattern_rxs, out,
+                                                    ),
+                                                }
                                             }
                                             Command::Ping(msg) => {
                                                 let resp = match msg {
