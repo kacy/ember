@@ -138,7 +138,7 @@ impl ClusterCoordinator {
             let cs = ClusterState::single_node(node);
             // Populate local_slots so Welcome replies correctly advertise all owned slots
             // instead of sending an empty list and triggering a stale SlotsChanged event.
-            gossip.set_local_slots(cs.slot_map.slots_for_node(local_id));
+            gossip.set_local_slots(cs.slot_map.slots_for_node(local_id), cs.local_epoch());
             cs
         } else {
             let mut cs = ClusterState::new(local_id);
@@ -209,7 +209,7 @@ impl ClusterCoordinator {
 
         // set local slots in gossip engine
         let local_slots = state.slot_map.slots_for_node(local_id);
-        gossip.set_local_slots(local_slots);
+        gossip.set_local_slots(local_slots, state.local_epoch());
 
         let coordinator = Self {
             state: RwLock::new(state),
@@ -503,7 +503,7 @@ impl ClusterCoordinator {
 
         // apply to local state immediately so subsequent reads see
         // the change without waiting for async raft reconciliation
-        let new_slots = {
+        let (new_slots, epoch) = {
             let mut state = self.state.write().await;
             for &slot in slots {
                 state.slot_map.assign(slot, self.local_id);
@@ -513,9 +513,9 @@ impl ClusterCoordinator {
                 node.slots = new_slots.clone();
             }
             state.update_health();
-            new_slots
+            (new_slots, state.local_epoch())
         };
-        self.broadcast_local_slots(new_slots).await;
+        self.broadcast_local_slots(new_slots, epoch).await;
         self.save_config().await;
         Frame::Simple("OK".into())
     }
@@ -553,7 +553,7 @@ impl ClusterCoordinator {
         }
 
         // apply to local state immediately
-        let new_slots = {
+        let (new_slots, epoch) = {
             let mut state = self.state.write().await;
             for &slot in slots {
                 state.slot_map.unassign(slot);
@@ -563,9 +563,9 @@ impl ClusterCoordinator {
                 node.slots = new_slots.clone();
             }
             state.update_health();
-            new_slots
+            (new_slots, state.local_epoch())
         };
-        self.broadcast_local_slots(new_slots).await;
+        self.broadcast_local_slots(new_slots, epoch).await;
         self.save_config().await;
         Frame::Simple("OK".into())
     }
@@ -718,9 +718,14 @@ impl ClusterCoordinator {
                 migration.complete_migration(slot);
             }
 
-            let local_slots = {
+            let (local_slots, epoch) = {
                 let mut state = self.state.write().await;
                 state.slot_map.assign(slot, node_id);
+                // the previous owner still claims the slot at its epoch
+                // until it hears of this, so claim it at a newer one
+                if node_id == self.local_id {
+                    state.bump_local_epoch();
+                }
 
                 let new_slots = state.slot_map.slots_for_node(node_id);
                 if let Some(node) = state.nodes.get_mut(&node_id) {
@@ -735,10 +740,10 @@ impl ClusterCoordinator {
                 }
 
                 state.update_health();
-                local_slots
+                (local_slots, state.local_epoch())
             };
 
-            self.broadcast_local_slots(local_slots).await;
+            self.broadcast_local_slots(local_slots, epoch).await;
             self.save_config().await;
             Frame::Simple("OK".into())
         }
@@ -1270,18 +1275,19 @@ impl ClusterCoordinator {
     /// that reused it. The slots go straight to every peer as well, so no
     /// peer keeps routing them to the old primary.
     async fn announce_promotion(&self) {
-        let slots = self
-            .state
-            .read()
-            .await
-            .slot_map
-            .slots_for_node(self.local_id);
+        let (slots, epoch) = {
+            let state = self.state.read().await;
+            (
+                state.slot_map.slots_for_node(self.local_id),
+                state.local_epoch(),
+            )
+        };
         {
             let mut gossip = self.gossip.lock().await;
             let incarnation = gossip.bump_incarnation();
             gossip.queue_role_update(self.local_id, incarnation, true, None);
         }
-        self.broadcast_local_slots(slots).await;
+        self.broadcast_local_slots(slots, epoch).await;
     }
 
     /// Attaches the engine so replication can start on demand.
@@ -1422,21 +1428,22 @@ impl ClusterCoordinator {
 
     /// Pushes the local node's current slot ownership into the gossip engine
     /// so it propagates to the rest of the cluster.
-    async fn broadcast_local_slots(&self, slots: Vec<SlotRange>) {
+    async fn broadcast_local_slots(&self, slots: Vec<SlotRange>, config_epoch: u64) {
         // Gather peer addresses and build the announce message while holding
         // the gossip lock, then release it before taking the socket lock.
         let (peer_addrs, encoded) = {
             let mut gossip = self.gossip.lock().await;
-            gossip.set_local_slots(slots.clone());
+            gossip.set_local_slots(slots.clone(), config_epoch);
             let incarnation = gossip.local_incarnation();
             // Queue for piggybacking on future ticks as a fallback.
-            gossip.queue_slots_update(self.local_id, incarnation, slots.clone());
+            gossip.queue_slots_update(self.local_id, incarnation, config_epoch, slots.clone());
 
             // Build an eager push to every known peer so they learn immediately
             // rather than waiting for the probabilistic gossip tick to select them.
             let msg = GossipMessage::SlotsAnnounce {
                 sender: self.local_id,
                 incarnation,
+                config_epoch,
                 slots,
             };
             let encoded = match &self.secret {
@@ -1600,6 +1607,8 @@ impl ClusterCoordinator {
                     candidate: NodeId,
                     epoch: u64,
                 },
+                /// Another node took slots from this one with a newer epoch.
+                AnnounceLocalSlots,
             }
 
             while let Some(event) = event_rx.recv().await {
@@ -1608,7 +1617,7 @@ impl ClusterCoordinator {
                 let needs_save = {
                     let mut state = coordinator.state.write().await;
                     match event {
-                        GossipEvent::MemberJoined(id, gossip_addr, slots) => {
+                        GossipEvent::MemberJoined(id, gossip_addr, slots, epoch) => {
                             info!("cluster: node {} joined at {}", id, gossip_addr);
                             if state.nodes.contains_key(&id) {
                                 false
@@ -1646,14 +1655,11 @@ impl ClusterCoordinator {
                                     data_addr,
                                     coordinator.gossip_port_offset,
                                 );
-                                // apply slot ranges from gossip
-                                for range in &slots {
-                                    for slot in range.iter() {
-                                        state.slot_map.assign(slot, id);
-                                    }
-                                }
-                                node.slots = slots;
+                                node.config_epoch = epoch;
                                 state.add_node(node);
+                                if state.apply_slot_claim(id, &slots, epoch).local_lost {
+                                    post_action = PostAction::AnnounceLocalSlots;
+                                }
                                 state.update_health();
 
                                 // replicate the new node into raft state and update
@@ -1748,35 +1754,28 @@ impl ClusterCoordinator {
                             state.update_health();
                             false
                         }
-                        GossipEvent::SlotsChanged(id, slots) => {
+                        GossipEvent::SlotsChanged(id, slots, epoch) => {
                             // The local node is authoritative for its own slot ownership;
                             // external gossip about it must never overwrite canonical state.
                             if id == coordinator.local_id {
                                 false
                             } else {
                                 debug!(
-                                    "cluster: node {} slots changed ({} ranges)",
+                                    "cluster: node {} claims {} slot ranges at epoch {}",
                                     id,
-                                    slots.len()
+                                    slots.len(),
+                                    epoch
                                 );
-                                // clear old slot assignments for this node
-                                let old_ranges = state.slot_map.slots_for_node(id);
-                                for range in &old_ranges {
-                                    for slot in range.iter() {
-                                        state.slot_map.unassign(slot);
-                                    }
-                                }
-                                // apply new slot assignments
-                                for range in &slots {
-                                    for slot in range.iter() {
-                                        state.slot_map.assign(slot, id);
-                                    }
-                                }
-                                if let Some(node) = state.nodes.get_mut(&id) {
-                                    node.slots = slots;
+                                let result = state.apply_slot_claim(id, &slots, epoch);
+                                if result.local_lost {
+                                    warn!(
+                                        "cluster: node {} took slots from this node at epoch {}",
+                                        id, epoch
+                                    );
+                                    post_action = PostAction::AnnounceLocalSlots;
                                 }
                                 state.update_health();
-                                true
+                                result.changed
                             }
                         }
                         GossipEvent::RoleChanged(id, is_primary, replicates) => {
@@ -1851,6 +1850,16 @@ impl ClusterCoordinator {
                         coordinator
                             .handle_vote_granted(from, candidate, epoch)
                             .await;
+                    }
+                    PostAction::AnnounceLocalSlots => {
+                        let (slots, epoch) = {
+                            let state = coordinator.state.read().await;
+                            (
+                                state.slot_map.slots_for_node(coordinator.local_id),
+                                state.local_epoch(),
+                            )
+                        };
+                        coordinator.broadcast_local_slots(slots, epoch).await;
                     }
                 }
 

@@ -61,4 +61,5 @@ pub use raft_log::RaftDiskError;
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
 pub use topology::{
     ClusterHealth, ClusterNode, ClusterState, ConfigParseError, NodeFlags, NodeId, NodeRole,
+    SlotClaimResult,
 };
