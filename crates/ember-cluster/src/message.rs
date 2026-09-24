@@ -126,6 +126,9 @@ pub enum NodeUpdate {
     VoteRequest {
         /// The candidate requesting votes.
         candidate: NodeId,
+        /// The primary the candidate wants to replace. Voters check this
+        /// node's health themselves before granting.
+        failed_primary: NodeId,
         /// Config epoch this election is contesting.
         epoch: u64,
         /// Candidate's replication offset; higher value signals the most up-to-date replica.
@@ -520,11 +523,13 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
         }
         NodeUpdate::VoteRequest {
             candidate,
+            failed_primary,
             epoch,
             offset,
         } => {
             buf.put_u8(UPDATE_VOTE_REQUEST);
             encode_node_id(buf, candidate);
+            encode_node_id(buf, failed_primary);
             buf.put_u64_le(*epoch);
             buf.put_u64_le(*offset);
         }
@@ -624,10 +629,12 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         }
         UPDATE_VOTE_REQUEST => {
             let candidate = decode_node_id(buf)?;
+            let failed_primary = decode_node_id(buf)?;
             let epoch = safe_get_u64_le(buf)?;
             let offset = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::VoteRequest {
                 candidate,
+                failed_primary,
                 epoch,
                 offset,
             })
@@ -959,6 +966,7 @@ mod tests {
             sender: candidate,
             updates: vec![NodeUpdate::VoteRequest {
                 candidate,
+                failed_primary: NodeId::new(),
                 epoch: 5,
                 offset: 1234,
             }],

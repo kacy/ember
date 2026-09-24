@@ -8,6 +8,7 @@
 //! SETSLOT, FORGET) are proposed through Raft consensus before returning OK.
 //! Read-only commands and node-local migration state skip Raft entirely.
 
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,6 +32,9 @@ const ELECTION_STAGGER_MS: u64 = 500;
 
 /// Timeout for an in-progress election; clears state if quorum not reached.
 const ELECTION_TIMEOUT_SECS: u64 = 5;
+
+/// Election rounds a replica runs before giving up on a failover.
+const ELECTION_ROUNDS: u64 = 5;
 
 /// Grace period given to the primary during a default (non-FORCE) failover.
 const FAILOVER_GRACE_MS: u64 = 500;
@@ -84,8 +88,9 @@ pub struct ClusterCoordinator {
 /// Tracks an in-progress automatic failover election that this node initiated.
 struct ElectionAttempt {
     inner: Election,
-    /// Number of alive primaries when the election started (used for quorum).
-    total_primaries: usize,
+    /// The primaries allowed to vote, fixed when the election starts. Votes
+    /// from anyone else are ignored.
+    voters: HashSet<NodeId>,
 }
 
 impl std::fmt::Debug for ClusterCoordinator {
@@ -289,7 +294,7 @@ impl ClusterCoordinator {
         }
 
         // remove nodes that raft has dropped (never remove ourselves)
-        let raft_ids: std::collections::HashSet<NodeId> = data
+        let raft_ids: HashSet<NodeId> = data
             .nodes
             .keys()
             .filter_map(|k| NodeId::parse(k).ok())
@@ -941,33 +946,53 @@ impl ClusterCoordinator {
 
     // -- automatic failover --
 
-    /// Starts an automatic failover election after `failed_primary` is confirmed dead.
+    /// Runs an automatic failover election after `failed_primary` is
+    /// confirmed dead.
     ///
-    /// Applies a brief stagger delay so that the most up-to-date replica wins.
-    /// Broadcasts a `VoteRequest` via gossip and waits up to 5 seconds for
-    /// a quorum of primaries to respond with `VoteGranted`.
+    /// A round can fail when voters have not yet seen the failure
+    /// themselves, so it retries while the primary stays down and this node
+    /// is still a replica. Each round uses a higher epoch, since a primary
+    /// votes at most once per epoch.
     async fn start_election(self: &Arc<Self>, failed_primary: NodeId) {
+        for round in 1..=ELECTION_ROUNDS {
+            if !self.election_round(failed_primary, round).await || !self.is_replica().await {
+                return;
+            }
+        }
+        warn!(
+            "election: gave up on failed primary {failed_primary} after {ELECTION_ROUNDS} rounds"
+        );
+    }
+
+    /// Runs one election round. Applies a brief stagger delay, broadcasts a
+    /// `VoteRequest` via gossip, and waits up to 5 seconds for a quorum of
+    /// primaries to respond with `VoteGranted`. Returns `true` if the round
+    /// timed out and another may follow.
+    async fn election_round(self: &Arc<Self>, failed_primary: NodeId, round: u64) -> bool {
         // fixed 500 ms stagger; a production implementation should compute
         // (max_offset - my_offset) * scale so the most up-to-date replica wins.
         // this requires a shared offset oracle (e.g., gossip-advertised offset).
         tokio::time::sleep(std::time::Duration::from_millis(ELECTION_STAGGER_MS)).await;
 
         // Re-read cluster state — the primary may have recovered during our sleep.
-        let (epoch, total_primaries, still_failed) = {
+        let (epoch, voters, still_failed) = {
             let state = self.state.read().await;
-            let epoch = state.config_epoch + 1;
-            // count alive primaries excluding the failed one
-            let total = state
+            let epoch = state.config_epoch + round;
+            // every other primary votes, reachable or not. counting only
+            // the ones this node can reach would let a replica cut off from
+            // the cluster win with its own tiny view of it (split brain).
+            let voters: HashSet<NodeId> = state
                 .nodes
                 .values()
-                .filter(|n| n.role == NodeRole::Primary && !n.flags.fail && n.id != failed_primary)
-                .count();
+                .filter(|n| n.role == NodeRole::Primary && n.id != failed_primary)
+                .map(|n| n.id)
+                .collect();
             let still_failed = state
                 .nodes
                 .get(&failed_primary)
                 .map(|n| n.flags.fail)
                 .unwrap_or(true);
-            (epoch, total, still_failed)
+            (epoch, voters, still_failed)
         };
 
         if !still_failed {
@@ -975,25 +1000,27 @@ impl ClusterCoordinator {
                 "election: primary {} recovered before election started",
                 failed_primary
             );
-            return;
+            return false;
         }
 
-        if total_primaries == 0 {
-            // No other primaries to collect votes from — promote directly.
-            info!(
-                "election: no other primaries in cluster; auto-promoting self for epoch {}",
-                epoch
+        if voters.is_empty() {
+            // nobody can confirm the primary is really gone, so promoting
+            // could leave two primaries serving the same slots
+            warn!(
+                "election: no other primaries to vote; automatic failover of {} needs at \
+                 least one more primary in the cluster",
+                failed_primary
             );
-            let _ = self.cluster_failover(true, false).await;
-            return;
+            return false;
         }
+        let total_primaries = voters.len();
 
         // Initialize the election.
         {
             let mut guard = self.election.lock().await;
             *guard = Some(ElectionAttempt {
                 inner: Election::new(epoch),
-                total_primaries,
+                voters,
             });
         }
 
@@ -1006,7 +1033,7 @@ impl ClusterCoordinator {
         // Broadcast vote request via gossip piggybacking.
         {
             let mut gossip = self.gossip.lock().await;
-            gossip.queue_vote_request(self.local_id, epoch, 0 /* offset */);
+            gossip.queue_vote_request(self.local_id, failed_primary, epoch, 0 /* offset */);
         }
 
         // Wait for votes; give the cluster time to respond.
@@ -1014,14 +1041,16 @@ impl ClusterCoordinator {
 
         // Timed out without quorum — clear election state.
         let mut guard = self.election.lock().await;
-        if let Some(ref e) = *guard {
-            if e.inner.epoch == epoch && !e.inner.is_promoted() {
+        match *guard {
+            Some(ref e) if e.inner.epoch == epoch && !e.inner.is_promoted() => {
                 warn!(
                     "election: timed out for epoch {} without reaching quorum",
                     epoch
                 );
                 *guard = None;
+                true
             }
+            _ => false,
         }
     }
 
@@ -1029,17 +1058,28 @@ impl ClusterCoordinator {
     ///
     /// If this node is a primary and hasn't voted in the given epoch, it
     /// grants its vote to the candidate and broadcasts `VoteGranted` via gossip.
-    async fn handle_vote_request(&self, candidate: NodeId, epoch: u64) {
-        // Only primaries vote.
-        let is_primary = {
+    async fn handle_vote_request(&self, candidate: NodeId, failed_primary: NodeId, epoch: u64) {
+        // Only primaries vote, and only when this node also sees the
+        // primary being replaced as failing. Otherwise a replica that merely
+        // lost its own link to a healthy primary could take over its slots.
+        // The candidate names that primary in the request, since news of
+        // who replicates whom may not have reached this node yet; if it has,
+        // the two must agree.
+        let may_vote = {
             let state = self.state.read().await;
-            state
+            let is_primary = state
                 .nodes
                 .get(&self.local_id)
-                .map(|n| n.role == NodeRole::Primary)
-                .unwrap_or(false)
+                .is_some_and(|n| n.role == NodeRole::Primary);
+            let primary_failing = state
+                .nodes
+                .get(&failed_primary)
+                .is_some_and(|primary| primary.flags.fail || primary.flags.pfail);
+            let known_primary = state.nodes.get(&candidate).and_then(|c| c.replicates);
+            is_primary && primary_failing && known_primary.is_none_or(|p| p == failed_primary)
         };
-        if !is_primary {
+        if !may_vote {
+            debug!("election: not voting for {candidate}; its primary looks healthy from here");
             return;
         }
 
@@ -1076,8 +1116,8 @@ impl ClusterCoordinator {
         let should_promote = {
             let mut guard = self.election.lock().await;
             match guard.as_mut() {
-                Some(attempt) if attempt.inner.epoch == epoch => {
-                    attempt.inner.record_vote(from, attempt.total_primaries)
+                Some(attempt) if attempt.inner.epoch == epoch && attempt.voters.contains(&from) => {
+                    attempt.inner.record_vote(from, attempt.voters.len())
                 }
                 _ => false,
             }
@@ -1536,6 +1576,7 @@ impl ClusterCoordinator {
                 StartElection(NodeId),
                 HandleVoteRequest {
                     candidate: NodeId,
+                    failed_primary: NodeId,
                     epoch: u64,
                 },
                 HandleVoteGranted {
@@ -1739,11 +1780,16 @@ impl ClusterCoordinator {
                         }
                         GossipEvent::VoteRequested {
                             candidate,
+                            failed_primary,
                             epoch,
                             offset: _,
                         } => {
                             // Handle outside the lock so we can call gossip.
-                            post_action = PostAction::HandleVoteRequest { candidate, epoch };
+                            post_action = PostAction::HandleVoteRequest {
+                                candidate,
+                                failed_primary,
+                                epoch,
+                            };
                             false
                         }
                         GossipEvent::VoteGranted {
@@ -1770,8 +1816,14 @@ impl ClusterCoordinator {
                             coord.start_election(primary_id).await;
                         });
                     }
-                    PostAction::HandleVoteRequest { candidate, epoch } => {
-                        coordinator.handle_vote_request(candidate, epoch).await;
+                    PostAction::HandleVoteRequest {
+                        candidate,
+                        failed_primary,
+                        epoch,
+                    } => {
+                        coordinator
+                            .handle_vote_request(candidate, failed_primary, epoch)
+                            .await;
                     }
                     PostAction::HandleVoteGranted {
                         from,
@@ -2467,14 +2519,25 @@ mod tests {
 
     // -- automatic failover --
 
+    /// Adds a primary to `coord`'s view, marked failed or healthy.
+    async fn add_primary(coord: &ClusterCoordinator, failed: bool) -> NodeId {
+        let id = NodeId::new();
+        let mut state = coord.state.write().await;
+        let mut node = ClusterNode::new_primary(id, "127.0.0.1:7000".parse().unwrap());
+        node.flags.fail = failed;
+        state.add_node(node);
+        id
+    }
+
     #[tokio::test]
     async fn primary_grants_vote_once_per_epoch() {
         // A primary should grant a vote for a given epoch exactly once.
         let (coord, _rx) = test_coordinator_bootstrapped();
         let candidate = NodeId::new();
+        let failed = add_primary(&coord, true).await;
 
         // first request for epoch 5 should be granted (gossip queue entry added)
-        coord.handle_vote_request(candidate, 5).await;
+        coord.handle_vote_request(candidate, failed, 5).await;
         assert_eq!(
             coord
                 .last_voted_epoch
@@ -2487,13 +2550,28 @@ mod tests {
         let prev_epoch = coord
             .last_voted_epoch
             .load(std::sync::atomic::Ordering::Acquire);
-        coord.handle_vote_request(candidate, 5).await;
+        coord.handle_vote_request(candidate, failed, 5).await;
         assert_eq!(
             coord
                 .last_voted_epoch
                 .load(std::sync::atomic::Ordering::Acquire),
             prev_epoch,
             "epoch should not change on duplicate request"
+        );
+    }
+
+    #[tokio::test]
+    async fn primary_does_not_vote_to_replace_a_healthy_primary() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let healthy = add_primary(&coord, false).await;
+
+        coord.handle_vote_request(NodeId::new(), healthy, 4).await;
+        assert_eq!(
+            coord
+                .last_voted_epoch
+                .load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "a primary that looks healthy here must not be voted out"
         );
     }
 
@@ -2521,7 +2599,9 @@ mod tests {
         }
 
         // replica should not update last_voted_epoch
-        coord.handle_vote_request(NodeId::new(), 3).await;
+        coord
+            .handle_vote_request(NodeId::new(), primary_id, 3)
+            .await;
         assert_eq!(
             coord
                 .last_voted_epoch
@@ -2576,7 +2656,7 @@ mod tests {
             let mut guard = coord.election.lock().await;
             *guard = Some(ElectionAttempt {
                 inner: Election::new(1),
-                total_primaries: 2,
+                voters: HashSet::from([voter1, voter2]),
             });
         }
 
@@ -2620,7 +2700,7 @@ mod tests {
             let mut guard = coord.election.lock().await;
             *guard = Some(ElectionAttempt {
                 inner: Election::new(1),
-                total_primaries: 1,
+                voters: HashSet::from([NodeId::new()]),
             });
         }
 

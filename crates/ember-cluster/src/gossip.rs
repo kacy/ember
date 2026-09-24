@@ -107,6 +107,8 @@ pub enum GossipEvent {
     /// A replica requested votes for a failover election.
     VoteRequested {
         candidate: NodeId,
+        /// The primary the candidate wants to replace.
+        failed_primary: NodeId,
         epoch: u64,
         /// Candidate's replication offset at the time of the request.
         offset: u64,
@@ -283,9 +285,16 @@ impl GossipEngine {
     ///
     /// Called by a replica that is starting an automatic failover election.
     /// The update will be piggybacked on the next outgoing Ping or Ack.
-    pub fn queue_vote_request(&mut self, candidate: NodeId, epoch: u64, offset: u64) {
+    pub fn queue_vote_request(
+        &mut self,
+        candidate: NodeId,
+        failed_primary: NodeId,
+        epoch: u64,
+        offset: u64,
+    ) {
         self.queue_update(NodeUpdate::VoteRequest {
             candidate,
+            failed_primary,
             epoch,
             offset,
         });
@@ -836,6 +845,7 @@ impl GossipEngine {
 
                 NodeUpdate::VoteRequest {
                     candidate,
+                    failed_primary,
                     epoch,
                     offset,
                 } => {
@@ -844,6 +854,7 @@ impl GossipEngine {
                     if *candidate != self.local_id {
                         self.emit(GossipEvent::VoteRequested {
                             candidate: *candidate,
+                            failed_primary: *failed_primary,
                             epoch: *epoch,
                             offset: *offset,
                         });
