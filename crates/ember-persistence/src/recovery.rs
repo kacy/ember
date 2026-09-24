@@ -393,21 +393,25 @@ fn replay_aof(
             AofRecord::LTrim { key, start, stop } => {
                 if let Some(entry) = map.get_mut(&key) {
                     if let RecoveredValue::List(ref mut deque) = entry.0 {
+                        // same rules as the keyspace's LTRIM. the math stays
+                        // in i64 until the range is known to be non-empty,
+                        // because a stop before the first element is negative
                         let len = deque.len() as i64;
                         let s = if start < 0 {
-                            (start + len).max(0) as usize
+                            (start + len).max(0)
                         } else {
-                            (start as usize).min(len as usize)
+                            start
                         };
                         let e = if stop < 0 {
-                            (stop + len).max(-1) as usize
+                            stop + len
                         } else {
-                            (stop as usize).min((len as usize).saturating_sub(1))
+                            stop.min(len - 1)
                         };
-                        if s > e || s >= len as usize {
+                        if s > e || s >= len {
                             deque.clear();
                         } else {
-                            *deque = deque.drain(s..=e).collect();
+                            deque.truncate(e as usize + 1);
+                            deque.drain(..s as usize);
                         }
                         if deque.is_empty() {
                             map.remove(&key);
@@ -813,7 +817,28 @@ fn replay_aof(
         count += 1;
     }
 
+    truncate_torn_tail(path, reader.valid_len())?;
     Ok(count)
+}
+
+/// Cuts off a partial record left at the end of the AOF by a crash.
+///
+/// The writer appends at end of file. If the partial bytes stayed, the next
+/// records would land after them, and the following recovery would misread
+/// those records as part of the partial one.
+fn truncate_torn_tail(path: &Path, valid_len: u64) -> Result<(), FormatError> {
+    let file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len > valid_len {
+        warn!(
+            path = %path.display(),
+            dropped_bytes = file_len - valid_len,
+            "aof ends with a partial record, truncating it"
+        );
+        file.set_len(valid_len)?;
+        file.sync_all()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -824,6 +849,73 @@ mod tests {
 
     fn temp_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("create temp dir")
+    }
+
+    /// Appends `records` to shard 0's AOF in `dir`.
+    fn write_aof(dir: &Path, records: &[AofRecord]) {
+        let mut writer = AofWriter::open(aof::aof_path(dir, 0)).unwrap();
+        for record in records {
+            writer.write_record(record).unwrap();
+        }
+        writer.sync().unwrap();
+    }
+
+    fn set(key: &str) -> AofRecord {
+        AofRecord::Set {
+            key: key.into(),
+            value: Bytes::from("v"),
+            expire_ms: -1,
+        }
+    }
+
+    fn sorted_keys(result: &RecoveryResult) -> Vec<String> {
+        let mut keys: Vec<String> = result.entries.iter().map(|e| e.key.clone()).collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn writes_after_a_torn_tail_survive_the_next_restart() {
+        use std::io::Write;
+
+        let dir = temp_dir();
+        write_aof(dir.path(), &[set("k1")]);
+
+        // simulate a crash halfway through writing the next record
+        let mut partial = set("k2").to_bytes().unwrap();
+        partial.truncate(partial.len() / 2);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(aof::aof_path(dir.path(), 0))
+            .unwrap()
+            .write_all(&partial)
+            .unwrap();
+
+        assert_eq!(sorted_keys(&recover_shard(dir.path(), 0)), ["k1"]);
+        write_aof(dir.path(), &[set("k3")]);
+        assert_eq!(sorted_keys(&recover_shard(dir.path(), 0)), ["k1", "k3"]);
+    }
+
+    #[test]
+    fn ltrim_with_stop_before_the_first_element_empties_the_list() {
+        let dir = temp_dir();
+        write_aof(
+            dir.path(),
+            &[
+                AofRecord::RPush {
+                    key: "l".into(),
+                    values: vec![Bytes::from("a"), Bytes::from("b")],
+                },
+                AofRecord::LTrim {
+                    key: "l".into(),
+                    start: 0,
+                    stop: -3,
+                },
+            ],
+        );
+        let result = recover_shard(dir.path(), 0);
+        assert!(result.replayed_aof);
+        assert!(result.entries.is_empty());
     }
 
     #[test]
