@@ -578,7 +578,6 @@ async fn main() {
         }
     }
 
-    #[allow(unused_mut)]
     let mut engine_config = build_engine_config(
         max_memory,
         eviction_policy,
@@ -586,6 +585,10 @@ async fn main() {
         persistence,
         cfg.engine.shard_channel_buffer,
     );
+    engine_config.shard.expiry_interval =
+        std::time::Duration::from_millis(cfg.active_expiry_interval_ms);
+    engine_config.shard.fsync_interval =
+        std::time::Duration::from_secs(cfg.aof_fsync_interval_secs);
 
     #[cfg(feature = "protobuf")]
     if args.protobuf {
@@ -746,7 +749,12 @@ async fn main() {
 
         let gossip_config = GossipConfig {
             gossip_port_offset: cfg.cluster.port_offset,
-            probe_timeout: std::time::Duration::from_millis(cfg.cluster.node_timeout_ms / 2),
+            probe_timeout: std::time::Duration::from_millis(
+                match cfg.cluster.gossip.probe_timeout_ms {
+                    0 => cfg.cluster.node_timeout_ms / 2,
+                    ms => ms,
+                },
+            ),
             protocol_period: std::time::Duration::from_millis(
                 cfg.cluster.gossip.protocol_period_ms,
             ),

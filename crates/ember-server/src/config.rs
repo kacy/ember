@@ -306,6 +306,7 @@ impl Default for ClusterConfig {
 pub struct GossipSection {
     #[serde(rename = "protocol-period-ms")]
     pub protocol_period_ms: u64,
+    /// Direct probe timeout. 0 means half of `node-timeout-ms`.
     #[serde(rename = "probe-timeout-ms")]
     pub probe_timeout_ms: u64,
     #[serde(rename = "suspicion-multiplier")]
@@ -320,7 +321,7 @@ impl Default for GossipSection {
     fn default() -> Self {
         Self {
             protocol_period_ms: 1_000,
-            probe_timeout_ms: 500,
+            probe_timeout_ms: 0,
             suspicion_multiplier: 5,
             indirect_probes: 3,
             max_piggyback: 10,
