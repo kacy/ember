@@ -685,8 +685,11 @@ async fn cluster_automatic_failover_promotes_replica() {
 async fn replica_matches_primary_and_wait_confirms_writes() {
     use std::time::{Duration, Instant};
 
+    // a shared secret, so the replica has to pass the replication
+    // handshake's challenge before it gets any data
     let opts = || ServerOptions {
         cluster_enabled: true,
+        cluster_auth_pass: Some("cluster-secret".into()),
         ..Default::default()
     };
     let primary = TestServer::start_with(ServerOptions {
@@ -737,4 +740,18 @@ async fn replica_matches_primary_and_wait_confirms_writes() {
         .map(|v| Frame::Bulk(bytes::Bytes::from(*v)))
         .collect();
     assert_eq!(list, Frame::Array(expected));
+}
+
+#[test]
+fn cluster_on_a_public_address_needs_a_cluster_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(crate::helpers::server_binary())
+        .args(["--host", "0.0.0.0", "--port", "16999", "--cluster-enabled"])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cluster-auth-pass"), "{stderr}");
 }

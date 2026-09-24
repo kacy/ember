@@ -1264,6 +1264,7 @@ impl ClusterCoordinator {
             local_id,
             SocketAddr::new(self.bind_addr.ip(), repl_port),
             tracker,
+            self.secret.clone(),
         )
         .await
         {
@@ -1301,7 +1302,11 @@ impl ClusterCoordinator {
 
         let repl_addr = std::net::SocketAddr::new(addr.ip(), repl_port);
         info!(%primary_id, %repl_addr, "starting replication client");
-        let task = crate::replication::ReplicationClient::start(Arc::clone(engine), repl_addr);
+        let task = crate::replication::ReplicationClient::start(
+            Arc::clone(engine),
+            repl_addr,
+            self.secret.clone(),
+        );
         // a second REPLICATE replaces the first; two streams would mix data
         if let Some(previous) = self.replication_task.lock().await.replace(task) {
             previous.abort();

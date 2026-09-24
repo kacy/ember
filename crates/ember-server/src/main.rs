@@ -649,6 +649,13 @@ async fn main() {
     }
     if cluster_secret.is_some() {
         info!("cluster transport authentication enabled");
+    } else if cfg.cluster.enabled && !addr.ip().to_canonical().is_loopback() {
+        // gossip, Raft and replication would accept anyone who can reach
+        // them: slot takeovers, forced failovers, a full copy of the data
+        exit_err(
+            "error: cluster mode on a non-loopback address requires cluster-auth-pass \
+             (or --cluster-auth-pass-file). set the same secret on every node.",
+        );
     }
 
     // build TLS config if tls-port is set

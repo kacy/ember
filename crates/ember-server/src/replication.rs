@@ -17,6 +17,12 @@
 //! [version: 1B][num_shards: 2B][primary_id_len: 1B][primary_id: N bytes]
 //! [status: 1B]   (0 = ok, 1 = shard count mismatch)
 //!
+//! // Authentication (if status = 0):
+//! // primary → replica: [nonce: 16B]
+//! // replica → primary: [tag: 32B]   HMAC of the nonce with the cluster
+//! //                                 secret, or zeros without one
+//! // primary → replica: [status: 1B] (0 = ok, 2 = authentication failed)
+//!
 //! // For each shard (if status = 0):
 //! [MSG_SHARD_SYNC: 1B][shard_id: 2B][snapshot_len: 4B][snapshot_bytes]
 //! [MSG_SHARD_OFFSET: 1B][shard_id: 2B][offset: 8B]
@@ -42,6 +48,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use ember_cluster::ClusterSecret;
 use ember_core::{Engine, ShardRequest, ShardResponse};
 use ember_persistence::aof::AofRecord;
 use ember_persistence::snapshot;
@@ -56,6 +63,8 @@ use tracing::{debug, error, info, warn};
 const REPL_VERSION: u8 = 2;
 const STATUS_OK: u8 = 0;
 const STATUS_SHARD_MISMATCH: u8 = 1;
+const STATUS_AUTH_FAILED: u8 = 2;
+const NONCE_LEN: usize = 16;
 
 const MSG_SHARD_SYNC: u8 = 2;
 const MSG_SHARD_OFFSET: u8 = 3;
@@ -225,6 +234,8 @@ pub struct ReplicationServer {
     engine: Arc<Engine>,
     primary_id: String,
     tracker: Arc<ReplicaTracker>,
+    /// Replicas must prove they hold this secret before receiving data.
+    secret: Option<Arc<ClusterSecret>>,
 }
 
 impl ReplicationServer {
@@ -240,6 +251,7 @@ impl ReplicationServer {
         primary_id: String,
         addr: SocketAddr,
         tracker: Arc<ReplicaTracker>,
+        secret: Option<Arc<ClusterSecret>>,
     ) -> std::io::Result<()> {
         let listener = TcpListener::bind(addr).await?;
         info!(%addr, "replication server listening");
@@ -248,6 +260,7 @@ impl ReplicationServer {
             engine,
             primary_id,
             tracker,
+            secret,
         });
 
         tokio::spawn(async move {
@@ -302,6 +315,28 @@ impl ReplicationServer {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("shard count mismatch: replica={replica_shards} primary={our_shards}"),
+            ));
+        }
+        write_u8(&mut stream, STATUS_OK).await?;
+
+        // the replica proves it holds the cluster secret before it gets
+        // any data. a fresh random nonce means a captured answer cannot be
+        // replayed.
+        let nonce: [u8; NONCE_LEN] = rand::random();
+        stream.write_all(&nonce).await?;
+        stream.flush().await?;
+        let mut tag = [0u8; ember_cluster::TAG_LEN];
+        stream.read_exact(&mut tag).await?;
+        let authenticated = self
+            .secret
+            .as_ref()
+            .is_none_or(|secret| secret.verify(&nonce, &tag));
+        if !authenticated {
+            write_u8(&mut stream, STATUS_AUTH_FAILED).await?;
+            stream.flush().await?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "replica failed cluster authentication",
             ));
         }
         write_u8(&mut stream, STATUS_OK).await?;
@@ -451,6 +486,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 pub struct ReplicationClient {
     engine: Arc<Engine>,
     primary_addr: SocketAddr,
+    /// Proves this replica may pull the primary's data.
+    secret: Option<Arc<ClusterSecret>>,
 }
 
 impl ReplicationClient {
@@ -460,10 +497,15 @@ impl ReplicationClient {
     /// reconnecting with backoff on any error. The caller must abort the
     /// returned task when this node stops replicating that primary, or it
     /// keeps pulling the old primary's data in.
-    pub fn start(engine: Arc<Engine>, primary_addr: SocketAddr) -> tokio::task::JoinHandle<()> {
+    pub fn start(
+        engine: Arc<Engine>,
+        primary_addr: SocketAddr,
+        secret: Option<Arc<ClusterSecret>>,
+    ) -> tokio::task::JoinHandle<()> {
         let client = Self {
             engine,
             primary_addr,
+            secret,
         };
         tokio::spawn(async move {
             client.run().await;
@@ -527,6 +569,22 @@ impl ReplicationClient {
                     "shard count mismatch with primary {primary_id}: \
                      ours={our_shards} primary={primary_shards}"
                 ),
+            ));
+        }
+
+        // answer the primary's challenge with the cluster secret
+        let mut nonce = [0u8; NONCE_LEN];
+        stream.read_exact(&mut nonce).await?;
+        let tag = self
+            .secret
+            .as_ref()
+            .map(|secret| secret.sign(&nonce))
+            .unwrap_or([0u8; ember_cluster::TAG_LEN]);
+        stream.write_all(&tag).await?;
+        if read_u8(&mut stream).await? == STATUS_AUTH_FAILED {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("primary {primary_id} rejected our cluster credentials"),
             ));
         }
 
