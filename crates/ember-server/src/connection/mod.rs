@@ -18,8 +18,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::connection_common::{
-    initial_acl_user, is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth,
-    TransactionState,
+    is_allowed_before_auth, is_auth_frame, is_monitor_frame, Session, TransactionState,
 };
 use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
@@ -230,8 +229,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     // per-connection auth + ACL state.
-    let (mut acl_user, mut current_username) = initial_acl_user(ctx);
-    let mut authenticated = acl_user.is_some();
+    let mut session = Session::new(ctx);
     let mut auth_failures: u32 = 0;
     // ASKING flag: set by the ASKING command, consumed by the next command.
     // allows the target node to serve importing slots during migration.
@@ -316,18 +314,19 @@ where
         // here would stall the connection.
         skip_read = frames.len() >= ctx.limits.max_pipeline_depth;
 
-        // when not yet authenticated, process frames serially so that an
-        // AUTH command in a pipeline takes effect for subsequent frames
-        if !authenticated {
+        // pick up ACL SETUSER/DELUSER changes to this connection's user
+        session.refresh(ctx);
+
+        // before authentication, or when the batch contains AUTH, process
+        // frames serially so an AUTH takes effect for the frames after it.
+        // AUTH on an authenticated connection switches its user and counts
+        // toward the failure limit like any other AUTH.
+        if !session.is_authenticated() || frames.iter().any(is_auth_frame) {
             for frame in frames.drain(..) {
                 if is_auth_frame(&frame) {
-                    let result = try_auth(frame, ctx);
-                    result.response.serialize(&mut out);
-                    if result.success() {
-                        authenticated = true;
-                        acl_user = result.user;
-                        current_username = result.username;
-                    } else {
+                    let (reply, ok) = session.auth(frame, ctx);
+                    reply.serialize(&mut out);
+                    if !ok {
                         auth_failures = auth_failures.saturating_add(1);
                         if auth_failures >= ctx.limits.max_auth_failures {
                             Frame::Error("ERR too many AUTH failures, closing connection".into())
@@ -336,7 +335,7 @@ where
                             return Ok(());
                         }
                     }
-                } else if is_allowed_before_auth(&frame) {
+                } else if session.is_authenticated() || is_allowed_before_auth(&frame) {
                     let response = dispatch::process(
                         frame,
                         &engine,
@@ -346,8 +345,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -362,13 +360,19 @@ where
             continue;
         }
 
-        // check if any frame is a subscribe command — if so, we need
-        // to enter subscriber mode which changes the connection loop
+        // MONITOR, SUBSCRIBE and blocking pops enter their own loops
+        // below instead of going through normal dispatch, so each checks
+        // ACL permissions itself before entering.
+
         // check for MONITOR — enters a dedicated output loop
         if frames.iter().any(is_monitor_frame) {
             // process any non-MONITOR frames first
             for frame in frames.drain(..) {
                 if is_monitor_frame(&frame) {
+                    if let Some(err) = session.check_frame(&frame) {
+                        err.serialize(&mut out);
+                        continue;
+                    }
                     // write +OK and enter monitor mode
                     Frame::Simple("OK".into()).serialize(&mut out);
                     stream.write_all(&out).await?;
@@ -386,8 +390,7 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
-                    &acl_user,
-                    &current_username,
+                    &session,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -405,7 +408,10 @@ where
             let mut sub_frames = Vec::new();
             for frame in frames.drain(..) {
                 if is_subscribe_frame(&frame) {
-                    sub_frames.push(frame);
+                    match session.check_frame(&frame) {
+                        Some(err) => err.serialize(&mut out),
+                        None => sub_frames.push(frame),
+                    }
                 } else {
                     let response = dispatch::process(
                         frame,
@@ -416,8 +422,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -428,6 +433,11 @@ where
                 out.clear();
             }
 
+            // every subscribe was denied, so stay in normal mode
+            if sub_frames.is_empty() {
+                continue;
+            }
+
             // enter subscriber mode — this blocks until all subscriptions
             // are removed or the client disconnects
             handler::handle_subscriber_mode(
@@ -436,6 +446,7 @@ where
                 &mut out,
                 ctx,
                 pubsub,
+                &session,
                 sub_frames,
             )
             .await?;
@@ -465,8 +476,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -481,9 +491,13 @@ where
 
             // handle the blocking pop
             if let Some(frame) = blocking_frame {
-                let response =
-                    handler::handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking)
-                        .await;
+                let response = match session.check_frame(&frame) {
+                    Some(err) => err,
+                    None => {
+                        handler::handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking)
+                            .await
+                    }
+                };
                 response.serialize(&mut out);
                 stream.write_all(&out).await?;
                 out.clear();
@@ -500,8 +514,7 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
-                    &acl_user,
-                    &current_username,
+                    &session,
                 )
                 .await;
                 response.serialize(&mut out);
@@ -537,8 +550,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -561,8 +573,7 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
-                    &acl_user,
-                    &current_username,
+                    &session,
                 )
                 .await;
                 match prepared {
@@ -626,8 +637,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     match prepared {
