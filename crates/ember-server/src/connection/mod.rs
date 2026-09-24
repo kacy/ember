@@ -254,8 +254,9 @@ where
     // when the client isn't pipelining.
     let (reusable_tx, mut reusable_rx) = mpsc::channel::<ShardResponse>(1);
 
-    // set when try_read grabbed data after a write, so we can skip
-    // the blocking read at the top of the next iteration.
+    // set when the buffer already holds work for the next iteration: the
+    // parse loop stopped at the pipeline depth limit, or try_read grabbed
+    // data after a write. the next iteration then skips the blocking read.
     let mut skip_read = false;
 
     loop {
@@ -268,9 +269,7 @@ where
             return Ok(());
         }
 
-        if skip_read {
-            skip_read = false;
-        } else {
+        if !skip_read {
             // read some data — returns 0 on clean disconnect, times out
             // after idle_timeout to reclaim resources from abandoned connections
             match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
@@ -312,6 +311,10 @@ where
                 }
             }
         }
+        // frames past the depth limit are still in `buf`. the client may be
+        // waiting for replies before it sends more, so blocking on a read
+        // here would stall the connection.
+        skip_read = frames.len() >= ctx.limits.max_pipeline_depth;
 
         // when not yet authenticated, process frames serially so that an
         // AUTH command in a pipeline takes effect for subsequent frames
@@ -698,7 +701,7 @@ where
             // kernel buffer already. grabbing it here saves a full
             // epoll/kqueue round-trip through the tokio scheduler.
             buf.reserve(4096);
-            skip_read = std::future::poll_fn(|cx| {
+            skip_read |= std::future::poll_fn(|cx| {
                 let n = {
                     let dst = buf.chunk_mut();
                     // SAFETY: UninitSlice is repr(transparent) over

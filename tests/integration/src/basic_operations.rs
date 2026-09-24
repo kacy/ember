@@ -475,3 +475,20 @@ async fn concurrent_decrby_min_is_rejected_without_crashing() {
     });
     assert_rejected_without_crash(&server, &[&["DECRBY", "n", "-9223372036854775808"]]).await;
 }
+
+#[tokio::test]
+async fn pipeline_longer_than_the_depth_limit_gets_every_reply() {
+    // the server parses at most 10,000 frames per batch. the rest must be
+    // processed without waiting for the client to send more bytes.
+    const COUNT: usize = 10_050;
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.write_raw(&b"*1\r\n$4\r\nPING\r\n".repeat(COUNT)).await;
+
+    for i in 0..COUNT {
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(10), c.read_frame())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for reply {i}"));
+        assert!(matches!(resp, Frame::Simple(ref s) if s == "PONG"));
+    }
+}

@@ -356,7 +356,7 @@ pub fn frame_to_monitor_args(frame: &Frame) -> Vec<String> {
     let Frame::Array(parts) = frame else {
         return Vec::new();
     };
-    parts
+    let mut args: Vec<String> = parts
         .iter()
         .map(|p| match p {
             Frame::Bulk(b) => String::from_utf8_lossy(b).into_owned(),
@@ -364,7 +364,30 @@ pub fn frame_to_monitor_args(frame: &Frame) -> Vec<String> {
             Frame::Integer(n) => n.to_string(),
             _ => String::new(),
         })
-        .collect()
+        .collect();
+    redact_secrets(&mut args);
+    args
+}
+
+/// Replaces arguments that can carry passwords with `(redacted)`, as Redis
+/// does, so MONITOR clients never see credentials.
+fn redact_secrets(args: &mut [String]) {
+    let is = |i: usize, word: &str| args.get(i).is_some_and(|a| a.eq_ignore_ascii_case(word));
+    let from = if is(0, "AUTH") || is(0, "HELLO") {
+        1
+    } else if (is(0, "ACL") && is(1, "SETUSER")) || (is(0, "CONFIG") && is(1, "SET")) {
+        2
+    } else if is(0, "MIGRATE") {
+        match (0..args.len()).find(|&i| is(i, "AUTH") || is(i, "AUTH2")) {
+            Some(i) => i + 1,
+            None => return,
+        }
+    } else {
+        return;
+    };
+    for arg in args.iter_mut().skip(from) {
+        *arg = "(redacted)".into();
+    }
 }
 
 /// Per-connection transaction state for MULTI/EXEC/DISCARD.
@@ -641,6 +664,43 @@ mod tests {
         ]);
         let args = frame_to_monitor_args(&frame);
         assert_eq!(args, vec!["SET", "mykey", "myvalue"]);
+    }
+
+    #[test]
+    fn frame_to_monitor_args_redacts_credentials() {
+        let args = |parts: &[&str]| {
+            let frame = Frame::Array(
+                parts
+                    .iter()
+                    .map(|p| Frame::Bulk(Bytes::copy_from_slice(p.as_bytes())))
+                    .collect(),
+            );
+            frame_to_monitor_args(&frame)
+        };
+        assert_eq!(
+            args(&["auth", "admin", "pw"]),
+            ["auth", "(redacted)", "(redacted)"]
+        );
+        assert_eq!(
+            args(&["HELLO", "3", "AUTH", "u", "pw"])[1..],
+            ["(redacted)"; 4]
+        );
+        assert_eq!(
+            args(&["ACL", "SETUSER", "bob", ">pw"]),
+            ["ACL", "SETUSER", "(redacted)", "(redacted)"]
+        );
+        assert_eq!(
+            args(&["CONFIG", "SET", "requirepass", "pw"]),
+            ["CONFIG", "SET", "(redacted)", "(redacted)"]
+        );
+        assert_eq!(
+            args(&["MIGRATE", "h", "6379", "k", "0", "10", "AUTH", "pw"])[7],
+            "(redacted)"
+        );
+        assert_eq!(
+            args(&["CONFIG", "GET", "maxmemory"]),
+            ["CONFIG", "GET", "maxmemory"]
+        );
     }
 
     #[test]

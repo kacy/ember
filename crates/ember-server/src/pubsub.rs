@@ -68,13 +68,11 @@ impl PubSubManager {
         self.subscribe_to(&self.channels, channel)
     }
 
-    /// Unsubscribe from an exact channel. Returns true if the channel
-    /// existed in the registry.
-    ///
-    /// Note: the actual receiver is dropped by the caller. This just
-    /// cleans up empty channels and adjusts the subscription count.
-    pub fn unsubscribe(&self, channel: &str) -> bool {
-        self.unsubscribe_from(&self.channels, channel)
+    /// Unsubscribe from an exact channel by handing back the receiver that
+    /// [`subscribe`](Self::subscribe) returned. The channel is removed once
+    /// no subscriber holds a receiver for it.
+    pub fn unsubscribe(&self, channel: &str, rx: broadcast::Receiver<PubMessage>) {
+        self.unsubscribe_from(&self.channels, channel, rx)
     }
 
     /// Subscribe to a glob pattern. Returns a receiver for messages
@@ -88,10 +86,10 @@ impl PubSubManager {
         Some(self.subscribe_to(&self.patterns, pattern))
     }
 
-    /// Unsubscribe from a pattern. Returns true if the pattern existed
-    /// in the registry.
-    pub fn punsubscribe(&self, pattern: &str) -> bool {
-        self.unsubscribe_from(&self.patterns, pattern)
+    /// Unsubscribe from a pattern by handing back the receiver that
+    /// [`psubscribe`](Self::psubscribe) returned.
+    pub fn punsubscribe(&self, pattern: &str, rx: broadcast::Receiver<PubMessage>) {
+        self.unsubscribe_from(&self.patterns, pattern, rx)
     }
 
     /// Subscribes to a key in the given map (channels or patterns).
@@ -108,23 +106,22 @@ impl PubSubManager {
         entry.subscribe()
     }
 
-    /// Unsubscribes from a key in the given map. Returns true if the
-    /// key existed. Removes the entry when no receivers remain.
+    /// Drops `rx` and removes the key's sender once no receivers remain.
+    ///
+    /// Taking the receiver means only a real subscriber can unsubscribe, so
+    /// the count cannot drift. It also means the receiver is gone before the
+    /// check: counting it as "ours" instead would remove a channel that
+    /// other clients still listen on. `remove_if` checks and removes under
+    /// the map's lock, so a concurrent subscribe cannot slip in between.
     fn unsubscribe_from(
         &self,
         map: &DashMap<String, broadcast::Sender<PubMessage>>,
         key: &str,
-    ) -> bool {
-        if let Some(entry) = map.get(key) {
-            self.subscription_count.fetch_sub(1, Ordering::Relaxed);
-            if entry.receiver_count() <= 1 {
-                drop(entry);
-                map.remove(key);
-            }
-            true
-        } else {
-            false
-        }
+        rx: broadcast::Receiver<PubMessage>,
+    ) {
+        drop(rx);
+        self.subscription_count.fetch_sub(1, Ordering::Relaxed);
+        map.remove_if(key, |_, tx| tx.receiver_count() == 0);
     }
 
     /// Publish a message to a channel. Returns the total number of
@@ -434,11 +431,21 @@ mod tests {
     fn unsubscribe_stops_delivery() {
         let mgr = PubSubManager::new();
         let rx = mgr.subscribe("ch");
-        mgr.unsubscribe("ch");
-        drop(rx);
+        mgr.unsubscribe("ch", rx);
 
         let count = mgr.publish("ch", Bytes::from("msg"));
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn unsubscribe_keeps_the_channel_for_other_subscribers() {
+        let mgr = PubSubManager::new();
+        let rx_a = mgr.subscribe("ch");
+        let mut rx_b = mgr.subscribe("ch");
+        mgr.unsubscribe("ch", rx_a);
+
+        assert_eq!(mgr.publish("ch", Bytes::from("msg")), 1);
+        assert!(rx_b.try_recv().is_ok());
     }
 
     #[test]

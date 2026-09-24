@@ -309,6 +309,12 @@ impl TestClient {
         }
     }
 
+    /// Writes raw bytes to the server without reading a reply.
+    #[allow(dead_code)]
+    pub async fn write_raw(&mut self, data: &[u8]) {
+        self.stream.write_all(data).await.unwrap();
+    }
+
     /// Sends a command with raw byte arguments and returns the parsed response.
     /// Useful for binary data like protobuf descriptors.
     #[allow(dead_code)]

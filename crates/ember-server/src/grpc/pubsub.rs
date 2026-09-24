@@ -95,11 +95,11 @@ pub(super) async fn subscribe(
         }
 
         // cleanup subscriptions
-        for (ch, _) in &channel_rxs {
-            pubsub.unsubscribe(ch);
+        for (ch, rx) in channel_rxs {
+            pubsub.unsubscribe(&ch, rx);
         }
-        for (pat, _) in &pattern_rxs {
-            pubsub.punsubscribe(pat);
+        for (pat, rx) in pattern_rxs {
+            pubsub.punsubscribe(&pat, rx);
         }
     });
 
