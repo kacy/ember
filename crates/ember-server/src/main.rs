@@ -157,10 +157,10 @@ struct Args {
     protobuf: bool,
 
     // -- gRPC options --
-    /// port for gRPC connections. set to 0 to disable even when compiled with grpc.
+    /// port for gRPC connections (default 6380). set to 0 to disable it.
     #[cfg(feature = "grpc")]
-    #[arg(long, default_value_t = 6380, env = "EMBER_GRPC_PORT")]
-    grpc_port: u16,
+    #[arg(long, env = "EMBER_GRPC_PORT")]
+    grpc_port: Option<u16>,
 
     /// disable gRPC listener even when compiled with the grpc feature
     #[cfg(feature = "grpc")]
@@ -309,6 +309,34 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     }
     if let Some(ref pass) = args.cluster_auth_pass {
         cfg.cluster.auth_pass = pass.clone();
+    }
+    #[cfg(feature = "encryption")]
+    if let Some(ref path) = args.encryption_key_file {
+        cfg.encryption_key_file = path.to_string_lossy().into_owned();
+    }
+    #[cfg(feature = "protobuf")]
+    if args.protobuf {
+        cfg.protobuf = true;
+    }
+    #[cfg(feature = "grpc")]
+    if let Some(port) = args.grpc_port {
+        cfg.grpc_port = port;
+    }
+    #[cfg(feature = "grpc")]
+    if args.no_grpc {
+        cfg.grpc_port = 0;
+    }
+}
+
+/// Exits if the config asks for a feature this build doesn't have, so a
+/// server that was meant to encrypt its files never writes them in plain
+/// text.
+fn check_features(cfg: &EmberConfig) {
+    if !cfg!(feature = "encryption") && !cfg.encryption_key_file.is_empty() {
+        exit_err("encryption-key-file is set, but this build has no encryption support");
+    }
+    if !cfg!(feature = "protobuf") && cfg.protobuf {
+        exit_err("protobuf is enabled, but this build has no protobuf support");
     }
 }
 
@@ -521,6 +549,7 @@ async fn main() {
         None => EmberConfig::default(),
     };
     apply_args(&mut cfg, &args);
+    check_features(&cfg);
 
     // resolve file-based credentials
     resolve_password(&mut cfg, &args);
@@ -543,8 +572,10 @@ async fn main() {
 
     // load encryption key if configured
     #[cfg(feature = "encryption")]
-    let encryption_key = if let Some(ref key_path) = args.encryption_key_file {
-        match ember_persistence::encryption::EncryptionKey::from_file(key_path) {
+    let encryption_key = if !cfg.encryption_key_file.is_empty() {
+        match ember_persistence::encryption::EncryptionKey::from_file(std::path::Path::new(
+            &cfg.encryption_key_file,
+        )) {
             Ok(key) => Some(key),
             Err(e) => exit_err(format!("failed to load encryption key: {e}")),
         }
@@ -591,7 +622,7 @@ async fn main() {
         std::time::Duration::from_secs(cfg.aof_fsync_interval_secs);
 
     #[cfg(feature = "protobuf")]
-    if args.protobuf {
+    if cfg.protobuf {
         engine_config.schema_registry = Some(ember_core::schema::SchemaRegistry::shared());
         info!("protobuf value storage enabled");
 
@@ -900,9 +931,9 @@ async fn main() {
 
     // build grpc address if enabled
     #[cfg(feature = "grpc")]
-    let grpc_addr = if !args.no_grpc && args.grpc_port != 0 {
-        let addr = parse_bind_addr(&cfg.bind, args.grpc_port, "gRPC");
-        info!(grpc_port = args.grpc_port, "gRPC enabled");
+    let grpc_addr = if cfg.grpc_port != 0 {
+        let addr = parse_bind_addr(&cfg.bind, cfg.grpc_port, "gRPC");
+        info!(grpc_port = cfg.grpc_port, "gRPC enabled");
         Some(addr)
     } else {
         None

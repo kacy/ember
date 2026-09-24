@@ -175,6 +175,18 @@ pub struct EmberConfig {
     /// automatically trigger a background save every N seconds. 0 = disabled.
     #[serde(rename = "save-interval-secs")]
     pub save_interval_secs: u64,
+    /// Path to a 32-byte key that encrypts the AOF and snapshots. Needs a
+    /// build with the `encryption` feature.
+    #[serde(rename = "encryption-key-file")]
+    pub encryption_key_file: String,
+
+    // -- protobuf and grpc --
+    /// Enables the PROTO.* commands. Needs a build with the `protobuf` feature.
+    pub protobuf: bool,
+    /// Port for the gRPC listener, which builds with the `grpc` feature
+    /// have. 0 disables it.
+    #[serde(rename = "grpc-port")]
+    pub grpc_port: u16,
 
     // -- monitoring --
     #[serde(rename = "metrics-port")]
@@ -245,6 +257,10 @@ impl Default for EmberConfig {
             active_expiry_interval_ms: 100,
             aof_fsync_interval_secs: 1,
             save_interval_secs: 0,
+            encryption_key_file: String::new(),
+
+            protobuf: false,
+            grpc_port: 6380,
 
             metrics_port: 0,
             slowlog_log_slower_than: 10_000,
@@ -936,6 +952,26 @@ mod tests {
         assert_eq!(cfg.bind, "127.0.0.1");
         assert_eq!(cfg.maxclients, 10_000);
         assert!(!cfg.appendonly);
+    }
+
+    #[test]
+    fn example_config_lists_valid_keys_and_defaults() {
+        // uncomment every `# key = value` and `# [table]` line
+        let example = include_str!("../../../ember.example.toml");
+        let uncommented: String = example
+            .lines()
+            .filter_map(|line| {
+                let line = line.strip_prefix("# ")?;
+                let (key, _) = line.split_once(" = ").unwrap_or((line, ""));
+                let is_key =
+                    !key.is_empty() && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
+                (is_key || line.starts_with('[')).then_some(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let parsed: EmberConfig = toml::from_str(&uncommented).unwrap();
+        assert_eq!(parsed.to_toml(), EmberConfig::default().to_toml());
     }
 
     #[test]
