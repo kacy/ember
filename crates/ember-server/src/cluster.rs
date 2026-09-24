@@ -768,6 +768,13 @@ impl ClusterCoordinator {
         let migration = self.migration.lock().await;
 
         if state.owns_slot(slot) {
+            // MIGRATE is copying this key: a write now would be lost when the
+            // local copy is deleted, so the client retries shortly
+            if migration.is_key_in_flight(key) {
+                return Some(Frame::Error(
+                    "TRYAGAIN the key is being migrated, retry shortly".into(),
+                ));
+            }
             // slot is migrating out — if key already moved, ASK redirect
             if migration.is_migrating(slot) && migration.is_key_migrated(slot, key) {
                 if let Some(m) = migration.get_outgoing(slot) {
@@ -798,6 +805,17 @@ impl ClusterCoordinator {
     pub async fn mark_key_migrated(&self, slot: u16, key: &[u8]) {
         let mut migration = self.migration.lock().await;
         migration.key_migrated(slot, key.to_vec());
+    }
+
+    /// Marks a key as being copied by MIGRATE, so commands for it get
+    /// TRYAGAIN until [`end_key_transfer`](Self::end_key_transfer). Returns
+    /// `false` if another MIGRATE is already copying it.
+    pub async fn begin_key_transfer(&self, key: &[u8]) -> bool {
+        self.migration.lock().await.begin_key_transfer(key)
+    }
+
+    pub async fn end_key_transfer(&self, key: &[u8]) {
+        self.migration.lock().await.end_key_transfer(key);
     }
 
     /// Checks that all keys hash to the same slot.
