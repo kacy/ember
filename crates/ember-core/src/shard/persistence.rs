@@ -579,4 +579,53 @@ mod tests {
             .unwrap();
         assert!(matches!(resp, ShardResponse::Bool(false)));
     }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn turning_encryption_on_keeps_existing_data() {
+        use ember_persistence::encryption::EncryptionKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let spawn = |encryption_key: Option<EncryptionKey>| {
+            let pcfg = ShardPersistenceConfig {
+                data_dir: dir.path().to_owned(),
+                append_only: true,
+                fsync_policy: FsyncPolicy::Always,
+                encryption_key,
+            };
+            spawn_shard(
+                16,
+                ShardConfig::default(),
+                Some(pcfg),
+                None,
+                None,
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            )
+        };
+        let set = |key: &str| ShardRequest::Set {
+            key: key.into(),
+            value: Bytes::from("v"),
+            expire: None,
+            nx: false,
+            xx: false,
+        };
+        let key = EncryptionKey::from_bytes([7; 32]);
+
+        let handle = spawn(None);
+        handle.send(set("plain")).await.unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // the plaintext AOF is rewritten encrypted, then appended to
+        let handle = spawn(Some(key.clone()));
+        handle.send(set("encrypted")).await.unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let handle = spawn(Some(key));
+        assert_eq!(get(&handle, "plain").await, Some(Bytes::from("v")));
+        assert_eq!(get(&handle, "encrypted").await, Some(Bytes::from("v")));
+    }
 }
