@@ -112,6 +112,7 @@ const TAG_BITOP: u8 = 34;
 const TAG_FLUSH_ALL: u8 = 36;
 const TAG_RESTORE: u8 = 37;
 const TAG_SET_EXPIRE_AT: u8 = 38;
+const TAG_CHECKPOINT: u8 = 39;
 
 // vector
 #[cfg(feature = "vector")]
@@ -239,6 +240,10 @@ pub enum AofRecord {
     },
     /// FLUSHDB or FLUSHALL. Removes every key in the shard.
     FlushAll,
+    /// The first record after a snapshot truncates the AOF. Names that
+    /// snapshot by its footer CRC, so recovery can tell whether this AOF
+    /// continues the snapshot on disk or came before it.
+    Checkpoint { snapshot_crc: u32 },
     /// RESTORE key ttl payload. `data` is the value in the snapshot value
     /// encoding, as carried by the RESTORE request. `ttl_ms` is 0 for no
     /// expiry.
@@ -328,6 +333,7 @@ impl AofRecord {
             AofRecord::Copy { .. } => TAG_COPY,
             AofRecord::SetExpireAt { .. } => TAG_SET_EXPIRE_AT,
             AofRecord::FlushAll => TAG_FLUSH_ALL,
+            AofRecord::Checkpoint { .. } => TAG_CHECKPOINT,
             AofRecord::Restore { .. } => TAG_RESTORE,
             #[cfg(feature = "vector")]
             AofRecord::VAdd { .. } => TAG_VADD,
@@ -441,6 +447,7 @@ impl AofRecord {
                 1 + LEN_PREFIX + key.len() + LEN_PREFIX + value.len() + 8
             }
             AofRecord::FlushAll => 1,
+            AofRecord::Checkpoint { .. } => 1 + 4,
             AofRecord::Restore { key, data, .. } => {
                 1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + data.len()
             }
@@ -670,6 +677,7 @@ impl AofRecord {
                 format::write_i64(&mut buf, (*timestamp_ms).min(i64::MAX as u64) as i64)?;
             }
             AofRecord::FlushAll => {}
+            AofRecord::Checkpoint { snapshot_crc } => format::write_u32(&mut buf, *snapshot_crc)?,
             AofRecord::Restore { key, ttl_ms, data } => {
                 format::write_bytes(&mut buf, key.as_bytes())?;
                 format::write_i64(&mut buf, (*ttl_ms).min(i64::MAX as u64) as i64)?;
@@ -945,6 +953,9 @@ impl AofRecord {
                 })
             }
             TAG_FLUSH_ALL => Ok(AofRecord::FlushAll),
+            TAG_CHECKPOINT => Ok(AofRecord::Checkpoint {
+                snapshot_crc: format::read_u32(cursor)?,
+            }),
             TAG_RESTORE => {
                 let key = read_string(cursor, "key")?;
                 let raw = format::read_i64(cursor)?;
@@ -1151,25 +1162,13 @@ impl AofWriter {
     }
 
     /// Appends a record to the AOF.
-    ///
-    /// When an encryption key is set, writes: `[nonce: 12B][len: 4B][ciphertext]`.
-    /// Otherwise writes the v2 format: `[tag+payload][crc32: 4B]`.
     pub fn write_record(&mut self, record: &AofRecord) -> Result<(), FormatError> {
-        let payload = record.to_bytes()?;
-
-        #[cfg(feature = "encryption")]
-        if let Some(ref enc) = self.encryption {
-            let (nonce, ciphertext) = enc.cipher.encrypt(&payload)?;
-            self.writer.write_all(&nonce)?;
-            format::write_len(&mut self.writer, ciphertext.len())?;
-            self.writer.write_all(&ciphertext)?;
-            return Ok(());
-        }
-
-        let checksum = format::crc32(&payload);
-        self.writer.write_all(&payload)?;
-        format::write_u32(&mut self.writer, checksum)?;
-        Ok(())
+        write_encoded(
+            &mut self.writer,
+            record,
+            #[cfg(feature = "encryption")]
+            self.encryption.as_ref().map(|enc| &enc.cipher),
+        )
     }
 
     /// Flushes the internal buffer to the OS.
@@ -1190,12 +1189,13 @@ impl AofWriter {
         &self.path
     }
 
-    /// Truncates the AOF file back to just the header.
+    /// Starts the AOF over after a snapshot, with just a header and a
+    /// checkpoint naming the snapshot by its footer CRC.
     ///
     /// Uses write-to-temp-then-rename for crash safety: the old AOF
-    /// remains intact until the new file (with only a header) is fully
-    /// synced and atomically renamed into place.
-    pub fn truncate(&mut self) -> Result<(), FormatError> {
+    /// remains intact until the new file is fully synced and atomically
+    /// renamed into place. If this fails, the old file stays in use.
+    pub fn truncate(&mut self, snapshot_crc: u32) -> Result<(), FormatError> {
         // flush the old writer so no data is in the BufWriter
         self.writer.flush()?;
 
@@ -1211,20 +1211,31 @@ impl AofWriter {
         let tmp_file = opts.open(&tmp_path)?;
         let mut tmp_writer = BufWriter::new(tmp_file);
 
+        // the new file's cipher. the old one stays in use until the rename
         #[cfg(feature = "encryption")]
-        if let Some(ref mut enc) = self.encryption {
-            format::write_header_versioned(
-                &mut tmp_writer,
-                format::AOF_MAGIC,
-                format::FORMAT_VERSION_ENCRYPTED,
-            )?;
-            enc.cipher = enc.key.write_new_file_salt(&mut tmp_writer)?;
-        } else {
-            format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
-        }
+        let cipher = match self.encryption {
+            Some(ref enc) => {
+                format::write_header_versioned(
+                    &mut tmp_writer,
+                    format::AOF_MAGIC,
+                    format::FORMAT_VERSION_ENCRYPTED,
+                )?;
+                Some(enc.key.write_new_file_salt(&mut tmp_writer)?)
+            }
+            None => {
+                format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
+                None
+            }
+        };
         #[cfg(not(feature = "encryption"))]
         format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
 
+        write_encoded(
+            &mut tmp_writer,
+            &AofRecord::Checkpoint { snapshot_crc },
+            #[cfg(feature = "encryption")]
+            cipher.as_ref(),
+        )?;
         tmp_writer.flush()?;
         tmp_writer.get_ref().sync_all()?;
 
@@ -1234,9 +1245,37 @@ impl AofWriter {
         // reopen for appending
         let file = OpenOptions::new().append(true).open(&self.path)?;
         self.writer = BufWriter::new(file);
+        #[cfg(feature = "encryption")]
+        if let (Some(enc), Some(cipher)) = (self.encryption.as_mut(), cipher) {
+            enc.cipher = cipher;
+        }
         self.needs_rewrite = false;
         Ok(())
     }
+}
+
+/// Writes one record. With a cipher: `[nonce: 12B][len: 4B][ciphertext]`.
+/// Otherwise the v2 format: `[tag+payload][crc32: 4B]`.
+fn write_encoded(
+    w: &mut impl Write,
+    record: &AofRecord,
+    #[cfg(feature = "encryption")] cipher: Option<&crate::encryption::FileCipher>,
+) -> Result<(), FormatError> {
+    let payload = record.to_bytes()?;
+
+    #[cfg(feature = "encryption")]
+    if let Some(cipher) = cipher {
+        let (nonce, ciphertext) = cipher.encrypt(&payload)?;
+        w.write_all(&nonce)?;
+        format::write_len(w, ciphertext.len())?;
+        w.write_all(&ciphertext)?;
+        return Ok(());
+    }
+
+    let checksum = format::crc32(&payload);
+    w.write_all(&payload)?;
+    format::write_u32(w, checksum)?;
+    Ok(())
 }
 
 /// Reads the header of an existing AOF: its version and, when it is
@@ -1609,6 +1648,9 @@ mod tests {
                 timestamp_ms: 1_700_000_000_000,
             },
             AofRecord::FlushAll,
+            AofRecord::Checkpoint {
+                snapshot_crc: 0xDEAD_BEEF,
+            },
             AofRecord::Restore {
                 key: key(),
                 ttl_ms: 5_000,
@@ -1804,7 +1846,7 @@ mod tests {
                 value: Bytes::from("data"),
                 expire_ms: -1,
             })?;
-            writer.truncate()?;
+            writer.truncate(7)?;
 
             // write a new record after truncation
             writer.write_record(&AofRecord::Set {
@@ -1816,6 +1858,10 @@ mod tests {
         }
 
         let mut reader = AofReader::open(&path)?;
+        assert_eq!(
+            reader.read_record()?,
+            Some(AofRecord::Checkpoint { snapshot_crc: 7 })
+        );
         let rec = reader.read_record()?.unwrap();
         match rec {
             AofRecord::Set { key, .. } => assert_eq!(key, "new"),
@@ -2293,7 +2339,7 @@ mod tests {
 
             let mut writer = AofWriter::open_encrypted(&path, test_key())?;
             assert!(writer.needs_rewrite());
-            writer.truncate()?;
+            writer.truncate(7)?;
             assert!(!writer.needs_rewrite());
             drop(writer);
 
@@ -2315,7 +2361,7 @@ mod tests {
                     value: Bytes::from("data"),
                     expire_ms: -1,
                 })?;
-                writer.truncate()?;
+                writer.truncate(7)?;
 
                 writer.write_record(&AofRecord::Set {
                     key: "new".into(),
@@ -2326,6 +2372,10 @@ mod tests {
             }
 
             let mut reader = AofReader::open_encrypted(&path, key)?;
+            assert_eq!(
+                reader.read_record()?,
+                Some(AofRecord::Checkpoint { snapshot_crc: 7 })
+            );
             let rec = reader.read_record()?.unwrap();
             match rec {
                 AofRecord::Set { key, .. } => assert_eq!(key, "new"),
@@ -2372,12 +2422,16 @@ mod tests {
 
             let mut writer = AofWriter::open_encrypted(&path, key.clone())?;
             assert!(writer.needs_rewrite());
-            writer.truncate()?;
+            writer.truncate(7)?;
             writer.write_record(&del("c"))?;
             writer.sync()?;
 
             let mut reader = AofReader::open_encrypted(&path, key)?;
             assert_eq!(reader.version, format::FORMAT_VERSION_ENCRYPTED);
+            assert_eq!(
+                reader.read_record()?,
+                Some(AofRecord::Checkpoint { snapshot_crc: 7 })
+            );
             assert_eq!(reader.read_record()?, Some(del("c")));
             Ok(())
         }

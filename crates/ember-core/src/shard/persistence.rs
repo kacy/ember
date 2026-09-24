@@ -63,11 +63,19 @@ pub(super) fn handle_snapshot(
         pcfg.encryption_key.as_ref(),
     );
     match result {
-        Ok(count) => {
+        Ok((count, snapshot_crc)) => {
             if let Some(ref mut writer) = aof_writer {
-                if let Err(e) = writer.truncate() {
-                    // the snapshot and the old AOF now overlap, so report
-                    // the failure instead of claiming the save succeeded
+                if let Err(e) = writer.truncate(snapshot_crc) {
+                    // the old AOF stays in use. mark where the snapshot
+                    // takes over, so recovery skips the records before it
+                    // and replays the ones after.
+                    let checkpoint = AofRecord::Checkpoint { snapshot_crc };
+                    if let Err(e) = writer
+                        .write_record(&checkpoint)
+                        .and_then(|()| writer.sync())
+                    {
+                        warn!(shard_id, "aof checkpoint after snapshot failed: {e}");
+                    }
                     warn!(shard_id, "aof truncate after snapshot failed: {e}");
                     return ShardResponse::Err(format!("aof truncate failed: {e}"));
                 }
@@ -186,6 +194,7 @@ pub(super) fn snap_to_value(snap: SnapValue) -> Value {
 }
 
 /// Iterates the keyspace and writes all live entries to a snapshot file.
+/// Returns the number of entries and the snapshot's footer CRC.
 pub(super) fn write_snapshot(
     keyspace: &Keyspace,
     path: &std::path::Path,
@@ -193,7 +202,7 @@ pub(super) fn write_snapshot(
     #[cfg(feature = "encryption")] encryption_key: Option<
         &ember_persistence::encryption::EncryptionKey,
     >,
-) -> Result<u32, ember_persistence::format::FormatError> {
+) -> Result<(u32, u32), ember_persistence::format::FormatError> {
     #[cfg(feature = "encryption")]
     let mut writer = if let Some(key) = encryption_key {
         SnapshotWriter::create_encrypted(path, shard_id, key.clone())?
@@ -213,8 +222,8 @@ pub(super) fn write_snapshot(
         count += 1;
     }
 
-    writer.finish()?;
-    Ok(count)
+    let crc = writer.finish()?;
+    Ok((count, crc))
 }
 
 #[cfg(test)]

@@ -200,7 +200,7 @@ recovery is straightforward:
 3. drop entries whose TTL expired while the server was down
 4. if a file is corrupt, warn and recover what can be recovered
 
-`BGREWRITEAOF` works by writing a fresh snapshot of the current shard state and then truncating the shard's AOF back to just its header before new writes continue.
+`BGREWRITEAOF` works by writing a fresh snapshot of the current shard state and then truncating the shard's AOF back to its header before new writes continue. the truncated AOF starts with a checkpoint record that names the snapshot by its footer CRC. if the server stops after the snapshot is saved but before the AOF is truncated, recovery sees that the AOF's checkpoint names an older snapshot and skips it instead of applying its writes a second time.
 
 ### encryption at rest
 
