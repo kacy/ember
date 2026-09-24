@@ -175,7 +175,7 @@ pub(super) fn snap_to_value(snap: SnapValue) -> Value {
                     for (name, vec) in elements {
                         let _ = vs.add(name, &vec);
                     }
-                    Value::Vector(vs)
+                    Value::Vector(Box::new(vs))
                 }
                 Err(_) => Value::String(Bytes::new()),
             }

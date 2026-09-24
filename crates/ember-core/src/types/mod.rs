@@ -36,7 +36,7 @@ pub enum Value {
     SortedSet(Box<SortedSet>),
 
     /// Hash map of field names to values. Uses a dual-representation
-    /// scheme: small hashes (≤32 fields) use a compact Vec for cache
+    /// scheme: small hashes (≤32 fields) use a packed byte buffer for cache
     /// locality, larger hashes auto-promote to HashMap. Boxed to reduce
     /// inline Value enum size.
     Hash(Box<HashValue>),
@@ -46,9 +46,10 @@ pub enum Value {
     Set(Box<HashSet<String>>),
 
     /// HNSW-backed vector set for similarity search. Each element is a
-    /// named string mapped to a dense float vector.
+    /// named string mapped to a dense float vector. Boxed: inline, it made
+    /// every `Value` (and every keyspace entry) three times larger.
     #[cfg(feature = "vector")]
-    Vector(vector::VectorSet),
+    Vector(Box<vector::VectorSet>),
 
     /// A protobuf message value. Stores the fully-qualified message type
     /// name alongside the serialized bytes. Validation happens at the

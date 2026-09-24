@@ -856,7 +856,7 @@ async fn run_shard(prepared: PreparedShard) {
                                     warn!("vector recovery: failed to add element: {e}");
                                 }
                             }
-                            Value::Vector(vs)
+                            Value::Vector(Box::new(vs))
                         }
                         Err(e) => {
                             warn!("vector recovery: failed to create index: {e}");
