@@ -51,7 +51,7 @@ impl Keyspace {
         if is_new {
             let vs = VectorSet::new(dim, metric, quantization, connectivity, expansion_add)
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
-            let value = Value::Vector(vs);
+            let value = Value::Vector(Box::new(vs));
             self.memory.add(key, &value);
             let entry = Entry::new(value, None);
             self.entries.insert(CompactString::from(key), entry);
@@ -161,7 +161,7 @@ impl Keyspace {
         if is_new {
             let vs = VectorSet::new(dim, metric, quantization, connectivity, expansion_add)
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
-            let value = Value::Vector(vs);
+            let value = Value::Vector(Box::new(vs));
             self.memory.add(key, &value);
             let new_entry = Entry::new(value, None);
             self.entries.insert(CompactString::from(key), new_entry);
