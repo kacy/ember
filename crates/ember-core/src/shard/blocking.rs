@@ -2,10 +2,8 @@ use super::*;
 
 /// Handles a BLPOP or BRPOP request.
 ///
-/// Tries to pop immediately. If the list has an element, sends the result
-/// on the waiter oneshot and records the AOF mutation. If the list is empty
-/// (or doesn't exist), registers the waiter in the appropriate map for
-/// later wake-up by an LPush/RPush.
+/// Pops immediately if the list has an element. If the list is empty or
+/// missing, registers the waiter for a later LPush/RPush to wake.
 pub(super) fn handle_blocking_pop(
     key: &str,
     waiter: mpsc::Sender<(String, Bytes)>,
@@ -13,51 +11,9 @@ pub(super) fn handle_blocking_pop(
     reply: ReplySender,
     ctx: &mut ProcessCtx<'_>,
 ) {
-    let fsync_policy = ctx.fsync_policy;
-    let shard_id = ctx.shard_id;
-
-    // try to pop immediately
-    let result = if is_left {
-        ctx.keyspace.lpop(key)
-    } else {
-        ctx.keyspace.rpop(key)
-    };
-
-    match result {
-        Ok(Some(data)) => {
-            // got an element — send to waiter and record the mutation.
-            // try_send can only fail if the client disconnected between
-            // registering the waiter and the element arriving; safe to ignore.
-            let _ = waiter.try_send((key.to_owned(), data));
-            reply.send(ShardResponse::Ok);
-
-            // AOF + replication for the pop
-            let record = if is_left {
-                AofRecord::LPop {
-                    key: key.to_owned(),
-                }
-            } else {
-                AofRecord::RPop {
-                    key: key.to_owned(),
-                }
-            };
-            aof::write_aof_record(
-                &record,
-                ctx.aof_writer,
-                fsync_policy,
-                shard_id,
-                ctx.aof_errors,
-                ctx.disk_full,
-            );
-            aof::broadcast_replication(
-                record,
-                ctx.replication_tx,
-                ctx.replication_offset,
-                shard_id,
-            );
-        }
-        Ok(None) => {
-            // list is empty or doesn't exist — register the waiter
+    match ctx.keyspace.llen(key) {
+        Err(_) => reply.send(ShardResponse::WrongType),
+        Ok(0) => {
             let map = if is_left {
                 &mut *ctx.lpop_waiters
             } else {
@@ -67,10 +23,15 @@ pub(super) fn handle_blocking_pop(
             // drop reply — connection handler doesn't await it for blocking ops
             drop(reply);
         }
-        Err(_) => {
-            // WRONGTYPE — drop the waiter (connection sees the receiver close)
-            // and send an error on the reply channel
-            reply.send(ShardResponse::WrongType);
+        Ok(_) => {
+            // a client blocked on several keys takes one element in total,
+            // and its channel holds one message. reserve that slot before
+            // popping: if another shard already filled it, or the client is
+            // gone, this list keeps its element.
+            if let Ok(permit) = waiter.try_reserve() {
+                pop_for(key, is_left, permit, ctx);
+            }
+            reply.send(ShardResponse::Ok);
         }
     }
 }
@@ -79,9 +40,6 @@ pub(super) fn handle_blocking_pop(
 /// operation. Pops elements from the list and sends them to waiters until
 /// either no more waiters remain or the list is empty.
 pub(super) fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
-    let fsync_policy = ctx.fsync_policy;
-    let shard_id = ctx.shard_id;
-
     // try BLPOP waiters first (left-pop), then BRPOP (right-pop)
     for is_left in [true, false] {
         let map = if is_left {
@@ -89,59 +47,74 @@ pub(super) fn wake_blocked_waiters(key: &str, ctx: &mut ProcessCtx<'_>) {
         } else {
             &mut *ctx.rpop_waiters
         };
+        let Some(mut waiters) = map.remove(key) else {
+            continue;
+        };
 
-        if let Some(waiters) = map.get_mut(key) {
-            while let Some(waiter) = waiters.pop_front() {
-                // skip dead waiters (client disconnected / timed out)
-                if waiter.is_closed() {
-                    continue;
-                }
-
-                let result = if is_left {
-                    ctx.keyspace.lpop(key)
-                } else {
-                    ctx.keyspace.rpop(key)
-                };
-
-                match result {
-                    Ok(Some(data)) => {
-                        let _ = waiter.try_send((key.to_owned(), data));
-
-                        // record AOF + replication for the pop
-                        let record = if is_left {
-                            AofRecord::LPop {
-                                key: key.to_owned(),
-                            }
-                        } else {
-                            AofRecord::RPop {
-                                key: key.to_owned(),
-                            }
-                        };
-                        aof::write_aof_record(
-                            &record,
-                            ctx.aof_writer,
-                            fsync_policy,
-                            shard_id,
-                            ctx.aof_errors,
-                            ctx.disk_full,
-                        );
-                        aof::broadcast_replication(
-                            record,
-                            ctx.replication_tx,
-                            ctx.replication_offset,
-                            shard_id,
-                        );
-                    }
-                    _ => break, // list is empty or wrong type — stop waking
-                }
-            }
-
-            // clean up empty waiter lists
-            if waiters.is_empty() {
-                map.remove(key);
+        while let Some(waiter) = waiters.pop_front() {
+            // skip clients that left, and clients already served through
+            // another key they were blocked on
+            let Ok(permit) = waiter.try_reserve() else {
+                continue;
+            };
+            if !pop_for(key, is_left, permit, ctx) {
+                // the list ran out: this client is still waiting
+                waiters.push_front(waiter);
+                break;
             }
         }
+
+        if !waiters.is_empty() {
+            let map = if is_left {
+                &mut *ctx.lpop_waiters
+            } else {
+                &mut *ctx.rpop_waiters
+            };
+            map.insert(key.to_owned(), waiters);
+        }
     }
+}
+
+/// Pops one element into a blocked client's reserved slot and logs the pop
+/// to the AOF and replication stream. Returns `false`, sending nothing,
+/// when the list is empty or holds another type.
+fn pop_for(
+    key: &str,
+    is_left: bool,
+    permit: mpsc::Permit<'_, (String, Bytes)>,
+    ctx: &mut ProcessCtx<'_>,
+) -> bool {
+    let popped = if is_left {
+        ctx.keyspace.lpop(key)
+    } else {
+        ctx.keyspace.rpop(key)
+    };
+    let Ok(Some(data)) = popped else {
+        return false;
+    };
+    permit.send((key.to_owned(), data));
+
+    let key = key.to_owned();
+    let record = if is_left {
+        AofRecord::LPop { key }
+    } else {
+        AofRecord::RPop { key }
+    };
+    aof::write_aof_record(
+        &record,
+        ctx.aof_writer,
+        ctx.fsync_policy,
+        ctx.shard_id,
+        ctx.aof_errors,
+        ctx.disk_full,
+    );
+    aof::broadcast_replication(
+        record,
+        ctx.replication_tx,
+        ctx.replication_offset,
+        ctx.shard_id,
+    );
+    true
 }
 
 #[cfg(test)]
@@ -186,6 +159,53 @@ mod tests {
         let (key, data) = result.expect("timed out waiting for BLPop").unwrap();
         assert_eq!(key, "mylist");
         assert_eq!(data, Bytes::from("hello"));
+    }
+
+    #[tokio::test]
+    async fn blpop_on_two_full_lists_takes_one_element() {
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            None,
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+        for key in ["a", "b"] {
+            handle
+                .send(ShardRequest::LPush {
+                    key: key.into(),
+                    values: vec![Bytes::from("v")],
+                })
+                .await
+                .unwrap();
+        }
+
+        // one client blocked on both keys shares one channel, as the
+        // connection handler sets it up
+        let (tx, mut rx) = mpsc::channel(1);
+        for key in ["a", "b"] {
+            let _ = handle
+                .dispatch(ShardRequest::BLPop {
+                    key: key.into(),
+                    waiter: tx.clone(),
+                })
+                .await;
+        }
+        let (key, _) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for BLPop")
+            .unwrap();
+        assert_eq!(key, "a");
+
+        // the second list was not popped into a full channel and lost
+        let resp = handle
+            .send(ShardRequest::LLen { key: "b".into() })
+            .await
+            .unwrap();
+        assert!(matches!(resp, ShardResponse::Len(1)), "{resp:?}");
     }
 
     #[tokio::test]

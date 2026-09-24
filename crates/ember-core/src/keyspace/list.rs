@@ -180,9 +180,9 @@ impl Keyspace {
             let entry = self.entries.get_mut(key).expect("key confirmed to exist");
             entry.touch(self.track_access);
             if delta > 0 {
-                entry.cached_value_size += delta as u32;
+                entry.grow_value_size(delta as usize);
             } else if delta < 0 {
-                entry.cached_value_size = entry.cached_value_size.saturating_sub((-delta) as u32);
+                entry.shrink_value_size(delta.unsigned_abs());
             }
         }
         self.bump_version(key);
@@ -234,7 +234,7 @@ impl Keyspace {
             entry.touch(self.track_access);
             let nvs = if !empty {
                 let size = memory::value_size(&entry.value);
-                entry.cached_value_size = size as u32;
+                entry.set_value_size(size);
                 size
             } else {
                 0
@@ -315,7 +315,7 @@ impl Keyspace {
             deque.insert(insert_pos, value);
             let len = deque.len() as i64;
             entry.touch(self.track_access);
-            entry.cached_value_size += element_cost as u32;
+            entry.grow_value_size(element_cost);
             len
         };
 
@@ -396,8 +396,7 @@ impl Keyspace {
             entry.touch(self.track_access);
 
             if !empty {
-                entry.cached_value_size =
-                    (entry.cached_value_size as usize).saturating_sub(bytes) as u32;
+                entry.shrink_value_size(bytes);
             }
 
             (n, bytes, empty)
@@ -525,7 +524,7 @@ impl Keyspace {
             }
             let len = deque.len();
             entry.touch(self.track_access);
-            entry.cached_value_size += element_increase as u32;
+            entry.grow_value_size(element_increase);
             len
         };
 
@@ -571,7 +570,12 @@ impl Keyspace {
         let Some(value) = popped else {
             return Ok(None);
         };
-        self.list_push(destination, std::slice::from_ref(&value), dst_left)?;
+        if let Err(e) = self.list_push(destination, std::slice::from_ref(&value), dst_left) {
+            // put the element back so a failed move changes nothing. the pop
+            // just freed at least the memory this push needs.
+            let _ = self.list_push(source, std::slice::from_ref(&value), src_left);
+            return Err(e);
+        }
         Ok(Some(value))
     }
 
@@ -1444,6 +1448,24 @@ mod tests {
             assert!(pushed < 1000, "memory limit never reached");
         }
         assert_eq!(ks.llen("q").unwrap(), pushed);
+    }
+
+    #[test]
+    fn lmove_that_runs_out_of_memory_keeps_the_element() {
+        let mut ks = Keyspace::new();
+        ks.rpush("src", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
+        // room for the existing list, but not for a new destination key
+        let used = ks.stats().used_bytes;
+        ks.update_memory_config(Some(used * 100 / 90 + 1), EvictionPolicy::NoEviction);
+
+        let result = ks.lmove("src", "dst", true, false);
+        assert!(matches!(result, Err(WriteError::OutOfMemory)));
+        assert_eq!(
+            ks.lrange("src", 0, -1).unwrap(),
+            vec![Bytes::from("a"), Bytes::from("b")]
+        );
+        assert!(!ks.exists("dst"));
     }
 
     #[test]

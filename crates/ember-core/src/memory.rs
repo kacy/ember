@@ -237,6 +237,16 @@ pub(crate) const HASHMAP_ENTRY_OVERHEAD: usize = 64;
 /// Base overhead for an empty HashMap (bucket array pointer + len + capacity).
 pub(crate) const HASHMAP_BASE_OVERHEAD: usize = 48;
 
+/// Estimated overhead per field for a hash in its current form. Packed and
+/// full hashes carry very different per-field costs, so removals must use
+/// the one that matches how the fields were counted.
+pub(crate) fn hash_field_overhead(hash: &crate::types::hash::HashValue) -> usize {
+    match hash {
+        crate::types::hash::HashValue::Packed(_) => PACKED_HASH_ENTRY_OVERHEAD,
+        crate::types::hash::HashValue::Full(_) => HASHMAP_ENTRY_OVERHEAD,
+    }
+}
+
 /// Estimated overhead per member in a HashSet.
 ///
 /// Each member is a String (24 bytes ptr+len+cap) plus bucket overhead.

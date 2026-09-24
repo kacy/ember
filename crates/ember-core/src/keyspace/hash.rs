@@ -102,9 +102,10 @@ impl Keyspace {
         let mut removed = Vec::new();
         let mut removed_bytes: usize = 0;
         let is_empty = if let Value::Hash(ref mut hash) = entry.value {
+            let overhead = memory::hash_field_overhead(hash);
             for field in fields {
                 if let Some(val) = hash.remove(field) {
-                    removed_bytes += field.len() + val.len() + memory::PACKED_HASH_ENTRY_OVERHEAD;
+                    removed_bytes += field.len() + val.len() + overhead;
                     removed.push(field.clone());
                 }
             }
@@ -204,7 +205,7 @@ impl Keyspace {
         entry.touch(self.track_access);
 
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size as u32;
+        entry.set_value_size(new_value_size);
         let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
         self.bump_version(key);
@@ -281,7 +282,7 @@ impl Keyspace {
         entry.touch(self.track_access);
 
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size as u32;
+        entry.set_value_size(new_value_size);
         let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
         self.bump_version(key);
@@ -459,6 +460,19 @@ impl Keyspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hdel_on_a_large_hash_returns_all_its_memory() {
+        let mut ks = Keyspace::new();
+        let fields: Vec<(String, Bytes)> = (0..100)
+            .map(|i| (format!("f{i}"), Bytes::from("v")))
+            .collect();
+        ks.hset("h", &fields).unwrap();
+        let names: Vec<String> = fields.iter().map(|(f, _)| f.clone()).collect();
+        ks.hdel("h", &names[..99]).unwrap();
+        ks.del("h");
+        assert_eq!(ks.stats().used_bytes, 0);
+    }
 
     #[test]
     fn hset_creates_hash() {
