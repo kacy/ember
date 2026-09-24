@@ -55,6 +55,9 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 /// - moved 8-byte `version` field to a lazy side table
 /// - packed `cached_value_size` as u32 (was usize)
 /// - bumped from 100 to 104 for CI platforms where Entry is 72 bytes
+/// - bumped to 120 for the `IndexMap` keyspace, which stores each entry's
+///   hash (8 bytes) next to it and keeps an index table (8 bytes plus a
+///   control byte per slot)
 ///
 /// This is calibrated from `std::mem::size_of` on 64-bit platforms. The
 /// exact value varies by compiler version, but precision isn't critical —
@@ -64,7 +67,7 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// The `entry_overhead_not_too_small` test validates this constant against
 /// the actual struct sizes on each platform.
-pub(crate) const ENTRY_OVERHEAD: usize = 104;
+pub(crate) const ENTRY_OVERHEAD: usize = 120;
 
 /// Tracks memory usage for a single keyspace.
 ///
@@ -374,9 +377,9 @@ mod tests {
 
         let entry_size = std::mem::size_of::<Entry>();
         let key_struct_size = std::mem::size_of::<CompactString>();
-        // hashbrown uses 1 control byte per slot + ~14% empty slot waste.
-        // 8 bytes is a conservative lower bound for per-entry hash overhead.
-        let hashmap_per_entry = 8;
+        // IndexMap stores each entry's 8-byte hash beside it, plus an index
+        // table of 8-byte slots with 1 control byte each
+        let hashmap_per_entry = 17;
         let minimum = entry_size + key_struct_size + hashmap_per_entry;
 
         assert!(
