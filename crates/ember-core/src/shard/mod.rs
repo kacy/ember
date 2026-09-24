@@ -44,6 +44,7 @@
 //! hierarchy can stay warm on data that belongs to this core.
 
 mod aof;
+pub use aof::from_aof_record;
 mod blocking;
 mod persistence;
 
