@@ -412,14 +412,16 @@ where
                     serialize_push_message(&msg, out);
                 }
             }
-            result = tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(buf)) => {
+            // no idle timeout here: a subscriber may only listen, and
+            // Redis doesn't apply `timeout` to pub/sub clients either
+            result = stream.read_buf(buf) => {
                 match result {
-                    Ok(Ok(0)) | Err(_) => return Ok(SubscriberExit::Close),
-                    Ok(Ok(_)) if buf.len() > ctx.limits.max_buf_size => {
+                    Ok(0) => return Ok(SubscriberExit::Close),
+                    Ok(_) if buf.len() > ctx.limits.max_buf_size => {
                         return Ok(SubscriberExit::Close);
                     }
-                    Ok(Ok(_)) => {}
-                    Ok(Err(e)) => return Err(e.into()),
+                    Ok(_) => {}
+                    Err(e) => return Err(e.into()),
                 }
             }
         }

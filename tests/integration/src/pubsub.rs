@@ -2,7 +2,7 @@
 
 use ember_protocol::Frame;
 
-use crate::helpers::TestServer;
+use crate::helpers::{ServerOptions, TestServer};
 
 #[tokio::test]
 async fn subscribe_and_receive_message() {
@@ -123,4 +123,24 @@ async fn unsubscribing_from_everything_returns_to_normal_mode() {
         matches!(resp, Frame::Simple(ref s) if s == "PONG"),
         "{resp:?}"
     );
+}
+
+#[tokio::test]
+async fn idle_timeout_does_not_close_subscribers() {
+    let server = TestServer::start_with(ServerOptions {
+        idle_timeout_secs: Some(1),
+        ..Default::default()
+    });
+    let mut sub = server.connect().await;
+    sub.cmd(&["SUBSCRIBE", "events"]).await;
+
+    // longer than the idle timeout, with nothing sent
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    let mut publisher = server.connect().await;
+    assert_eq!(publisher.get_int(&["PUBLISH", "events", "hi"]).await, 1);
+    let Frame::Array(frames) = sub.read_frame().await else {
+        panic!("expected a message");
+    };
+    assert!(matches!(&frames[2], Frame::Bulk(b) if b == &b"hi"[..]));
 }
