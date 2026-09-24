@@ -1184,200 +1184,60 @@ pub(super) async fn prepare_command(
     }
 }
 
-/// Validates cluster slot ownership for the given command.
+/// Checks whether this cluster node may run the command.
 ///
-/// Returns `None` if the command should proceed (not in cluster mode,
-/// or the local node owns the slot). Returns `Some(Frame)` with a MOVED,
-/// ASK, CLUSTERDOWN, or CROSSSLOT error if execution should be rejected.
+/// Returns `None` if the command should proceed. Otherwise returns the
+/// error to send:
+/// - READONLY for a write while failover has paused writes, or MOVED to the
+///   primary (READONLY if it is unknown) for a write on a replica
+/// - CROSSSLOT when the command's keys hash to different slots
+/// - MOVED, ASK or CLUSTERDOWN when this node does not serve the key's slot
 ///
-/// The `asking` flag is set when the client sent ASKING before this command,
-/// allowing access to importing slots during migration.
+/// Every command path calls this, so the write checks cover pipelined
+/// commands as well as those that go through `execute`. The `asking` flag
+/// is set when the client sent ASKING before this command, allowing access
+/// to importing slots during migration.
 pub(super) async fn cluster_slot_check(
     ctx: &ServerContext,
     cmd: &Command,
     asking: bool,
 ) -> Option<Frame> {
     let cluster = ctx.cluster.as_ref()?;
+    let is_replica = cluster.is_replica().await;
 
-    // Replicas serve all reads locally — skip slot routing.
-    // Write rejection is handled separately in execute() before this call.
-    if cluster.is_replica().await {
+    if cmd.is_write() {
+        if cluster.is_writes_paused() {
+            return Some(Frame::Error(
+                "READONLY Failover in progress; writes are temporarily paused.".into(),
+            ));
+        }
+        if is_replica {
+            if let Some(key) = cmd.primary_key() {
+                let slot = ember_cluster::key_slot(key.as_bytes());
+                if let Some(addr) = cluster.primary_addr_for_slot(slot).await {
+                    return Some(Frame::Error(format!("MOVED {slot} {addr}")));
+                }
+            }
+            return Some(Frame::Error(
+                "READONLY You can't write against a read only replica.".into(),
+            ));
+        }
+    }
+
+    // replicas serve every read locally
+    if is_replica {
         return None;
     }
 
-    match cmd {
-        // single-key commands — check slot ownership for the key
-        Command::Get { ref key }
-        | Command::Set { ref key, .. }
-        | Command::Expire { ref key, .. }
-        | Command::Ttl { ref key }
-        | Command::Incr { ref key }
-        | Command::Decr { ref key }
-        | Command::IncrBy { ref key, .. }
-        | Command::DecrBy { ref key, .. }
-        | Command::Append { ref key, .. }
-        | Command::Strlen { ref key }
-        | Command::GetRange { ref key, .. }
-        | Command::SetRange { ref key, .. }
-        | Command::IncrByFloat { ref key, .. }
-        | Command::Persist { ref key }
-        | Command::Pttl { ref key }
-        | Command::Pexpire { ref key, .. }
-        | Command::Expireat { ref key, .. }
-        | Command::Pexpireat { ref key, .. }
-        | Command::Type { ref key }
-        | Command::GetSet { ref key, .. }
-        | Command::LPush { ref key, .. }
-        | Command::RPush { ref key, .. }
-        | Command::LPop { ref key, .. }
-        | Command::RPop { ref key, .. }
-        | Command::LRange { ref key, .. }
-        | Command::LLen { ref key }
-        | Command::LIndex { ref key, .. }
-        | Command::LSet { ref key, .. }
-        | Command::LTrim { ref key, .. }
-        | Command::LInsert { ref key, .. }
-        | Command::LRem { ref key, .. }
-        | Command::LPos { ref key, .. }
-        | Command::ZAdd { ref key, .. }
-        | Command::ZRem { ref key, .. }
-        | Command::ZScore { ref key, .. }
-        | Command::ZRank { ref key, .. }
-        | Command::ZRevRank { ref key, .. }
-        | Command::ZRange { ref key, .. }
-        | Command::ZRevRange { ref key, .. }
-        | Command::ZCard { ref key }
-        | Command::ZCount { ref key, .. }
-        | Command::ZIncrBy { ref key, .. }
-        | Command::ZRangeByScore { ref key, .. }
-        | Command::ZRevRangeByScore { ref key, .. }
-        | Command::ZPopMin { ref key, .. }
-        | Command::ZPopMax { ref key, .. }
-        | Command::HSet { ref key, .. }
-        | Command::HGet { ref key, .. }
-        | Command::HGetAll { ref key }
-        | Command::HDel { ref key, .. }
-        | Command::HExists { ref key, .. }
-        | Command::HLen { ref key }
-        | Command::HIncrBy { ref key, .. }
-        | Command::HKeys { ref key }
-        | Command::HVals { ref key }
-        | Command::HMGet { ref key, .. }
-        | Command::SAdd { ref key, .. }
-        | Command::SRem { ref key, .. }
-        | Command::SMembers { ref key }
-        | Command::SIsMember { ref key, .. }
-        | Command::SCard { ref key }
-        | Command::SScan { ref key, .. }
-        | Command::SRandMember { ref key, .. }
-        | Command::SPop { ref key, .. }
-        | Command::SMisMember { ref key, .. }
-        | Command::HScan { ref key, .. }
-        | Command::ZScan { ref key, .. }
-        | Command::ProtoSet { ref key, .. }
-        | Command::ProtoGet { ref key }
-        | Command::ProtoType { ref key }
-        | Command::ProtoGetField { ref key, .. }
-        | Command::ProtoSetField { ref key, .. }
-        | Command::ProtoDelField { ref key, .. }
-        | Command::VAdd { ref key, .. }
-        | Command::VAddBatch { ref key, .. }
-        | Command::VSim { ref key, .. }
-        | Command::VRem { ref key, .. }
-        | Command::VGet { ref key, .. }
-        | Command::VCard { ref key }
-        | Command::VDim { ref key }
-        | Command::VInfo { ref key }
-        | Command::Sort {
-            ref key,
-            store: None,
-            ..
-        } => {
-            cluster
-                .check_slot_with_migration(key.as_bytes(), asking)
-                .await
+    let keys = cmd.keys();
+    let first = keys.iter().next()?;
+    if keys.iter().nth(1).is_some() {
+        let all: Vec<&str> = keys.iter().collect();
+        if let Err(err) = cluster.check_crossslot(&all) {
+            return Some(err);
         }
-        // SORT with STORE: crossslot check on source + destination
-        Command::Sort {
-            ref key,
-            store: Some(ref dest),
-            ..
-        } => {
-            let pair = [key.as_str(), dest.as_str()];
-            if let Err(err) = cluster.check_crossslot(&pair) {
-                return Some(err);
-            }
-            cluster
-                .check_slot_with_migration(key.as_bytes(), asking)
-                .await
-        }
-
-        // multi-key commands — crossslot validation + slot ownership
-        Command::Del { ref keys }
-        | Command::Unlink { ref keys }
-        | Command::Exists { ref keys }
-        | Command::Touch { ref keys }
-        | Command::MGet { ref keys }
-        | Command::BLPop { ref keys, .. }
-        | Command::BRPop { ref keys, .. }
-        | Command::SUnion { ref keys }
-        | Command::SInter { ref keys }
-        | Command::SDiff { ref keys } => {
-            if let Err(err) = cluster.check_crossslot(keys) {
-                return Some(err);
-            }
-            if let Some(first) = keys.first() {
-                return cluster
-                    .check_slot_with_migration(first.as_bytes(), asking)
-                    .await;
-            }
-            None
-        }
-
-        // set store: crossslot check on dest + all source keys
-        Command::SUnionStore { ref dest, ref keys }
-        | Command::SInterStore { ref dest, ref keys }
-        | Command::SDiffStore { ref dest, ref keys } => {
-            let mut all_keys: Vec<&str> = vec![dest];
-            all_keys.extend(keys.iter().map(|s| s.as_str()));
-            if let Err(err) = cluster.check_crossslot(&all_keys) {
-                return Some(err);
-            }
-            cluster
-                .check_slot_with_migration(dest.as_bytes(), asking)
-                .await
-        }
-
-        // rename: crossslot check on both keys
-        Command::Rename {
-            ref key,
-            ref newkey,
-        } => {
-            let pair = [key.as_str(), newkey.as_str()];
-            if let Err(err) = cluster.check_crossslot(&pair) {
-                return Some(err);
-            }
-            cluster
-                .check_slot_with_migration(key.as_bytes(), asking)
-                .await
-        }
-
-        // mset / msetnx: extract keys from pairs for crossslot check
-        Command::MSet { ref pairs } | Command::MSetNx { ref pairs } => {
-            let keys: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
-            if let Err(err) = cluster.check_crossslot(&keys) {
-                return Some(err);
-            }
-            if let Some(first) = keys.first() {
-                return cluster
-                    .check_slot_with_migration(first.as_bytes(), asking)
-                    .await;
-            }
-            None
-        }
-
-        // everything else (PING, ECHO, INFO, DBSIZE, cluster commands,
-        // pubsub, AUTH, etc.) doesn't need slot routing
-        _ => None,
     }
+    cluster
+        .check_slot_with_migration(first.as_bytes(), asking)
+        .await
 }

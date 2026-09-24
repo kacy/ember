@@ -3,6 +3,8 @@
 //! Separated from the enum definition for readability. Each method is a
 //! simple match over all variants.
 
+use bytes::Bytes;
+
 use super::Command;
 
 impl Command {
@@ -610,127 +612,301 @@ impl Command {
         }
     }
 
-    /// Returns the primary key for this command, if there is one.
+    /// Returns every key this command reads or writes, in argument order.
     ///
-    /// Used to calculate the hash slot for MOVED redirects on replicas.
-    /// For multi-key commands, returns the first key.
-    pub fn primary_key(&self) -> Option<&str> {
+    /// ACL key patterns and cluster slot checks both use this list. The
+    /// match has no wildcard arm, so a new command does not compile until
+    /// its keys are listed here.
+    pub fn keys(&self) -> CommandKeys<'_> {
         match self {
-            Command::Get { key }
+            Command::Get { key, .. }
             | Command::Set { key, .. }
-            | Command::Incr { key }
-            | Command::Decr { key }
+            | Command::Incr { key, .. }
+            | Command::Decr { key, .. }
             | Command::IncrBy { key, .. }
             | Command::DecrBy { key, .. }
             | Command::IncrByFloat { key, .. }
             | Command::Append { key, .. }
-            | Command::Strlen { key }
+            | Command::Strlen { key, .. }
             | Command::GetRange { key, .. }
             | Command::SetRange { key, .. }
-            | Command::Persist { key }
+            | Command::GetBit { key, .. }
+            | Command::SetBit { key, .. }
+            | Command::BitCount { key, .. }
+            | Command::BitPos { key, .. }
+            | Command::GetSet { key, .. }
             | Command::Expire { key, .. }
             | Command::Expireat { key, .. }
+            | Command::Ttl { key, .. }
+            | Command::Persist { key, .. }
+            | Command::Pttl { key, .. }
             | Command::Pexpire { key, .. }
             | Command::Pexpireat { key, .. }
-            | Command::Ttl { key }
-            | Command::Pttl { key }
-            | Command::Expiretime { key }
-            | Command::Pexpiretime { key }
-            | Command::Type { key }
-            | Command::Rename { key, .. }
-            | Command::ObjectEncoding { key }
-            | Command::ObjectRefcount { key }
-            | Command::GetSet { key, .. }
+            | Command::MemoryUsage { key, .. }
+            | Command::SScan { key, .. }
+            | Command::HScan { key, .. }
+            | Command::ZScan { key, .. }
             | Command::LPush { key, .. }
             | Command::RPush { key, .. }
             | Command::LPop { key, .. }
             | Command::RPop { key, .. }
             | Command::LRange { key, .. }
-            | Command::LLen { key }
+            | Command::LLen { key, .. }
             | Command::LIndex { key, .. }
             | Command::LSet { key, .. }
             | Command::LTrim { key, .. }
             | Command::LInsert { key, .. }
             | Command::LRem { key, .. }
             | Command::LPos { key, .. }
+            | Command::GetDel { key, .. }
+            | Command::GetEx { key, .. }
+            | Command::Type { key, .. }
             | Command::ZAdd { key, .. }
             | Command::ZRem { key, .. }
             | Command::ZScore { key, .. }
             | Command::ZRank { key, .. }
+            | Command::ZCard { key, .. }
             | Command::ZRange { key, .. }
-            | Command::ZCard { key }
+            | Command::ZRevRange { key, .. }
+            | Command::ZRevRank { key, .. }
+            | Command::ZCount { key, .. }
+            | Command::ZIncrBy { key, .. }
+            | Command::ZRangeByScore { key, .. }
+            | Command::ZRevRangeByScore { key, .. }
+            | Command::ZPopMin { key, .. }
+            | Command::ZPopMax { key, .. }
             | Command::HSet { key, .. }
             | Command::HGet { key, .. }
-            | Command::HGetAll { key }
+            | Command::HGetAll { key, .. }
             | Command::HDel { key, .. }
             | Command::HExists { key, .. }
-            | Command::HLen { key }
+            | Command::HLen { key, .. }
             | Command::HIncrBy { key, .. }
-            | Command::HKeys { key }
-            | Command::HVals { key }
+            | Command::HKeys { key, .. }
+            | Command::HVals { key, .. }
             | Command::HMGet { key, .. }
             | Command::HRandField { key, .. }
-            | Command::ZRandMember { key, .. }
             | Command::SAdd { key, .. }
             | Command::SRem { key, .. }
-            | Command::SMembers { key }
+            | Command::SMembers { key, .. }
             | Command::SIsMember { key, .. }
-            | Command::SCard { key }
-            | Command::SScan { key, .. }
+            | Command::SCard { key, .. }
             | Command::SRandMember { key, .. }
+            | Command::ZRandMember { key, .. }
             | Command::SPop { key, .. }
             | Command::SMisMember { key, .. }
-            | Command::HScan { key, .. }
-            | Command::ZScan { key, .. }
+            | Command::Expiretime { key, .. }
+            | Command::Pexpiretime { key, .. }
+            | Command::Migrate { key, .. }
+            | Command::Restore { key, .. }
             | Command::VAdd { key, .. }
             | Command::VAddBatch { key, .. }
             | Command::VSim { key, .. }
             | Command::VRem { key, .. }
             | Command::VGet { key, .. }
-            | Command::VCard { key }
-            | Command::VDim { key }
-            | Command::VInfo { key }
+            | Command::VCard { key, .. }
+            | Command::VDim { key, .. }
+            | Command::VInfo { key, .. }
             | Command::ProtoSet { key, .. }
-            | Command::ProtoGet { key }
-            | Command::ProtoType { key }
+            | Command::ProtoGet { key, .. }
+            | Command::ProtoType { key, .. }
             | Command::ProtoGetField { key, .. }
             | Command::ProtoSetField { key, .. }
             | Command::ProtoDelField { key, .. }
-            | Command::Restore { key, .. }
-            | Command::Sort { key, .. }
-            | Command::GetDel { key }
-            | Command::GetEx { key, .. }
-            | Command::MemoryUsage { key } => Some(key),
-            Command::LMove { source, .. } => Some(source),
-            Command::Copy { source, .. } => Some(source),
-            Command::SMove { source, .. } => Some(source),
-            Command::Del { keys }
-            | Command::Unlink { keys }
-            | Command::Exists { keys }
-            | Command::Touch { keys }
-            | Command::MGet { keys }
+            | Command::ObjectEncoding { key, .. }
+            | Command::ObjectRefcount { key, .. }
+            | Command::HIncrByFloat { key, .. } => CommandKeys::one(key),
+            Command::Del { keys, .. }
+            | Command::Unlink { keys, .. }
+            | Command::Exists { keys, .. }
+            | Command::MGet { keys, .. }
             | Command::BLPop { keys, .. }
             | Command::BRPop { keys, .. }
-            | Command::SUnion { keys }
-            | Command::SInter { keys }
-            | Command::SDiff { keys }
-            | Command::SInterCard { keys, .. }
             | Command::ZDiff { keys, .. }
             | Command::ZInter { keys, .. }
             | Command::ZUnion { keys, .. }
             | Command::Lmpop { keys, .. }
-            | Command::Zmpop { keys, .. } => keys.first().map(String::as_str),
-            Command::SUnionStore { dest, .. }
-            | Command::SInterStore { dest, .. }
-            | Command::SDiffStore { dest, .. }
-            | Command::ZUnionStore { dest, .. }
-            | Command::ZInterStore { dest, .. }
-            | Command::ZDiffStore { dest, .. } => Some(dest),
-            Command::HIncrByFloat { key, .. } => Some(key),
-            Command::MSet { pairs } | Command::MSetNx { pairs } => {
-                pairs.first().map(|(k, _)| k.as_str())
-            }
-            _ => None,
+            | Command::Zmpop { keys, .. }
+            | Command::SUnion { keys, .. }
+            | Command::SInter { keys, .. }
+            | Command::SDiff { keys, .. }
+            | Command::SInterCard { keys, .. }
+            | Command::Watch { keys, .. }
+            | Command::Touch { keys, .. } => CommandKeys::list(keys),
+            Command::BitOp { dest, keys, .. }
+            | Command::ZDiffStore { dest, keys, .. }
+            | Command::ZInterStore { dest, keys, .. }
+            | Command::ZUnionStore { dest, keys, .. }
+            | Command::SUnionStore { dest, keys, .. }
+            | Command::SInterStore { dest, keys, .. }
+            | Command::SDiffStore { dest, keys, .. } => CommandKeys::dest_and(dest, keys),
+            Command::MSet { pairs } | Command::MSetNx { pairs } => CommandKeys::pairs(pairs),
+            Command::Rename { key, newkey } => CommandKeys::two(key, newkey),
+            Command::LMove {
+                source,
+                destination,
+                ..
+            } => CommandKeys::two(source, destination),
+            Command::SMove {
+                source,
+                destination,
+                ..
+            } => CommandKeys::two(source, destination),
+            Command::Copy {
+                source,
+                destination,
+                ..
+            } => CommandKeys::two(source, destination),
+            Command::Sort { key, store, .. } => CommandKeys {
+                first: Some(key),
+                last: store.as_deref(),
+                ..CommandKeys::default()
+            },
+            Command::Ping(_)
+            | Command::Echo(_)
+            | Command::Keys { .. }
+            | Command::DbSize
+            | Command::Info { .. }
+            | Command::BgSave
+            | Command::BgRewriteAof
+            | Command::FlushDb { .. }
+            | Command::FlushAll { .. }
+            | Command::ConfigGet { .. }
+            | Command::ConfigSet { .. }
+            | Command::ConfigRewrite
+            | Command::Multi
+            | Command::Exec
+            | Command::Discard
+            | Command::Scan { .. }
+            | Command::ClusterInfo
+            | Command::ClusterNodes
+            | Command::ClusterSlots
+            | Command::ClusterKeySlot { .. }
+            | Command::ClusterMyId
+            | Command::ClusterSetSlotImporting { .. }
+            | Command::ClusterSetSlotMigrating { .. }
+            | Command::ClusterSetSlotNode { .. }
+            | Command::ClusterSetSlotStable { .. }
+            | Command::ClusterMeet { .. }
+            | Command::ClusterAddSlots { .. }
+            | Command::ClusterAddSlotsRange { .. }
+            | Command::ClusterDelSlots { .. }
+            | Command::ClusterForget { .. }
+            | Command::ClusterReplicate { .. }
+            | Command::ClusterFailover { .. }
+            | Command::ClusterCountKeysInSlot { .. }
+            | Command::ClusterGetKeysInSlot { .. }
+            | Command::Asking
+            | Command::SlowLogGet { .. }
+            | Command::SlowLogLen
+            | Command::SlowLogReset
+            | Command::Subscribe { .. }
+            | Command::Unsubscribe { .. }
+            | Command::PSubscribe { .. }
+            | Command::PUnsubscribe { .. }
+            | Command::Publish { .. }
+            | Command::PubSubChannels { .. }
+            | Command::PubSubNumSub { .. }
+            | Command::PubSubNumPat
+            | Command::ProtoRegister { .. }
+            | Command::ProtoSchemas
+            | Command::ProtoDescribe { .. }
+            | Command::ProtoScan { .. }
+            | Command::ProtoFind { .. }
+            | Command::ClientId
+            | Command::ClientSetName { .. }
+            | Command::ClientGetName
+            | Command::ClientList
+            | Command::Auth { .. }
+            | Command::AclWhoAmI
+            | Command::AclList
+            | Command::AclUsers
+            | Command::AclGetUser { .. }
+            | Command::AclDelUser { .. }
+            | Command::AclSetUser { .. }
+            | Command::AclCat { .. }
+            | Command::Unwatch
+            | Command::Time
+            | Command::LastSave
+            | Command::Role
+            | Command::Wait { .. }
+            | Command::Quit
+            | Command::Monitor
+            | Command::RandomKey
+            | Command::Command { .. }
+            | Command::Unknown(_) => CommandKeys::default(),
         }
+    }
+
+    /// Returns the first key of this command, if it has any.
+    ///
+    /// Used to calculate the hash slot for MOVED redirects on replicas.
+    pub fn primary_key(&self) -> Option<&str> {
+        self.keys().iter().next()
+    }
+}
+
+/// The keys of a [`Command`], borrowed from its fields.
+///
+/// Every command's keys fit this shape: an optional key, a list of keys,
+/// a list of key/value pairs, and an optional trailing key. Keeping the
+/// parts separate lets [`Command::keys`] avoid allocating.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CommandKeys<'a> {
+    first: Option<&'a str>,
+    list: &'a [String],
+    pairs: &'a [(String, Bytes)],
+    last: Option<&'a str>,
+}
+
+impl<'a> CommandKeys<'a> {
+    fn one(key: &'a str) -> Self {
+        Self {
+            first: Some(key),
+            ..Self::default()
+        }
+    }
+
+    fn two(first: &'a str, second: &'a str) -> Self {
+        Self {
+            first: Some(first),
+            last: Some(second),
+            ..Self::default()
+        }
+    }
+
+    fn list(keys: &'a [String]) -> Self {
+        Self {
+            list: keys,
+            ..Self::default()
+        }
+    }
+
+    fn dest_and(dest: &'a str, keys: &'a [String]) -> Self {
+        Self {
+            first: Some(dest),
+            list: keys,
+            ..Self::default()
+        }
+    }
+
+    fn pairs(pairs: &'a [(String, Bytes)]) -> Self {
+        Self {
+            pairs,
+            ..Self::default()
+        }
+    }
+
+    /// Iterates over the keys in argument order.
+    pub fn iter(self) -> impl Iterator<Item = &'a str> {
+        self.first
+            .into_iter()
+            .chain(self.list.iter().map(String::as_str))
+            .chain(self.pairs.iter().map(|(key, _)| key.as_str()))
+            .chain(self.last)
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.iter().next().is_none()
     }
 }

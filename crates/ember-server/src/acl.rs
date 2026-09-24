@@ -361,8 +361,7 @@ pub fn check_permission(
 
     // check key permission
     if !user.allkeys {
-        let keys = extract_keys(cmd);
-        for key in keys {
+        for key in cmd.keys().iter() {
             if !user.key_patterns.iter().any(|pat| glob_match(pat, key)) {
                 return Some(Frame::Error(format!(
                     "NOPERM this user has no permissions to access the '{key}' key"
@@ -372,101 +371,6 @@ pub fn check_permission(
     }
 
     None
-}
-
-/// Extracts all keys referenced by a command.
-///
-/// Returns references to the key strings inside the command. Multi-key
-/// commands return all keys; keyless commands return an empty vec.
-fn extract_keys(cmd: &ember_protocol::Command) -> Vec<&str> {
-    use ember_protocol::Command;
-    match cmd {
-        // single-key commands
-        Command::Get { key }
-        | Command::Set { key, .. }
-        | Command::Incr { key }
-        | Command::Decr { key }
-        | Command::IncrBy { key, .. }
-        | Command::DecrBy { key, .. }
-        | Command::IncrByFloat { key, .. }
-        | Command::Append { key, .. }
-        | Command::Strlen { key }
-        | Command::Expire { key, .. }
-        | Command::Pexpire { key, .. }
-        | Command::Ttl { key }
-        | Command::Pttl { key }
-        | Command::Persist { key }
-        | Command::Type { key }
-        | Command::ObjectEncoding { key }
-        | Command::ObjectRefcount { key }
-        | Command::LPush { key, .. }
-        | Command::RPush { key, .. }
-        | Command::LPop { key, .. }
-        | Command::RPop { key, .. }
-        | Command::LRange { key, .. }
-        | Command::LLen { key }
-        | Command::ZAdd { key, .. }
-        | Command::ZRem { key, .. }
-        | Command::ZScore { key, .. }
-        | Command::ZRank { key, .. }
-        | Command::ZRange { key, .. }
-        | Command::ZCard { key }
-        | Command::HSet { key, .. }
-        | Command::HGet { key, .. }
-        | Command::HGetAll { key }
-        | Command::HDel { key, .. }
-        | Command::HExists { key, .. }
-        | Command::HLen { key }
-        | Command::HIncrBy { key, .. }
-        | Command::HKeys { key }
-        | Command::HVals { key }
-        | Command::HMGet { key, .. }
-        | Command::SAdd { key, .. }
-        | Command::SRem { key, .. }
-        | Command::SMembers { key }
-        | Command::SIsMember { key, .. }
-        | Command::SCard { key }
-        | Command::SScan { key, .. }
-        | Command::HScan { key, .. }
-        | Command::ZScan { key, .. }
-        | Command::Restore { key, .. }
-        | Command::VAdd { key, .. }
-        | Command::VAddBatch { key, .. }
-        | Command::VSim { key, .. }
-        | Command::VRem { key, .. }
-        | Command::VGet { key, .. }
-        | Command::VCard { key }
-        | Command::VDim { key }
-        | Command::VInfo { key }
-        | Command::ProtoSet { key, .. }
-        | Command::ProtoGet { key }
-        | Command::ProtoType { key }
-        | Command::ProtoGetField { key, .. }
-        | Command::ProtoSetField { key, .. }
-        | Command::ProtoDelField { key, .. } => vec![key.as_str()],
-
-        // two-key commands
-        Command::Rename { key, newkey } => vec![key.as_str(), newkey.as_str()],
-        Command::Copy {
-            source,
-            destination,
-            ..
-        } => vec![source.as_str(), destination.as_str()],
-
-        // multi-key commands
-        Command::Del { keys }
-        | Command::Unlink { keys }
-        | Command::Exists { keys }
-        | Command::MGet { keys }
-        | Command::BLPop { keys, .. }
-        | Command::BRPop { keys, .. }
-        | Command::Watch { keys } => keys.iter().map(String::as_str).collect(),
-
-        Command::MSet { pairs } => pairs.iter().map(|(k, _)| k.as_str()).collect(),
-
-        // keyless commands
-        _ => Vec::new(),
-    }
 }
 
 /// Simple glob pattern matcher supporting `*` and `?`.
@@ -1298,6 +1202,26 @@ mod tests {
             assert!(msg.contains("NOPERM"));
             assert!(msg.contains("session:abc"));
         }
+    }
+
+    #[test]
+    fn permission_check_covers_keys_of_every_command() {
+        // these commands used to skip the key check entirely
+        let mut user = AclUser::unrestricted();
+        user.allkeys = false;
+        user.key_patterns = vec!["user:*".into()];
+
+        let getset = ember_protocol::Command::GetSet {
+            key: "secret:x".into(),
+            value: bytes::Bytes::from("v"),
+        };
+        assert!(check_permission(&user, &getset, "getset", CAT_WRITE).is_some());
+
+        let store = ember_protocol::Command::SUnionStore {
+            dest: "user:mine".into(),
+            keys: vec!["secret:a".into()],
+        };
+        assert!(check_permission(&user, &store, "sunionstore", CAT_WRITE).is_some());
     }
 
     #[test]

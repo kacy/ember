@@ -27,27 +27,7 @@ pub(super) async fn execute(
     asking: bool,
     client_id: u64,
 ) -> Frame {
-    // Write gating: reject mutations when the node is a replica or when
-    // writes are temporarily paused (e.g. during failover coordination).
-    if let Some(ref cluster) = ctx.cluster {
-        if cluster.is_writes_paused() && cmd.is_write() {
-            return Frame::Error(
-                "READONLY Failover in progress; writes are temporarily paused.".into(),
-            );
-        }
-        if cluster.is_replica().await && cmd.is_write() {
-            if let Some(key) = cmd.primary_key() {
-                use ember_cluster::key_slot;
-                let slot = key_slot(key.as_bytes());
-                if let Some(addr) = cluster.primary_addr_for_slot(slot).await {
-                    return Frame::Error(format!("MOVED {slot} {addr}"));
-                }
-            }
-            return Frame::Error("READONLY You can't write against a read only replica.".into());
-        }
-    }
-
-    // cluster slot validation — check whether we own the slot for this key.
+    // cluster checks: replica writes, slot ownership, cross-slot keys.
     // when `asking` is true, importing slots are allowed through.
     if let Some(redirect) = super::dispatch::cluster_slot_check(ctx, &cmd, asking).await {
         return redirect;
