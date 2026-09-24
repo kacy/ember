@@ -58,7 +58,7 @@ pub fn is_allowed_before_auth(frame: &Frame) -> bool {
 
 /// Result of an AUTH attempt. Carries the user snapshot and username
 /// on success so the connection can cache them for permission checks.
-pub struct AuthResult {
+struct AuthResult {
     pub response: Frame,
     pub user: Option<Arc<AclUser>>,
     pub username: String,
@@ -72,17 +72,13 @@ impl AuthResult {
             username: String::new(),
         }
     }
-
-    pub fn success(&self) -> bool {
-        self.user.is_some()
-    }
 }
 
 /// Attempts to authenticate using an AUTH frame.
 ///
 /// Returns an `AuthResult` containing the response frame, and on success,
 /// an `Arc<AclUser>` snapshot and the username string.
-pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
+fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
     let cmd = match Command::from_frame(frame) {
         Ok(cmd) => cmd,
         Err(e) => return AuthResult::fail(&format!("ERR {e}")),
@@ -110,20 +106,98 @@ pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
     }
 }
 
-/// Returns the initial ACL user for a new connection.
+/// Who a connection is authenticated as.
 ///
-/// A connection starts authenticated as `default` when that user is
-/// enabled and needs no password, which is the case when `requirepass` is
-/// unset. Otherwise it returns `None` and the client must AUTH first.
-pub fn initial_acl_user(ctx: &ServerContext) -> (Option<Arc<AclUser>>, String) {
-    if let Ok(state) = ctx.acl.read() {
-        if let Some(user) = state.get_user("default") {
-            if user.enabled && user.nopass {
-                return (Some(Arc::new(user.clone())), "default".into());
-            }
+/// Holds a copy of the connection's ACL user so permission checks need no
+/// lock. [`refresh`](Self::refresh) reloads that copy when ACL SETUSER or
+/// DELUSER has changed the users since it was taken.
+pub struct Session {
+    user: Option<Arc<AclUser>>,
+    username: String,
+    generation: u64,
+}
+
+impl Session {
+    /// Starts a session. The connection is authenticated as `default` from
+    /// the start when that user is enabled and needs no password, which is
+    /// the case when `requirepass` is unset.
+    pub fn new(ctx: &ServerContext) -> Self {
+        let generation = ctx.acl.generation();
+        let user = ctx.acl.read().ok().and_then(|state| {
+            state
+                .get_user("default")
+                .filter(|user| user.enabled && user.nopass)
+                .cloned()
+        });
+        let username = if user.is_some() { "default" } else { "" };
+        Self {
+            user: user.map(Arc::new),
+            username: username.into(),
+            generation,
         }
     }
-    (None, String::new())
+
+    pub fn is_authenticated(&self) -> bool {
+        self.user.is_some()
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// Handles an AUTH frame. On success the session switches to the user
+    /// that authenticated, so AUTH on an authenticated connection changes
+    /// its permissions. Returns the reply and whether AUTH succeeded.
+    pub fn auth(&mut self, frame: Frame, ctx: &ServerContext) -> (Frame, bool) {
+        let generation = ctx.acl.generation();
+        let result = try_auth(frame, ctx);
+        let Some(user) = result.user else {
+            return (result.response, false);
+        };
+        self.user = Some(user);
+        self.username = result.username;
+        self.generation = generation;
+        (result.response, true)
+    }
+
+    /// Reloads the user if the ACL users changed since it was loaded. A
+    /// user that was deleted or switched off leaves the session
+    /// unauthenticated, so its next command gets NOAUTH.
+    pub fn refresh(&mut self, ctx: &ServerContext) {
+        let generation = ctx.acl.generation();
+        if generation == self.generation {
+            return;
+        }
+        self.generation = generation;
+        if self.user.is_some() {
+            self.user = ctx.acl.read().ok().and_then(|state| {
+                state
+                    .get_user(&self.username)
+                    .filter(|user| user.enabled)
+                    .cloned()
+                    .map(Arc::new)
+            });
+        }
+    }
+
+    /// Returns the error to send if this session's user may not run `cmd`.
+    pub fn check(&self, cmd: &Command) -> Option<Frame> {
+        let user = self.user.as_ref()?;
+        if user.allcommands && user.allkeys {
+            return None;
+        }
+        crate::acl::check_permission(user, cmd, cmd.command_name(), cmd.acl_categories())
+    }
+
+    /// Parses `frame` and checks it with [`check`](Self::check). Used before
+    /// MONITOR, SUBSCRIBE and blocking pops, which enter their own loops
+    /// instead of going through normal dispatch.
+    pub fn check_frame(&self, frame: &Frame) -> Option<Frame> {
+        match Command::from_frame(frame.clone()) {
+            Ok(cmd) => self.check(&cmd),
+            Err(e) => Some(Frame::Error(format!("ERR {e}"))),
+        }
+    }
 }
 
 /// Validates key and value sizes for a parsed command.
