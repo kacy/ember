@@ -188,6 +188,39 @@ where
     }
 }
 
+/// Most slot ranges one node can own: every other slot, each on its own.
+/// Slot lists get this limit rather than `MAX_COLLECTION_COUNT`, which is
+/// too small for a node that owns many scattered slots after resharding.
+const MAX_SLOT_RANGES: usize = crate::SLOT_COUNT as usize / 2;
+
+/// Writes a node's slot ranges as `[count: u16][start: u16, end: u16]*`.
+fn encode_slot_ranges(buf: &mut BytesMut, ranges: &[SlotRange]) {
+    // disjoint ranges never exceed the limit, so nothing is dropped here
+    debug_assert!(ranges.len() <= MAX_SLOT_RANGES);
+    buf.put_u16_le(ranges.len().min(MAX_SLOT_RANGES) as u16);
+    for range in ranges.iter().take(MAX_SLOT_RANGES) {
+        buf.put_u16_le(range.start);
+        buf.put_u16_le(range.end);
+    }
+}
+
+fn decode_slot_ranges(buf: &mut &[u8]) -> io::Result<Vec<SlotRange>> {
+    let count = safe_get_u16_le(buf)? as usize;
+    if count > MAX_SLOT_RANGES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("slot range count {count} exceeds limit"),
+        ));
+    }
+    (0..count)
+        .map(|_| {
+            let start = safe_get_u16_le(buf)?;
+            let end = safe_get_u16_le(buf)?;
+            SlotRange::try_new(start, end)
+        })
+        .collect()
+}
+
 impl GossipMessage {
     /// Serializes the message to bytes.
     pub fn encode(&self) -> Bytes {
@@ -252,10 +285,7 @@ impl GossipMessage {
                 buf.put_u8(MSG_SLOTS_ANNOUNCE);
                 encode_node_id(buf, sender);
                 buf.put_u64_le(*incarnation);
-                encode_slice(buf, slots, |b, slot| {
-                    b.put_u16_le(slot.start);
-                    b.put_u16_le(slot.end);
-                });
+                encode_slot_ranges(buf, slots);
             }
         }
     }
@@ -329,19 +359,7 @@ impl GossipMessage {
             MSG_SLOTS_ANNOUNCE => {
                 let sender = decode_node_id(&mut buf)?;
                 let incarnation = safe_get_u64_le(&mut buf)?;
-                let count = safe_get_u16_le(&mut buf)? as usize;
-                if count > MAX_COLLECTION_COUNT {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("slot range count {count} exceeds limit"),
-                    ));
-                }
-                let mut slots = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let start = safe_get_u16_le(&mut buf)?;
-                    let end = safe_get_u16_le(&mut buf)?;
-                    slots.push(SlotRange::try_new(start, end)?);
-                }
+                let slots = decode_slot_ranges(&mut buf)?;
                 Ok(GossipMessage::SlotsAnnounce {
                     sender,
                     incarnation,
@@ -496,10 +514,7 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
             buf.put_u8(UPDATE_SLOTS_CHANGED);
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
-            encode_slice(buf, slots, |b, slot| {
-                b.put_u16_le(slot.start);
-                b.put_u16_le(slot.end);
-            });
+            encode_slot_ranges(buf, slots);
         }
         NodeUpdate::RoleChanged {
             node,
@@ -591,19 +606,7 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         UPDATE_SLOTS_CHANGED => {
             let node = decode_node_id(buf)?;
             let incarnation = safe_get_u64_le(buf)?;
-            let count = safe_get_u16_le(buf)? as usize;
-            if count > MAX_COLLECTION_COUNT {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("slot range count {count} exceeds limit"),
-                ));
-            }
-            let mut slots = Vec::with_capacity(count);
-            for _ in 0..count {
-                let start = safe_get_u16_le(buf)?;
-                let end = safe_get_u16_le(buf)?;
-                slots.push(SlotRange::try_new(start, end)?);
-            }
+            let slots = decode_slot_ranges(buf)?;
             Ok(NodeUpdate::SlotsChanged {
                 node,
                 incarnation,
@@ -661,10 +664,7 @@ fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
     encode_socket_addr(buf, &member.addr);
     buf.put_u64_le(member.incarnation);
     buf.put_u8(if member.is_primary { 1 } else { 0 });
-    encode_slice(buf, &member.slots, |b, slot| {
-        b.put_u16_le(slot.start);
-        b.put_u16_le(slot.end);
-    });
+    encode_slot_ranges(buf, &member.slots);
 }
 
 fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
@@ -672,19 +672,7 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
     let addr = decode_socket_addr(buf)?;
     let incarnation = safe_get_u64_le(buf)?;
     let is_primary = safe_get_u8(buf)? != 0;
-    let slot_count = safe_get_u16_le(buf)? as usize;
-    if slot_count > MAX_COLLECTION_COUNT {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("slot range count {slot_count} exceeds limit"),
-        ));
-    }
-    let mut slots = Vec::with_capacity(slot_count);
-    for _ in 0..slot_count {
-        let start = safe_get_u16_le(buf)?;
-        let end = safe_get_u16_le(buf)?;
-        slots.push(SlotRange::try_new(start, end)?);
-    }
+    let slots = decode_slot_ranges(buf)?;
     Ok(MemberInfo {
         id,
         addr,
@@ -697,6 +685,23 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slot_lists_longer_than_other_collections_round_trip() {
+        // 3000 scattered single slots, past the 1024 limit used for members
+        let slots: Vec<SlotRange> = (0..3000u16)
+            .map(|i| SlotRange::try_new(i * 2, i * 2).unwrap())
+            .collect();
+        let msg = GossipMessage::SlotsAnnounce {
+            sender: NodeId::new(),
+            incarnation: 3,
+            slots: slots.clone(),
+        };
+        match GossipMessage::decode(&msg.encode()).unwrap() {
+            GossipMessage::SlotsAnnounce { slots: decoded, .. } => assert_eq!(decoded, slots),
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn test_addr() -> SocketAddr {
