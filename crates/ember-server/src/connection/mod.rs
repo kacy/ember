@@ -18,9 +18,20 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::connection_common::{
-    is_allowed_before_auth, is_auth_frame, is_monitor_frame, Session, TransactionState,
+    is_allowed_before_auth, is_auth_frame, is_command_frame, is_monitor_frame, Session,
+    TransactionState,
 };
 use crate::metrics::on_auth_failure;
+
+/// Read buffer limit for a connection that has not authenticated yet. Big
+/// enough for AUTH with a long password.
+const UNAUTHENTICATED_MAX_BUF: usize = 64 * 1024;
+
+/// Pipelined replies are written out once this many bytes build up.
+const OUTPUT_FLUSH_BYTES: usize = 1024 * 1024;
+
+/// Largest capacity an idle connection buffer keeps.
+const RETAINED_BUFFER_MAX: usize = 1024 * 1024;
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -230,6 +241,9 @@ where
 {
     // per-connection auth + ACL state.
     let mut session = Session::new(ctx);
+    // set when a batch contained QUIT; the connection closes once the
+    // replies for the commands before it are written
+    let mut quit_requested = false;
     let mut auth_failures: u32 = 0;
     // ASKING flag: set by the ASKING command, consumed by the next command.
     // allows the target node to serve importing slots during migration.
@@ -259,12 +273,14 @@ where
 
     loop {
         // guard against unbounded buffer growth from incomplete frames
-        if buf.len() > ctx.limits.max_buf_size {
-            let msg = "ERR max buffer size exceeded, closing connection";
-            let mut err_buf = BytesMut::new();
-            Frame::Error(msg.into()).serialize(&mut err_buf);
-            let _ = stream.write_all(&err_buf).await;
+        // QUIT from the previous batch: every reply before it is written
+        if quit_requested {
+            let _ = stream.write_all(b"+OK\r\n").await;
             return Ok(());
+        }
+
+        if buf.is_empty() && buf.capacity() > RETAINED_BUFFER_MAX {
+            buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
         }
 
         if !skip_read {
@@ -278,6 +294,24 @@ where
             }
         }
 
+        // checked after the read and before parsing, since one read can
+        // bring in a whole oversized frame. before AUTH a client gets a
+        // small buffer: it can only send AUTH and a few short commands, and
+        // a large buffer would let it hold memory and parse time without a
+        // password.
+        let buf_limit = if session.is_authenticated() {
+            ctx.limits.max_buf_size
+        } else {
+            UNAUTHENTICATED_MAX_BUF
+        };
+        if buf.len() > buf_limit {
+            let msg = "ERR max buffer size exceeded, closing connection";
+            let mut err_buf = BytesMut::new();
+            Frame::Error(msg.into()).serialize(&mut err_buf);
+            let _ = stream.write_all(&err_buf).await;
+            return Ok(());
+        }
+
         // parse all complete frames from the buffer first, then dispatch
         // them concurrently to shards. this allows pipelined commands to
         // be processed in parallel rather than serially.
@@ -288,6 +322,11 @@ where
         // which is negligible for small values (the common case).
         out.clear();
         frames.clear();
+        // a buffer that grew for one large request or reply goes back to
+        // its normal size instead of keeping its peak for the connection
+        if out.capacity() > RETAINED_BUFFER_MAX {
+            out = BytesMut::with_capacity(ctx.limits.buf_capacity);
+        }
         loop {
             if buf.is_empty() {
                 break;
@@ -313,6 +352,12 @@ where
         // waiting for replies before it sends more, so blocking on a read
         // here would stall the connection.
         skip_read = frames.len() >= ctx.limits.max_pipeline_depth;
+
+        // commands after a QUIT are never run
+        if let Some(quit_at) = frames.iter().position(|f| is_command_frame(f, &[b"QUIT"])) {
+            frames.truncate(quit_at);
+            quit_requested = true;
+        }
 
         // pick up ACL SETUSER/DELUSER changes to this connection's user
         session.refresh(ctx);
@@ -440,7 +485,7 @@ where
 
             // enter subscriber mode — this blocks until all subscriptions
             // are removed or the client disconnects
-            handler::handle_subscriber_mode(
+            match handler::handle_subscriber_mode(
                 &mut stream,
                 &mut buf,
                 &mut out,
@@ -449,8 +494,16 @@ where
                 &session,
                 sub_frames,
             )
-            .await?;
-            return Ok(());
+            .await?
+            {
+                handler::SubscriberExit::Close => return Ok(()),
+                // back to normal mode; commands pipelined after the last
+                // UNSUBSCRIBE may already be in the buffer
+                handler::SubscriberExit::Unsubscribed => {
+                    skip_read = !buf.is_empty();
+                    continue;
+                }
+            }
         }
 
         // check for blocking list operations (BLPOP/BRPOP). these break
@@ -694,11 +747,17 @@ where
                     }
                 }
 
-                // phase 3: collect in original order
+                // phase 3: collect in original order. write replies out as
+                // they build up, so a long pipeline of large values does not
+                // hold every reply in memory at once
                 for p in result {
                     let response = response::resolve_response(p, ctx, slow_log).await;
                     ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                     response.serialize(&mut out);
+                    if out.len() >= OUTPUT_FLUSH_BYTES {
+                        stream.write_all(&out).await?;
+                        out.clear();
+                    }
                 }
             }
         }
@@ -776,37 +835,21 @@ pub(super) fn peek_command_name(frame: &Frame) -> Option<&'static str> {
 /// Checks if a raw frame is a transaction-related command that requires
 /// serial execution (MULTI, EXEC, DISCARD, WATCH, UNWATCH).
 pub(super) fn is_transaction_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"MULTI")
-                || name.eq_ignore_ascii_case(b"EXEC")
-                || name.eq_ignore_ascii_case(b"DISCARD")
-                || name.eq_ignore_ascii_case(b"WATCH")
-                || name.eq_ignore_ascii_case(b"UNWATCH");
-        }
-    }
-    false
+    is_command_frame(
+        frame,
+        &[b"MULTI", b"EXEC", b"DISCARD", b"WATCH", b"UNWATCH"],
+    )
 }
 
 /// Checks if a raw frame is a BLPOP or BRPOP command.
 pub(super) fn is_blocking_pop_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"BLPOP") || name.eq_ignore_ascii_case(b"BRPOP");
-        }
-    }
-    false
+    is_command_frame(frame, &[b"BLPOP", b"BRPOP"])
 }
 
 /// Checks if a raw frame is a SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE command.
 pub(super) fn is_subscribe_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"SUBSCRIBE")
-                || name.eq_ignore_ascii_case(b"PSUBSCRIBE")
-                || name.eq_ignore_ascii_case(b"UNSUBSCRIBE")
-                || name.eq_ignore_ascii_case(b"PUNSUBSCRIBE");
-        }
-    }
-    false
+    is_command_frame(
+        frame,
+        &[b"SUBSCRIBE", b"PSUBSCRIBE", b"UNSUBSCRIBE", b"PUNSUBSCRIBE"],
+    )
 }
