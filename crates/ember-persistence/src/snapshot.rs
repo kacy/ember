@@ -357,7 +357,7 @@ pub struct SnapshotWriter {
     /// impl to clean up incomplete temp files.
     finished: bool,
     #[cfg(feature = "encryption")]
-    encryption_key: Option<crate::encryption::EncryptionKey>,
+    cipher: Option<crate::encryption::FileCipher>,
 }
 
 impl SnapshotWriter {
@@ -380,7 +380,7 @@ impl SnapshotWriter {
             count: 0,
             finished: false,
             #[cfg(feature = "encryption")]
-            encryption_key: None,
+            cipher: None,
         })
     }
 
@@ -402,6 +402,7 @@ impl SnapshotWriter {
         )?;
         format::write_u16(&mut writer, shard_id)?;
         format::write_u32(&mut writer, 0)?;
+        let cipher = key.write_new_file_salt(&mut writer)?;
 
         Ok(Self {
             final_path,
@@ -410,7 +411,7 @@ impl SnapshotWriter {
             hasher: crc32fast::Hasher::new(),
             count: 0,
             finished: false,
-            encryption_key: Some(key),
+            cipher: Some(cipher),
         })
     }
 
@@ -503,8 +504,8 @@ impl SnapshotWriter {
         format::write_i64(&mut buf, entry.expire_ms)?;
 
         #[cfg(feature = "encryption")]
-        if let Some(ref key) = self.encryption_key {
-            let (nonce, ciphertext) = crate::encryption::encrypt_record(key, &buf)?;
+        if let Some(ref cipher) = self.cipher {
+            let (nonce, ciphertext) = cipher.encrypt(&buf)?;
             let ct_len = u32::try_from(ciphertext.len()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -544,7 +545,8 @@ impl SnapshotWriter {
         {
             use std::io::{Seek, SeekFrom};
             let mut file = fs::OpenOptions::new().write(true).open(&self.tmp_path)?;
-            // header: 4 (magic) + 1 (version) + 2 (shard_id) = 7 bytes
+            // header: 4 (magic) + 1 (version) + 2 (shard_id) = 7 bytes.
+            // an encrypted file's salt comes after the count.
             file.seek(SeekFrom::Start(7))?;
             format::write_u32(&mut file, self.count)?;
             file.sync_all()?;
@@ -581,10 +583,12 @@ pub struct SnapshotReader {
     pub entry_count: u32,
     read_so_far: u32,
     hasher: crc32fast::Hasher,
-    /// Format version — v1 has no type tags, v2 has type-tagged entries, v3 is encrypted.
+    /// Format version — v1 has no type tags, v2 has type-tagged entries,
+    /// v3 and v4 are encrypted.
     version: u8,
+    /// Set for an encrypted file.
     #[cfg(feature = "encryption")]
-    encryption_key: Option<crate::encryption::EncryptionKey>,
+    cipher: Option<crate::encryption::FileCipher>,
 }
 
 impl SnapshotReader {
@@ -595,7 +599,7 @@ impl SnapshotReader {
 
         let version = format::read_header(&mut reader, format::SNAP_MAGIC)?;
 
-        if version == format::FORMAT_VERSION_ENCRYPTED {
+        if format::is_encrypted(version) {
             return Err(FormatError::EncryptionRequired);
         }
 
@@ -610,11 +614,11 @@ impl SnapshotReader {
             hasher: crc32fast::Hasher::new(),
             version,
             #[cfg(feature = "encryption")]
-            encryption_key: None,
+            cipher: None,
         })
     }
 
-    /// Opens a snapshot file with an encryption key for decrypting v3 entries.
+    /// Opens a snapshot file with an encryption key for decrypting v3/v4 entries.
     ///
     /// Also handles v1/v2 (plaintext) files — the key is simply unused.
     #[cfg(feature = "encryption")]
@@ -628,6 +632,9 @@ impl SnapshotReader {
         let version = format::read_header(&mut reader, format::SNAP_MAGIC)?;
         let shard_id = format::read_u16(&mut reader)?;
         let entry_count = format::read_u32(&mut reader)?;
+        let cipher = format::is_encrypted(version)
+            .then(|| key.read_file_cipher(version, &mut reader))
+            .transpose()?;
 
         Ok(Self {
             reader,
@@ -636,7 +643,7 @@ impl SnapshotReader {
             read_so_far: 0,
             hasher: crc32fast::Hasher::new(),
             version,
-            encryption_key: Some(key),
+            cipher,
         })
     }
 
@@ -647,7 +654,7 @@ impl SnapshotReader {
         }
 
         #[cfg(feature = "encryption")]
-        if self.version == format::FORMAT_VERSION_ENCRYPTED {
+        if format::is_encrypted(self.version) {
             return self.read_encrypted_entry();
         }
 
@@ -822,14 +829,14 @@ impl SnapshotReader {
         }))
     }
 
-    /// Reads an encrypted (v3) entry: nonce + len + ciphertext.
+    /// Reads an encrypted (v3/v4) entry: nonce + len + ciphertext.
     /// Decrypts to get the same bytes as a plaintext entry, then parses.
     #[cfg(feature = "encryption")]
     fn read_encrypted_entry(&mut self) -> Result<Option<SnapEntry>, FormatError> {
         use std::io::Read as _;
 
-        let key = self
-            .encryption_key
+        let cipher = self
+            .cipher
             .as_ref()
             .ok_or(FormatError::EncryptionRequired)?;
 
@@ -863,7 +870,7 @@ impl SnapshotReader {
         self.hasher.update(&ct_len_bytes);
         self.hasher.update(&ciphertext);
 
-        let plaintext = crate::encryption::decrypt_record(key, &nonce, &ciphertext)?;
+        let plaintext = cipher.decrypt(&nonce, &ciphertext)?;
 
         let mut cursor = io::Cursor::new(&plaintext);
         let entry_key = read_snap_string(&mut cursor, "key")?;
@@ -1548,6 +1555,41 @@ mod tests {
 
         fn test_key() -> EncryptionKey {
             EncryptionKey::from_bytes([0x42; 32])
+        }
+
+        #[test]
+        fn v3_snapshot_is_still_read() -> Result {
+            let dir = temp_dir();
+            let path = dir.path().join("v3.snap");
+            let key = test_key();
+            let entry = SnapEntry {
+                key: "k".into(),
+                value: SnapValue::String(Bytes::from("v")),
+                expire_ms: -1,
+            };
+
+            // a v3 file encrypts with the master key and has no salt
+            let mut file = Vec::new();
+            format::write_header_versioned(
+                &mut file,
+                format::SNAP_MAGIC,
+                format::FORMAT_VERSION_ENCRYPTED_V3,
+            )?;
+            format::write_u16(&mut file, 3)?;
+            format::write_u32(&mut file, 1)?;
+            let (nonce, ciphertext) = key.legacy_cipher().encrypt(&serialize_entry(&entry)?)?;
+            let mut envelope = nonce.to_vec();
+            format::write_len(&mut envelope, ciphertext.len())?;
+            envelope.extend_from_slice(&ciphertext);
+            file.extend_from_slice(&envelope);
+            format::write_u32(&mut file, format::crc32(&envelope))?;
+            fs::write(&path, file)?;
+
+            let mut reader = SnapshotReader::open_encrypted(&path, key)?;
+            assert_eq!(reader.shard_id, 3);
+            assert_eq!(reader.read_entry()?, Some(entry));
+            reader.verify_footer()?;
+            Ok(())
         }
 
         #[test]

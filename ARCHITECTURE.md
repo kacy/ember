@@ -204,9 +204,13 @@ recovery is straightforward:
 
 ### encryption at rest
 
-when the `encryption` feature is enabled, AOF records and snapshot entries can be stored in v3 encrypted form using AES-256-GCM.
+when the `encryption` feature is enabled, AOF records and snapshot entries are stored in the v4 encrypted format using AES-256-GCM.
 
-encryption is done per record, not per file. that keeps incremental replay simple and avoids decrypting an entire file just to read one record.
+encryption is done per record, not per file. that keeps incremental replay simple and avoids decrypting an entire file just to read one record. each record gets a random nonce.
+
+each file header holds a random 16-byte salt, and the file's records are encrypted with a key derived from the master key and that salt using HKDF-SHA256. no key encrypts more than one file, which keeps random nonces far from the AES-GCM collision limit, and a record copied into another file fails to decrypt. records are not bound to their position within a file.
+
+v3 files, which used the master key for every record, are still read. a v3 AOF is rewritten as v4 when the shard starts, and snapshots move to v4 on the next save.
 
 ## clustering and replication
 

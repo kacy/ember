@@ -20,10 +20,20 @@ pub const SNAP_MAGIC: &[u8; 4] = b"ESNP";
 /// v2: type-tagged entries (string, list, sorted set, hash, set)
 pub const FORMAT_VERSION: u8 = 2;
 
-/// Format version for encrypted files.
+/// Format version for encrypted files (requires the `encryption` feature).
 ///
-/// v3: per-record AES-256-GCM encryption (requires `encryption` feature)
-pub const FORMAT_VERSION_ENCRYPTED: u8 = 3;
+/// v4: per-record AES-256-GCM with a key derived from the master key and a
+/// random salt stored in the file header.
+pub const FORMAT_VERSION_ENCRYPTED: u8 = 4;
+
+/// The earlier encrypted format, which used the master key for every file.
+/// Still read; files in it are rewritten as v4.
+pub const FORMAT_VERSION_ENCRYPTED_V3: u8 = 3;
+
+/// Whether files with this header version hold encrypted records.
+pub fn is_encrypted(version: u8) -> bool {
+    version == FORMAT_VERSION_ENCRYPTED || version == FORMAT_VERSION_ENCRYPTED_V3
+}
 
 /// Errors that can occur when reading or writing persistence formats.
 #[derive(Debug, Error)]
@@ -246,8 +256,8 @@ pub fn write_header_versioned(w: &mut impl Write, magic: &[u8; 4], version: u8) 
 
 /// The maximum format version this build can read.
 ///
-/// When the `encryption` feature is compiled in, v3 (encrypted) files
-/// are supported. Without the feature, only v1 and v2 are accepted.
+/// When the `encryption` feature is compiled in, v3 and v4 (encrypted)
+/// files are supported. Without the feature, only v1 and v2 are accepted.
 #[cfg(feature = "encryption")]
 const MAX_READABLE_VERSION: u8 = FORMAT_VERSION_ENCRYPTED;
 #[cfg(not(feature = "encryption"))]
