@@ -1238,7 +1238,7 @@ impl ClusterCoordinator {
         if let Err(e) = crate::replication::ReplicationServer::start(
             Arc::clone(engine),
             local_id,
-            repl_port,
+            SocketAddr::new(self.bind_addr.ip(), repl_port),
             tracker,
         )
         .await
