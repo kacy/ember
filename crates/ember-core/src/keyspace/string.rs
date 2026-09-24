@@ -133,14 +133,12 @@ impl Keyspace {
         // update memory tracking and expiry count
         if let Some((_, had_expiry)) = old_info {
             self.memory.adjust(old_size, new_size);
-            self.adjust_expiry_count(had_expiry, has_expiry);
+            self.track_expiry(&key, had_expiry, has_expiry);
         } else {
             // clean up the expired entry if one exists
             self.remove_if_expired(&key);
             self.memory.add(&key, &new_value);
-            if has_expiry {
-                self.expiry_count += 1;
-            }
+            self.track_expiry(&key, false, has_expiry);
         }
 
         let entry = Entry::new(new_value, expire);
@@ -256,7 +254,7 @@ impl Keyspace {
         };
         self.memory
             .remove_with_size(entry.value_size() + key.len() + memory::ENTRY_OVERHEAD);
-        self.decrement_expiry_if_set(&entry);
+        self.untrack_expiry(key, &entry);
         self.remove_version(key);
         Ok(Some(bytes))
     }
@@ -347,13 +345,13 @@ impl Keyspace {
                     entry.expires_at_ms =
                         time::now_ms().saturating_add(duration.as_millis() as u64);
                     if !had_expiry {
-                        self.expiry_count += 1;
+                        self.expiring.insert(key.into());
                     }
                 }
                 None => {
                     entry.expires_at_ms = 0;
                     if had_expiry {
-                        self.expiry_count = self.expiry_count.saturating_sub(1);
+                        self.expiring.swap_remove(key);
                     }
                 }
             }

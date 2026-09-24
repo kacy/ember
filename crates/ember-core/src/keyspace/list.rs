@@ -247,7 +247,7 @@ impl Keyspace {
 
         if is_empty {
             if let Some(removed) = self.entries.swap_remove(key) {
-                self.decrement_expiry_if_set(&removed);
+                self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_entry_size);
         } else {
@@ -406,7 +406,7 @@ impl Keyspace {
 
         if is_empty {
             if let Some(removed) = self.entries.swap_remove(key) {
-                self.decrement_expiry_if_set(&removed);
+                self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_entry_size);
         } else {

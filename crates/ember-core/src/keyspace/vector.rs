@@ -291,7 +291,9 @@ impl Keyspace {
 
             if is_empty {
                 self.memory.remove_with_size(new_size);
-                self.entries.swap_remove(key);
+                if let Some(removed) = self.entries.swap_remove(key) {
+                    self.untrack_expiry(key, &removed);
+                }
             }
         }
 
