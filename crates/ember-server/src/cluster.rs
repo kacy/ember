@@ -8,7 +8,7 @@
 //! SETSLOT, FORGET) are proposed through Raft consensus before returning OK.
 //! Read-only commands and node-local migration state skip Raft entirely.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -257,23 +257,27 @@ impl ClusterCoordinator {
     /// state machine whenever committed entries are applied.
     ///
     /// The watch receiver fires after every `apply_to_state_machine` call on
-    /// the Raft storage. The task rebuilds the routing table from the canonical
-    /// Raft view.
+    /// the Raft storage. Each update applies the slot owners that changed in
+    /// Raft since the one before; the state Raft already had at startup is
+    /// in the saved node config.
     pub fn spawn_raft_reconciliation(
         self: &Arc<Self>,
         mut state_rx: watch::Receiver<ClusterStateData>,
     ) {
         let coordinator = Arc::clone(self);
         tokio::spawn(async move {
+            let mut applied = state_rx.borrow().slots.clone();
             while state_rx.changed().await.is_ok() {
                 let data = state_rx.borrow().clone();
-                coordinator.apply_raft_state(&data).await;
+                coordinator.apply_raft_state(&data, &applied).await;
+                applied = data.slots;
             }
         });
     }
 
-    /// Reconciles the local routing table with a committed Raft state snapshot.
-    async fn apply_raft_state(&self, data: &ClusterStateData) {
+    /// Reconciles the local routing table with a committed Raft state.
+    /// `applied` is the Raft slot map from the previous update.
+    async fn apply_raft_state(&self, data: &ClusterStateData, applied: &BTreeMap<u16, String>) {
         let mut state = self.state.write().await;
 
         // add nodes that are in raft state but not yet in the routing table
@@ -309,15 +313,18 @@ impl ClusterCoordinator {
             state.nodes.remove(&id);
         }
 
-        // reconcile slot assignments from the raft slot map
+        // apply only the slots whose owner changed in raft. raft runs on
+        // the bootstrap node alone, and failovers between other nodes go
+        // through gossip, so for the slots raft didn't touch it may still
+        // name an old primary. overwriting every slot would route them back.
         for slot in 0..SLOT_COUNT {
-            let raft_owner = data.slots.get(&slot).and_then(|k| NodeId::parse(k).ok());
-            let current_owner = state.slot_map.owner(slot);
-            if raft_owner != current_owner {
-                match raft_owner {
-                    Some(owner) => state.slot_map.assign(slot, owner),
-                    None => state.slot_map.unassign(slot),
-                }
+            let raft_owner = data.slots.get(&slot);
+            if raft_owner == applied.get(&slot) {
+                continue;
+            }
+            match raft_owner.and_then(|k| NodeId::parse(k).ok()) {
+                Some(owner) => state.slot_map.assign(slot, owner),
+                None => state.slot_map.unassign(slot),
             }
         }
 
@@ -1218,23 +1225,16 @@ impl ClusterCoordinator {
                 return Self::raft_error_frame(e);
             }
 
-            // transfer the primary's slots to this node via Raft
+            // move the primary's slots to this node in one step
             if !primary_slots.is_empty() {
-                let assign_cmd = ClusterCommand::AssignSlots {
-                    node_id: self.local_id,
-                    slots: primary_slots.clone(),
-                };
-                if let Err(e) = raft.propose(assign_cmd).await {
-                    return Self::raft_error_frame(e);
-                }
-
-                // remove those slots from the old primary
-                let remove_cmd = ClusterCommand::RemoveSlots {
-                    node_id: primary_id,
+                let transfer_cmd = ClusterCommand::TransferSlots {
+                    from: primary_id,
+                    to: self.local_id,
                     slots: primary_slots,
                 };
-                // best-effort: old primary may already be unreachable
-                let _ = raft.propose(remove_cmd).await;
+                if let Err(e) = raft.propose(transfer_cmd).await {
+                    return Self::raft_error_frame(e);
+                }
             }
         }
 
@@ -1929,6 +1929,31 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
         let config = GossipConfig::default();
         ClusterCoordinator::new(local_id, addr, config, true, None, None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn raft_update_only_applies_slots_it_changed() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let local = coord.local_id;
+        let other = NodeId::new();
+        // raft still names the local node for slots 0 and 1, but gossip has
+        // since moved slot 0 to `other`
+        let stale: BTreeMap<u16, String> = [(0, local.0.to_string()), (1, local.0.to_string())]
+            .into_iter()
+            .collect();
+        coord.state.write().await.slot_map.assign(0, other);
+
+        // the new raft update moves slot 1 and leaves slot 0 alone
+        let mut data = ClusterStateData {
+            slots: stale.clone(),
+            ..Default::default()
+        };
+        data.slots.insert(1, other.0.to_string());
+        coord.apply_raft_state(&data, &stale).await;
+
+        let state = coord.state.read().await;
+        assert_eq!(state.slot_map.owner(0), Some(other));
+        assert_eq!(state.slot_map.owner(1), Some(other));
     }
 
     #[test]

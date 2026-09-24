@@ -70,7 +70,8 @@ pub enum ClusterCommand {
     },
     /// Remove a node from the cluster.
     RemoveNode { node_id: NodeId },
-    /// Assign slots to a node.
+    /// Assign unowned slots to a node. Fails if another node owns any of
+    /// them: use `TransferSlots` to move slots between nodes.
     AssignSlots {
         node_id: NodeId,
         slots: Vec<SlotRange>,
@@ -86,6 +87,14 @@ pub enum ClusterCommand {
     BeginMigration { slot: u16, from: NodeId, to: NodeId },
     /// Complete a slot migration.
     CompleteMigration { slot: u16, new_owner: NodeId },
+    /// Move the slots in `slots` that `from` owns to `to`, as in a failover.
+    /// Slots `from` doesn't own are left alone. Added after the other
+    /// variants so existing logs still decode.
+    TransferSlots {
+        from: NodeId,
+        to: NodeId,
+        slots: Vec<SlotRange>,
+    },
 }
 
 /// Response from applying a cluster command.
@@ -273,56 +282,45 @@ impl Storage {
             }
 
             ClusterCommand::AssignSlots { node_id, slots } => {
-                // validate all slot ranges before applying
-                for range in slots {
-                    if range.start > range.end || range.end >= SLOT_COUNT {
-                        return ClusterResponse::Error(format!(
-                            "invalid slot range {}..={} (max {})",
-                            range.start,
-                            range.end,
-                            SLOT_COUNT - 1
-                        ));
-                    }
+                if let Err(e) = check_ranges(slots) {
+                    return e;
                 }
                 let key = node_id.as_key();
-                if let Some(node) = state.nodes.get_mut(&key) {
-                    node.slots = slots.clone();
-                    for slot_range in slots {
-                        for slot in slot_range.start..=slot_range.end {
-                            state.slots.insert(slot, key.clone());
-                        }
-                    }
-                    ClusterResponse::Ok
-                } else {
-                    ClusterResponse::Error(format!("node {} not found", node_id))
+                if !state.nodes.contains_key(&key) {
+                    return ClusterResponse::Error(format!("node {node_id} not found"));
                 }
+                // two nodes can run ADDSLOTS for the same slot at once; the
+                // one applied second must not take it from the first
+                let busy = slots
+                    .iter()
+                    .flat_map(|range| range.start..=range.end)
+                    .find(|slot| state.slots.get(slot).is_some_and(|owner| *owner != key));
+                if let Some(slot) = busy {
+                    return ClusterResponse::Error(format!("slot {slot} is already busy"));
+                }
+                for range in slots {
+                    for slot in range.start..=range.end {
+                        state.slots.insert(slot, key.clone());
+                    }
+                }
+                rebuild_slot_lists(state);
+                ClusterResponse::Ok
             }
 
             ClusterCommand::RemoveSlots { node_id, slots } => {
-                for range in slots {
-                    if range.start > range.end || range.end >= SLOT_COUNT {
-                        return ClusterResponse::Error(format!(
-                            "invalid slot range {}..={} (max {})",
-                            range.start,
-                            range.end,
-                            SLOT_COUNT - 1
-                        ));
-                    }
+                if let Err(e) = check_ranges(slots) {
+                    return e;
                 }
                 let key = node_id.as_key();
-                for slot_range in slots {
-                    for slot in slot_range.start..=slot_range.end {
+                for range in slots {
+                    for slot in range.start..=range.end {
                         // only remove if this node is the current owner
-                        if state.slots.get(&slot).map(|s| s.as_str()) == Some(key.as_str()) {
+                        if state.slots.get(&slot) == Some(&key) {
                             state.slots.remove(&slot);
                         }
                     }
                 }
-                // rebuild node's slot list from what remains; split the borrow
-                let remaining = slots_for_node_in_state(state, &key);
-                if let Some(node) = state.nodes.get_mut(&key) {
-                    node.slots = remaining;
-                }
+                rebuild_slot_lists(state);
                 ClusterResponse::Ok
             }
 
@@ -362,8 +360,56 @@ impl Storage {
                 state.migrations.remove(slot);
                 let key = new_owner.as_key();
                 state.slots.insert(*slot, key);
+                rebuild_slot_lists(state);
                 ClusterResponse::Ok
             }
+
+            ClusterCommand::TransferSlots { from, to, slots } => {
+                if let Err(e) = check_ranges(slots) {
+                    return e;
+                }
+                let (from, to) = (from.as_key(), to.as_key());
+                if !state.nodes.contains_key(&to) {
+                    return ClusterResponse::Error(format!("node {to} not found"));
+                }
+                for range in slots {
+                    for slot in range.start..=range.end {
+                        if state.slots.get(&slot) == Some(&from) {
+                            state.slots.insert(slot, to.clone());
+                        }
+                    }
+                }
+                rebuild_slot_lists(state);
+                ClusterResponse::Ok
+            }
+        }
+    }
+}
+
+/// Returns an error response if any range is reversed or out of bounds.
+fn check_ranges(slots: &[SlotRange]) -> Result<(), ClusterResponse> {
+    match slots
+        .iter()
+        .find(|range| range.start > range.end || range.end >= SLOT_COUNT)
+    {
+        Some(range) => Err(ClusterResponse::Error(format!(
+            "invalid slot range {}..={} (max {})",
+            range.start,
+            range.end,
+            SLOT_COUNT - 1
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Recomputes every node's slot list from the slot map, so the two can't
+/// disagree after a change.
+fn rebuild_slot_lists(state: &mut ClusterStateData) {
+    let keys: Vec<String> = state.nodes.keys().cloned().collect();
+    for key in keys {
+        let slots = slots_for_node_in_state(state, &key);
+        if let Some(node) = state.nodes.get_mut(&key) {
+            node.slots = slots;
         }
     }
 }
@@ -1053,6 +1099,85 @@ mod tests {
         let state_arc = storage.state();
         let state = state_arc.read().await;
         assert!(state.nodes.contains_key(&node_id.as_key()));
+    }
+
+    /// A state with two nodes, `a` owning slots 0..=9.
+    fn two_nodes() -> (ClusterStateData, NodeId, NodeId) {
+        let mut state = ClusterStateData::default();
+        let (a, b) = (NodeId::new(), NodeId::new());
+        for (raft_id, node_id) in [(1, a), (2, b)] {
+            Storage::apply_command(
+                &ClusterCommand::AddNode {
+                    node_id,
+                    raft_id,
+                    addr: "127.0.0.1:6379".into(),
+                    is_primary: true,
+                },
+                &mut state,
+            );
+        }
+        let assign = ClusterCommand::AssignSlots {
+            node_id: a,
+            slots: vec![SlotRange::new(0, 9)],
+        };
+        assert_eq!(
+            Storage::apply_command(&assign, &mut state),
+            ClusterResponse::Ok
+        );
+        (state, a, b)
+    }
+
+    fn slots_of(state: &ClusterStateData, node: NodeId) -> Vec<SlotRange> {
+        state.nodes[&node.as_key()].slots.clone()
+    }
+
+    #[test]
+    fn assign_slots_refuses_another_nodes_slot() {
+        let (mut state, a, b) = two_nodes();
+        let steal = ClusterCommand::AssignSlots {
+            node_id: b,
+            slots: vec![SlotRange::new(5, 20)],
+        };
+        assert!(matches!(
+            Storage::apply_command(&steal, &mut state),
+            ClusterResponse::Error(_)
+        ));
+        assert_eq!(state.slots[&5], a.as_key());
+        assert!(!state.slots.contains_key(&20));
+    }
+
+    #[test]
+    fn assign_slots_adds_to_the_nodes_list() {
+        let (mut state, a, _) = two_nodes();
+        let more = ClusterCommand::AssignSlots {
+            node_id: a,
+            slots: vec![SlotRange::new(20, 29)],
+        };
+        assert_eq!(
+            Storage::apply_command(&more, &mut state),
+            ClusterResponse::Ok
+        );
+        assert_eq!(
+            slots_of(&state, a),
+            [SlotRange::new(0, 9), SlotRange::new(20, 29)]
+        );
+    }
+
+    #[test]
+    fn transfer_slots_moves_only_the_senders_slots() {
+        let (mut state, a, b) = two_nodes();
+        let transfer = ClusterCommand::TransferSlots {
+            from: a,
+            to: b,
+            slots: vec![SlotRange::new(0, 14)],
+        };
+        assert_eq!(
+            Storage::apply_command(&transfer, &mut state),
+            ClusterResponse::Ok
+        );
+        assert_eq!(slots_of(&state, b), [SlotRange::new(0, 9)]);
+        assert!(slots_of(&state, a).is_empty());
+        assert!(!state.slots.contains_key(&14));
     }
 
     #[tokio::test]
