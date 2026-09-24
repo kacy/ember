@@ -530,7 +530,7 @@ impl ReplicationClient {
             let msg = read_u8(&mut stream).await?;
             match msg {
                 MSG_RECORD => {
-                    let _shard_id = read_u16_le(&mut stream).await?;
+                    let shard_id = read_u16_le(&mut stream).await?;
                     let _offset = read_u64_le(&mut stream).await?;
                     let record_len = read_u32_le(&mut stream).await? as usize;
                     let mut record_bytes = vec![0u8; record_len];
@@ -543,11 +543,12 @@ impl ReplicationClient {
                         )
                     })?;
 
+                    // the handshake checked that both sides have the same shard
+                    // count, so the primary's shard id picks the same shard a
+                    // key lookup would, and it also covers keyless records
                     if let Some(request) = aof_record_to_shard_request(&record) {
-                        if let Some(key) = primary_key_for_request(&request).map(str::to_owned) {
-                            if let Err(e) = self.engine.route(&key, request).await {
-                                warn!("replication apply failed: {e:?}");
-                            }
+                        if let Err(e) = self.engine.send_to_shard(shard_id.into(), request).await {
+                            warn!("replication apply failed: {e:?}");
                         }
                     }
 
@@ -858,6 +859,13 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             destination: destination.clone(),
             replace: *replace,
         }),
+        AofRecord::FlushAll => Some(ShardRequest::FlushDb),
+        AofRecord::Restore { key, ttl_ms, data } => Some(ShardRequest::RestoreKey {
+            key: key.clone(),
+            ttl_ms: *ttl_ms,
+            data: data.clone(),
+            replace: true,
+        }),
         #[cfg(feature = "vector")]
         AofRecord::VAdd {
             key,
@@ -903,43 +911,6 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
     }
 }
 
-/// Returns a reference to the primary key of a `ShardRequest` for routing.
-fn primary_key_for_request(req: &ShardRequest) -> Option<&str> {
-    match req {
-        ShardRequest::Set { key, .. }
-        | ShardRequest::Del { key }
-        | ShardRequest::Unlink { key }
-        | ShardRequest::Expire { key, .. }
-        | ShardRequest::Persist { key }
-        | ShardRequest::Pexpire { key, .. }
-        | ShardRequest::Incr { key }
-        | ShardRequest::Decr { key }
-        | ShardRequest::IncrBy { key, .. }
-        | ShardRequest::DecrBy { key, .. }
-        | ShardRequest::IncrByFloat { key, .. }
-        | ShardRequest::Append { key, .. }
-        | ShardRequest::SetRange { key, .. }
-        | ShardRequest::LPush { key, .. }
-        | ShardRequest::RPush { key, .. }
-        | ShardRequest::LPop { key }
-        | ShardRequest::RPop { key }
-        | ShardRequest::ZAdd { key, .. }
-        | ShardRequest::ZRem { key, .. }
-        | ShardRequest::HSet { key, .. }
-        | ShardRequest::HDel { key, .. }
-        | ShardRequest::HIncrBy { key, .. }
-        | ShardRequest::SAdd { key, .. }
-        | ShardRequest::SRem { key, .. }
-        | ShardRequest::Rename { key, .. }
-        | ShardRequest::SetBit { key, .. }
-        | ShardRequest::GetBit { key, .. }
-        | ShardRequest::BitCount { key, .. }
-        | ShardRequest::BitPos { key, .. } => Some(key),
-        ShardRequest::BitOp { dest, .. } => Some(dest),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -975,17 +946,5 @@ mod tests {
         let record = AofRecord::Del { key: "gone".into() };
         let req = aof_record_to_shard_request(&record).unwrap();
         assert!(matches!(req, ShardRequest::Del { key } if key == "gone"));
-    }
-
-    #[test]
-    fn primary_key_set() {
-        let req = ShardRequest::Set {
-            key: "mykey".into(),
-            value: Bytes::new(),
-            expire: None,
-            nx: false,
-            xx: false,
-        };
-        assert_eq!(primary_key_for_request(&req), Some("mykey"));
     }
 }
