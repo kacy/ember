@@ -1014,63 +1014,71 @@ pub enum FsyncPolicy {
 pub struct AofWriter {
     writer: BufWriter<File>,
     path: PathBuf,
+    /// The existing file is in a different format than this writer writes.
+    /// See [`AofWriter::needs_rewrite`].
+    needs_rewrite: bool,
     #[cfg(feature = "encryption")]
     encryption_key: Option<crate::encryption::EncryptionKey>,
 }
 
 impl AofWriter {
-    /// Opens (or creates) an AOF file. If the file is new, writes the header.
-    /// If the file already exists, appends to it.
+    /// Opens (or creates) a plaintext AOF file. A new file gets a header;
+    /// an existing one is appended to.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, FormatError> {
-        let path = path.into();
-        let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
-
-        let file = open_persistence_file(&path)?;
-        let mut writer = BufWriter::new(file);
-
-        if !exists {
-            format::write_header(&mut writer, format::AOF_MAGIC)?;
-            writer.flush()?;
-        }
-
-        Ok(Self {
-            writer,
-            path,
+        Self::open_versioned(
+            path.into(),
+            format::FORMAT_VERSION,
             #[cfg(feature = "encryption")]
-            encryption_key: None,
-        })
+            None,
+        )
     }
 
-    /// Opens (or creates) an encrypted AOF file using AES-256-GCM.
-    ///
-    /// New files get a v3 header. Existing v2 files can be appended to —
-    /// new records will be written unencrypted (use `BGREWRITEAOF` to
-    /// migrate the full file to v3).
+    /// Opens (or creates) an encrypted AOF file using AES-256-GCM. A new
+    /// file gets a v3 header.
     #[cfg(feature = "encryption")]
     pub fn open_encrypted(
         path: impl Into<PathBuf>,
         key: crate::encryption::EncryptionKey,
     ) -> Result<Self, FormatError> {
-        let path = path.into();
-        let exists = path.exists() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+        Self::open_versioned(path.into(), format::FORMAT_VERSION_ENCRYPTED, Some(key))
+    }
+
+    fn open_versioned(
+        path: PathBuf,
+        version: u8,
+        #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
+    ) -> Result<Self, FormatError> {
+        let existing = fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+        // a header that cannot be read counts as a different format
+        let existing_version = existing.then(|| {
+            File::open(&path)
+                .map_err(FormatError::from)
+                .and_then(|f| format::read_header(&mut BufReader::new(f), format::AOF_MAGIC))
+                .ok()
+        });
 
         let file = open_persistence_file(&path)?;
         let mut writer = BufWriter::new(file);
-
-        if !exists {
-            format::write_header_versioned(
-                &mut writer,
-                format::AOF_MAGIC,
-                format::FORMAT_VERSION_ENCRYPTED,
-            )?;
+        if !existing {
+            format::write_header_versioned(&mut writer, format::AOF_MAGIC, version)?;
             writer.flush()?;
         }
 
         Ok(Self {
             writer,
             path,
-            encryption_key: Some(key),
+            needs_rewrite: existing_version.is_some_and(|v| v != Some(version)),
+            #[cfg(feature = "encryption")]
+            encryption_key,
         })
+    }
+
+    /// Whether the existing file is in a different format than this writer
+    /// writes, such as after encryption was turned on or off. Appending
+    /// would mix formats in one file and make it unreadable, so the caller
+    /// must snapshot the data and [`truncate`](Self::truncate) first.
+    pub fn needs_rewrite(&self) -> bool {
+        self.needs_rewrite
     }
 
     /// Appends a record to the AOF.
@@ -1156,6 +1164,7 @@ impl AofWriter {
         // reopen for appending
         let file = OpenOptions::new().append(true).open(&self.path)?;
         self.writer = BufWriter::new(file);
+        self.needs_rewrite = false;
         Ok(())
     }
 }
@@ -2154,6 +2163,28 @@ mod tests {
             // try to open without a key
             let err = AofReader::open(&path).unwrap_err();
             assert!(matches!(err, FormatError::EncryptionRequired));
+            Ok(())
+        }
+
+        #[test]
+        fn switching_encryption_on_or_off_asks_for_a_rewrite() -> Result {
+            let dir = temp_dir();
+            let path = dir.path().join("switch.aof");
+            {
+                let mut writer = AofWriter::open(&path)?;
+                writer.write_record(&AofRecord::Del { key: "k".into() })?;
+                writer.sync()?;
+                assert!(!writer.needs_rewrite());
+            }
+
+            let mut writer = AofWriter::open_encrypted(&path, test_key())?;
+            assert!(writer.needs_rewrite());
+            writer.truncate()?;
+            assert!(!writer.needs_rewrite());
+            drop(writer);
+
+            assert!(!AofWriter::open_encrypted(&path, test_key())?.needs_rewrite());
+            assert!(AofWriter::open(&path)?.needs_rewrite());
             Ok(())
         }
 
