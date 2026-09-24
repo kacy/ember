@@ -410,7 +410,7 @@ fn peek_command_name(frame: &Frame) -> Option<String> {
 async fn execute_concurrent(
     cmd: Command,
     keyspace: &Arc<ConcurrentKeyspace>,
-    _engine: &Engine,
+    engine: &Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
@@ -755,21 +755,7 @@ async fn execute_concurrent(
         }
 
         Command::ConfigSet { param, value } => {
-            if let Err(e) = ctx.config.set(&param, &value) {
-                Frame::Error(e)
-            } else {
-                let key = param.to_ascii_lowercase();
-                if key == "slowlog-log-slower-than" {
-                    if let Ok(us) = value.parse::<i64>() {
-                        slow_log.update_threshold(us);
-                    }
-                } else if key == "slowlog-max-len" {
-                    if let Ok(len) = value.parse::<usize>() {
-                        slow_log.update_max_len(len);
-                    }
-                }
-                Frame::Simple("OK".into())
-            }
+            crate::connection_common::config_set(&param, &value, ctx, engine, slow_log).await
         }
 
         Command::ConfigRewrite => match &ctx.config_path {
@@ -823,7 +809,7 @@ async fn execute_concurrent(
         // -- protobuf commands --
         #[cfg(feature = "protobuf")]
         Command::ProtoRegister { name, descriptor } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let result = {
@@ -834,7 +820,7 @@ async fn execute_concurrent(
             };
             match result {
                 Ok(types) => {
-                    if let Err(e) = _engine
+                    if let Err(e) = engine
                         .broadcast(|| ember_core::ShardRequest::ProtoRegisterAof {
                             name: name.clone(),
                             descriptor: descriptor.clone(),
@@ -863,7 +849,7 @@ async fn execute_concurrent(
             nx,
             xx,
         } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             {
@@ -903,7 +889,7 @@ async fn execute_concurrent(
                 nx,
                 xx,
             };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::Ok) => Frame::Simple("OK".into()),
                 Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
                 Ok(ember_core::ShardResponse::OutOfMemory) => {
@@ -916,11 +902,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoGet { key } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
                 }
@@ -935,11 +921,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoType { key } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoType { key: key.clone() };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoTypeName(Some(name))) => {
                     Frame::Bulk(Bytes::from(name))
                 }
@@ -954,7 +940,7 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoSchemas => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let Ok(reg) = registry.read() else {
@@ -971,7 +957,7 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDescribe { name } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let Ok(reg) = registry.read() else {
@@ -990,11 +976,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoGetField { key, field_path } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     let Ok(reg) = registry.read() else {
                         return Frame::Error("ERR schema registry lock poisoned".into());
@@ -1019,7 +1005,7 @@ async fn execute_concurrent(
             field_path,
             value,
         } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoSetField {
@@ -1027,7 +1013,7 @@ async fn execute_concurrent(
                 field_path,
                 value,
             };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoFieldUpdated { .. }) => {
                     Frame::Simple("OK".into())
                 }
@@ -1046,14 +1032,14 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDelField { key, field_path } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoDelField {
                 key: key.clone(),
                 field_path,
             };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoFieldUpdated { .. }) => Frame::Integer(1),
                 Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
                 Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
@@ -1075,10 +1061,10 @@ async fn execute_concurrent(
             count,
             type_name,
         } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let shard_count = _engine.shard_count();
+            let shard_count = engine.shard_count();
             let count = count.unwrap_or(10);
             let (shard_id, position) = if cursor == 0 {
                 (0usize, 0u64)
@@ -1100,7 +1086,7 @@ async fn execute_concurrent(
                     pattern: pattern.clone(),
                     type_name: type_name.clone(),
                 };
-                match _engine.send_to_shard(current_shard, req).await {
+                match engine.send_to_shard(current_shard, req).await {
                     Ok(ember_core::ShardResponse::Scan {
                         cursor: next_pos,
                         keys,
@@ -1145,10 +1131,10 @@ async fn execute_concurrent(
             type_name,
             count,
         } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let shard_count = _engine.shard_count();
+            let shard_count = engine.shard_count();
             let count = count.unwrap_or(10);
             let (shard_id, position) = if cursor == 0 {
                 (0usize, 0u64)
@@ -1172,7 +1158,7 @@ async fn execute_concurrent(
                     field_path: field_path.clone(),
                     field_value: field_value.clone(),
                 };
-                match _engine.send_to_shard(current_shard, req).await {
+                match engine.send_to_shard(current_shard, req).await {
                     Ok(ember_core::ShardResponse::Scan {
                         cursor: next_pos,
                         keys,

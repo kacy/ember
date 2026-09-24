@@ -166,7 +166,9 @@ pub(super) async fn execute(
         Command::DbSize => exec::server::dbsize(&cx).await,
         Command::Info { section } => exec::server::info(&cx, section.as_deref()).await,
         Command::ConfigGet { pattern } => exec::server::config_get(pattern, &cx).await,
-        Command::ConfigSet { param, value } => exec::server::config_set(param, value, &cx).await,
+        Command::ConfigSet { param, value } => {
+            crate::connection_common::config_set(&param, &value, ctx, engine, slow_log).await
+        }
         Command::ConfigRewrite => exec::server::config_rewrite(&cx).await,
         Command::BgSave => exec::server::bgsave(&cx).await,
         Command::BgRewriteAof => exec::server::bgrewriteaof(&cx).await,
