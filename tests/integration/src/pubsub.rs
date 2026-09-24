@@ -89,3 +89,24 @@ async fn publish_returns_subscriber_count() {
     let count = publisher.get_int(&["PUBLISH", "chan", "msg"]).await;
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+async fn unsubscribe_leaves_other_subscribers_on_the_channel() {
+    let server = TestServer::start();
+    let mut leaver = server.connect().await;
+    let mut stayer = server.connect().await;
+    let mut publisher = server.connect().await;
+
+    leaver.cmd(&["SUBSCRIBE", "news"]).await;
+    stayer.cmd(&["SUBSCRIBE", "news"]).await;
+    leaver.cmd(&["UNSUBSCRIBE", "news"]).await;
+
+    assert_eq!(publisher.get_int(&["PUBLISH", "news", "hello"]).await, 1);
+    match stayer.read_frame().await {
+        Frame::Array(ref frames) => {
+            assert!(matches!(&frames[0], Frame::Bulk(b) if b == &b"message"[..]));
+            assert!(matches!(&frames[2], Frame::Bulk(b) if b == &b"hello"[..]));
+        }
+        other => panic!("expected message frame, got {other:?}"),
+    }
+}
