@@ -108,6 +108,10 @@ const TAG_SETRANGE: u8 = 32;
 const TAG_SETBIT: u8 = 33;
 const TAG_BITOP: u8 = 34;
 
+// whole keyspace and serialized values
+const TAG_FLUSH_ALL: u8 = 36;
+const TAG_RESTORE: u8 = 37;
+
 // vector
 #[cfg(feature = "vector")]
 const TAG_VADD: u8 = 25;
@@ -224,6 +228,16 @@ pub enum AofRecord {
     },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
+    /// FLUSHDB or FLUSHALL. Removes every key in the shard.
+    FlushAll,
+    /// RESTORE key ttl payload. `data` is the value in the snapshot value
+    /// encoding, as carried by the RESTORE request. `ttl_ms` is 0 for no
+    /// expiry.
+    Restore {
+        key: String,
+        ttl_ms: u64,
+        data: Bytes,
+    },
     /// COPY source destination [REPLACE].
     Copy {
         source: String,
@@ -303,6 +317,8 @@ impl AofRecord {
             AofRecord::BitOp { .. } => TAG_BITOP,
             AofRecord::Rename { .. } => TAG_RENAME,
             AofRecord::Copy { .. } => TAG_COPY,
+            AofRecord::FlushAll => TAG_FLUSH_ALL,
+            AofRecord::Restore { .. } => TAG_RESTORE,
             #[cfg(feature = "vector")]
             AofRecord::VAdd { .. } => TAG_VADD,
             #[cfg(feature = "vector")]
@@ -411,6 +427,10 @@ impl AofRecord {
                 destination,
                 ..
             } => 1 + LEN_PREFIX + source.len() + LEN_PREFIX + destination.len() + 1,
+            AofRecord::FlushAll => 1,
+            AofRecord::Restore { key, data, .. } => {
+                1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + data.len()
+            }
             #[cfg(feature = "vector")]
             AofRecord::VAdd {
                 key,
@@ -626,6 +646,12 @@ impl AofRecord {
                 format::write_bytes(&mut buf, source.as_bytes())?;
                 format::write_bytes(&mut buf, destination.as_bytes())?;
                 buf.push(u8::from(*replace));
+            }
+            AofRecord::FlushAll => {}
+            AofRecord::Restore { key, ttl_ms, data } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_i64(&mut buf, (*ttl_ms).min(i64::MAX as u64) as i64)?;
+                format::write_bytes(&mut buf, data)?;
             }
 
             #[cfg(feature = "vector")]
@@ -880,6 +906,18 @@ impl AofRecord {
                     destination,
                     replace,
                 })
+            }
+            TAG_FLUSH_ALL => Ok(AofRecord::FlushAll),
+            TAG_RESTORE => {
+                let key = read_string(cursor, "key")?;
+                let raw = format::read_i64(cursor)?;
+                let ttl_ms = u64::try_from(raw).map_err(|_| {
+                    FormatError::InvalidData(format!(
+                        "RESTORE ttl is negative ({raw}) in AOF record"
+                    ))
+                })?;
+                let data = Bytes::from(format::read_bytes(cursor)?);
+                Ok(AofRecord::Restore { key, ttl_ms, data })
             }
             TAG_SETBIT => {
                 let key = read_string(cursor, "key")?;
@@ -1446,6 +1484,12 @@ mod tests {
                 source: key(),
                 destination: "d".into(),
                 replace: true,
+            },
+            AofRecord::FlushAll,
+            AofRecord::Restore {
+                key: key(),
+                ttl_ms: 5_000,
+                data: val(),
             },
             #[cfg(feature = "vector")]
             AofRecord::VAdd {
