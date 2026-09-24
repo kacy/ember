@@ -1,16 +1,20 @@
 use super::*;
 
-/// Clamps a duration's millisecond value to fit in i64.
+/// Returns the unix time in ms at which a TTL starting now runs out.
 ///
-/// `Duration::as_millis()` returns u128 which silently wraps when cast
-/// to i64 for TTLs longer than ~292 million years. This caps at i64::MAX
-/// instead, preserving "very long TTL" semantics without sign corruption.
-pub(super) fn duration_to_expire_ms(d: Duration) -> i64 {
-    let ms = d.as_millis();
-    if ms > i64::MAX as u128 {
-        i64::MAX
-    } else {
-        ms as i64
+/// The AOF stores expiries this way, as absolute deadlines. A TTL stored as
+/// time left would be counted again from each restart, and expired keys
+/// are not logged as deleted, so replay would bring them back.
+fn deadline_after(ttl: Duration) -> u64 {
+    let ttl_ms = ttl.as_millis().min(u64::MAX as u128) as u64;
+    ember_persistence::aof::unix_now_ms().saturating_add(ttl_ms)
+}
+
+/// Records that `key` expires `ttl` from now.
+fn expire_at(key: String, ttl: Duration) -> AofRecord {
+    AofRecord::Pexpireat {
+        key,
+        timestamp_ms: deadline_after(ttl),
     }
 }
 
@@ -29,20 +33,24 @@ pub(super) fn to_aof_records(
                 key, value, expire, ..
             },
             ShardResponse::Ok,
-        ) => {
-            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            smallvec![AofRecord::Set {
+        ) => match expire {
+            Some(ttl) => smallvec![AofRecord::SetExpireAt {
                 key,
                 value,
-                expire_ms,
-            }]
-        }
+                timestamp_ms: deadline_after(ttl),
+            }],
+            None => smallvec![AofRecord::Set {
+                key,
+                value,
+                expire_ms: -1,
+            }],
+        },
         (ShardRequest::Del { key }, ShardResponse::Bool(true))
         | (ShardRequest::Unlink { key }, ShardResponse::Bool(true)) => {
             smallvec![AofRecord::Del { key }]
         }
         (ShardRequest::Expire { key, seconds }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::Expire { key, seconds }]
+            smallvec![expire_at(key, Duration::from_secs(seconds))]
         }
         // EXPIREAT: convert the absolute unix timestamp to a pexpire record (ms).
         // On replay, pexpire will recompute the monotonic deadline from the stored ms.
@@ -236,7 +244,7 @@ pub(super) fn to_aof_records(
             smallvec![AofRecord::Persist { key }]
         }
         (ShardRequest::Pexpire { key, milliseconds }, ShardResponse::Bool(true)) => {
-            smallvec![AofRecord::Pexpire { key, milliseconds }]
+            smallvec![expire_at(key, Duration::from_millis(milliseconds))]
         }
         // Hash commands
         (ShardRequest::HSet { key, fields }, ShardResponse::Len(_)) => {
@@ -345,13 +353,16 @@ pub(super) fn to_aof_records(
             },
             ShardResponse::Ok,
         ) => {
-            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            smallvec![AofRecord::ProtoSet {
-                key,
+            let mut records: SmallVec<[AofRecord; 1]> = smallvec![AofRecord::ProtoSet {
+                key: key.clone(),
                 type_name,
                 data,
-                expire_ms,
-            }]
+                expire_ms: -1,
+            }];
+            if let Some(ttl) = expire {
+                records.push(expire_at(key, ttl));
+            }
+            records
         }
         #[cfg(feature = "protobuf")]
         (ShardRequest::ProtoRegisterAof { name, descriptor }, ShardResponse::Ok) => {
@@ -367,13 +378,16 @@ pub(super) fn to_aof_records(
                 expire,
             },
         ) => {
-            let expire_ms = expire.map(duration_to_expire_ms).unwrap_or(-1);
-            smallvec![AofRecord::ProtoSet {
-                key,
+            let mut records: SmallVec<[AofRecord; 1]> = smallvec![AofRecord::ProtoSet {
+                key: key.clone(),
                 type_name: type_name.clone(),
                 data: data.clone(),
-                expire_ms,
-            }]
+                expire_ms: -1,
+            }];
+            if let Some(ttl) = expire {
+                records.push(expire_at(key, *ttl));
+            }
+            records
         }
         // Vector commands
         #[cfg(feature = "vector")]
@@ -492,12 +506,7 @@ pub(super) fn to_aof_records(
             },
             ShardResponse::Value(Some(_)),
         ) => match new_expire {
-            Some(ms) if ms > 0 => {
-                smallvec![AofRecord::Pexpire {
-                    key,
-                    milliseconds: ms
-                }]
-            }
+            Some(ms) if ms > 0 => smallvec![expire_at(key, Duration::from_millis(ms))],
             // GETEX PERSIST clears the expiry, so log a PERSIST record
             _ => smallvec![AofRecord::Persist { key }],
         },
@@ -511,7 +520,17 @@ pub(super) fn to_aof_records(
                 key, ttl_ms, data, ..
             },
             ShardResponse::Ok,
-        ) => smallvec![AofRecord::Restore { key, ttl_ms, data }],
+        ) => {
+            let mut records: SmallVec<[AofRecord; 1]> = smallvec![AofRecord::Restore {
+                key: key.clone(),
+                ttl_ms: 0,
+                data,
+            }];
+            if ttl_ms > 0 {
+                records.push(expire_at(key, Duration::from_millis(ttl_ms)));
+            }
+            records
+        }
         _ => SmallVec::new(),
     }
 }
@@ -640,13 +659,18 @@ mod tests {
             xx: false,
         };
         let mut resp = ShardResponse::Ok;
+        let before = ember_persistence::aof::unix_now_ms();
         let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
-            AofRecord::Set { key, expire_ms, .. } => {
+            AofRecord::SetExpireAt {
+                key, timestamp_ms, ..
+            } => {
                 assert_eq!(key, "k");
-                assert_eq!(expire_ms, 60_000);
+                // an absolute deadline 60s after the write
+                let after = ember_persistence::aof::unix_now_ms();
+                assert!((before + 60_000..=after + 60_000).contains(&timestamp_ms));
             }
-            other => panic!("expected Set, got {other:?}"),
+            other => panic!("expected SetExpireAt, got {other:?}"),
         }
     }
 
@@ -767,13 +791,15 @@ mod tests {
             milliseconds: 5000,
         };
         let mut resp = ShardResponse::Bool(true);
+        let before = ember_persistence::aof::unix_now_ms();
         let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         match record {
-            AofRecord::Pexpire { key, milliseconds } => {
+            AofRecord::Pexpireat { key, timestamp_ms } => {
                 assert_eq!(key, "k");
-                assert_eq!(milliseconds, 5000);
+                let after = ember_persistence::aof::unix_now_ms();
+                assert!((before + 5000..=after + 5000).contains(&timestamp_ms));
             }
-            other => panic!("expected Pexpire, got {other:?}"),
+            other => panic!("expected Pexpireat, got {other:?}"),
         }
     }
 
