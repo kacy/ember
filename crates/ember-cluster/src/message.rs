@@ -88,6 +88,7 @@ pub enum GossipMessage {
     SlotsAnnounce {
         sender: NodeId,
         incarnation: u64,
+        config_epoch: u64,
         slots: Vec<SlotRange>,
     },
 }
@@ -107,10 +108,12 @@ pub enum NodeUpdate {
     Dead { node: NodeId, incarnation: u64 },
     /// Node left the cluster gracefully.
     Left { node: NodeId },
-    /// Node's slot ownership changed.
+    /// Node's slot ownership changed. `config_epoch` is the node's config
+    /// epoch: when two nodes claim a slot, the higher epoch wins.
     SlotsChanged {
         node: NodeId,
         incarnation: u64,
+        config_epoch: u64,
         slots: Vec<SlotRange>,
     },
     /// Node's role changed (primary ↔ replica).
@@ -152,6 +155,7 @@ pub struct MemberInfo {
     pub addr: SocketAddr,
     pub incarnation: u64,
     pub is_primary: bool,
+    pub config_epoch: u64,
     pub slots: Vec<SlotRange>,
 }
 
@@ -280,11 +284,13 @@ impl GossipMessage {
             GossipMessage::SlotsAnnounce {
                 sender,
                 incarnation,
+                config_epoch,
                 slots,
             } => {
                 buf.put_u8(MSG_SLOTS_ANNOUNCE);
                 encode_node_id(buf, sender);
                 buf.put_u64_le(*incarnation);
+                buf.put_u64_le(*config_epoch);
                 encode_slot_ranges(buf, slots);
             }
         }
@@ -359,10 +365,12 @@ impl GossipMessage {
             MSG_SLOTS_ANNOUNCE => {
                 let sender = decode_node_id(&mut buf)?;
                 let incarnation = safe_get_u64_le(&mut buf)?;
+                let config_epoch = safe_get_u64_le(&mut buf)?;
                 let slots = decode_slot_ranges(&mut buf)?;
                 Ok(GossipMessage::SlotsAnnounce {
                     sender,
                     incarnation,
+                    config_epoch,
                     slots,
                 })
             }
@@ -509,11 +517,13 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
         NodeUpdate::SlotsChanged {
             node,
             incarnation,
+            config_epoch,
             slots,
         } => {
             buf.put_u8(UPDATE_SLOTS_CHANGED);
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
+            buf.put_u64_le(*config_epoch);
             encode_slot_ranges(buf, slots);
         }
         NodeUpdate::RoleChanged {
@@ -606,10 +616,12 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         UPDATE_SLOTS_CHANGED => {
             let node = decode_node_id(buf)?;
             let incarnation = safe_get_u64_le(buf)?;
+            let config_epoch = safe_get_u64_le(buf)?;
             let slots = decode_slot_ranges(buf)?;
             Ok(NodeUpdate::SlotsChanged {
                 node,
                 incarnation,
+                config_epoch,
                 slots,
             })
         }
@@ -664,6 +676,7 @@ fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
     encode_socket_addr(buf, &member.addr);
     buf.put_u64_le(member.incarnation);
     buf.put_u8(if member.is_primary { 1 } else { 0 });
+    buf.put_u64_le(member.config_epoch);
     encode_slot_ranges(buf, &member.slots);
 }
 
@@ -672,12 +685,14 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
     let addr = decode_socket_addr(buf)?;
     let incarnation = safe_get_u64_le(buf)?;
     let is_primary = safe_get_u8(buf)? != 0;
+    let config_epoch = safe_get_u64_le(buf)?;
     let slots = decode_slot_ranges(buf)?;
     Ok(MemberInfo {
         id,
         addr,
         incarnation,
         is_primary,
+        config_epoch,
         slots,
     })
 }
@@ -695,6 +710,7 @@ mod tests {
         let msg = GossipMessage::SlotsAnnounce {
             sender: NodeId::new(),
             incarnation: 3,
+            config_epoch: 1,
             slots: slots.clone(),
         };
         match GossipMessage::decode(&msg.encode()).unwrap() {
@@ -797,6 +813,7 @@ mod tests {
                     addr: test_addr(),
                     incarnation: 1,
                     is_primary: true,
+                    config_epoch: 1,
                     slots: vec![SlotRange::new(0, 5460)],
                 },
                 MemberInfo {
@@ -804,6 +821,7 @@ mod tests {
                     addr: test_addr(),
                     incarnation: 2,
                     is_primary: false,
+                    config_epoch: 1,
                     slots: vec![],
                 },
             ],
@@ -881,6 +899,7 @@ mod tests {
             NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 4,
+                config_epoch: 1,
                 slots: vec![SlotRange::new(0, 5460)],
             },
         ];
@@ -903,6 +922,7 @@ mod tests {
             updates: vec![NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 1,
+                config_epoch: 1,
                 slots: vec![],
             }],
         };
@@ -920,6 +940,7 @@ mod tests {
             updates: vec![NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 5,
+                config_epoch: 1,
                 slots: vec![
                     SlotRange::new(0, 5460),
                     SlotRange::new(5461, 10922),
