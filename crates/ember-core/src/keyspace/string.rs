@@ -249,7 +249,7 @@ impl Keyspace {
             Some(e) if !matches!(e.value, Value::String(_)) => return Err(WrongType),
             _ => {}
         }
-        let entry = self.entries.remove(key).expect("verified above");
+        let entry = self.entries.swap_remove(key).expect("verified above");
         let bytes = match entry.value {
             Value::String(ref b) => b.clone(),
             _ => unreachable!("type checked above"),

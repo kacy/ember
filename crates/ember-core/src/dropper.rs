@@ -10,10 +10,7 @@
 
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 
-use ahash::AHashMap;
-use compact_str::CompactString;
-
-use crate::keyspace::Entry;
+use crate::keyspace::EntryMap;
 use crate::memory::is_large_value;
 use crate::types::Value;
 
@@ -30,7 +27,7 @@ enum Droppable {
     /// A single value removed from the keyspace (e.g. DEL, UNLINK, eviction).
     Value(Value),
     /// All entries from a FLUSHDB ASYNC — dropped in bulk.
-    Entries(AHashMap<CompactString, Entry>),
+    Entries(EntryMap),
 }
 
 /// A cloneable handle for deferring expensive drops to the background thread.
@@ -88,7 +85,7 @@ impl DropHandle {
 
     /// Defers dropping all entries from a flush operation. Always deferred
     /// since a full keyspace is always worth offloading.
-    pub(crate) fn defer_entries(&self, entries: AHashMap<CompactString, Entry>) {
+    pub(crate) fn defer_entries(&self, entries: EntryMap) {
         if entries.is_empty() {
             return;
         }
@@ -130,11 +127,11 @@ mod tests {
     #[test]
     fn defer_entries_from_flush() {
         let handle = DropHandle::spawn();
-        let mut entries = AHashMap::new();
+        let mut entries = EntryMap::default();
         for i in 0..10 {
             entries.insert(
-                CompactString::from(format!("key-{i}").as_str()),
-                Entry::new(Value::String(Bytes::from(format!("val-{i}"))), None),
+                compact_str::CompactString::from(format!("key-{i}").as_str()),
+                crate::keyspace::Entry::new(Value::String(Bytes::from(format!("val-{i}"))), None),
             );
         }
         handle.defer_entries(entries);
@@ -144,6 +141,6 @@ mod tests {
     #[test]
     fn empty_entries_skipped() {
         let handle = DropHandle::spawn();
-        handle.defer_entries(AHashMap::new());
+        handle.defer_entries(EntryMap::default());
     }
 }

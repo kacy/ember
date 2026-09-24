@@ -1,6 +1,6 @@
 //! The keyspace: Ember's core key-value store.
 //!
-//! A `Keyspace` owns a flat `AHashMap<CompactString, Entry>` and handles
+//! A `Keyspace` owns a flat `EntryMap` (an `IndexMap` of keys to entries) and handles
 //! get, set, delete, existence checks, and TTL management. Expired
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
@@ -12,6 +12,7 @@ use ahash::AHashMap;
 use bytes::Bytes;
 use compact_str::CompactString;
 use rand::seq::IteratorRandom;
+use rand::Rng;
 
 use tracing::warn;
 
@@ -269,6 +270,13 @@ pub enum SetResult {
     Blocked,
 }
 
+/// The key-to-entry map a shard keeps.
+///
+/// An `IndexMap` stores entries in a dense vector, so a random key or a
+/// cursor position is an O(1) index. SCAN, eviction and active expiry rely
+/// on that. Remove entries only with `swap_remove`: `shift_remove` is O(n).
+pub(crate) type EntryMap = indexmap::IndexMap<CompactString, Entry, ahash::RandomState>;
+
 /// A single entry in the keyspace: a value plus optional expiration
 /// and last access time for LRU approximation.
 ///
@@ -418,7 +426,7 @@ const EVICTION_SAMPLE_SIZE: usize = 16;
 /// All operations are single-threaded per shard — no internal locking.
 /// Memory usage is tracked incrementally on every mutation.
 pub struct Keyspace {
-    entries: AHashMap<CompactString, Entry>,
+    entries: EntryMap,
     memory: MemoryTracker,
     config: ShardConfig,
     /// Number of entries that currently have an expiration set.
@@ -461,7 +469,7 @@ impl Keyspace {
     pub fn with_config(config: ShardConfig) -> Self {
         let track_access = config.eviction_policy == EvictionPolicy::AllKeysLru;
         Self {
-            entries: AHashMap::new(),
+            entries: EntryMap::default(),
             memory: MemoryTracker::new(),
             config,
             expiry_count: 0,
@@ -544,7 +552,7 @@ impl Keyspace {
         removed_bytes: usize,
     ) {
         if is_empty {
-            if let Some(removed) = self.entries.remove(key) {
+            if let Some(removed) = self.entries.swap_remove(key) {
                 self.decrement_expiry_if_set(&removed);
             }
             self.memory.remove_with_size(old_size);
@@ -635,60 +643,44 @@ impl Keyspace {
 
     /// Tries to evict one key using an approximate LRU.
     ///
-    /// Samples up to `EVICTION_SAMPLE_SIZE` keys and removes the one with the
-    /// oldest `last_access` time. The sample is drawn by reservoir sampling
-    /// so no Vec is allocated. `protect` is never chosen, because the caller
-    /// is about to write to it. Returns `false` if no other key exists.
+    /// Picks `EVICTION_SAMPLE_SIZE` random entries (every entry when there
+    /// are fewer) and removes the one with the oldest `last_access` time.
+    /// `protect` is never chosen, because the caller is about to write to
+    /// it. Returns `false` if no other key exists.
     fn try_evict(&mut self, protect: &str) -> bool {
-        if self.entries.is_empty() {
+        let len = self.entries.len();
+        let victim = if len <= EVICTION_SAMPLE_SIZE {
+            self.least_recently_used(0..len, protect)
+        } else {
+            let mut rng = rand::rng();
+            let samples = (0..EVICTION_SAMPLE_SIZE).map(|_| rng.random_range(0..len));
+            self.least_recently_used(samples, protect)
+        };
+        let Some((key, entry)) = victim.and_then(|i| self.entries.swap_remove_index(i)) else {
             return false;
-        }
+        };
+        self.memory.remove(&key, &entry.value);
+        self.decrement_expiry_if_set(&entry);
+        self.evicted_total += 1;
+        self.remove_version(&key);
+        self.defer_drop(entry.value);
+        true
+    }
 
-        let mut rng = rand::rng();
-
-        // reservoir sample k=1 from the iterator, tracking the oldest
-        // entry by last_access_secs. this replaces choose_multiple() which
-        // allocates a Vec internally.
-        let mut best_key: Option<&str> = None;
-        let mut best_access = u32::MAX;
-        let mut seen = 0usize;
-
-        for (key, entry) in &self.entries {
-            if key.as_str() == protect {
-                continue;
-            }
-            // reservoir sampling: include this item with probability
-            // EVICTION_SAMPLE_SIZE / (seen + 1), capped once we have
-            // enough candidates
-            seen += 1;
-            if seen <= EVICTION_SAMPLE_SIZE {
-                if entry.last_access_secs < best_access {
-                    best_access = entry.last_access_secs;
-                    best_key = Some(&**key);
-                }
-            } else {
-                use rand::Rng;
-                let j = rng.random_range(0..seen);
-                if j < EVICTION_SAMPLE_SIZE && entry.last_access_secs < best_access {
-                    best_access = entry.last_access_secs;
-                    best_key = Some(&**key);
-                }
-            }
-        }
-
-        if let Some(victim) = best_key {
-            // own the key to break the immutable borrow on self.entries
-            let victim = victim.to_owned();
-            if let Some(entry) = self.entries.remove(victim.as_str()) {
-                self.memory.remove(&victim, &entry.value);
-                self.decrement_expiry_if_set(&entry);
-                self.evicted_total += 1;
-                self.remove_version(&victim);
-                self.defer_drop(entry.value);
-                return true;
-            }
-        }
-        false
+    /// Returns the position, among `positions`, of the entry accessed least
+    /// recently, skipping `protect`.
+    fn least_recently_used(
+        &self,
+        positions: impl Iterator<Item = usize>,
+        protect: &str,
+    ) -> Option<usize> {
+        positions
+            .filter(|&i| {
+                self.entries
+                    .get_index(i)
+                    .is_some_and(|(key, _)| key.as_str() != protect)
+            })
+            .min_by_key(|&i| self.entries[i].last_access_secs)
     }
 
     /// Checks whether the memory limit allows a write that would increase
@@ -751,7 +743,7 @@ impl Keyspace {
         if self.remove_if_expired(key) {
             return false;
         }
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
             self.decrement_expiry_if_set(&entry);
             self.remove_version(key);
@@ -771,7 +763,7 @@ impl Keyspace {
         if self.remove_if_expired(key) {
             return false;
         }
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
             self.decrement_expiry_if_set(&entry);
             self.remove_version(key);
@@ -788,7 +780,7 @@ impl Keyspace {
     /// Replaces the entries map with an empty one and resets memory
     /// tracking. Returns the old entries so the caller can send them
     /// to the background drop thread.
-    pub(crate) fn flush_async(&mut self) -> AHashMap<CompactString, Entry> {
+    pub(crate) fn flush_async(&mut self) -> EntryMap {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
         self.expiry_count = 0;
@@ -806,14 +798,16 @@ impl Keyspace {
 
     /// Returns a random key from the keyspace, or `None` if empty.
     ///
-    /// Uses reservoir sampling from the hash map iterator. Expired keys
-    /// are skipped (and lazily cleaned up with bounded retries).
+    /// Expired keys that come up are removed, with a bounded number of
+    /// retries.
     pub fn random_key(&mut self) -> Option<String> {
-        // bounded retries in case we keep hitting expired keys
+        let mut rng = rand::rng();
         for _ in 0..5 {
-            let mut rng = rand::rng();
-            let key = self.entries.keys().choose(&mut rng)?.clone();
-
+            let len = self.entries.len();
+            if len == 0 {
+                return None;
+            }
+            let key = self.entries.get_index(rng.random_range(0..len))?.0.clone();
             if self.remove_if_expired(&key) {
                 continue;
             }
@@ -1154,7 +1148,7 @@ impl Keyspace {
         self.remove_if_expired(key);
         self.remove_if_expired(newkey);
 
-        let entry = match self.entries.remove(key) {
+        let entry = match self.entries.swap_remove(key) {
             Some(entry) => entry,
             None => return Err(RenameError::NoSuchKey),
         };
@@ -1164,7 +1158,7 @@ impl Keyspace {
         self.decrement_expiry_if_set(&entry);
 
         // remove destination if it exists
-        if let Some(old_dest) = self.entries.remove(newkey) {
+        if let Some(old_dest) = self.entries.swap_remove(newkey) {
             self.memory.remove(newkey, &old_dest.value);
             self.decrement_expiry_if_set(&old_dest);
         }
@@ -1220,7 +1214,7 @@ impl Keyspace {
         }
 
         // remove old destination if replacing
-        if let Some(old_dest) = self.entries.remove(dest) {
+        if let Some(old_dest) = self.entries.swap_remove(dest) {
             self.memory.remove(dest, &old_dest.value);
             self.decrement_expiry_if_set(&old_dest);
             self.defer_drop(old_dest.value);
@@ -1304,55 +1298,14 @@ impl Keyspace {
         pattern: Option<&str>,
         type_name: Option<&str>,
     ) -> (u64, Vec<String>) {
-        let mut keys = Vec::with_capacity(count);
-        let mut position = 0u64;
-        let target_count = if count == 0 { 10 } else { count };
         let compiled = pattern.map(GlobPattern::new);
-
-        for (key, entry) in self.entries.iter() {
-            if entry.is_expired() {
-                continue;
-            }
-
-            if position < cursor {
-                position += 1;
-                continue;
-            }
-
-            // only proto entries
-            let entry_type = match &entry.value {
-                Value::Proto { type_name: t, .. } => t.as_str(),
-                _ => {
-                    position += 1;
-                    continue;
-                }
+        self.scan_entries(cursor, count, |key, entry| {
+            let Value::Proto { type_name: t, .. } = &entry.value else {
+                return false;
             };
-
-            // optional type filter
-            if let Some(wanted) = type_name {
-                if entry_type != wanted {
-                    position += 1;
-                    continue;
-                }
-            }
-
-            // optional key pattern
-            if let Some(ref pat) = compiled {
-                if !pat.matches(key) {
-                    position += 1;
-                    continue;
-                }
-            }
-
-            keys.push(String::from(&**key));
-            position += 1;
-
-            if keys.len() >= target_count {
-                return (position, keys);
-            }
-        }
-
-        (0, keys)
+            type_name.is_none_or(|wanted| t.as_str() == wanted)
+                && compiled.as_ref().is_none_or(|pat| pat.matches(key))
+        })
     }
 
     /// Scans keys starting from a cursor position.
@@ -1365,43 +1318,46 @@ impl Keyspace {
         count: usize,
         pattern: Option<&str>,
     ) -> (u64, Vec<String>) {
-        let mut keys = Vec::with_capacity(count);
-        let mut position = 0u64;
-        let target_count = if count == 0 { 10 } else { count };
-
         let compiled = pattern.map(GlobPattern::new);
+        self.scan_entries(cursor, count, |key, _| {
+            compiled.as_ref().is_none_or(|pat| pat.matches(key))
+        })
+    }
 
-        for (key, entry) in self.entries.iter() {
-            // skip expired entries
-            if entry.is_expired() {
-                continue;
-            }
-
-            // skip entries before cursor
-            if position < cursor {
-                position += 1;
-                continue;
-            }
-
-            // pattern matching
-            if let Some(ref pat) = compiled {
-                if !pat.matches(key) {
-                    position += 1;
-                    continue;
-                }
-            }
-
-            keys.push(String::from(&**key));
-            position += 1;
-
-            if keys.len() >= target_count {
-                // return position as next cursor
-                return (position, keys);
+    /// Walks entries down from the cursor, collecting live keys that pass
+    /// `keep`, until `count` are found or the walk reaches the start.
+    ///
+    /// The cursor is the number of positions left to visit: 0 starts a
+    /// scan, and a returned 0 means it is done. Each call costs O(count)
+    /// plus the entries skipped. Walking down from the end keeps Redis's
+    /// guarantee that a key present for the whole scan is returned:
+    /// `swap_remove` only moves the last entry, which the walk has already
+    /// passed, into a lower slot. It may be returned twice. Keys added
+    /// during the scan go at the end and may be missed, as Redis allows.
+    fn scan_entries(
+        &self,
+        cursor: u64,
+        count: usize,
+        keep: impl Fn(&str, &Entry) -> bool,
+    ) -> (u64, Vec<String>) {
+        let target = if count == 0 { 10 } else { count };
+        let len = self.entries.len();
+        let mut position = match cursor {
+            0 => len,
+            c => usize::try_from(c).map_or(len, |c| c.min(len)),
+        };
+        let mut keys = Vec::with_capacity(target.min(position));
+        while position > 0 && keys.len() < target {
+            position -= 1;
+            let (key, entry) = &self
+                .entries
+                .get_index(position)
+                .expect("position is below len");
+            if !entry.is_expired() && keep(key, entry) {
+                keys.push(key.to_string());
             }
         }
-
-        // scan complete
-        (0, keys)
+        (position as u64, keys)
     }
 
     /// Returns the value and remaining TTL in milliseconds for a single key.
@@ -1461,29 +1417,27 @@ impl Keyspace {
         self.bump_version(&key);
     }
 
-    /// Randomly samples up to `count` keys and removes any that have expired.
-    ///
     /// Samples up to `count` random keys and removes any that have expired.
     ///
     /// Expired key names are appended to `out` so the caller can emit
     /// keyspace notifications. Returns the number of keys removed.
     pub(crate) fn expire_sample(&mut self, count: usize, out: &mut Vec<String>) -> usize {
-        if self.entries.is_empty() {
+        let len = self.entries.len();
+        if len == 0 {
             return 0;
         }
-
-        let mut rng = rand::rng();
-
-        let keys_to_check: Vec<String> = self
-            .entries
-            .keys()
-            .choose_multiple(&mut rng, count)
+        // distinct positions, so a pass over a small keyspace sees every key
+        let positions = rand::seq::index::sample(&mut rand::rng(), len, count.min(len));
+        let expired: Vec<String> = positions
             .into_iter()
-            .map(|k| String::from(&**k))
+            .filter_map(|i| {
+                let (key, entry) = self.entries.get_index(i)?;
+                entry.is_expired().then(|| key.to_string())
+            })
             .collect();
 
         let mut removed = 0;
-        for key in keys_to_check {
+        for key in expired {
             if self.remove_if_expired(&key) {
                 out.push(key);
                 removed += 1;
@@ -1496,7 +1450,7 @@ impl Keyspace {
     /// fused lookup paths that check expiry inline via `get_mut()` and
     /// need a second probe only on the rare expired path.
     fn remove_expired_entry(&mut self, key: &str) {
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
             self.decrement_expiry_if_set(&entry);
             self.expired_total += 1;
@@ -1515,7 +1469,7 @@ impl Keyspace {
             .unwrap_or(false);
 
         if expired {
-            if let Some(entry) = self.entries.remove(key) {
+            if let Some(entry) = self.entries.swap_remove(key) {
                 self.memory.remove(key, &entry.value);
                 self.decrement_expiry_if_set(&entry);
                 self.expired_total += 1;
@@ -1892,11 +1846,65 @@ mod tests {
     // -- eviction tests --
 
     #[test]
+    fn scan_finishes_in_len_over_count_calls() {
+        let mut ks = Keyspace::new();
+        for i in 0..100 {
+            ks.set(format!("k{i}"), Bytes::from("v"), None, false, false);
+        }
+        let (mut cursor, mut calls, mut seen) = (0, 0, 0);
+        loop {
+            let (next, keys) = ks.scan_keys(cursor, 10, None);
+            calls += 1;
+            seen += keys.len();
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+        assert_eq!((calls, seen), (10, 100));
+    }
+
+    #[test]
+    fn scan_returns_every_key_present_for_the_whole_scan() {
+        let mut ks = Keyspace::new();
+        for i in 0..200 {
+            ks.set(format!("k{i}"), Bytes::from("v"), None, false, false);
+        }
+        // even-numbered keys stay; odd ones are deleted while scanning
+        let mut found = std::collections::HashSet::new();
+        let (mut cursor, mut next_odd) = (0, 1);
+        loop {
+            let (next, keys) = ks.scan_keys(cursor, 7, None);
+            found.extend(keys);
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+            for _ in 0..3 {
+                if next_odd < 200 {
+                    ks.del(&format!("k{next_odd}"));
+                    next_odd += 2;
+                }
+            }
+        }
+        for i in (0..200).step_by(2) {
+            assert!(found.contains(&format!("k{i}")), "k{i} was skipped");
+        }
+    }
+
+    /// Size of the small test entry `"a" = "val"`.
+    const SMALL_ENTRY: usize = 1 + 3 + memory::ENTRY_OVERHEAD;
+
+    /// A memory limit that fits one small entry but not two, after the
+    /// safety margin `memory::effective_limit` takes off.
+    fn one_entry_limit() -> usize {
+        (SMALL_ENTRY + 10) * 100 / memory::MEMORY_SAFETY_MARGIN_PERCENT
+    }
+
+    #[test]
     fn noeviction_returns_oom_when_full() {
-        // one entry with key "a" + value "val" = 1 + 3 + 104 = 108 bytes
-        // set limit so one entry fits but two don't
         let config = ShardConfig {
-            max_memory: Some(130),
+            max_memory: Some(one_entry_limit()),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -1936,7 +1944,7 @@ mod tests {
     #[test]
     fn lru_eviction_makes_room() {
         let config = ShardConfig {
-            max_memory: Some(130),
+            max_memory: Some(one_entry_limit()),
             eviction_policy: EvictionPolicy::AllKeysLru,
             ..ShardConfig::default()
         };
@@ -1960,12 +1968,13 @@ mod tests {
 
     #[test]
     fn safety_margin_rejects_near_raw_limit() {
-        // one entry = 1 (key) + 3 (val) + ENTRY_OVERHEAD (104) = 108 bytes.
-        // configure max_memory = 120. effective limit = 120 * 90 / 100 = 108.
-        // the entry fills exactly the effective limit, so a second entry should
-        // be rejected even though the raw limit has 12 bytes of headroom.
+        // the effective limit equals one small entry, so a second entry is
+        // rejected even though the raw limit has headroom left
+        let limit = (SMALL_ENTRY * 100).div_ceil(memory::MEMORY_SAFETY_MARGIN_PERCENT);
+        assert_eq!(memory::effective_limit(limit), SMALL_ENTRY);
+        assert!(limit > SMALL_ENTRY);
         let config = ShardConfig {
-            max_memory: Some(120),
+            max_memory: Some(limit),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -1983,7 +1992,7 @@ mod tests {
     #[test]
     fn overwrite_same_size_succeeds_at_limit() {
         let config = ShardConfig {
-            max_memory: Some(130),
+            max_memory: Some(one_entry_limit()),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };
@@ -2008,7 +2017,7 @@ mod tests {
     #[test]
     fn overwrite_larger_value_respects_limit() {
         let config = ShardConfig {
-            max_memory: Some(130),
+            max_memory: Some(one_entry_limit()),
             eviction_policy: EvictionPolicy::NoEviction,
             ..ShardConfig::default()
         };

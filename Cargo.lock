@@ -983,6 +983,7 @@ dependencies = [
  "dashmap",
  "ember-persistence",
  "ember-protocol",
+ "indexmap",
  "metrics",
  "ordered-float",
  "parking_lot",
