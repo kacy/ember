@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use bytes::{BufMut, BytesMut};
 use ember_core::{Engine, ShardRequest, ShardResponse};
-use ember_protocol::{parse_frame, Frame};
+use ember_protocol::{parse_request, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -333,7 +333,7 @@ where
             if buf.is_empty() {
                 break;
             }
-            match parse_frame(&buf) {
+            match parse_request(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     frames.push(frame);

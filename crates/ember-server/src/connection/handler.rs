@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use ember_core::{Engine, ShardRequest, ShardResponse};
-use ember_protocol::{parse_frame, Command, Frame};
+use ember_protocol::{parse_request, Command, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 
@@ -449,7 +449,7 @@ where
                     Ok(_) => {
                         // parse and handle subscriber commands
                         loop {
-                            match parse_frame(buf) {
+                            match parse_request(buf) {
                                 Ok(Some((frame, consumed))) => {
                                     let _ = buf.split_to(consumed);
                                     match Command::from_frame(frame) {
