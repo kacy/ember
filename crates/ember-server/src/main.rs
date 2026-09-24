@@ -563,6 +563,14 @@ async fn main() {
         encryption_key,
     );
 
+    if let Some(total) = max_memory {
+        if config::per_shard_memory(total, shard_count) == 0 {
+            exit_err(format!(
+                "maxmemory ({total} bytes) is too small to split across {shard_count} shards"
+            ));
+        }
+    }
+
     #[allow(unused_mut)]
     let mut engine_config = build_engine_config(
         max_memory,
@@ -654,6 +662,11 @@ async fn main() {
             "no" | "false" | "0" => false,
             _ => exit_err("tls-auth-clients must be 'yes' or 'no'"),
         };
+        if auth_clients && cfg.tls_ca_cert_file.is_empty() {
+            // without a CA there is nothing to verify client certificates
+            // against, so TLS would quietly accept every client
+            exit_err("tls-auth-clients requires tls-ca-cert-file");
+        }
 
         let tls_addr = parse_bind_addr(&cfg.bind, tls_port, "TLS");
 
