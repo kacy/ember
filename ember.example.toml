@@ -19,7 +19,7 @@
 # --- connections ---
 
 # maxclients = 10000              # max simultaneous client connections
-# idle-timeout-secs = 300         # close idle connections after N seconds
+# idle-timeout-secs = 300         # close connections idle, or not reading replies, for N seconds (0 = never)
 # max-pipeline-depth = 10000      # max pipelined commands per connection
 # max-auth-failures = 10          # disconnect after N failed AUTH attempts
 
