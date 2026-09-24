@@ -1115,13 +1115,18 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         ctx.schema_registry,
     );
 
-    // after LPush/RPush, check if any blocked clients are waiting.
-    // done before consuming the request so we can borrow the key.
-    if let ShardRequest::LPush { ref key, .. } | ShardRequest::RPush { ref key, .. } = request {
-        if matches!(response, ShardResponse::Len(_)) {
-            blocking::wake_blocked_waiters(key, ctx);
+    // a successful push may feed blocked clients. remember the key now,
+    // because the request is consumed below, but wake the waiters only after
+    // the push is logged: their pops must follow it in the AOF and in the
+    // replication stream.
+    let pushed_key = match &request {
+        ShardRequest::LPush { key, .. } | ShardRequest::RPush { key, .. }
+            if matches!(response, ShardResponse::Len(_)) =>
+        {
+            Some(key.clone())
         }
-    }
+        _ => None,
+    };
 
     // consume the request to move owned data into AOF records (avoids cloning).
     // response is &mut so VAddBatch can steal applied entries instead of cloning
@@ -1153,6 +1158,12 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             *ctx.disk_full = false;
             info!(shard_id, missed_errors = missed, "aof writes recovered");
         }
+        // with appendfsync always, OK promises the write is on disk
+        if !batch_ok && fsync_policy == FsyncPolicy::Always {
+            response = ShardResponse::Err(
+                "ERR write applied in memory but could not be persisted to the AOF".into(),
+            );
+        }
     }
 
     // broadcast mutation events to replication subscribers
@@ -1168,20 +1179,19 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         }
     }
 
+    if let Some(key) = pushed_key {
+        blocking::wake_blocked_waiters(&key, ctx);
+    }
+
     // handle special requests that need access to persistence state
     match request_kind {
-        RequestKind::Snapshot => {
-            let resp = persistence::handle_snapshot(ctx.keyspace, ctx.persistence, shard_id);
-            reply.send(resp);
-            return;
-        }
         RequestKind::SerializeSnapshot => {
             let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id);
             reply.send(resp);
             return;
         }
-        RequestKind::RewriteAof => {
-            let resp = persistence::handle_rewrite(
+        RequestKind::Snapshot => {
+            let resp = persistence::handle_snapshot(
                 ctx.keyspace,
                 ctx.persistence,
                 ctx.aof_writer,
@@ -1218,9 +1228,9 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
 /// Lightweight tag so we can identify requests that need special
 /// handling after dispatch without borrowing the request again.
 enum RequestKind {
+    /// BGSAVE and BGREWRITEAOF both write a snapshot and truncate the AOF.
     Snapshot,
     SerializeSnapshot,
-    RewriteAof,
     FlushDbAsync,
     UpdateMemoryConfig {
         max_memory: Option<usize>,
@@ -1231,9 +1241,8 @@ enum RequestKind {
 
 fn describe_request(req: &ShardRequest) -> RequestKind {
     match req {
-        ShardRequest::Snapshot => RequestKind::Snapshot,
+        ShardRequest::Snapshot | ShardRequest::RewriteAof => RequestKind::Snapshot,
         ShardRequest::SerializeSnapshot => RequestKind::SerializeSnapshot,
-        ShardRequest::RewriteAof => RequestKind::RewriteAof,
         ShardRequest::FlushDbAsync => RequestKind::FlushDbAsync,
         ShardRequest::UpdateMemoryConfig {
             max_memory,

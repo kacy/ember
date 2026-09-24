@@ -676,6 +676,16 @@ fn replay_aof(
                     map.insert(newkey, entry);
                 }
             }
+            AofRecord::FlushAll => map.clear(),
+            AofRecord::Restore { key, ttl_ms, data } => {
+                let value = snapshot::deserialize_snap_value(&data)?;
+                let ttl = if ttl_ms == 0 {
+                    -1
+                } else {
+                    ttl_ms.min(i64::MAX as u64) as i64
+                };
+                map.insert(key, (RecoveredValue::from(value), ttl));
+            }
             AofRecord::Copy {
                 source,
                 destination,
@@ -916,6 +926,31 @@ mod tests {
         let result = recover_shard(dir.path(), 0);
         assert!(result.replayed_aof);
         assert!(result.entries.is_empty());
+    }
+
+    #[test]
+    fn flush_all_record_removes_earlier_keys() {
+        let dir = temp_dir();
+        write_aof(dir.path(), &[set("a"), AofRecord::FlushAll, set("b")]);
+        assert_eq!(sorted_keys(&recover_shard(dir.path(), 0)), ["b"]);
+    }
+
+    #[test]
+    fn restore_record_recreates_the_value() {
+        let dir = temp_dir();
+        let data = snapshot::serialize_snap_value(&SnapValue::String(Bytes::from("x"))).unwrap();
+        write_aof(
+            dir.path(),
+            &[AofRecord::Restore {
+                key: "r".into(),
+                ttl_ms: 0,
+                data: Bytes::from(data),
+            }],
+        );
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(result.entries.len(), 1);
+        assert!(result.entries[0].ttl.is_none());
+        assert!(matches!(&result.entries[0].value, RecoveredValue::String(v) if v == "x"));
     }
 
     #[test]

@@ -498,11 +498,20 @@ pub(super) fn to_aof_records(
                     milliseconds: ms
                 }]
             }
-            // PERSIST — expire set to 0 in the keyspace; record as pexpire 0
-            // so replay calls persist. We use a negative sentinel to signal
-            // PERSIST on replay: store as Expire with seconds = 0.
+            // GETEX PERSIST clears the expiry, so log a PERSIST record
             _ => smallvec![AofRecord::Persist { key }],
         },
+        // FLUSHDB ASYNC hands its reply to a later step, so log it whatever
+        // the placeholder response says
+        (ShardRequest::FlushDb, ShardResponse::Ok) | (ShardRequest::FlushDbAsync, _) => {
+            smallvec![AofRecord::FlushAll]
+        }
+        (
+            ShardRequest::RestoreKey {
+                key, ttl_ms, data, ..
+            },
+            ShardResponse::Ok,
+        ) => smallvec![AofRecord::Restore { key, ttl_ms, data }],
         _ => SmallVec::new(),
     }
 }
