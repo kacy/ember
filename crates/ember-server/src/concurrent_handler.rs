@@ -31,6 +31,7 @@ use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
 use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
+use crate::write_timeout::WriteTimeout;
 
 /// Handles a connection using the concurrent keyspace for GET/SET.
 ///
@@ -38,7 +39,7 @@ use crate::slowlog::SlowLog;
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle<S>(
-    mut stream: S,
+    stream: S,
     peer_addr: SocketAddr,
     keyspace: Arc<ConcurrentKeyspace>,
     engine: Engine, // fallback for complex commands
@@ -50,6 +51,7 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut stream = WriteTimeout::new(stream, ctx.limits.idle_timeout);
     let mut session = Session::new(ctx);
     let mut auth_failures: u32 = 0;
     let mut tx_state = TransactionState::None;

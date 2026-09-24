@@ -425,7 +425,11 @@ impl EmberConfig {
         Ok(ConnectionLimits {
             buf_capacity: self.read_buffer_capacity,
             max_buf_size,
-            idle_timeout: Duration::from_secs(self.idle_timeout_secs),
+            // 0 means no timeout, as with Redis's `timeout 0`
+            idle_timeout: match self.idle_timeout_secs {
+                0 => Duration::MAX,
+                secs => Duration::from_secs(secs),
+            },
             max_auth_failures: self.max_auth_failures,
             max_subscriptions_per_conn: self.max_subscriptions_per_connection,
             max_pattern_len: self.max_pattern_len,
@@ -993,6 +997,15 @@ mod tests {
         assert_eq!(limits.idle_timeout, Duration::from_secs(300));
         assert_eq!(limits.max_key_len, 512 * 1024);
         assert_eq!(limits.max_value_len, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn idle_timeout_zero_means_never() {
+        let cfg = EmberConfig {
+            idle_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert_eq!(cfg.connection_limits().unwrap().idle_timeout, Duration::MAX);
     }
 
     #[test]
