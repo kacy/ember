@@ -91,6 +91,11 @@ pub enum GossipMessage {
         config_epoch: u64,
         slots: Vec<SlotRange>,
     },
+
+    /// A failover vote request or grant, sent straight to the node it is
+    /// for and never relayed, so the receiver can check who sent it.
+    /// `update` is a `VoteRequest` or `VoteGranted`.
+    Election { sender: NodeId, update: NodeUpdate },
 }
 
 /// A state update about a node, piggybacked on protocol messages.
@@ -166,6 +171,7 @@ const MSG_ACK: u8 = 3;
 const MSG_JOIN: u8 = 4;
 const MSG_WELCOME: u8 = 5;
 const MSG_SLOTS_ANNOUNCE: u8 = 6;
+const MSG_ELECTION: u8 = 7;
 
 const UPDATE_ALIVE: u8 = 1;
 const UPDATE_SUSPECT: u8 = 2;
@@ -293,6 +299,11 @@ impl GossipMessage {
                 buf.put_u64_le(*config_epoch);
                 encode_slot_ranges(buf, slots);
             }
+            GossipMessage::Election { sender, update } => {
+                buf.put_u8(MSG_ELECTION);
+                encode_node_id(buf, sender);
+                encode_update(buf, update);
+            }
         }
     }
 
@@ -373,6 +384,11 @@ impl GossipMessage {
                     config_epoch,
                     slots,
                 })
+            }
+            MSG_ELECTION => {
+                let sender = decode_node_id(&mut buf)?;
+                let update = decode_update(&mut buf)?;
+                Ok(GossipMessage::Election { sender, update })
             }
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1075,5 +1091,19 @@ mod tests {
         // too short to even contain a 32-byte tag
         let result = GossipMessage::decode_authenticated(&[0u8; 16], &secret);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn election_message_round_trips() {
+        let msg = GossipMessage::Election {
+            sender: NodeId::new(),
+            update: NodeUpdate::VoteRequest {
+                candidate: NodeId::new(),
+                failed_primary: NodeId::new(),
+                epoch: 9,
+                offset: 1234,
+            },
+        };
+        assert_eq!(GossipMessage::decode(&msg.encode()).unwrap(), msg);
     }
 }
