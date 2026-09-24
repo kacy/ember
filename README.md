@@ -387,7 +387,7 @@ EMBER_PORT=8888 ember-server --config ember.toml
 
 see [`ember.example.toml`](ember.example.toml) for the full annotated config with all available options.
 
-runtime changes via `CONFIG SET` persist in memory. use `CONFIG REWRITE` to flush them back to the config file.
+runtime changes via `CONFIG SET` persist in memory. `CONFIG REWRITE` writes them into the config file and leaves the file's other settings as they are.
 
 ### common flags
 

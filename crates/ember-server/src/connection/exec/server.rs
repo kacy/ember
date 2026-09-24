@@ -44,49 +44,6 @@ pub(in crate::connection) async fn config_get(pattern: String, cx: &ExecCtx<'_>)
     Frame::Array(frames)
 }
 
-pub(in crate::connection) async fn config_set(
-    param: String,
-    value: String,
-    cx: &ExecCtx<'_>,
-) -> Frame {
-    if let Err(e) = cx.ctx.config.set(&param, &value) {
-        return Frame::Error(e);
-    }
-    // apply dynamic updates for known parameters
-    let key = param.to_ascii_lowercase();
-    if key == "slowlog-log-slower-than" {
-        if let Ok(us) = value.parse::<i64>() {
-            cx.slow_log.update_threshold(us);
-        }
-    } else if key == "slowlog-max-len" {
-        if let Ok(len) = value.parse::<usize>() {
-            cx.slow_log.update_max_len(len);
-        }
-    } else if key == "maxmemory" || key == "maxmemory-policy" {
-        let limit = cx.ctx.config.memory_limit();
-        let policy = cx.ctx.config.eviction_policy();
-        // broadcast is fallible but config is already stored — log and continue
-        let _ = cx
-            .engine
-            .broadcast(move || ShardRequest::UpdateMemoryConfig {
-                max_memory: limit,
-                eviction_policy: policy,
-            })
-            .await;
-        // keep the INFO-visible limit in sync
-        cx.ctx.max_memory_limit.store(
-            limit.unwrap_or(0) as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    } else if key == "notify-keyspace-events" {
-        let flags = crate::keyspace_notifications::parse_keyspace_event_flags(&value);
-        cx.ctx
-            .keyspace_event_flags
-            .store(flags, std::sync::atomic::Ordering::Relaxed);
-    }
-    Frame::Simple("OK".into())
-}
-
 pub(in crate::connection) async fn config_rewrite(cx: &ExecCtx<'_>) -> Frame {
     match &cx.ctx.config_path {
         Some(path) => match cx.ctx.config.rewrite(path) {

@@ -9,9 +9,12 @@ use std::sync::Arc;
 use ember_protocol::types::Frame;
 use ember_protocol::Command;
 
+use ember_core::{Engine, ShardRequest};
+
 use crate::acl::AclUser;
 use crate::metrics::on_auth_failure;
 use crate::server::ServerContext;
+use crate::slowlog::SlowLog;
 
 // Default values for connection limits. These serve as documentation
 // fallbacks — the actual values used at runtime come from `ctx.limits`
@@ -198,6 +201,58 @@ impl Session {
             Err(e) => Some(Frame::Error(format!("ERR {e}"))),
         }
     }
+}
+
+/// Handles CONFIG SET for both connection handlers: stores the value, then
+/// applies it to the running server.
+pub async fn config_set(
+    param: &str,
+    value: &str,
+    ctx: &ServerContext,
+    engine: &Engine,
+    slow_log: &SlowLog,
+) -> Frame {
+    if let Err(e) = ctx.config.set(param, value) {
+        return Frame::Error(e);
+    }
+    // `set` has already validated the value, so these parses succeed
+    match param.to_ascii_lowercase().as_str() {
+        "slowlog-log-slower-than" => {
+            if let Ok(us) = value.parse() {
+                slow_log.update_threshold(us);
+            }
+        }
+        "slowlog-max-len" => {
+            if let Ok(len) = value.parse() {
+                slow_log.update_max_len(len);
+            }
+        }
+        "maxmemory" | "maxmemory-policy" => {
+            let limit = ctx.config.memory_limit();
+            let policy = ctx.config.eviction_policy();
+            // each shard enforces its share of the total, as at startup
+            let per_shard =
+                limit.map(|total| crate::config::per_shard_memory(total, engine.shard_count()));
+            // the value is already stored, so a failed broadcast is not fatal
+            let _ = engine
+                .broadcast(move || ShardRequest::UpdateMemoryConfig {
+                    max_memory: per_shard,
+                    eviction_policy: policy,
+                })
+                .await;
+            ctx.max_memory_limit.store(
+                limit.unwrap_or(0) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        "notify-keyspace-events" => {
+            let flags = crate::keyspace_notifications::parse_keyspace_event_flags(value);
+            ctx.keyspace_event_flags
+                .store(flags, std::sync::atomic::Ordering::Relaxed);
+        }
+        _ => {}
+    }
+    Frame::Simple("OK".into())
 }
 
 /// Validates key and value sizes for a parsed command.
