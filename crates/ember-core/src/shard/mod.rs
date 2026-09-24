@@ -56,7 +56,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use ember_persistence::aof::{AofRecord, AofWriter, FsyncPolicy};
-use ember_persistence::recovery::{self, RecoveredValue};
+use ember_persistence::recovery;
 use ember_persistence::snapshot::{self, SnapEntry, SnapValue, SnapshotWriter};
 use smallvec::{smallvec, SmallVec};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -811,94 +811,13 @@ async fn run_shard(prepared: PreparedShard) {
     // -- recovery --
     let mut stale_aof = false;
     if let Some(ref pcfg) = persistence {
-        #[cfg(feature = "encryption")]
-        let result = if let Some(ref key) = pcfg.encryption_key {
-            recovery::recover_shard_encrypted(&pcfg.data_dir, shard_id, key.clone())
-        } else {
-            recovery::recover_shard(&pcfg.data_dir, shard_id)
-        };
-        #[cfg(not(feature = "encryption"))]
-        let result = recovery::recover_shard(&pcfg.data_dir, shard_id);
-        stale_aof = result.stale_aof;
-        let count = result.entries.len();
-        for entry in result.entries {
-            let value = match entry.value {
-                RecoveredValue::String(data) => Value::String(data),
-                RecoveredValue::List(deque) => Value::List(deque),
-                RecoveredValue::SortedSet(members) => {
-                    let mut ss = crate::types::sorted_set::SortedSet::new();
-                    for (score, member) in members {
-                        ss.add(&member, score);
-                    }
-                    Value::SortedSet(Box::new(ss))
-                }
-                RecoveredValue::Hash(map) => {
-                    Value::Hash(Box::new(crate::types::hash::HashValue::from(map)))
-                }
-                RecoveredValue::Set(set) => Value::Set(Box::new(set)),
-                #[cfg(feature = "vector")]
-                RecoveredValue::Vector {
-                    metric,
-                    quantization,
-                    connectivity,
-                    expansion_add,
-                    elements,
-                } => {
-                    use crate::types::vector::{DistanceMetric, QuantizationType, VectorSet};
-                    let dim = elements.first().map(|(_, v)| v.len()).unwrap_or(0);
-                    match VectorSet::new(
-                        dim,
-                        DistanceMetric::from_u8(metric),
-                        QuantizationType::from_u8(quantization),
-                        connectivity as usize,
-                        expansion_add as usize,
-                    ) {
-                        Ok(mut vs) => {
-                            for (element, vector) in elements {
-                                if let Err(e) = vs.add(element, &vector) {
-                                    warn!("vector recovery: failed to add element: {e}");
-                                }
-                            }
-                            Value::Vector(Box::new(vs))
-                        }
-                        Err(e) => {
-                            warn!("vector recovery: failed to create index: {e}");
-                            continue;
-                        }
-                    }
-                }
-                #[cfg(feature = "protobuf")]
-                RecoveredValue::Proto { type_name, data } => Value::Proto { type_name, data },
-            };
-            keyspace.restore(entry.key, value, entry.ttl);
-        }
-        if count > 0 {
-            info!(
-                shard_id,
-                recovered_keys = count,
-                snapshot = result.loaded_snapshot,
-                aof = result.replayed_aof,
-                "recovered shard state"
-            );
-        }
-
-        // restore schemas found in the AOF into the shared registry
-        #[cfg(feature = "protobuf")]
-        if let Some(ref registry) = schema_registry {
-            if !result.schemas.is_empty() {
-                if let Ok(mut reg) = registry.write() {
-                    let schema_count = result.schemas.len();
-                    for (name, descriptor) in result.schemas {
-                        reg.restore(name, descriptor);
-                    }
-                    info!(
-                        shard_id,
-                        schemas = schema_count,
-                        "restored schemas from AOF"
-                    );
-                }
-            }
-        }
+        stale_aof = persistence::recover(
+            &mut keyspace,
+            pcfg,
+            shard_id,
+            #[cfg(feature = "protobuf")]
+            &schema_registry,
+        );
     }
 
     // -- AOF writer --

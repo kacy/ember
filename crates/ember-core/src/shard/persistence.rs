@@ -1,5 +1,85 @@
 use super::*;
 
+/// Loads the shard's snapshot and replays its AOF into `keyspace`. Returns
+/// whether the AOF was older than the snapshot and has to be rewritten.
+pub(super) fn recover(
+    keyspace: &mut Keyspace,
+    pcfg: &ShardPersistenceConfig,
+    shard_id: u16,
+    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
+) -> bool {
+    // everything recovered was stored once already, so it must neither be
+    // refused for memory nor evict other recovered keys
+    let (max_memory, eviction_policy) = keyspace.memory_config();
+    keyspace.update_memory_config(None, EvictionPolicy::NoEviction);
+
+    let mut target = KeyspaceRecovery {
+        keyspace: &mut *keyspace,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    };
+    #[cfg(feature = "encryption")]
+    let result = match pcfg.encryption_key {
+        Some(ref key) => {
+            recovery::recover_shard_encrypted(&pcfg.data_dir, shard_id, key, &mut target)
+        }
+        None => recovery::recover_shard(&pcfg.data_dir, shard_id, &mut target),
+    };
+    #[cfg(not(feature = "encryption"))]
+    let result = recovery::recover_shard(&pcfg.data_dir, shard_id, &mut target);
+
+    keyspace.update_memory_config(max_memory, eviction_policy);
+    if result.loaded_snapshot || result.replayed_aof {
+        info!(
+            shard_id,
+            recovered_keys = keyspace.len(),
+            snapshot = result.loaded_snapshot,
+            aof = result.replayed_aof,
+            "recovered shard state"
+        );
+    }
+    result.stale_aof
+}
+
+/// Recovers into the keyspace. An AOF record becomes the request that
+/// wrote it and runs through [`dispatch`], the same code as the original
+/// write, so replay can't drift from how commands behave.
+struct KeyspaceRecovery<'a> {
+    keyspace: &'a mut Keyspace,
+    #[cfg(feature = "protobuf")]
+    schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
+}
+
+impl recovery::Recover for KeyspaceRecovery<'_> {
+    fn restore(&mut self, key: String, value: SnapValue, ttl: Option<Duration>) {
+        self.keyspace.restore(key, snap_to_value(value), ttl);
+    }
+
+    fn apply(&mut self, record: AofRecord) {
+        #[cfg(feature = "protobuf")]
+        if let AofRecord::ProtoRegister { name, descriptor } = record {
+            if let Some(registry) = self.schema_registry {
+                if let Ok(mut registry) = registry.write() {
+                    registry.restore(name, descriptor);
+                }
+            }
+            return;
+        }
+        let Some(mut request) = aof::from_aof_record(&record) else {
+            return;
+        };
+        let response = dispatch(
+            self.keyspace,
+            &mut request,
+            #[cfg(feature = "protobuf")]
+            self.schema_registry,
+        );
+        if let ShardResponse::Err(e) = response {
+            warn!("aof replay: a record failed to apply: {e}");
+        }
+    }
+}
+
 /// Serializes the current shard state to bytes without filesystem I/O.
 ///
 /// Used by the replication server to capture a snapshot for transmission
@@ -229,6 +309,107 @@ pub(super) fn write_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes `records` as shard 0's AOF in `dir` and recovers a keyspace
+    /// from it. Returns the keyspace and whether the AOF was stale.
+    fn recover_from(
+        dir: &std::path::Path,
+        records: &[AofRecord],
+        ks: Keyspace,
+    ) -> (Keyspace, bool) {
+        let mut writer = AofWriter::open(ember_persistence::aof::aof_path(dir, 0)).unwrap();
+        for record in records {
+            writer.write_record(record).unwrap();
+        }
+        writer.sync().unwrap();
+        let pcfg = ShardPersistenceConfig {
+            data_dir: dir.to_path_buf(),
+            append_only: true,
+            fsync_policy: FsyncPolicy::No,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
+        };
+        let mut ks = ks;
+        let stale = recover(
+            &mut ks,
+            &pcfg,
+            0,
+            #[cfg(feature = "protobuf")]
+            &None,
+        );
+        (ks, stale)
+    }
+
+    fn set(key: &str, value: &str) -> AofRecord {
+        AofRecord::Set {
+            key: key.into(),
+            value: Bytes::copy_from_slice(value.as_bytes()),
+            expire_ms: -1,
+        }
+    }
+
+    fn get_string(ks: &mut Keyspace, key: &str) -> Option<Bytes> {
+        match ks.get(key).unwrap() {
+            Some(Value::String(data)) => Some(data),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn replay_runs_each_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = [
+            set("n", "10"),
+            AofRecord::Incr { key: "n".into() },
+            AofRecord::LPush {
+                key: "l".into(),
+                values: vec![Bytes::from("a"), Bytes::from("b")],
+            },
+            AofRecord::Append {
+                key: "n".into(),
+                value: Bytes::from("!"),
+            },
+        ];
+        let (mut ks, stale) = recover_from(dir.path(), &records, Keyspace::new());
+        assert!(!stale);
+        assert_eq!(get_string(&mut ks, "n"), Some(Bytes::from("11!")));
+        assert_eq!(ks.llen("l").unwrap(), 2);
+    }
+
+    #[test]
+    fn replay_applies_flush_and_passed_deadlines() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = [
+            set("a", "1"),
+            AofRecord::FlushAll,
+            set("b", "2"),
+            AofRecord::SetExpireAt {
+                key: "gone".into(),
+                value: Bytes::from("x"),
+                timestamp_ms: 1,
+            },
+        ];
+        let (mut ks, _) = recover_from(dir.path(), &records, Keyspace::new());
+        assert_eq!(get_string(&mut ks, "a"), None);
+        assert_eq!(get_string(&mut ks, "b"), Some(Bytes::from("2")));
+        assert_eq!(get_string(&mut ks, "gone"), None);
+    }
+
+    #[test]
+    fn replay_ignores_the_memory_limit_and_restores_it() {
+        // every recovered key was stored once already; evicting or
+        // refusing some of them at startup would lose data
+        let dir = tempfile::tempdir().unwrap();
+        let records: Vec<AofRecord> = (0..100).map(|i| set(&format!("k{i}"), "value")).collect();
+        let config = ShardConfig {
+            max_memory: Some(1024),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let (ks, _) = recover_from(dir.path(), &records, Keyspace::with_config(config));
+        assert_eq!(ks.len(), 100);
+        assert_eq!(ks.memory_config(), (Some(1024), EvictionPolicy::AllKeysLru));
+    }
 
     #[tokio::test]
     async fn shard_round_trip() {

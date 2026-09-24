@@ -1239,6 +1239,11 @@ impl Keyspace {
         Ok(true)
     }
 
+    /// Returns the memory limit and eviction policy.
+    pub fn memory_config(&self) -> (Option<usize>, EvictionPolicy) {
+        (self.config.max_memory, self.config.eviction_policy)
+    }
+
     /// Updates the memory limit and eviction policy in-place.
     ///
     /// Takes effect immediately for all subsequent write commands.
