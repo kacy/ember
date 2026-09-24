@@ -1008,6 +1008,8 @@ async fn run_shard(prepared: PreparedShard) {
                         }
                     }
                 }
+                blocking::prune_waiters(&mut lpop_waiters);
+                blocking::prune_waiters(&mut rpop_waiters);
             }
             // also tick while the disk is full, whatever the fsync policy:
             // writes are rejected then, so a successful sync here is the
@@ -1155,16 +1157,29 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         ctx.schema_registry,
     );
 
-    // a successful push may feed blocked clients. remember the key now,
+    // a successful push, or an LMOVE, COPY or RESTORE into a key, may feed
+    // blocked clients. remember the key now,
     // because the request is consumed below, but wake the waiters only after
     // the push is logged: their pops must follow it in the AOF and in the
     // replication stream.
-    let pushed_key = match &request {
-        ShardRequest::LPush { key, .. } | ShardRequest::RPush { key, .. }
-            if matches!(response, ShardResponse::Len(_)) =>
-        {
-            Some(key.clone())
-        }
+    let pushed_key = match (&request, &response) {
+        (
+            ShardRequest::LPush { key, .. } | ShardRequest::RPush { key, .. },
+            ShardResponse::Len(_),
+        )
+        | (
+            ShardRequest::LMove {
+                destination: key, ..
+            },
+            ShardResponse::Value(Some(_)),
+        )
+        | (
+            ShardRequest::Copy {
+                destination: key, ..
+            },
+            ShardResponse::Bool(true),
+        )
+        | (ShardRequest::RestoreKey { key, .. }, ShardResponse::Ok) => Some(key.clone()),
         _ => None,
     };
 
