@@ -19,6 +19,7 @@ mod replication;
 mod server;
 mod slowlog;
 mod tls;
+mod write_timeout;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

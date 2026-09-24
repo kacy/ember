@@ -35,6 +35,7 @@ const RETAINED_BUFFER_MAX: usize = 1024 * 1024;
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
+use crate::write_timeout::WriteTimeout;
 
 mod dispatch;
 mod exec;
@@ -228,7 +229,7 @@ pub(super) type ShardBucketEntry = (
 /// Generic over the stream type to support both plain TCP and TLS connections.
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
 pub async fn handle<S>(
-    mut stream: S,
+    stream: S,
     peer_addr: SocketAddr,
     engine: Engine,
     ctx: &Arc<ServerContext>,
@@ -239,6 +240,7 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut stream = WriteTimeout::new(stream, ctx.limits.idle_timeout);
     // per-connection auth + ACL state.
     let mut session = Session::new(ctx);
     // set when a batch contained QUIT; the connection closes once the
