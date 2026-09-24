@@ -435,3 +435,43 @@ async fn msetnx_any_existing_returns_zero_and_no_changes() {
     let resp = c.cmd(&["GET", "b"]).await;
     assert!(matches!(resp, Frame::Null));
 }
+
+/// Sends each command and checks that it is rejected with an error and that
+/// the server still answers PING afterwards. Release builds abort on panic,
+/// so a panic here would take the whole server down.
+async fn assert_rejected_without_crash(server: &TestServer, commands: &[&[&str]]) {
+    let mut c = server.connect().await;
+    for command in commands {
+        let resp = c.cmd(command).await;
+        assert!(matches!(resp, Frame::Error(_)), "{command:?} gave {resp:?}");
+    }
+    let resp = c.cmd(&["PING"]).await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "PONG"));
+}
+
+#[tokio::test]
+async fn hostile_arguments_are_rejected_without_crashing() {
+    let server = TestServer::start();
+    assert_rejected_without_crash(
+        &server,
+        &[
+            &["ZINTER", "18446744073709551615", "a"],
+            &["LMPOP", "18446744073709551615", "a", "LEFT"],
+            &["BLPOP", "k", "nan"],
+            &["ZCOUNT", "z", "nan", "1"],
+            &["SETRANGE", "s", "100000000000", "x"],
+            &["SETBIT", "b", "100000000000", "1"],
+            &["SRANDMEMBER", "set", "-9223372036854775808"],
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn concurrent_decrby_min_is_rejected_without_crashing() {
+    let server = TestServer::start_with(ServerOptions {
+        concurrent: true,
+        ..Default::default()
+    });
+    assert_rejected_without_crash(&server, &[&["DECRBY", "n", "-9223372036854775808"]]).await;
+}
