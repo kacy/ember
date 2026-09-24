@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use ember_protocol::types::Frame;
 use ember_protocol::Command;
-use subtle::ConstantTimeEq;
 
 use crate::acl::AclUser;
 use crate::metrics::on_auth_failure;
@@ -81,10 +80,6 @@ impl AuthResult {
 
 /// Attempts to authenticate using an AUTH frame.
 ///
-/// When ACL is configured (`ctx.acl` is Some), looks up the user in
-/// the ACL state and verifies the password against stored hashes.
-/// When ACL is not configured, falls back to legacy `requirepass` comparison.
-///
 /// Returns an `AuthResult` containing the response frame, and on success,
 /// an `Arc<AclUser>` snapshot and the username string.
 pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
@@ -100,89 +95,35 @@ pub fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
         _ => return AuthResult::fail("ERR expected AUTH command"),
     };
 
-    // ACL-aware path
-    if let Some(ref acl) = ctx.acl {
-        let state = match acl.read() {
-            Ok(s) => s,
-            Err(_) => return AuthResult::fail("ERR ACL state lock poisoned"),
-        };
-
-        let user = match state.get_user(&username) {
-            Some(u) => u,
-            None => {
-                on_auth_failure("wrongpass");
-                return AuthResult::fail(
-                    "WRONGPASS invalid username-password pair or user is disabled.",
-                );
-            }
-        };
-
-        if !user.enabled {
-            on_auth_failure("wrongpass");
-            return AuthResult::fail(
-                "WRONGPASS invalid username-password pair or user is disabled.",
-            );
-        }
-
-        if !user.verify_password(&password) {
-            on_auth_failure("wrongpass");
-            return AuthResult::fail(
-                "WRONGPASS invalid username-password pair or user is disabled.",
-            );
-        }
-
-        return AuthResult {
+    match crate::acl::authenticate(&ctx.acl, &username, &password) {
+        Ok(user) => AuthResult {
             response: Frame::Simple("OK".into()),
-            user: Some(Arc::new(user.clone())),
+            user: Some(Arc::new(user)),
             username,
-        };
-    }
-
-    // Legacy requirepass path
-    match &ctx.requirepass {
-        None => AuthResult::fail(
-            "ERR Client sent AUTH, but no password is set. \
-             Did you mean ACL SETUSER with >password?",
-        ),
-        Some(expected) => {
-            if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
-                AuthResult {
-                    response: Frame::Simple("OK".into()),
-                    user: Some(Arc::new(AclUser::unrestricted())),
-                    username,
-                }
-            } else {
+        },
+        Err(msg) => {
+            if msg.starts_with("WRONGPASS") {
                 on_auth_failure("wrongpass");
-                AuthResult::fail("WRONGPASS invalid username-password pair or user is disabled.")
             }
+            AuthResult::fail(&msg)
         }
     }
 }
 
 /// Returns the initial ACL user for a new connection.
 ///
-/// - When no `requirepass` and no ACL: returns `Some(unrestricted)` (auto-authenticated)
-/// - When `requirepass` set or ACL with password-required default: returns `None` (must AUTH)
-/// - When ACL configured but default user is nopass+enabled: returns `Some(default_user)`
+/// A connection starts authenticated as `default` when that user is
+/// enabled and needs no password, which is the case when `requirepass` is
+/// unset. Otherwise it returns `None` and the client must AUTH first.
 pub fn initial_acl_user(ctx: &ServerContext) -> (Option<Arc<AclUser>>, String) {
-    if let Some(ref acl) = ctx.acl {
-        if let Ok(state) = acl.read() {
-            if let Some(user) = state.get_user("default") {
-                if user.enabled && user.nopass {
-                    return (Some(Arc::new(user.clone())), "default".into());
-                }
+    if let Ok(state) = ctx.acl.read() {
+        if let Some(user) = state.get_user("default") {
+            if user.enabled && user.nopass {
+                return (Some(Arc::new(user.clone())), "default".into());
             }
         }
-        // ACL configured but default user requires a password
-        return (None, String::new());
     }
-
-    // Legacy mode
-    if ctx.requirepass.is_none() {
-        (Some(Arc::new(AclUser::unrestricted())), "default".into())
-    } else {
-        (None, String::new())
-    }
+    (None, String::new())
 }
 
 /// Validates key and value sizes for a parsed command.
