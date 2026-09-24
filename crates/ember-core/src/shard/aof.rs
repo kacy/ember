@@ -34,6 +34,237 @@ pub(super) fn incr_float_ttl(
     }
 }
 
+/// Converts a millisecond expiry field to an `Option<Duration>`.
+///
+/// AOF records store `-1` (or any non-positive value) to indicate "no
+/// expiry". A positive `ms` becomes `Some(Duration)`.
+fn expire_from_ms(ms: i64) -> Option<Duration> {
+    (ms > 0).then(|| Duration::from_millis(ms as u64))
+}
+
+/// Converts an `AofRecord` into the `ShardRequest` that repeats its write,
+/// the reverse of [`to_aof_records`]. Replicas apply the primary's records
+/// this way.
+///
+/// Returns `None` for record types that have no meaningful replay action
+/// (e.g. schema registration, which is handled at startup).
+pub fn from_aof_record(record: &AofRecord) -> Option<ShardRequest> {
+    match record {
+        AofRecord::Set {
+            key,
+            value,
+            expire_ms,
+        } => Some(ShardRequest::Set {
+            key: key.clone(),
+            value: value.clone(),
+            expire: expire_from_ms(*expire_ms),
+            nx: false,
+            xx: false,
+        }),
+        AofRecord::SetExpireAt {
+            key,
+            value,
+            timestamp_ms,
+        } => Some(match ember_persistence::aof::ms_until(*timestamp_ms) {
+            Some(ms) => ShardRequest::Set {
+                key: key.clone(),
+                value: value.clone(),
+                expire: Some(Duration::from_millis(ms)),
+                nx: false,
+                xx: false,
+            },
+            // already expired by the time it arrived
+            None => ShardRequest::Del { key: key.clone() },
+        }),
+        AofRecord::Del { key } => Some(ShardRequest::Del { key: key.clone() }),
+        AofRecord::Expire { key, seconds } => Some(ShardRequest::Expire {
+            key: key.clone(),
+            seconds: *seconds,
+        }),
+        AofRecord::LPush { key, values } => Some(ShardRequest::LPush {
+            key: key.clone(),
+            values: values.clone(),
+        }),
+        AofRecord::RPush { key, values } => Some(ShardRequest::RPush {
+            key: key.clone(),
+            values: values.clone(),
+        }),
+        AofRecord::LPop { key } => Some(ShardRequest::LPop { key: key.clone() }),
+        AofRecord::RPop { key } => Some(ShardRequest::RPop { key: key.clone() }),
+        AofRecord::LSet { key, index, value } => Some(ShardRequest::LSet {
+            key: key.clone(),
+            index: *index,
+            value: value.clone(),
+        }),
+        AofRecord::LTrim { key, start, stop } => Some(ShardRequest::LTrim {
+            key: key.clone(),
+            start: *start,
+            stop: *stop,
+        }),
+        AofRecord::LInsert {
+            key,
+            before,
+            pivot,
+            value,
+        } => Some(ShardRequest::LInsert {
+            key: key.clone(),
+            before: *before,
+            pivot: pivot.clone(),
+            value: value.clone(),
+        }),
+        AofRecord::LRem { key, count, value } => Some(ShardRequest::LRem {
+            key: key.clone(),
+            count: *count,
+            value: value.clone(),
+        }),
+        AofRecord::ZAdd { key, members } => Some(ShardRequest::ZAdd {
+            key: key.clone(),
+            members: members.clone(),
+            nx: false,
+            xx: false,
+            gt: false,
+            lt: false,
+            ch: false,
+        }),
+        AofRecord::ZRem { key, members } => Some(ShardRequest::ZRem {
+            key: key.clone(),
+            members: members.clone(),
+        }),
+        AofRecord::Persist { key } => Some(ShardRequest::Persist { key: key.clone() }),
+        AofRecord::Pexpire { key, milliseconds } => Some(ShardRequest::Pexpire {
+            key: key.clone(),
+            milliseconds: *milliseconds,
+        }),
+        AofRecord::Pexpireat { key, timestamp_ms } => Some(ShardRequest::Pexpireat {
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+        }),
+        AofRecord::Incr { key } => Some(ShardRequest::Incr { key: key.clone() }),
+        AofRecord::Decr { key } => Some(ShardRequest::Decr { key: key.clone() }),
+        AofRecord::HSet { key, fields } => Some(ShardRequest::HSet {
+            key: key.clone(),
+            fields: fields.clone(),
+        }),
+        AofRecord::HDel { key, fields } => Some(ShardRequest::HDel {
+            key: key.clone(),
+            fields: fields.clone(),
+        }),
+        AofRecord::HIncrBy { key, field, delta } => Some(ShardRequest::HIncrBy {
+            key: key.clone(),
+            field: field.clone(),
+            delta: *delta,
+        }),
+        AofRecord::SAdd { key, members } => Some(ShardRequest::SAdd {
+            key: key.clone(),
+            members: members.clone(),
+        }),
+        AofRecord::SRem { key, members } => Some(ShardRequest::SRem {
+            key: key.clone(),
+            members: members.clone(),
+        }),
+        AofRecord::IncrBy { key, delta } => Some(ShardRequest::IncrBy {
+            key: key.clone(),
+            delta: *delta,
+        }),
+        AofRecord::DecrBy { key, delta } => Some(ShardRequest::DecrBy {
+            key: key.clone(),
+            delta: *delta,
+        }),
+        AofRecord::Append { key, value } => Some(ShardRequest::Append {
+            key: key.clone(),
+            value: value.clone(),
+        }),
+        AofRecord::SetRange { key, offset, value } => Some(ShardRequest::SetRange {
+            key: key.clone(),
+            offset: *offset,
+            value: value.clone(),
+        }),
+        AofRecord::SetBit { key, offset, value } => Some(ShardRequest::SetBit {
+            key: key.clone(),
+            offset: *offset,
+            value: *value,
+        }),
+        AofRecord::BitOp { op, dest, keys } => {
+            use ember_protocol::command::BitOpKind;
+            let op_kind = match op {
+                0 => BitOpKind::And,
+                1 => BitOpKind::Or,
+                2 => BitOpKind::Xor,
+                _ => BitOpKind::Not,
+            };
+            Some(ShardRequest::BitOp {
+                op: op_kind,
+                dest: dest.clone(),
+                keys: keys.clone(),
+            })
+        }
+        AofRecord::Rename { key, newkey } => Some(ShardRequest::Rename {
+            key: key.clone(),
+            newkey: newkey.clone(),
+        }),
+        AofRecord::Copy {
+            source,
+            destination,
+            replace,
+        } => Some(ShardRequest::Copy {
+            source: source.clone(),
+            destination: destination.clone(),
+            replace: *replace,
+        }),
+        AofRecord::FlushAll => Some(ShardRequest::FlushDb),
+        // only written to AOF files, never sent to replicas
+        AofRecord::Checkpoint { .. } => None,
+        AofRecord::Restore { key, ttl_ms, data } => Some(ShardRequest::RestoreKey {
+            key: key.clone(),
+            ttl_ms: *ttl_ms,
+            data: data.clone(),
+            replace: true,
+        }),
+        #[cfg(feature = "vector")]
+        AofRecord::VAdd {
+            key,
+            element,
+            vector,
+            metric,
+            quantization,
+            connectivity,
+            expansion_add,
+        } => Some(ShardRequest::VAdd {
+            key: key.clone(),
+            element: element.clone(),
+            vector: vector.clone(),
+            metric: *metric,
+            quantization: *quantization,
+            connectivity: *connectivity,
+            expansion_add: *expansion_add,
+        }),
+        #[cfg(feature = "vector")]
+        AofRecord::VRem { key, element } => Some(ShardRequest::VRem {
+            key: key.clone(),
+            element: element.clone(),
+        }),
+        #[cfg(feature = "protobuf")]
+        AofRecord::ProtoSet {
+            key,
+            type_name,
+            data,
+            expire_ms,
+        } => Some(ShardRequest::ProtoSet {
+            key: key.clone(),
+            type_name: type_name.clone(),
+            data: data.clone(),
+            expire: expire_from_ms(*expire_ms),
+            nx: false,
+            xx: false,
+        }),
+        #[cfg(feature = "protobuf")]
+        AofRecord::ProtoRegister { name, descriptor } => Some(ShardRequest::ProtoRegisterAof {
+            name: name.clone(),
+            descriptor: descriptor.clone(),
+        }),
+    }
+}
+
 /// Converts a successful mutation request+response pair into AOF records.
 ///
 /// Takes ownership of the request to move keys and values directly into
@@ -664,6 +895,38 @@ pub(super) fn broadcast_replication(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aof_set_roundtrip() {
+        let record = AofRecord::Set {
+            key: "foo".into(),
+            value: Bytes::from("bar"),
+            expire_ms: 5000,
+        };
+        let req = from_aof_record(&record).expect("Set should map to ShardRequest");
+        match req {
+            ShardRequest::Set {
+                key,
+                value,
+                expire,
+                nx,
+                xx,
+            } => {
+                assert_eq!(key, "foo");
+                assert_eq!(value, Bytes::from("bar"));
+                assert_eq!(expire, Some(Duration::from_millis(5000)));
+                assert!(!nx && !xx);
+            }
+            other => panic!("expected ShardRequest::Set, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aof_del_roundtrip() {
+        let record = AofRecord::Del { key: "gone".into() };
+        let req = from_aof_record(&record).unwrap();
+        assert!(matches!(req, ShardRequest::Del { key } if key == "gone"));
+    }
 
     #[test]
     fn to_aof_records_for_set() {
