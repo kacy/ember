@@ -77,6 +77,8 @@ pub struct ClusterCoordinator {
     last_voted_epoch: std::sync::atomic::AtomicU64,
     /// optional shared secret for authenticating cluster transport messages.
     secret: Option<Arc<ClusterSecret>>,
+    /// the task pulling data from our primary, while this node is a replica
+    replication_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Tracks an in-progress automatic failover election that this node initiated.
@@ -154,6 +156,7 @@ impl ClusterCoordinator {
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            replication_task: Mutex::new(None),
             last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
             secret,
         };
@@ -216,6 +219,7 @@ impl ClusterCoordinator {
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            replication_task: Mutex::new(None),
             last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
             secret,
         };
@@ -1126,8 +1130,7 @@ impl ClusterCoordinator {
                     return Frame::Error(format!("ERR {e}"));
                 }
             }
-            self.announce_promotion().await;
-            self.save_config().await;
+            self.finish_promotion().await;
             info!(local_id = %self.local_id, %primary_id, "TAKEOVER: promoted to primary");
             return Frame::Simple("OK".into());
         }
@@ -1188,12 +1191,20 @@ impl ClusterCoordinator {
             }
         }
 
-        self.announce_promotion().await;
-        self.save_config().await;
+        self.finish_promotion().await;
 
         let mode = if force { "FORCE" } else { "default" };
         info!(local_id = %self.local_id, %primary_id, mode, "promoted to primary");
         Frame::Simple("OK".into())
+    }
+
+    /// Completes a promotion that has already updated the local state:
+    /// stops pulling from the old primary, announces the new role, and
+    /// saves the config.
+    async fn finish_promotion(&self) {
+        self.stop_replication_client().await;
+        self.announce_promotion().await;
+        self.save_config().await;
     }
 
     /// Tells the cluster this node is now a primary and which slots it owns.
@@ -1290,7 +1301,35 @@ impl ClusterCoordinator {
 
         let repl_addr = std::net::SocketAddr::new(addr.ip(), repl_port);
         info!(%primary_id, %repl_addr, "starting replication client");
-        crate::replication::ReplicationClient::start(Arc::clone(engine), repl_addr);
+        let task = crate::replication::ReplicationClient::start(Arc::clone(engine), repl_addr);
+        // a second REPLICATE replaces the first; two streams would mix data
+        if let Some(previous) = self.replication_task.lock().await.replace(task) {
+            previous.abort();
+        }
+    }
+
+    /// Stops pulling from the primary, if this node was replicating one.
+    async fn stop_replication_client(&self) {
+        if let Some(task) = self.replication_task.lock().await.take() {
+            task.abort();
+        }
+    }
+
+    /// Starts replicating from our primary if the saved cluster state says
+    /// this node is a replica. Called once at startup, after the engine is
+    /// attached, so a restarted replica picks its stream back up.
+    pub async fn resume_replication(&self) {
+        let primary = {
+            let state = self.state.read().await;
+            state
+                .nodes
+                .get(&self.local_id)
+                .filter(|node| node.role == NodeRole::Replica)
+                .and_then(|node| node.replicates)
+        };
+        if let Some(primary_id) = primary {
+            self.start_replication_client(primary_id).await;
+        }
     }
 
     /// Returns replication status for the `INFO replication` section.
