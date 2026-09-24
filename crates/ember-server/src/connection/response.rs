@@ -4,16 +4,19 @@ use bytes::Bytes;
 use ember_core::{ShardResponse, TtlResult, Value};
 use ember_protocol::Frame;
 
+use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 
 use super::{PendingResponse, ResponseTag};
 
-/// Resolves a `PendingResponse` into a `Frame`, recording timing if applicable.
+/// Resolves a `PendingResponse` into a `Frame`, recording timing if
+/// applicable and publishing the command's keyspace event.
 pub(super) async fn resolve_response(
     pending: PendingResponse,
     ctx: &ServerContext,
     slow_log: &SlowLog,
+    pubsub: &PubSubManager,
 ) -> Frame {
     match pending {
         PendingResponse::Immediate(frame) => frame,
@@ -22,11 +25,15 @@ pub(super) async fn resolve_response(
             tag,
             start,
             cmd_name,
+            notify,
         } => {
             let frame = match rx.await {
                 Ok(resp) => resolve_shard_response(resp, tag),
                 Err(_) => Frame::Error("ERR shard unavailable".into()),
             };
+            if let Some(notify) = notify {
+                notify.send(&frame, ctx, pubsub);
+            }
             if let Some(start) = start {
                 let elapsed = start.elapsed();
                 slow_log.maybe_record(elapsed, cmd_name);

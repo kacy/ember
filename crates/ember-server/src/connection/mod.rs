@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{BufMut, BytesMut};
-use ember_core::{Engine, ShardRequest, ShardResponse};
+use ember_core::{Engine, ShardResponse};
 use ember_protocol::{parse_request, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
@@ -42,6 +42,7 @@ mod exec;
 mod execute;
 mod handler;
 mod response;
+mod route;
 
 /// A command that has been dispatched to a shard but not yet resolved.
 ///
@@ -61,6 +62,8 @@ pub(super) enum PendingResponse {
         start: Option<Instant>,
         /// Command name for metrics/slowlog.
         cmd_name: &'static str,
+        /// Keyspace event to publish if the command succeeds.
+        notify: Option<route::Notify>,
     },
 }
 
@@ -198,11 +201,9 @@ pub(super) enum ResponseTag {
 pub(super) enum PreparedDispatch {
     /// Already resolved — no shard send needed.
     Immediate(PendingResponse),
-    /// Needs to be dispatched to the given shard.
+    /// Needs to be dispatched to the route's shard.
     Routed {
-        shard_idx: usize,
-        request: ShardRequest,
-        tag: ResponseTag,
+        route: route::Route,
         start: Option<Instant>,
         cmd_name: &'static str,
     },
@@ -210,15 +211,9 @@ pub(super) enum PreparedDispatch {
 
 /// A command routed to a shard during the batch-dispatch prepare phase.
 ///
-/// Bundles the output index (position in the result vec), the shard request,
-/// the response conversion tag, and timing metadata.
-pub(super) type ShardBucketEntry = (
-    usize,
-    ShardRequest,
-    ResponseTag,
-    Option<Instant>,
-    &'static str,
-);
+/// Bundles the output index (position in the result vec), the route, and
+/// timing metadata.
+pub(super) type ShardBucketEntry = (usize, route::Route, Option<Instant>, &'static str);
 
 /// Drives a single client connection to completion.
 ///
@@ -466,27 +461,32 @@ where
                 .await;
                 match prepared {
                     PreparedDispatch::Immediate(pr) => {
-                        let response = response::resolve_response(pr, ctx, slow_log).await;
+                        let response = response::resolve_response(pr, ctx, slow_log, pubsub).await;
                         ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                         response.serialize(&mut out);
                     }
                     PreparedDispatch::Routed {
-                        shard_idx,
-                        request,
-                        tag,
+                        route,
                         start,
                         cmd_name,
                     } => {
                         let frame = match engine
-                            .dispatch_reusable_to_shard(shard_idx, request, reusable_tx.clone())
+                            .dispatch_reusable_to_shard(
+                                route.shard_idx,
+                                route.request,
+                                reusable_tx.clone(),
+                            )
                             .await
                         {
                             Ok(()) => match reusable_rx.recv().await {
-                                Some(resp) => response::resolve_shard_response(resp, tag),
+                                Some(resp) => response::resolve_shard_response(resp, route.tag),
                                 None => Frame::Error("ERR shard unavailable".into()),
                             },
                             Err(e) => Frame::Error(format!("ERR {e}")),
                         };
+                        if let Some(notify) = route.notify {
+                            notify.send(&frame, ctx, pubsub);
+                        }
                         if let Some(start) = start {
                             let elapsed = start.elapsed();
                             slow_log.maybe_record(elapsed, cmd_name);
@@ -533,15 +533,13 @@ where
                             result.push(pr);
                         }
                         PreparedDispatch::Routed {
-                            shard_idx,
-                            request,
-                            tag,
+                            route,
                             start,
                             cmd_name,
                         } => {
                             // placeholder — will be replaced in phase 2
                             result.push(PendingResponse::Immediate(Frame::Null));
-                            shard_buckets[shard_idx].push((idx, request, tag, start, cmd_name));
+                            shard_buckets[route.shard_idx].push((idx, route, start, cmd_name));
                         }
                     }
                 }
@@ -554,14 +552,14 @@ where
                     let mut indices = Vec::with_capacity(bucket.len());
                     let mut requests = Vec::with_capacity(bucket.len());
                     let mut meta = Vec::with_capacity(bucket.len());
-                    for (i, req, tag, start, cmd_name) in bucket {
+                    for (i, route, start, cmd_name) in bucket {
                         indices.push(i);
-                        requests.push(req);
-                        meta.push((tag, start, cmd_name));
+                        requests.push(route.request);
+                        meta.push((route.tag, route.notify, start, cmd_name));
                     }
                     match engine.dispatch_batch_to_shard(shard_idx, requests).await {
                         Ok(receivers) => {
-                            for ((rx, (tag, start, cmd_name)), i) in
+                            for ((rx, (tag, notify, start, cmd_name)), i) in
                                 receivers.into_iter().zip(meta).zip(indices)
                             {
                                 result[i] = PendingResponse::Pending {
@@ -569,6 +567,7 @@ where
                                     tag,
                                     start,
                                     cmd_name,
+                                    notify,
                                 };
                             }
                         }
@@ -586,7 +585,7 @@ where
                 // they build up, so a long pipeline of large values does not
                 // hold every reply in memory at once
                 for p in result {
-                    let response = response::resolve_response(p, ctx, slow_log).await;
+                    let response = response::resolve_response(p, ctx, slow_log, pubsub).await;
                     ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                     response.serialize(&mut out);
                     if out.len() >= OUTPUT_FLUSH_BYTES {
