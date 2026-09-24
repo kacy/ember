@@ -144,3 +144,22 @@ async fn idle_timeout_does_not_close_subscribers() {
     };
     assert!(matches!(&frames[2], Frame::Bulk(b) if b == &b"hi"[..]));
 }
+
+#[tokio::test]
+async fn keyspace_events_fire_for_single_commands() {
+    let server = TestServer::start();
+    let mut admin = server.connect().await;
+    admin
+        .cmd(&["CONFIG", "SET", "notify-keyspace-events", "KEA"])
+        .await;
+
+    let mut sub = server.connect().await;
+    sub.cmd(&["SUBSCRIBE", "__keyevent@0__:set"]).await;
+
+    // a lone SET takes the pipelined path, which used to skip events
+    admin.cmd(&["SET", "k", "v"]).await;
+    let Frame::Array(frames) = sub.read_frame().await else {
+        panic!("expected a keyevent message");
+    };
+    assert!(matches!(&frames[2], Frame::Bulk(b) if b == &b"k"[..]));
+}

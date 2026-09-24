@@ -1,5 +1,6 @@
 //! Command execution — routes parsed commands to engine shards.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -11,12 +12,14 @@ use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
 
 use super::exec;
+use super::route::Routing;
 
 /// Executes a parsed command and returns the response frame.
 ///
-/// Ping and Echo are handled inline (no shard routing needed).
-/// Single-key commands route to the owning shard. Multi-key commands
-/// (DEL, EXISTS) fan out across shards and aggregate results.
+/// Single-key commands go to their shard through
+/// [`route`](super::route::route), the same routing the pipelined path uses.
+/// The rest are handled here: Ping and Echo inline, multi-key commands
+/// (DEL, EXISTS) by fanning out across shards, and so on.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn execute(
     cmd: Command,
@@ -32,6 +35,22 @@ pub(super) async fn execute(
     if let Some(redirect) = super::dispatch::cluster_slot_check(ctx, &cmd, asking).await {
         return redirect;
     }
+
+    let notify = ctx.keyspace_event_flags.load(Ordering::Relaxed) != 0;
+    let cmd = match super::route::route(cmd, engine, notify) {
+        Routing::Shard(route) => {
+            let frame = match engine.send_to_shard(route.shard_idx, route.request).await {
+                Ok(resp) => super::response::resolve_shard_response(resp, route.tag),
+                Err(e) => Frame::Error(format!("ERR {e}")),
+            };
+            if let Some(notify) = route.notify {
+                notify.send(&frame, ctx, pubsub);
+            }
+            return frame;
+        }
+        Routing::Reply(frame) => return frame,
+        Routing::Other(cmd) => cmd,
+    };
 
     let cx = exec::ExecCtx {
         engine,
@@ -77,27 +96,6 @@ pub(super) async fn execute(
         }
 
         // -- string commands --
-        Command::Get { key } => exec::strings::get(key, &cx).await,
-        Command::Set {
-            key,
-            value,
-            expire,
-            nx,
-            xx,
-        } => exec::strings::set(key, value, expire, nx, xx, &cx).await,
-        Command::Incr { key } => exec::strings::incr(key, &cx).await,
-        Command::Decr { key } => exec::strings::decr(key, &cx).await,
-        Command::IncrBy { key, delta } => exec::strings::incrby(key, delta, &cx).await,
-        Command::DecrBy { key, delta } => exec::strings::decrby(key, delta, &cx).await,
-        Command::IncrByFloat { key, delta } => exec::strings::incrbyfloat(key, delta, &cx).await,
-        Command::Append { key, value } => exec::strings::append(key, value, &cx).await,
-        Command::Strlen { key } => exec::strings::strlen(key, &cx).await,
-        Command::GetRange { key, start, end } => {
-            exec::strings::getrange(key, start, end, &cx).await
-        }
-        Command::SetRange { key, offset, value } => {
-            exec::strings::setrange(key, offset, value, &cx).await
-        }
         Command::GetBit { key, offset } => exec::strings::getbit(key, offset, &cx).await,
         Command::SetBit { key, offset, value } => {
             exec::strings::setbit(key, offset, value, &cx).await
@@ -117,17 +115,10 @@ pub(super) async fn execute(
         Command::Unlink { keys } => exec::keyspace::unlink(keys, &cx).await,
         Command::Exists { keys } => exec::keyspace::exists(keys, &cx).await,
         Command::Touch { keys } => exec::keyspace::touch(keys, &cx).await,
-        Command::Expire { key, seconds } => exec::keyspace::expire(key, seconds, &cx).await,
         Command::Expireat { key, timestamp } => exec::keyspace::expireat(key, timestamp, &cx).await,
-        Command::Pexpire { key, milliseconds } => {
-            exec::keyspace::pexpire(key, milliseconds, &cx).await
-        }
         Command::Pexpireat { key, timestamp_ms } => {
             exec::keyspace::pexpireat(key, timestamp_ms, &cx).await
         }
-        Command::Ttl { key } => exec::keyspace::ttl(key, &cx).await,
-        Command::Pttl { key } => exec::keyspace::pttl(key, &cx).await,
-        Command::Persist { key } => exec::keyspace::persist(key, &cx).await,
         Command::Expiretime { key } => exec::keyspace::expiretime(key, &cx).await,
         Command::Pexpiretime { key } => exec::keyspace::pexpiretime(key, &cx).await,
         Command::Keys { pattern } => exec::keyspace::keys(pattern, &cx).await,
@@ -136,30 +127,7 @@ pub(super) async fn execute(
             pattern,
             count,
         } => exec::keyspace::scan(cursor, pattern, count, &cx).await,
-        Command::Rename { key, newkey } => exec::keyspace::rename(key, newkey, &cx).await,
-        Command::Copy {
-            source,
-            destination,
-            replace,
-        } => exec::keyspace::copy(source, destination, replace, &cx).await,
         Command::RandomKey => exec::keyspace::randomkey(&cx).await,
-        Command::Sort {
-            key,
-            desc,
-            alpha,
-            limit,
-            store: Some(dest),
-        } => exec::keyspace::sort_with_store(key, desc, alpha, limit, dest, &cx).await,
-        Command::Sort {
-            key,
-            desc,
-            alpha,
-            limit,
-            store: None,
-        } => exec::keyspace::sort_no_store(key, desc, alpha, limit, &cx).await,
-        Command::Type { key } => exec::keyspace::type_cmd(key, &cx).await,
-        Command::ObjectEncoding { key } => exec::keyspace::object_encoding(key, &cx).await,
-        Command::ObjectRefcount { key } => exec::keyspace::object_refcount(key, &cx).await,
         Command::MemoryUsage { key } => exec::keyspace::memory_usage(key, &cx).await,
 
         // -- server commands --
@@ -186,29 +154,6 @@ pub(super) async fn execute(
         Command::SlowLogReset => exec::server::slowlog_reset(&cx),
 
         // -- list commands --
-        Command::LPush { key, values } => exec::lists::lpush(key, values, &cx).await,
-        Command::RPush { key, values } => exec::lists::rpush(key, values, &cx).await,
-        Command::LPop { key, count } => exec::lists::lpop(key, count, &cx).await,
-        Command::RPop { key, count } => exec::lists::rpop(key, count, &cx).await,
-        Command::LRange { key, start, stop } => exec::lists::lrange(key, start, stop, &cx).await,
-        Command::LLen { key } => exec::lists::llen(key, &cx).await,
-        Command::LIndex { key, index } => exec::lists::lindex(key, index, &cx).await,
-        Command::LSet { key, index, value } => exec::lists::lset(key, index, value, &cx).await,
-        Command::LTrim { key, start, stop } => exec::lists::ltrim(key, start, stop, &cx).await,
-        Command::LInsert {
-            key,
-            before,
-            pivot,
-            value,
-        } => exec::lists::linsert(key, before, pivot, value, &cx).await,
-        Command::LRem { key, count, value } => exec::lists::lrem(key, count, value, &cx).await,
-        Command::LPos {
-            key,
-            element,
-            rank,
-            count,
-            maxlen,
-        } => exec::lists::lpos(key, element, rank, count, maxlen, &cx).await,
         Command::LMove {
             source,
             destination,
@@ -222,55 +167,6 @@ pub(super) async fn execute(
         Command::BRPop { .. } => exec::lists::brpop_in_tx(),
 
         // -- sorted set commands --
-        Command::ZAdd {
-            key,
-            flags,
-            members,
-        } => exec::sorted_sets::zadd(key, flags, members, &cx).await,
-        Command::ZRem { key, members } => exec::sorted_sets::zrem(key, members, &cx).await,
-        Command::ZScore { key, member } => exec::sorted_sets::zscore(key, member, &cx).await,
-        Command::ZRank { key, member } => exec::sorted_sets::zrank(key, member, &cx).await,
-        Command::ZRevRank { key, member } => exec::sorted_sets::zrevrank(key, member, &cx).await,
-        Command::ZRange {
-            key,
-            start,
-            stop,
-            with_scores,
-        } => exec::sorted_sets::zrange(key, start, stop, with_scores, &cx).await,
-        Command::ZRevRange {
-            key,
-            start,
-            stop,
-            with_scores,
-        } => exec::sorted_sets::zrevrange(key, start, stop, with_scores, &cx).await,
-        Command::ZCard { key } => exec::sorted_sets::zcard(key, &cx).await,
-        Command::ZCount { key, min, max } => exec::sorted_sets::zcount(key, min, max, &cx).await,
-        Command::ZIncrBy {
-            key,
-            increment,
-            member,
-        } => exec::sorted_sets::zincrby(key, increment, member, &cx).await,
-        Command::ZRangeByScore {
-            key,
-            min,
-            max,
-            with_scores,
-            offset,
-            count,
-        } => exec::sorted_sets::zrangebyscore(key, min, max, with_scores, offset, count, &cx).await,
-        Command::ZRevRangeByScore {
-            key,
-            min,
-            max,
-            with_scores,
-            offset,
-            count,
-        } => {
-            exec::sorted_sets::zrevrangebyscore(key, min, max, with_scores, offset, count, &cx)
-                .await
-        }
-        Command::ZPopMin { key, count } => exec::sorted_sets::zpopmin(key, count, &cx).await,
-        Command::ZPopMax { key, count } => exec::sorted_sets::zpopmax(key, count, &cx).await,
         Command::Zmpop { keys, min, count } => {
             exec::sorted_sets::zmpop(keys, min, count, &cx).await
         }
@@ -295,68 +191,24 @@ pub(super) async fn execute(
             count,
             with_scores,
         } => exec::sorted_sets::zrandmember(key, count, with_scores, &cx).await,
-        Command::ZScan {
-            key,
-            cursor,
-            pattern,
-            count,
-        } => exec::sorted_sets::zscan(key, cursor, pattern, count, &cx).await,
 
         // -- hash commands --
-        Command::HSet { key, fields } => exec::hashes::hset(key, fields, &cx).await,
-        Command::HGet { key, field } => exec::hashes::hget(key, field, &cx).await,
-        Command::HGetAll { key } => exec::hashes::hgetall(key, &cx).await,
-        Command::HDel { key, fields } => exec::hashes::hdel(key, fields, &cx).await,
-        Command::HExists { key, field } => exec::hashes::hexists(key, field, &cx).await,
-        Command::HLen { key } => exec::hashes::hlen(key, &cx).await,
-        Command::HIncrBy { key, field, delta } => {
-            exec::hashes::hincrby(key, field, delta, &cx).await
-        }
         Command::HIncrByFloat { key, field, delta } => {
             exec::hashes::hincrbyfloat(key, field, delta, &cx).await
         }
-        Command::HKeys { key } => exec::hashes::hkeys(key, &cx).await,
-        Command::HVals { key } => exec::hashes::hvals(key, &cx).await,
-        Command::HMGet { key, fields } => exec::hashes::hmget(key, fields, &cx).await,
         Command::HRandField {
             key,
             count,
             with_values,
         } => exec::hashes::hrandfield(key, count, with_values, &cx).await,
-        Command::HScan {
-            key,
-            cursor,
-            pattern,
-            count,
-        } => exec::hashes::hscan(key, cursor, pattern, count, &cx).await,
 
         // -- set commands --
-        Command::SAdd { key, members } => exec::sets::sadd(key, members, &cx).await,
-        Command::SRem { key, members } => exec::sets::srem(key, members, &cx).await,
-        Command::SMembers { key } => exec::sets::smembers(key, &cx).await,
-        Command::SIsMember { key, member } => exec::sets::sismember(key, member, &cx).await,
-        Command::SCard { key } => exec::sets::scard(key, &cx).await,
-        Command::SUnion { keys } => exec::sets::sunion(keys, &cx).await,
-        Command::SInter { keys } => exec::sets::sinter(keys, &cx).await,
-        Command::SDiff { keys } => exec::sets::sdiff(keys, &cx).await,
-        Command::SUnionStore { dest, keys } => exec::sets::sunionstore(dest, keys, &cx).await,
-        Command::SInterStore { dest, keys } => exec::sets::sinterstore(dest, keys, &cx).await,
-        Command::SDiffStore { dest, keys } => exec::sets::sdiffstore(dest, keys, &cx).await,
-        Command::SRandMember { key, count } => exec::sets::srandmember(key, count, &cx).await,
-        Command::SPop { key, count } => exec::sets::spop(key, count, &cx).await,
-        Command::SMisMember { key, members } => exec::sets::smismember(key, members, &cx).await,
         Command::SMove {
             source,
             destination,
             member,
         } => exec::sets::smove(source, destination, member, &cx).await,
         Command::SInterCard { keys, limit } => exec::sets::sintercard(keys, limit, &cx).await,
-        Command::SScan {
-            key,
-            cursor,
-            pattern,
-            count,
-        } => exec::sets::sscan(key, cursor, pattern, count, &cx).await,
 
         // -- cluster commands --
         Command::ClusterKeySlot { key } => exec::cluster::cluster_keyslot(key),
@@ -432,77 +284,6 @@ pub(super) async fn execute(
         | Command::AclCat { .. }) => exec::acl::acl_admin(cmd, &cx),
 
         // -- vector commands --
-        #[cfg(feature = "vector")]
-        Command::VAdd {
-            key,
-            element,
-            vector,
-            metric,
-            quantization,
-            connectivity,
-            expansion_add,
-        } => {
-            exec::vector::vadd(
-                key,
-                element,
-                vector,
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-                &cx,
-            )
-            .await
-        }
-        #[cfg(feature = "vector")]
-        Command::VAddBatch {
-            key,
-            entries,
-            dim,
-            metric,
-            quantization,
-            connectivity,
-            expansion_add,
-        } => {
-            exec::vector::vaddbatch(
-                key,
-                entries,
-                dim,
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-                &cx,
-            )
-            .await
-        }
-        #[cfg(feature = "vector")]
-        Command::VSim {
-            key,
-            query,
-            count,
-            ef_search,
-            with_scores,
-        } => exec::vector::vsim(key, query, count, ef_search, with_scores, &cx).await,
-        #[cfg(feature = "vector")]
-        Command::VRem { key, element } => exec::vector::vrem(key, element, &cx).await,
-        #[cfg(feature = "vector")]
-        Command::VGet { key, element } => exec::vector::vget(key, element, &cx).await,
-        #[cfg(feature = "vector")]
-        Command::VCard { key } => exec::vector::vcard(key, &cx).await,
-        #[cfg(feature = "vector")]
-        Command::VDim { key } => exec::vector::vdim(key, &cx).await,
-        #[cfg(feature = "vector")]
-        Command::VInfo { key } => exec::vector::vinfo(key, &cx).await,
-        #[cfg(not(feature = "vector"))]
-        Command::VAdd { .. }
-        | Command::VAddBatch { .. }
-        | Command::VSim { .. }
-        | Command::VRem { .. }
-        | Command::VGet { .. }
-        | Command::VCard { .. }
-        | Command::VDim { .. }
-        | Command::VInfo { .. } => exec::vector::not_compiled(),
 
         // -- protobuf commands --
         #[cfg(feature = "protobuf")]
@@ -510,35 +291,12 @@ pub(super) async fn execute(
             exec::protobuf::proto_register(name, descriptor, &cx).await
         }
         #[cfg(feature = "protobuf")]
-        Command::ProtoSet {
-            key,
-            type_name,
-            data,
-            expire,
-            nx,
-            xx,
-        } => exec::protobuf::proto_set(key, type_name, data, expire, nx, xx, &cx).await,
-        #[cfg(feature = "protobuf")]
-        Command::ProtoGet { key } => exec::protobuf::proto_get(key, &cx).await,
-        #[cfg(feature = "protobuf")]
-        Command::ProtoType { key } => exec::protobuf::proto_type(key, &cx).await,
-        #[cfg(feature = "protobuf")]
         Command::ProtoSchemas => exec::protobuf::proto_schemas(&cx).await,
         #[cfg(feature = "protobuf")]
         Command::ProtoDescribe { name } => exec::protobuf::proto_describe(name, &cx).await,
         #[cfg(feature = "protobuf")]
         Command::ProtoGetField { key, field_path } => {
             exec::protobuf::proto_get_field(key, field_path, &cx).await
-        }
-        #[cfg(feature = "protobuf")]
-        Command::ProtoSetField {
-            key,
-            field_path,
-            value,
-        } => exec::protobuf::proto_set_field(key, field_path, value, &cx).await,
-        #[cfg(feature = "protobuf")]
-        Command::ProtoDelField { key, field_path } => {
-            exec::protobuf::proto_del_field(key, field_path, &cx).await
         }
         #[cfg(feature = "protobuf")]
         Command::ProtoScan {
@@ -589,5 +347,111 @@ pub(super) async fn execute(
         Command::Watch { .. } | Command::Unwatch => Frame::Simple("OK".into()),
 
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
+
+        // single-key commands, sent to their shard at the top of this function
+        Command::Append { .. }
+        | Command::Copy { .. }
+        | Command::Decr { .. }
+        | Command::DecrBy { .. }
+        | Command::Expire { .. }
+        | Command::Get { .. }
+        | Command::GetRange { .. }
+        | Command::HDel { .. }
+        | Command::HExists { .. }
+        | Command::HGet { .. }
+        | Command::HGetAll { .. }
+        | Command::HIncrBy { .. }
+        | Command::HKeys { .. }
+        | Command::HLen { .. }
+        | Command::HMGet { .. }
+        | Command::HScan { .. }
+        | Command::HSet { .. }
+        | Command::HVals { .. }
+        | Command::Incr { .. }
+        | Command::IncrBy { .. }
+        | Command::IncrByFloat { .. }
+        | Command::LIndex { .. }
+        | Command::LInsert { .. }
+        | Command::LLen { .. }
+        | Command::LPop { .. }
+        | Command::LPos { .. }
+        | Command::LPush { .. }
+        | Command::LRange { .. }
+        | Command::LRem { .. }
+        | Command::LSet { .. }
+        | Command::LTrim { .. }
+        | Command::ObjectEncoding { .. }
+        | Command::ObjectRefcount { .. }
+        | Command::Persist { .. }
+        | Command::Pexpire { .. }
+        | Command::Pttl { .. }
+        | Command::RPop { .. }
+        | Command::RPush { .. }
+        | Command::Rename { .. }
+        | Command::SAdd { .. }
+        | Command::SCard { .. }
+        | Command::SDiff { .. }
+        | Command::SDiffStore { .. }
+        | Command::SInter { .. }
+        | Command::SInterStore { .. }
+        | Command::SIsMember { .. }
+        | Command::SMembers { .. }
+        | Command::SMisMember { .. }
+        | Command::SPop { .. }
+        | Command::SRandMember { .. }
+        | Command::SRem { .. }
+        | Command::SScan { .. }
+        | Command::SUnion { .. }
+        | Command::SUnionStore { .. }
+        | Command::Set { .. }
+        | Command::SetRange { .. }
+        | Command::Sort { .. }
+        | Command::Strlen { .. }
+        | Command::Ttl { .. }
+        | Command::Type { .. }
+        | Command::ZAdd { .. }
+        | Command::ZCard { .. }
+        | Command::ZCount { .. }
+        | Command::ZIncrBy { .. }
+        | Command::ZPopMax { .. }
+        | Command::ZPopMin { .. }
+        | Command::ZRange { .. }
+        | Command::ZRangeByScore { .. }
+        | Command::ZRank { .. }
+        | Command::ZRem { .. }
+        | Command::ZRevRange { .. }
+        | Command::ZRevRangeByScore { .. }
+        | Command::ZRevRank { .. }
+        | Command::ZScan { .. }
+        | Command::ZScore { .. } => not_routed(),
+        #[cfg(feature = "vector")]
+        Command::VAdd { .. }
+        | Command::VAddBatch { .. }
+        | Command::VCard { .. }
+        | Command::VDim { .. }
+        | Command::VGet { .. }
+        | Command::VInfo { .. }
+        | Command::VRem { .. }
+        | Command::VSim { .. } => not_routed(),
+        #[cfg(feature = "protobuf")]
+        Command::ProtoDelField { .. }
+        | Command::ProtoGet { .. }
+        | Command::ProtoSet { .. }
+        | Command::ProtoSetField { .. }
+        | Command::ProtoType { .. } => not_routed(),
+        #[cfg(not(feature = "vector"))]
+        Command::VAdd { .. }
+        | Command::VAddBatch { .. }
+        | Command::VCard { .. }
+        | Command::VDim { .. }
+        | Command::VGet { .. }
+        | Command::VInfo { .. }
+        | Command::VRem { .. }
+        | Command::VSim { .. } => exec::vector::not_compiled(),
     }
+}
+
+/// The reply for a command `route` handles, should one ever get here.
+fn not_routed() -> Frame {
+    Frame::Error("ERR internal error: command was not routed to a shard".into())
 }
