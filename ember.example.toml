@@ -13,6 +13,7 @@
 # shards = 0                      # worker threads (0 = auto-detect CPU cores)
 # concurrent = false              # use DashMap-backed keyspace (deprecated, will be removed)
 # requirepass = ""                # require AUTH before commands (empty = disabled)
+# aclfile = ""                    # file of "user <name> <rules...>" lines loaded at startup
 # data-dir = ""                   # directory for AOF/snapshot files
 
 # --- connections ---

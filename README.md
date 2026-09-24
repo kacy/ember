@@ -31,7 +31,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **vector similarity search** — HNSW-backed approximate nearest neighbor search with cosine, L2, and inner product metrics (compile with `--features vector`)
 - **protobuf storage** — schema-validated protobuf values with field-level access (compile with `--features protobuf`)
-- **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms), optional ACL for per-user access control
+- **authentication** — `--requirepass` for redis-compatible AUTH (legacy and username/password forms), plus ACL users for per-user access control, created with ACL SETUSER or loaded from `--aclfile`
 - **tls support** — redis-compatible TLS on a separate port, with optional mTLS for client certificates
 - **protected mode** — rejects non-loopback connections when no password is set on public binds
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
