@@ -289,7 +289,9 @@ pub(super) async fn handle_blocking_pop_cmd(
     let timeout_dur = if timeout_secs == 0.0 {
         Duration::from_secs(300)
     } else {
-        Duration::from_secs_f64(timeout_secs)
+        // the parser only allows finite, non-negative values, but a huge one
+        // still overflows Duration, so saturate instead of panicking
+        Duration::try_from_secs_f64(timeout_secs).unwrap_or(Duration::MAX)
     };
 
     let result = tokio::time::timeout(timeout_dur, waiter_rx.recv()).await;
