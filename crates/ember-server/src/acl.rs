@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard};
 
+use ember_core::glob_match;
 use ember_protocol::types::Frame;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -379,44 +380,6 @@ pub fn check_permission(
     }
 
     None
-}
-
-/// Simple glob pattern matcher supporting `*` and `?`.
-///
-/// Case-sensitive, matching Redis ACL key pattern behavior.
-pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let pat = pattern.as_bytes();
-    let txt = text.as_bytes();
-    glob_match_bytes(pat, txt)
-}
-
-fn glob_match_bytes(pat: &[u8], txt: &[u8]) -> bool {
-    let mut pi = 0;
-    let mut ti = 0;
-    let mut star_pi = usize::MAX;
-    let mut star_ti = 0;
-
-    while ti < txt.len() {
-        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == txt[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < pat.len() && pat[pi] == b'*' {
-            star_pi = pi;
-            star_ti = ti;
-            pi += 1;
-        } else if star_pi != usize::MAX {
-            pi = star_pi + 1;
-            star_ti += 1;
-            ti = star_ti;
-        } else {
-            return false;
-        }
-    }
-
-    while pi < pat.len() && pat[pi] == b'*' {
-        pi += 1;
-    }
-    pi == pat.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,32 +1182,6 @@ mod tests {
     fn rule_unknown_errors() {
         let mut user = AclUser::new();
         assert!(apply_rule(&mut user, "nonsense").is_err());
-    }
-
-    #[test]
-    fn glob_match_star() {
-        assert!(glob_match("user:*", "user:123"));
-        assert!(glob_match("user:*", "user:"));
-        assert!(!glob_match("user:*", "session:123"));
-        assert!(glob_match("*", "anything"));
-    }
-
-    #[test]
-    fn glob_match_question_mark() {
-        assert!(glob_match("user:?", "user:a"));
-        assert!(!glob_match("user:?", "user:ab"));
-    }
-
-    #[test]
-    fn glob_match_exact() {
-        assert!(glob_match("hello", "hello"));
-        assert!(!glob_match("hello", "world"));
-    }
-
-    #[test]
-    fn glob_match_complex() {
-        assert!(glob_match("*:*", "user:123"));
-        assert!(glob_match("cache:*:data", "cache:session:data"));
     }
 
     #[test]

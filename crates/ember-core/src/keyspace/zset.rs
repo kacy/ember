@@ -181,7 +181,6 @@ impl Keyspace {
         };
 
         let target = if count == 0 { 10 } else { count };
-        let compiled = pattern.map(GlobPattern::new);
         let mut result = Vec::with_capacity(target);
         let mut pos = 0u64;
         let mut done = true;
@@ -191,8 +190,8 @@ impl Keyspace {
                 pos += 1;
                 continue;
             }
-            if let Some(ref pat) = compiled {
-                if !pat.matches(member) {
+            if let Some(pat) = pattern {
+                if !glob_match(pat, member) {
                     pos += 1;
                     continue;
                 }

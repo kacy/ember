@@ -9,6 +9,7 @@ pub mod dropper;
 pub mod engine;
 pub mod error;
 pub mod expiry;
+pub mod glob;
 pub mod keyspace;
 pub mod memory;
 pub mod shard;
@@ -21,6 +22,7 @@ pub mod schema;
 pub use concurrent::{ConcurrentFloatError, ConcurrentKeyspace, ConcurrentOpError};
 pub use engine::{Engine, EngineConfig};
 pub use error::ShardError;
+pub use glob::{glob_match, glob_match_nocase};
 pub use keyspace::{
     EvictionPolicy, IncrError, IncrFloatError, Keyspace, KeyspaceStats, RenameError, ShardConfig,
     TtlResult, WriteError, WrongType, ZAddResult,

@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Duration;
 
-use ember_core::{EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig};
+use ember_core::{
+    glob_match_nocase, EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig,
+};
 use ember_persistence::aof::FsyncPolicy;
 use serde::{Deserialize, Serialize};
 
@@ -639,7 +641,7 @@ impl ConfigRegistry {
         let params = self.params.read().unwrap_or_else(|e| e.into_inner());
         let mut results: Vec<_> = params
             .iter()
-            .filter(|(k, _)| glob_match(pattern, k))
+            .filter(|(k, _)| glob_match_nocase(pattern, k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -768,26 +770,6 @@ impl ConfigRegistry {
     }
 }
 
-/// Simple glob matching for CONFIG GET patterns.
-///
-/// Supports `*` (match everything), `foo*` (prefix), `*foo` (suffix),
-/// and exact match. This covers the patterns that monitoring tools use.
-fn glob_match(pattern: &str, name: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    let lower_pattern = pattern.to_ascii_lowercase();
-    let lower_name = name.to_ascii_lowercase();
-
-    if let Some(prefix) = lower_pattern.strip_suffix('*') {
-        lower_name.starts_with(prefix)
-    } else if let Some(suffix) = lower_pattern.strip_prefix('*') {
-        lower_name.ends_with(suffix)
-    } else {
-        lower_pattern == lower_name
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,23 +857,6 @@ mod tests {
     fn build_config_no_limit() {
         let cfg = build_engine_config(None, EvictionPolicy::NoEviction, 4, None, 0);
         assert_eq!(cfg.shard.max_memory, None);
-    }
-
-    #[test]
-    fn glob_match_wildcard() {
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("slow*", "slowlog-log-slower-than"));
-        assert!(glob_match("slow*", "slowlog-max-len"));
-        assert!(!glob_match("slow*", "maxmemory"));
-        assert!(glob_match("*memory", "maxmemory"));
-        assert!(!glob_match("*memory", "slowlog-max-len"));
-    }
-
-    #[test]
-    fn glob_match_exact() {
-        assert!(glob_match("port", "port"));
-        assert!(glob_match("PORT", "port")); // case insensitive
-        assert!(!glob_match("port", "maxmemory"));
     }
 
     #[test]
