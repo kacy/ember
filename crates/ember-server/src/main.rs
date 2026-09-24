@@ -113,6 +113,11 @@ struct Args {
     #[arg(long, env = "EMBER_REQUIREPASS_FILE")]
     requirepass_file: Option<PathBuf>,
 
+    /// ACL file with one `user <name> <rules...>` line per user, loaded at
+    /// startup on top of the default user
+    #[arg(long, env = "EMBER_ACLFILE")]
+    aclfile: Option<PathBuf>,
+
     // -- TLS options (matching redis) --
     /// port for TLS connections. when set, enables TLS alongside plain TCP
     #[arg(long, env = "EMBER_TLS_PORT")]
@@ -233,6 +238,9 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     if let Some(ref dir) = args.data_dir {
         cfg.data_dir = dir.to_string_lossy().into_owned();
     }
+    if let Some(ref path) = args.aclfile {
+        cfg.aclfile = path.to_string_lossy().into_owned();
+    }
     if args.appendonly {
         cfg.appendonly = true;
     }
@@ -312,6 +320,25 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
 fn exit_err(msg: impl std::fmt::Display) -> ! {
     eprintln!("{msg}");
     std::process::exit(1);
+}
+
+/// Builds the ACL state: the `default` user from `requirepass`, plus any
+/// users in the ACL file. Exits on an unreadable or invalid file.
+fn build_acl_state(cfg: &EmberConfig) -> acl::SharedAclState {
+    let mut state = acl::AclState::new(cfg.requirepass().as_deref());
+    if !cfg.aclfile.is_empty() {
+        let contents = std::fs::read_to_string(&cfg.aclfile).unwrap_or_else(|e| {
+            exit_err(format!(
+                "error: failed to read aclfile '{}': {e}",
+                cfg.aclfile
+            ))
+        });
+        if let Err(e) = state.load_file(&contents) {
+            exit_err(format!("error: invalid aclfile '{}': {e}", cfg.aclfile));
+        }
+        info!(path = %cfg.aclfile, "loaded ACL users");
+    }
+    std::sync::Arc::new(std::sync::RwLock::new(state))
 }
 
 /// Resolves the password from either `--requirepass` or `--requirepass-file`.
@@ -850,6 +877,7 @@ async fn main() {
     let config_registry = Arc::new(cfg.to_registry());
 
     let requirepass = cfg.requirepass();
+    let acl = build_acl_state(&cfg);
 
     let config_path = args.config.clone();
 
@@ -869,6 +897,7 @@ async fn main() {
             metrics_handle,
             slowlog_config,
             requirepass,
+            acl,
             tls_config,
             config_registry,
             limits,
@@ -892,6 +921,7 @@ async fn main() {
             metrics_handle,
             slowlog_config,
             requirepass,
+            acl,
             tls_config,
             cluster,
             config_registry,

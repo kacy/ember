@@ -38,3 +38,40 @@ async fn ping_allowed_without_auth() {
     let resp = c.cmd(&["PING"]).await;
     assert!(matches!(resp, ember_protocol::Frame::Simple(ref s) if s == "PONG"));
 }
+
+#[tokio::test]
+async fn acl_users_created_at_runtime_are_enforced() {
+    let server = TestServer::start_with(ServerOptions {
+        requirepass: Some("admin-pass".into()),
+        ..Default::default()
+    });
+    let mut admin = server.connect().await;
+    admin.ok(&["AUTH", "admin-pass"]).await;
+    admin
+        .ok(&[
+            "ACL",
+            "SETUSER",
+            "reader",
+            "on",
+            ">reader-pass",
+            "+get",
+            "~cache:*",
+        ])
+        .await;
+
+    let mut reader = server.connect().await;
+    reader.ok(&["AUTH", "reader", "reader-pass"]).await;
+    assert_eq!(reader.get_bulk(&["GET", "cache:1"]).await, None);
+
+    let err = reader.err(&["GET", "secret:1"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+    let err = reader.err(&["SET", "cache:1", "v"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+
+    let err = server
+        .connect()
+        .await
+        .err(&["AUTH", "reader", "wrong"])
+        .await;
+    assert!(err.starts_with("WRONGPASS"), "{err}");
+}

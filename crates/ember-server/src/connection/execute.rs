@@ -422,12 +422,12 @@ pub(super) async fn execute(
         // -- ACL / AUTH commands --
         Command::Auth { username, password } => exec::acl::auth(username, password, &cx),
         Command::AclWhoAmI => exec::acl::acl_whoami(),
-        Command::AclList => exec::acl::acl_list(&cx),
-        Command::AclUsers => exec::acl::acl_users(&cx),
-        Command::AclGetUser { username } => exec::acl::acl_getuser(username, &cx),
-        Command::AclDelUser { usernames } => exec::acl::acl_deluser(usernames, &cx),
-        Command::AclSetUser { username, rules } => exec::acl::acl_setuser(username, rules, &cx),
-        Command::AclCat { category } => exec::acl::acl_cat(category),
+        cmd @ (Command::AclList
+        | Command::AclUsers
+        | Command::AclGetUser { .. }
+        | Command::AclDelUser { .. }
+        | Command::AclSetUser { .. }
+        | Command::AclCat { .. }) => exec::acl::acl_admin(cmd, &cx),
 
         // -- vector commands --
         #[cfg(feature = "vector")]

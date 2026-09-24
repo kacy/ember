@@ -21,7 +21,6 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
 use ember_protocol::{parse_frame, Command, Frame, SetExpire};
-use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
@@ -846,33 +845,13 @@ async fn execute_concurrent(
         }
 
         // AUTH on an already-authenticated connection (re-auth)
-        Command::Auth { username, password } => match &ctx.requirepass {
-            None => Frame::Error(
-                "ERR Client sent AUTH, but no password is set. \
-                 Did you mean ACL SETUSER with >password?"
-                    .into(),
-            ),
-            Some(expected) => {
-                if let Some(ref user) = username {
-                    if user != "default" {
-                        return Frame::Error(
-                            "WRONGPASS invalid username-password pair \
-                             or user is disabled."
-                                .into(),
-                        );
-                    }
-                }
-                if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
-                    Frame::Simple("OK".into())
-                } else {
-                    Frame::Error(
-                        "WRONGPASS invalid username-password pair \
-                         or user is disabled."
-                            .into(),
-                    )
-                }
+        Command::Auth { username, password } => {
+            let username = username.unwrap_or_else(|| "default".into());
+            match crate::acl::authenticate(&ctx.acl, &username, &password) {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(msg) => Frame::Error(msg),
             }
-        },
+        }
 
         // -- protobuf commands --
         #[cfg(feature = "protobuf")]
@@ -1285,97 +1264,12 @@ async fn execute_concurrent(
         // -- ACL commands --
         Command::AclWhoAmI => Frame::Bulk(Bytes::from_static(b"default")),
 
-        Command::AclList => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.read() {
-                    Ok(state) => {
-                        let lines = state.list();
-                        Frame::Array(
-                            lines
-                                .into_iter()
-                                .map(|l| Frame::Bulk(Bytes::from(l)))
-                                .collect(),
-                        )
-                    }
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Array(vec![Frame::Bulk(Bytes::from(
-                    "user default on nopass +@all ~*",
-                ))])
-            }
-        }
-
-        Command::AclUsers => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.read() {
-                    Ok(state) => {
-                        let names = state.usernames();
-                        Frame::Array(
-                            names
-                                .into_iter()
-                                .map(|n| Frame::Bulk(Bytes::from(n)))
-                                .collect(),
-                        )
-                    }
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"default"))])
-            }
-        }
-
-        Command::AclGetUser { username } => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.read() {
-                    Ok(state) => match state.get_user_detail(&username) {
-                        Some(detail) => detail,
-                        None => Frame::Error(format!("ERR no such user '{username}'")),
-                    },
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else if username == "default" {
-                crate::acl::AclState::new()
-                    .get_user_detail("default")
-                    .unwrap_or(Frame::Null)
-            } else {
-                Frame::Error(format!("ERR no such user '{username}'"))
-            }
-        }
-
-        Command::AclDelUser { usernames } => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.write() {
-                    Ok(mut state) => match state.del_users(&usernames) {
-                        Ok(count) => Frame::Integer(count as i64),
-                        Err(msg) => Frame::Error(msg),
-                    },
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Error(
-                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
-                )
-            }
-        }
-
-        Command::AclSetUser { username, rules } => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.write() {
-                    Ok(mut state) => match state.set_user(&username, &rules) {
-                        Ok(()) => Frame::Simple("OK".into()),
-                        Err(msg) => Frame::Error(msg),
-                    },
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Error(
-                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
-                )
-            }
-        }
-
-        Command::AclCat { category } => crate::acl::handle_acl_cat(category.as_deref()),
+        cmd @ (Command::AclList
+        | Command::AclUsers
+        | Command::AclGetUser { .. }
+        | Command::AclDelUser { .. }
+        | Command::AclSetUser { .. }
+        | Command::AclCat { .. }) => crate::acl::run_admin_command(&ctx.acl, cmd),
 
         // For unsupported commands, return an error
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),
