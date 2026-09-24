@@ -141,6 +141,9 @@ pub struct EmberConfig {
     pub shards: usize,
     pub concurrent: bool,
     pub requirepass: String,
+    /// Path to an ACL file with `user <name> <rules...>` lines, loaded at
+    /// startup. Empty means only the `default` user exists.
+    pub aclfile: String,
     #[serde(rename = "data-dir")]
     pub data_dir: String,
 
@@ -222,6 +225,7 @@ impl Default for EmberConfig {
             shards: 0,
             concurrent: false,
             requirepass: String::new(),
+            aclfile: String::new(),
             data_dir: String::new(),
 
             maxclients: 10_000,
