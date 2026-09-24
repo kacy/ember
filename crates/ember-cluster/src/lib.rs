@@ -44,7 +44,9 @@ mod topology;
 pub use auth::ClusterSecret;
 pub use election::Election;
 pub use error::ClusterError;
-pub use gossip::{GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus};
+pub use gossip::{
+    GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus, PendingEvents,
+};
 pub use message::{GossipMessage, MemberInfo, NodeUpdate};
 pub use migration::{
     Migration, MigrationBatch, MigrationConfig, MigrationEntry, MigrationError, MigrationId,
