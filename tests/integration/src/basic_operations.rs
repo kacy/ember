@@ -492,3 +492,53 @@ async fn pipeline_longer_than_the_depth_limit_gets_every_reply() {
         assert!(matches!(resp, Frame::Simple(ref s) if s == "PONG"));
     }
 }
+
+/// Sends raw bytes on a fresh connection and returns everything the server
+/// writes back before it closes the connection.
+async fn send_and_read_to_close(server: &TestServer, request: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port))
+        .await
+        .unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut reply = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_end(&mut reply),
+    )
+    .await
+    .expect("server did not close the connection")
+    .unwrap();
+    reply
+}
+
+#[tokio::test]
+async fn quit_replies_and_closes_without_running_later_commands() {
+    let server = TestServer::start();
+    let request =
+        b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nQUIT\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
+    let reply = send_and_read_to_close(&server, request).await;
+    assert_eq!(reply, b"+PONG\r\n+OK\r\n");
+
+    let mut c = server.connect().await;
+    assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
+}
+
+#[tokio::test]
+async fn unauthenticated_client_cannot_send_large_requests() {
+    let server = TestServer::start_with(ServerOptions {
+        requirepass: Some("pw".into()),
+        ..Default::default()
+    });
+    let big = vec![b'x'; 100 * 1024];
+    let mut request = format!("*2\r\n$4\r\nECHO\r\n${}\r\n", big.len()).into_bytes();
+    request.extend_from_slice(&big);
+    request.extend_from_slice(b"\r\n");
+
+    let reply = send_and_read_to_close(&server, &request).await;
+    assert!(
+        reply.starts_with(b"-ERR max buffer size exceeded"),
+        "{reply:?}"
+    );
+}
