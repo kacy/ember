@@ -992,7 +992,10 @@ async fn run_shard(prepared: PreparedShard) {
                     }
                 }
             }
-            _ = fsync_tick.tick(), if fsync_policy == FsyncPolicy::EverySec => {
+            // also tick while the disk is full, whatever the fsync policy:
+            // writes are rejected then, so a successful sync here is the
+            // only way the shard learns there is space again
+            _ = fsync_tick.tick(), if fsync_policy == FsyncPolicy::EverySec || disk_full => {
                 if let Some(ref mut writer) = aof_writer {
                     if let Err(e) = writer.sync() {
                         if aof::log_aof_error(shard_id, &mut aof_errors, "sync", &e) {
