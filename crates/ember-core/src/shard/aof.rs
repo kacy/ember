@@ -18,6 +18,22 @@ fn expire_at(key: String, ttl: Duration) -> AofRecord {
     }
 }
 
+/// INCRBYFLOAT is logged as a SET of the result, and a SET replays without
+/// a TTL. Returns the record that puts back the TTL the key still has.
+pub(super) fn incr_float_ttl(
+    ks: &mut Keyspace,
+    req: &ShardRequest,
+    resp: &ShardResponse,
+) -> Option<AofRecord> {
+    let (ShardRequest::IncrByFloat { key, .. }, ShardResponse::BulkString(_)) = (req, resp) else {
+        return None;
+    };
+    match ks.pttl(key) {
+        TtlResult::Milliseconds(ms) => Some(expire_at(key.clone(), Duration::from_millis(ms))),
+        _ => None,
+    }
+}
+
 /// Converts a successful mutation request+response pair into AOF records.
 ///
 /// Takes ownership of the request to move keys and values directly into
@@ -672,6 +688,39 @@ mod tests {
             }
             other => panic!("expected SetExpireAt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn incr_float_keeps_ttl() {
+        let mut ks = Keyspace::new();
+        ks.set(
+            "k".into(),
+            Bytes::from("1.5"),
+            Some(Duration::from_secs(60)),
+            false,
+            false,
+        );
+        ks.set("plain".into(), Bytes::from("1.5"), None, false, false);
+        let resp = ShardResponse::BulkString(ks.incr_by_float("k", 1.0).unwrap());
+
+        let req = ShardRequest::IncrByFloat {
+            key: "k".into(),
+            delta: 1.0,
+        };
+        match incr_float_ttl(&mut ks, &req, &resp) {
+            Some(AofRecord::Pexpireat { key, timestamp_ms }) => {
+                assert_eq!(key, "k");
+                let now = ember_persistence::aof::unix_now_ms();
+                assert!((now + 59_000..=now + 60_000).contains(&timestamp_ms));
+            }
+            other => panic!("expected Pexpireat, got {other:?}"),
+        }
+
+        let req = ShardRequest::IncrByFloat {
+            key: "plain".into(),
+            delta: 1.0,
+        };
+        assert!(incr_float_ttl(&mut ks, &req, &resp).is_none());
     }
 
     #[test]

@@ -1186,7 +1186,9 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     // consume the request to move owned data into AOF records (avoids cloning).
     // response is &mut so VAddBatch can steal applied entries instead of cloning
     // vectors — the connection handler only uses added_count.
-    let records = aof::to_aof_records(request, &mut response);
+    let kept_ttl = aof::incr_float_ttl(ctx.keyspace, &request, &response);
+    let mut records = aof::to_aof_records(request, &mut response);
+    records.extend(kept_ttl);
 
     // write AOF records for successful mutations
     if let Some(ref mut writer) = *ctx.aof_writer {
