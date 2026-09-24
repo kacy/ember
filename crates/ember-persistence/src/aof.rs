@@ -111,6 +111,7 @@ const TAG_BITOP: u8 = 34;
 // whole keyspace and serialized values
 const TAG_FLUSH_ALL: u8 = 36;
 const TAG_RESTORE: u8 = 37;
+const TAG_SET_EXPIRE_AT: u8 = 38;
 
 // vector
 #[cfg(feature = "vector")]
@@ -228,6 +229,14 @@ pub enum AofRecord {
     },
     /// RENAME key newkey.
     Rename { key: String, newkey: String },
+    /// SET with an expiry, stored as an absolute unix time in ms. The plain
+    /// `Set` record stores the TTL left at write time, which replay counts
+    /// from the restart instead of from the write.
+    SetExpireAt {
+        key: String,
+        value: Bytes,
+        timestamp_ms: u64,
+    },
     /// FLUSHDB or FLUSHALL. Removes every key in the shard.
     FlushAll,
     /// RESTORE key ttl payload. `data` is the value in the snapshot value
@@ -317,6 +326,7 @@ impl AofRecord {
             AofRecord::BitOp { .. } => TAG_BITOP,
             AofRecord::Rename { .. } => TAG_RENAME,
             AofRecord::Copy { .. } => TAG_COPY,
+            AofRecord::SetExpireAt { .. } => TAG_SET_EXPIRE_AT,
             AofRecord::FlushAll => TAG_FLUSH_ALL,
             AofRecord::Restore { .. } => TAG_RESTORE,
             #[cfg(feature = "vector")]
@@ -427,6 +437,9 @@ impl AofRecord {
                 destination,
                 ..
             } => 1 + LEN_PREFIX + source.len() + LEN_PREFIX + destination.len() + 1,
+            AofRecord::SetExpireAt { key, value, .. } => {
+                1 + LEN_PREFIX + key.len() + LEN_PREFIX + value.len() + 8
+            }
             AofRecord::FlushAll => 1,
             AofRecord::Restore { key, data, .. } => {
                 1 + LEN_PREFIX + key.len() + 8 + LEN_PREFIX + data.len()
@@ -646,6 +659,15 @@ impl AofRecord {
                 format::write_bytes(&mut buf, source.as_bytes())?;
                 format::write_bytes(&mut buf, destination.as_bytes())?;
                 buf.push(u8::from(*replace));
+            }
+            AofRecord::SetExpireAt {
+                key,
+                value,
+                timestamp_ms,
+            } => {
+                format::write_bytes(&mut buf, key.as_bytes())?;
+                format::write_bytes(&mut buf, value)?;
+                format::write_i64(&mut buf, (*timestamp_ms).min(i64::MAX as u64) as i64)?;
             }
             AofRecord::FlushAll => {}
             AofRecord::Restore { key, ttl_ms, data } => {
@@ -905,6 +927,21 @@ impl AofRecord {
                     source,
                     destination,
                     replace,
+                })
+            }
+            TAG_SET_EXPIRE_AT => {
+                let key = read_string(cursor, "key")?;
+                let value = Bytes::from(format::read_bytes(cursor)?);
+                let raw = format::read_i64(cursor)?;
+                let timestamp_ms = u64::try_from(raw).map_err(|_| {
+                    FormatError::InvalidData(format!(
+                        "SET deadline is negative ({raw}) in AOF record"
+                    ))
+                })?;
+                Ok(AofRecord::SetExpireAt {
+                    key,
+                    value,
+                    timestamp_ms,
                 })
             }
             TAG_FLUSH_ALL => Ok(AofRecord::FlushAll),
@@ -1310,6 +1347,19 @@ fn open_persistence_file(path: &Path) -> Result<File, FormatError> {
     Ok(opts.open(path)?)
 }
 
+/// Returns the current unix time in milliseconds.
+pub fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis().min(u64::MAX as u128) as u64)
+}
+
+/// Returns the milliseconds left until an absolute unix-ms deadline, or
+/// `None` once it has passed.
+pub fn ms_until(timestamp_ms: u64) -> Option<u64> {
+    timestamp_ms.checked_sub(unix_now_ms()).filter(|&ms| ms > 0)
+}
+
 /// Returns the AOF file path for a given shard in a data directory.
 pub fn aof_path(data_dir: &Path, shard_id: u16) -> PathBuf {
     data_dir.join(format!("shard-{shard_id}.aof"))
@@ -1493,6 +1543,11 @@ mod tests {
                 source: key(),
                 destination: "d".into(),
                 replace: true,
+            },
+            AofRecord::SetExpireAt {
+                key: key(),
+                value: val(),
+                timestamp_ms: 1_700_000_000_000,
             },
             AofRecord::FlushAll,
             AofRecord::Restore {

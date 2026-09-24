@@ -17,8 +17,11 @@
 //! [key_len: 4B][key][type_tag: 1B][type-specific payload][expire_ms: 8B]
 //! ```
 //!
-//! Type tags: 0=string, 1=list, 2=sorted set.
-//! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
+//! Type tags: 0=string, 1=list, 2=sorted set, 3=hash, 4=set, 5=protobuf,
+//! 6=vector.
+//! `expire_ms` is the TTL left when the snapshot was written, in
+//! milliseconds, or -1 for no expiry. Recovery subtracts the time since the
+//! file was last modified.
 //! v1 entries (no type tag) are still readable for backward compatibility.
 
 use std::collections::{HashMap, HashSet, VecDeque};
