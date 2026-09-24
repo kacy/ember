@@ -94,6 +94,12 @@ impl<R: Read> CrcReader<R> {
     pub fn finalize(self) -> u32 {
         self.hasher.finalize()
     }
+
+    /// Returns the hasher, to combine with a running checksum over several
+    /// records.
+    pub fn into_hasher(self) -> Hasher {
+        self.hasher
+    }
 }
 
 impl<R: Read> Read for CrcReader<R> {
