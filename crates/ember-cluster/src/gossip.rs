@@ -657,35 +657,56 @@ impl GossipEngine {
         }
     }
 
+    /// Whether an update about `node` at `incarnation` is believable. Nodes
+    /// raise their own incarnation one step at a time, so a claim far ahead
+    /// of what we know is a bug or an attempt to use up the incarnation
+    /// space. That includes claims about the local node: refuting one would
+    /// copy its incarnation. A node we haven't heard of yet has no baseline.
+    fn plausible_incarnation(&self, node: NodeId, incarnation: u64) -> bool {
+        let known = if node == self.local_id {
+            Some(self.incarnation)
+        } else {
+            self.members.get(&node).map(|member| member.incarnation)
+        };
+        incarnation <= MAX_INCARNATION
+            && known.is_none_or(|known| incarnation <= known.saturating_add(MAX_INCARNATION_JUMP))
+    }
+
     fn apply_updates(&mut self, updates: &[NodeUpdate]) {
         for update in updates {
+            let subject = match update {
+                NodeUpdate::Alive {
+                    node, incarnation, ..
+                }
+                | NodeUpdate::Suspect { node, incarnation }
+                | NodeUpdate::Dead { node, incarnation }
+                | NodeUpdate::SlotsChanged {
+                    node, incarnation, ..
+                }
+                | NodeUpdate::RoleChanged {
+                    node, incarnation, ..
+                } => Some((*node, *incarnation)),
+                _ => None,
+            };
+            if let Some((node, incarnation)) = subject {
+                if !self.plausible_incarnation(node, incarnation) {
+                    warn!("rejecting gossip update for {node} with incarnation {incarnation}");
+                    continue;
+                }
+            }
+
             match update {
                 NodeUpdate::Alive {
                     node,
                     addr,
                     incarnation,
                 } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting alive update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // Someone thinks we're alive, good
                         continue;
                     }
                     if let Some(member) = self.members.get_mut(node) {
                         if *incarnation > member.incarnation {
-                            let jump = incarnation - member.incarnation;
-                            if jump > MAX_INCARNATION_JUMP {
-                                warn!(
-                                    "rejecting alive update for {}: incarnation jump {} exceeds limit",
-                                    node, jump
-                                );
-                                continue;
-                            }
                             member.incarnation = *incarnation;
                             member.addr = *addr;
                             if member.state != MemberStatus::Alive {
@@ -713,13 +734,6 @@ impl GossipEngine {
                 }
 
                 NodeUpdate::Suspect { node, incarnation } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting suspect update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // Refute suspicion by incrementing our incarnation
                         if *incarnation >= self.incarnation {
@@ -743,13 +757,6 @@ impl GossipEngine {
                 }
 
                 NodeUpdate::Dead { node, incarnation } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting dead update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // Refute death claim
                         self.incarnation = incarnation.saturating_add(1);
@@ -788,13 +795,6 @@ impl GossipEngine {
                     incarnation,
                     slots,
                 } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting slots update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         continue;
                     }
@@ -822,13 +822,6 @@ impl GossipEngine {
                     is_primary,
                     replicates,
                 } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting role update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // we know our own role
                         continue;
@@ -1665,5 +1658,46 @@ mod tests {
             member.incarnation, MAX_INCARNATION_JUMP,
             "valid incarnation jump should be accepted"
         );
+    }
+
+    #[tokio::test]
+    async fn dead_update_far_ahead_is_ignored() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+        let remote = NodeId::new();
+        engine.add_seed(remote, test_addr(6380));
+
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![NodeUpdate::Dead {
+                node: remote,
+                incarnation: MAX_INCARNATION_JUMP + 1,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6381));
+
+        assert_ne!(engine.members[&remote].state, MemberStatus::Dead);
+    }
+
+    #[tokio::test]
+    async fn suspicion_of_self_far_ahead_does_not_raise_incarnation() {
+        let (tx, _rx) = mpsc::channel(16);
+        let local = NodeId::new();
+        let mut engine = GossipEngine::new(local, test_addr(6379), GossipConfig::default(), tx);
+        let before = engine.incarnation;
+
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![NodeUpdate::Suspect {
+                node: local,
+                incarnation: MAX_INCARNATION / 2,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6381));
+
+        assert_eq!(engine.incarnation, before);
     }
 }
