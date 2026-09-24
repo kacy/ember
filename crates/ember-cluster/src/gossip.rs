@@ -295,35 +295,54 @@ impl GossipEngine {
         });
     }
 
-    /// Queues a vote request for gossip propagation.
-    ///
-    /// Called by a replica that is starting an automatic failover election.
-    /// The update will be piggybacked on the next outgoing Ping or Ack.
-    pub fn queue_vote_request(
-        &mut self,
-        candidate: NodeId,
+    /// Builds the message asking `voter` for its vote. Election messages go
+    /// straight to the node they are for, never piggybacked, so the
+    /// receiver can check the sender. `None` if `voter` is unknown.
+    pub fn vote_request(
+        &self,
+        voter: NodeId,
         failed_primary: NodeId,
         epoch: u64,
         offset: u64,
-    ) {
-        self.queue_update(NodeUpdate::VoteRequest {
-            candidate,
-            failed_primary,
-            epoch,
-            offset,
-        });
+    ) -> Option<(SocketAddr, GossipMessage)> {
+        self.election_message(
+            voter,
+            NodeUpdate::VoteRequest {
+                candidate: self.local_id,
+                failed_primary,
+                epoch,
+                offset,
+            },
+        )
     }
 
-    /// Queues a vote grant for gossip propagation.
-    ///
-    /// Called by a primary that has decided to vote for the given candidate.
-    /// The update will be piggybacked on the next outgoing Ping or Ack.
-    pub fn queue_vote_granted(&mut self, from: NodeId, candidate: NodeId, epoch: u64) {
-        self.queue_update(NodeUpdate::VoteGranted {
-            from,
+    /// Builds the message granting `candidate` this node's vote for `epoch`.
+    pub fn vote_granted(
+        &self,
+        candidate: NodeId,
+        epoch: u64,
+    ) -> Option<(SocketAddr, GossipMessage)> {
+        self.election_message(
             candidate,
-            epoch,
-        });
+            NodeUpdate::VoteGranted {
+                from: self.local_id,
+                candidate,
+                epoch,
+            },
+        )
+    }
+
+    fn election_message(
+        &self,
+        to: NodeId,
+        update: NodeUpdate,
+    ) -> Option<(SocketAddr, GossipMessage)> {
+        let addr = self.members.get(&to)?.addr;
+        let msg = GossipMessage::Election {
+            sender: self.local_id,
+            update,
+        };
+        Some((addr, msg))
     }
 
     /// Adds a seed node to bootstrap cluster discovery.
@@ -550,6 +569,26 @@ impl GossipEngine {
                             member.config_epoch,
                         ));
                     }
+                }
+                vec![]
+            }
+
+            GossipMessage::Election { sender, update } => {
+                // the node the vote is from must have sent it, from the
+                // address this node knows for it. every node shares the
+                // cluster secret, so the message alone doesn't prove that.
+                let from_sender = self.members.get(&sender).is_some_and(|m| m.addr == from);
+                let names_sender = match update {
+                    NodeUpdate::VoteRequest { candidate, .. } => candidate == sender,
+                    NodeUpdate::VoteGranted { from: voter, .. } => voter == sender,
+                    _ => false,
+                };
+                if from_sender && names_sender {
+                    self.apply_vote(update);
+                } else {
+                    debug!(
+                        "ignoring election message claiming to be from {sender} sent from {from}"
+                    );
                 }
                 vec![]
             }
@@ -868,36 +907,36 @@ impl GossipEngine {
                     }
                 }
 
-                NodeUpdate::VoteRequest {
-                    candidate,
-                    failed_primary,
-                    epoch,
-                    offset,
-                } => {
-                    // Relay to the server layer to decide whether to grant.
-                    // No incarnation check needed: epoch ordering is handled upstream.
-                    if *candidate != self.local_id {
-                        self.emit(GossipEvent::VoteRequested {
-                            candidate: *candidate,
-                            failed_primary: *failed_primary,
-                            epoch: *epoch,
-                            offset: *offset,
-                        });
-                    }
-                }
-
-                NodeUpdate::VoteGranted {
-                    from,
-                    candidate,
-                    epoch,
-                } => {
-                    self.emit(GossipEvent::VoteGranted {
-                        from: *from,
-                        candidate: *candidate,
-                        epoch: *epoch,
-                    });
-                }
+                // votes only count when sent directly, see GossipMessage::Election
+                NodeUpdate::VoteRequest { .. } | NodeUpdate::VoteGranted { .. } => {}
             }
+        }
+    }
+
+    /// Reports a vote request or grant that arrived in an election message.
+    fn apply_vote(&mut self, update: NodeUpdate) {
+        match update {
+            NodeUpdate::VoteRequest {
+                candidate,
+                failed_primary,
+                epoch,
+                offset,
+            } => self.emit(GossipEvent::VoteRequested {
+                candidate,
+                failed_primary,
+                epoch,
+                offset,
+            }),
+            NodeUpdate::VoteGranted {
+                from,
+                candidate,
+                epoch,
+            } => self.emit(GossipEvent::VoteGranted {
+                from,
+                candidate,
+                epoch,
+            }),
+            _ => {}
         }
     }
 
@@ -1736,5 +1775,71 @@ mod tests {
         engine.handle_message(msg, test_addr(6381));
 
         assert_eq!(engine.incarnation, before);
+    }
+
+    /// Delivers `msg` from `from` to an engine that knows `voter` at
+    /// port 6380, and returns the events it produced.
+    async fn deliver_vote(msg: GossipMessage, voter: NodeId, from: SocketAddr) -> Vec<GossipEvent> {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+        engine.add_seed(voter, test_addr(6380));
+        engine.handle_message(msg, from);
+        engine.take_events().send().await;
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn grant(from: NodeId) -> NodeUpdate {
+        NodeUpdate::VoteGranted {
+            from,
+            candidate: NodeId::new(),
+            epoch: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn vote_from_the_voters_address_counts() {
+        let voter = NodeId::new();
+        let msg = GossipMessage::Election {
+            sender: voter,
+            update: grant(voter),
+        };
+        let events = deliver_vote(msg, voter, test_addr(6380)).await;
+        assert!(matches!(events[..], [GossipEvent::VoteGranted { from, .. }] if from == voter));
+    }
+
+    #[tokio::test]
+    async fn vote_from_another_address_is_ignored() {
+        let voter = NodeId::new();
+        let msg = GossipMessage::Election {
+            sender: voter,
+            update: grant(voter),
+        };
+        assert!(deliver_vote(msg, voter, test_addr(6390)).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vote_for_someone_else_is_ignored() {
+        // the sender is known, but the vote names another voter
+        let voter = NodeId::new();
+        let msg = GossipMessage::Election {
+            sender: voter,
+            update: grant(NodeId::new()),
+        };
+        assert!(deliver_vote(msg, voter, test_addr(6380)).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn piggybacked_vote_is_ignored() {
+        let voter = NodeId::new();
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: voter,
+            updates: vec![grant(voter)],
+        };
+        let events = deliver_vote(msg, voter, test_addr(6380)).await;
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, GossipEvent::VoteGranted { .. })));
     }
 }

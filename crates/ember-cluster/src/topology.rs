@@ -330,6 +330,9 @@ pub struct ClusterState {
     pub local_id: NodeId,
     /// Current configuration epoch (increases on topology changes).
     pub config_epoch: u64,
+    /// The epoch of the last failover vote this node granted. Saved with
+    /// the config, so a restarted primary can't vote twice in one epoch.
+    pub last_vote_epoch: u64,
     /// Slot-to-node mapping.
     pub slot_map: SlotMap,
     /// Cluster state: ok, fail, or unknown.
@@ -370,6 +373,7 @@ impl ClusterState {
             nodes,
             local_id,
             config_epoch: 1,
+            last_vote_epoch: 0,
             slot_map,
             state: ClusterHealth::Ok,
         }
@@ -381,6 +385,7 @@ impl ClusterState {
             nodes: HashMap::new(),
             local_id,
             config_epoch: 0,
+            last_vote_epoch: 0,
             slot_map: SlotMap::new(),
             state: ClusterHealth::Unknown,
         }
@@ -657,14 +662,14 @@ impl ClusterState {
     /// Serializes the cluster state to the `nodes.conf` format.
     ///
     /// The output consists of a comment header, a `vars` line with the current
-    /// epoch and gossip incarnation, followed by one line per node in the
-    /// standard `CLUSTER NODES` format.
+    /// epoch, gossip incarnation and last vote epoch, followed by one line per
+    /// node in the standard `CLUSTER NODES` format.
     pub fn to_nodes_conf(&self, incarnation: u64) -> String {
         let mut out = String::new();
         out.push_str("# ember cluster config — do not edit\n");
         out.push_str(&format!(
-            "vars currentEpoch {} lastIncarnation {}\n",
-            self.config_epoch, incarnation
+            "vars currentEpoch {} lastIncarnation {} lastVoteEpoch {}\n",
+            self.config_epoch, incarnation, self.last_vote_epoch
         ));
 
         // sort by node id for deterministic output
@@ -687,6 +692,7 @@ impl ClusterState {
     pub fn from_nodes_conf(data: &str) -> Result<(Self, u64), ConfigParseError> {
         let mut config_epoch = 0u64;
         let mut incarnation = 0u64;
+        let mut last_vote_epoch = 0u64;
         let mut found_vars = false;
         let mut local_id = None;
         let mut nodes = HashMap::new();
@@ -703,7 +709,7 @@ impl ClusterState {
             // parse the vars header
             if line.starts_with("vars ") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                // vars currentEpoch <n> lastIncarnation <n>
+                // vars currentEpoch <n> lastIncarnation <n> [lastVoteEpoch <n>]
                 if parts.len() < 5 {
                     return Err(ConfigParseError::InvalidVarsLine(line.to_string()));
                 }
@@ -713,6 +719,12 @@ impl ClusterState {
                 incarnation = parts[4]
                     .parse()
                     .map_err(|_| ConfigParseError::InvalidVarsLine(line.to_string()))?;
+                // written since failover votes are saved; absent in older files
+                if let Some(value) = parts.get(6) {
+                    last_vote_epoch = value
+                        .parse()
+                        .map_err(|_| ConfigParseError::InvalidVarsLine(line.to_string()))?;
+                }
                 found_vars = true;
                 continue;
             }
@@ -816,6 +828,7 @@ impl ClusterState {
             nodes,
             local_id,
             config_epoch,
+            last_vote_epoch,
             slot_map,
             state: ClusterHealth::Unknown,
         };
@@ -1041,6 +1054,7 @@ mod tests {
             n.slots = state.slot_map.slots_for_node(id2);
         }
         state.config_epoch = 5;
+        state.last_vote_epoch = 4;
         state.update_health();
 
         let conf = state.to_nodes_conf(10);
@@ -1048,6 +1062,7 @@ mod tests {
 
         assert_eq!(incarnation, 10);
         assert_eq!(restored.config_epoch, 5);
+        assert_eq!(restored.last_vote_epoch, 4);
         assert_eq!(restored.local_id, id1);
         assert_eq!(restored.nodes.len(), 2);
         assert_eq!(restored.slot_map.owner(0), Some(id1));

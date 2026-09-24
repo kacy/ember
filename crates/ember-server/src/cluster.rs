@@ -36,6 +36,11 @@ const ELECTION_TIMEOUT_SECS: u64 = 5;
 /// Election rounds a replica runs before giving up on a failover.
 const ELECTION_ROUNDS: u64 = 5;
 
+/// How far past this node's current epoch a vote request may be. Candidates
+/// ask at most `ELECTION_ROUNDS` past theirs, and nodes see each other's
+/// epochs through gossip, so a request much further ahead is bogus.
+const MAX_VOTE_EPOCH_AHEAD: u64 = 100;
+
 /// Grace period given to the primary during a default (non-FORCE) failover.
 const FAILOVER_GRACE_MS: u64 = 500;
 
@@ -77,8 +82,6 @@ pub struct ClusterCoordinator {
     writes_paused: std::sync::atomic::AtomicBool,
     /// in-progress automatic failover election (we are the candidate).
     election: Mutex<Option<ElectionAttempt>>,
-    /// config epoch of the last vote we granted as a primary; enforces one vote per epoch.
-    last_voted_epoch: std::sync::atomic::AtomicU64,
     /// optional shared secret for authenticating cluster transport messages.
     secret: Option<Arc<ClusterSecret>>,
     /// the task pulling data from our primary, while this node is a replica
@@ -162,7 +165,6 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             replication_task: Mutex::new(None),
-            last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
             secret,
         };
 
@@ -225,7 +227,6 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             replication_task: Mutex::new(None),
-            last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
             secret,
         };
 
@@ -1043,6 +1044,15 @@ impl ClusterCoordinator {
         }
         let total_primaries = voters.len();
 
+        // ask every voter directly
+        let requests: Vec<_> = {
+            let gossip = self.gossip.lock().await;
+            voters
+                .iter()
+                .filter_map(|&voter| gossip.vote_request(voter, failed_primary, epoch, 0))
+                .collect()
+        };
+
         // Initialize the election.
         {
             let mut guard = self.election.lock().await;
@@ -1058,11 +1068,7 @@ impl ClusterCoordinator {
             Election::quorum(total_primaries)
         );
 
-        // Broadcast vote request via gossip piggybacking.
-        {
-            let mut gossip = self.gossip.lock().await;
-            gossip.queue_vote_request(self.local_id, failed_primary, epoch, 0 /* offset */);
-        }
+        self.send_direct(requests).await;
 
         // Wait for votes; give the cluster time to respond.
         tokio::time::sleep(std::time::Duration::from_secs(ELECTION_TIMEOUT_SECS)).await;
@@ -1093,8 +1099,8 @@ impl ClusterCoordinator {
         // The candidate names that primary in the request, since news of
         // who replicates whom may not have reached this node yet; if it has,
         // the two must agree.
-        let may_vote = {
-            let state = self.state.read().await;
+        {
+            let mut state = self.state.write().await;
             let is_primary = state
                 .nodes
                 .get(&self.local_id)
@@ -1104,32 +1110,41 @@ impl ClusterCoordinator {
                 .get(&failed_primary)
                 .is_some_and(|primary| primary.flags.fail || primary.flags.pfail);
             let known_primary = state.nodes.get(&candidate).and_then(|c| c.replicates);
-            is_primary && primary_failing && known_primary.is_none_or(|p| p == failed_primary)
-        };
-        if !may_vote {
-            debug!("election: not voting for {candidate}; its primary looks healthy from here");
-            return;
+            if !(is_primary && primary_failing && known_primary.is_none_or(|p| p == failed_primary))
+            {
+                debug!("election: not voting for {candidate}; its primary looks healthy from here");
+                return;
+            }
+            // a request far ahead of every epoch seen here would use up the
+            // epochs that later elections need
+            if epoch > state.config_epoch.saturating_add(MAX_VOTE_EPOCH_AHEAD) {
+                debug!(
+                    "election: not voting in epoch {epoch}, far past the current {}",
+                    state.config_epoch
+                );
+                return;
+            }
+            // one vote per epoch
+            if epoch <= state.last_vote_epoch {
+                debug!(
+                    "election: already voted in epoch {} (requested {}); ignoring",
+                    state.last_vote_epoch, epoch
+                );
+                return;
+            }
+            state.last_vote_epoch = epoch;
         }
-
-        // Enforce one vote per epoch.
-        let prev = self
-            .last_voted_epoch
-            .fetch_max(epoch, std::sync::atomic::Ordering::AcqRel);
-        if prev >= epoch {
-            debug!(
-                "election: already voted in epoch {} (requested {}); ignoring",
-                prev, epoch
-            );
-            return;
-        }
+        // the vote goes to disk before it is granted, so a restart can't
+        // lead to a second vote in the same epoch
+        self.save_config().await;
 
         info!(
             "election: granting vote to candidate {} for epoch {}",
             candidate, epoch
         );
 
-        let mut gossip = self.gossip.lock().await;
-        gossip.queue_vote_granted(self.local_id, candidate, epoch);
+        let grant = self.gossip.lock().await.vote_granted(candidate, epoch);
+        self.send_direct(grant).await;
     }
 
     /// Handles an incoming `VoteGranted` gossip event.
@@ -1428,6 +1443,23 @@ impl ClusterCoordinator {
 
     /// Pushes the local node's current slot ownership into the gossip engine
     /// so it propagates to the rest of the cluster.
+    /// Sends gossip messages straight to their addresses.
+    async fn send_direct(&self, messages: impl IntoIterator<Item = (SocketAddr, GossipMessage)>) {
+        let socket = self.udp_socket.lock().await;
+        let Some(ref sock) = *socket else {
+            return;
+        };
+        for (addr, msg) in messages {
+            let encoded = match &self.secret {
+                Some(s) => msg.encode_authenticated(s),
+                None => msg.encode(),
+            };
+            if let Err(e) = sock.send_to(&encoded, addr).await {
+                debug!("gossip send to {addr} failed: {e}");
+            }
+        }
+    }
+
     async fn broadcast_local_slots(&self, slots: Vec<SlotRange>, config_epoch: u64) {
         // Gather peer addresses and build the announce message while holding
         // the gossip lock, then release it before taking the socket lock.
@@ -2591,25 +2623,30 @@ mod tests {
         // first request for epoch 5 should be granted (gossip queue entry added)
         coord.handle_vote_request(candidate, failed, 5).await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             5,
-            "last_voted_epoch should be 5 after granting"
+            "last_vote_epoch should be 5 after granting"
         );
 
         // second request for epoch 5 should be ignored
-        let prev_epoch = coord
-            .last_voted_epoch
-            .load(std::sync::atomic::Ordering::Acquire);
+        let prev_epoch = coord.state.read().await.last_vote_epoch;
         coord.handle_vote_request(candidate, failed, 5).await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             prev_epoch,
             "epoch should not change on duplicate request"
         );
+    }
+
+    #[tokio::test]
+    async fn primary_does_not_vote_far_past_the_current_epoch() {
+        let (coord, _rx) = test_coordinator_bootstrapped();
+        let failed = add_primary(&coord, true).await;
+
+        coord
+            .handle_vote_request(NodeId::new(), failed, 1 + MAX_VOTE_EPOCH_AHEAD + 1)
+            .await;
+        assert_eq!(coord.state.read().await.last_vote_epoch, 0);
     }
 
     #[tokio::test]
@@ -2619,9 +2656,7 @@ mod tests {
 
         coord.handle_vote_request(NodeId::new(), healthy, 4).await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             0,
             "a primary that looks healthy here must not be voted out"
         );
@@ -2650,14 +2685,12 @@ mod tests {
             }
         }
 
-        // replica should not update last_voted_epoch
+        // replica should not update last_vote_epoch
         coord
             .handle_vote_request(NodeId::new(), primary_id, 3)
             .await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             0,
             "replica must not grant votes"
         );
