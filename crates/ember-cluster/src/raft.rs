@@ -862,6 +862,9 @@ pub enum RaftProposalError {
     NotLeader(Option<BasicNode>),
     /// Fatal Raft error.
     Fatal(String),
+    /// The state machine refused the command, for example assigning slots
+    /// to a node Raft does not know. Nothing changed.
+    Rejected(String),
 }
 
 impl std::fmt::Display for RaftProposalError {
@@ -870,8 +873,9 @@ impl std::fmt::Display for RaftProposalError {
             RaftProposalError::NotLeader(Some(node)) => {
                 write!(f, "not leader, leader at {}", node.addr)
             }
-            RaftProposalError::NotLeader(None) => write!(f, "no leader elected"),
-            RaftProposalError::Fatal(msg) => write!(f, "raft fatal: {msg}"),
+            RaftProposalError::NotLeader(None) => write!(f, "no leader elected, retry shortly"),
+            RaftProposalError::Fatal(msg) => write!(f, "raft error: {msg}"),
+            RaftProposalError::Rejected(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -956,10 +960,15 @@ impl RaftNode {
     /// Proposes a cluster configuration change through Raft.
     ///
     /// Blocks until the entry is committed and applied to the state machine
-    /// on a quorum of nodes. Returns `NotLeader` if this node is not the leader.
-    pub async fn propose(&self, cmd: ClusterCommand) -> Result<ClusterResponse, RaftProposalError> {
+    /// on a quorum of nodes. Returns `NotLeader` if this node is not the
+    /// leader, and `Rejected` if the state machine refused the command, so
+    /// callers cannot mistake a refusal for success.
+    pub async fn propose(&self, cmd: ClusterCommand) -> Result<(), RaftProposalError> {
         match self.raft.client_write(cmd).await {
-            Ok(resp) => Ok(resp.data),
+            Ok(resp) => match resp.data {
+                ClusterResponse::Ok => Ok(()),
+                ClusterResponse::Error(msg) => Err(RaftProposalError::Rejected(msg)),
+            },
             Err(e) => match e {
                 openraft::error::RaftError::APIError(ClientWriteError::ForwardToLeader(fwd)) => {
                     Err(RaftProposalError::NotLeader(fwd.leader_node))
