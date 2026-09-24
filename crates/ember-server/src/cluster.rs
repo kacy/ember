@@ -450,7 +450,10 @@ impl ClusterCoordinator {
         // both a real entry and a stale placeholder in state.nodes.
         {
             let mut state = self.state.write().await;
-            let node = ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
+            let mut node =
+                ClusterNode::new_primary_with_offset(new_id, addr, self.gossip_port_offset);
+            // a placeholder until the node answers with its real id
+            node.flags.handshake = true;
             state.add_node(node);
         }
 
@@ -984,7 +987,9 @@ impl ClusterCoordinator {
             let voters: HashSet<NodeId> = state
                 .nodes
                 .values()
-                .filter(|n| n.role == NodeRole::Primary && n.id != failed_primary)
+                .filter(|n| {
+                    n.role == NodeRole::Primary && n.id != failed_primary && !n.flags.handshake
+                })
                 .map(|n| n.id)
                 .collect();
             let still_failed = state
@@ -1597,16 +1602,18 @@ impl ClusterCoordinator {
                             if state.nodes.contains_key(&id) {
                                 false
                             } else {
-                                // cluster_meet creates a placeholder with a random fake ID
-                                // but the correct data address. Find it by matching the
-                                // gossip port (cluster_bus_addr == gossip_addr).
+                                // cluster_meet creates a handshake placeholder with a
+                                // random id but the right addresses. Only such a
+                                // placeholder at this exact gossip address is replaced:
+                                // matching on the port alone replaced real nodes on
+                                // other hosts that use the same port.
                                 let stale_id = state
                                     .nodes
                                     .values()
                                     .find(|n| {
-                                        !n.flags.myself
+                                        n.flags.handshake
                                             && n.id != id
-                                            && n.cluster_bus_addr.port() == gossip_addr.port()
+                                            && n.cluster_bus_addr == gossip_addr
                                     })
                                     .map(|n| n.id);
 
