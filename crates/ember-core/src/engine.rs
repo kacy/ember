@@ -195,6 +195,14 @@ impl Engine {
         self.shards.len()
     }
 
+    /// Returns each shard's replication offset, indexed by shard id.
+    pub fn replication_offsets(&self) -> Vec<u64> {
+        self.shards
+            .iter()
+            .map(ShardHandle::replication_offset)
+            .collect()
+    }
+
     /// Creates a new broadcast receiver for replication events.
     ///
     /// Returns `None` if no replication channel was configured. Each

@@ -5,7 +5,11 @@ use super::*;
 /// Used by the replication server to capture a snapshot for transmission
 /// to a new replica. The format matches the file-based snapshot and can
 /// be loaded via [`ember_persistence::snapshot::read_snapshot_from_bytes`].
-pub(super) fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> ShardResponse {
+pub(super) fn handle_serialize_snapshot(
+    keyspace: &Keyspace,
+    shard_id: u16,
+    offset: u64,
+) -> ShardResponse {
     let entries: Vec<SnapEntry> = keyspace
         .iter_entries()
         .map(|(key, value, expire_ms)| SnapEntry {
@@ -16,7 +20,11 @@ pub(super) fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> S
         .collect();
 
     match snapshot::write_snapshot_bytes(shard_id, &entries) {
-        Ok(data) => ShardResponse::SnapshotData { shard_id, data },
+        Ok(data) => ShardResponse::SnapshotData {
+            shard_id,
+            offset,
+            data,
+        },
         Err(e) => {
             warn!(shard_id, "snapshot serialization failed: {e}");
             ShardResponse::Err(format!("snapshot failed: {e}"))

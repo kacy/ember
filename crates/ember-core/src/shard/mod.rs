@@ -49,6 +49,8 @@ mod persistence;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -519,7 +521,14 @@ pub enum ShardResponse {
     /// Serialized key dump with remaining TTL (for MIGRATE/DUMP).
     KeyDump { data: Vec<u8>, ttl_ms: i64 },
     /// In-memory snapshot of the full shard state (for replication).
-    SnapshotData { shard_id: u16, data: Vec<u8> },
+    ///
+    /// `offset` is the shard's replication offset when the snapshot was
+    /// taken: the snapshot holds every event up to and including it.
+    SnapshotData {
+        shard_id: u16,
+        offset: u64,
+        data: Vec<u8>,
+    },
     /// HMGET result: array of optional values.
     OptionalArray(Vec<Option<Bytes>>),
     /// VADD result: element, vector, and whether it was newly added.
@@ -599,9 +608,19 @@ pub enum ShardMessage {
 #[derive(Debug, Clone)]
 pub struct ShardHandle {
     tx: mpsc::Sender<ShardMessage>,
+    replication_offset: Arc<AtomicU64>,
 }
 
 impl ShardHandle {
+    /// Returns the offset of the last replication event this shard sent.
+    ///
+    /// The shard advances it before replying to a write, so once a client
+    /// has its reply the offset already covers that write. WAIT uses this
+    /// as the point replicas must reach.
+    pub fn replication_offset(&self) -> u64 {
+        self.replication_offset.load(Ordering::Acquire)
+    }
+
     /// Sends a request and waits for the response.
     ///
     /// Returns `ShardError::Unavailable` if the shard task has stopped.
@@ -690,6 +709,7 @@ pub struct PreparedShard {
     persistence: Option<ShardPersistenceConfig>,
     drop_handle: Option<DropHandle>,
     replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
+    replication_offset: Arc<AtomicU64>,
     /// Optional channel to broadcast expired key names for keyspace notifications.
     expired_tx: Option<broadcast::Sender<String>>,
     #[cfg(feature = "protobuf")]
@@ -710,17 +730,25 @@ pub fn prepare_shard(
     #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
 ) -> (ShardHandle, PreparedShard) {
     let (tx, rx) = mpsc::channel(buffer);
+    let replication_offset = Arc::new(AtomicU64::new(0));
     let prepared = PreparedShard {
         rx,
         config,
         persistence,
         drop_handle,
         replication_tx,
+        replication_offset: Arc::clone(&replication_offset),
         expired_tx,
         #[cfg(feature = "protobuf")]
         schema_registry,
     };
-    (ShardHandle { tx }, prepared)
+    (
+        ShardHandle {
+            tx,
+            replication_offset,
+        },
+        prepared,
+    )
 }
 
 /// Runs the shard's main loop. Call this on the target runtime.
@@ -728,17 +756,7 @@ pub fn prepare_shard(
 /// Consumes the `PreparedShard` and enters the infinite recv/expiry/fsync
 /// select loop. Returns when the channel is closed (all senders dropped).
 pub async fn run_prepared(prepared: PreparedShard) {
-    run_shard(
-        prepared.rx,
-        prepared.config,
-        prepared.persistence,
-        prepared.drop_handle,
-        prepared.replication_tx,
-        prepared.expired_tx,
-        #[cfg(feature = "protobuf")]
-        prepared.schema_registry,
-    )
-    .await
+    run_shard(prepared).await
 }
 
 /// Spawns a shard task and returns the handle for communicating with it.
@@ -774,15 +792,18 @@ pub fn spawn_shard(
 
 /// The shard's main loop. Processes messages and runs periodic
 /// active expiration until the channel closes.
-async fn run_shard(
-    mut rx: mpsc::Receiver<ShardMessage>,
-    config: ShardConfig,
-    persistence: Option<ShardPersistenceConfig>,
-    drop_handle: Option<DropHandle>,
-    replication_tx: Option<broadcast::Sender<ReplicationEvent>>,
-    expired_tx: Option<broadcast::Sender<String>>,
-    #[cfg(feature = "protobuf")] schema_registry: Option<crate::schema::SharedSchemaRegistry>,
-) {
+async fn run_shard(prepared: PreparedShard) {
+    let PreparedShard {
+        mut rx,
+        config,
+        persistence,
+        drop_handle,
+        replication_tx,
+        replication_offset,
+        expired_tx,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    } = prepared;
     let shard_id = config.shard_id;
     let mut keyspace = Keyspace::with_config(config);
 
@@ -909,9 +930,6 @@ async fn run_shard(
         .map(|p| p.fsync_policy)
         .unwrap_or(FsyncPolicy::No);
 
-    // monotonically increasing per-shard replication offset
-    let mut replication_offset: u64 = 0;
-
     // waiter registries for blocking list operations (BLPOP/BRPOP)
     let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
     let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
@@ -943,7 +961,7 @@ async fn run_shard(
                             drop_handle: &drop_handle,
                             shard_id,
                             replication_tx: &replication_tx,
-                            replication_offset: &mut replication_offset,
+                            replication_offset: &replication_offset,
                             lpop_waiters: &mut lpop_waiters,
                             rpop_waiters: &mut rpop_waiters,
                             aof_errors: &mut aof_errors,
@@ -1015,7 +1033,9 @@ struct ProcessCtx<'a> {
     drop_handle: &'a Option<DropHandle>,
     shard_id: u16,
     replication_tx: &'a Option<broadcast::Sender<ReplicationEvent>>,
-    replication_offset: &'a mut u64,
+    /// Offset of the last replication event sent. Shared with the
+    /// `ShardHandle` so WAIT can read it.
+    replication_offset: &'a AtomicU64,
     /// Waiters for BLPOP — keyed by list name, FIFO order.
     lpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
     /// Waiters for BRPOP — keyed by list name, FIFO order.
@@ -1169,11 +1189,11 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     // broadcast mutation events to replication subscribers
     if let Some(ref tx) = *ctx.replication_tx {
         for record in records {
-            *ctx.replication_offset += 1;
+            let offset = ctx.replication_offset.fetch_add(1, Ordering::Release) + 1;
             // ignore send errors — no subscribers or lagged consumers
             let _ = tx.send(ReplicationEvent {
                 shard_id,
-                offset: *ctx.replication_offset,
+                offset,
                 record,
             });
         }
@@ -1186,7 +1206,10 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     // handle special requests that need access to persistence state
     match request_kind {
         RequestKind::SerializeSnapshot => {
-            let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id);
+            // the snapshot covers every event up to the current offset,
+            // since this task sends all of them and is busy doing this now
+            let offset = ctx.replication_offset.load(Ordering::Acquire);
+            let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id, offset);
             reply.send(resp);
             return;
         }
