@@ -63,6 +63,37 @@ pub fn crc32(data: &[u8]) -> u32 {
     h.finalize()
 }
 
+/// Reader adapter that feeds every byte it returns into a CRC32 hasher.
+///
+/// A record can then be decoded straight from the stream and its checksum
+/// compared afterwards, with no second parser to rebuild the record bytes.
+pub struct CrcReader<R> {
+    inner: R,
+    hasher: Hasher,
+}
+
+impl<R: Read> CrcReader<R> {
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            hasher: Hasher::new(),
+        }
+    }
+
+    /// Returns the checksum of every byte read so far.
+    pub fn finalize(self) -> u32 {
+        self.hasher.finalize()
+    }
+}
+
+impl<R: Read> Read for CrcReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // write helpers
 // ---------------------------------------------------------------------------
@@ -191,7 +222,7 @@ pub fn read_bytes(r: &mut impl Read) -> Result<Vec<u8>, FormatError> {
 }
 
 /// Reads exactly `buf.len()` bytes, returning `UnexpectedEof` on short read.
-fn read_exact(r: &mut impl Read, buf: &mut [u8]) -> Result<(), FormatError> {
+pub fn read_exact(r: &mut impl Read, buf: &mut [u8]) -> Result<(), FormatError> {
     r.read_exact(buf).map_err(|e| {
         if e.kind() == io::ErrorKind::UnexpectedEof {
             FormatError::UnexpectedEof

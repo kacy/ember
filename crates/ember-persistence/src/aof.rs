@@ -18,9 +18,7 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-#[cfg(feature = "encryption")]
-use std::io::Read as _;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
@@ -681,15 +679,22 @@ impl AofRecord {
     /// Deserializes a record from its binary payload (tag byte + fields, no CRC).
     ///
     /// The format is the same as `to_bytes()`. CRC validation is the caller's
-    /// responsibility (done by the AOF recovery reader before this is called).
+    /// responsibility.
     pub fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
-        let mut cursor = io::Cursor::new(data);
-        let tag = format::read_u8(&mut cursor)?;
+        Self::decode(&mut io::Cursor::new(data))
+    }
+
+    /// Decodes one record (tag byte + fields, no CRC) from a stream.
+    ///
+    /// This is the only record decoder. The AOF reader runs it over a
+    /// [`format::CrcReader`] so the checksum covers exactly the bytes decoded.
+    fn decode(cursor: &mut impl io::Read) -> Result<Self, FormatError> {
+        let tag = format::read_u8(cursor)?;
         match tag {
             TAG_SET => {
-                let key = read_string(&mut cursor, "key")?;
-                let value = format::read_bytes(&mut cursor)?;
-                let expire_ms = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let value = format::read_bytes(cursor)?;
+                let expire_ms = format::read_i64(cursor)?;
                 Ok(AofRecord::Set {
                     key,
                     value: Bytes::from(value),
@@ -697,12 +702,12 @@ impl AofRecord {
                 })
             }
             TAG_DEL => {
-                let key = read_string(&mut cursor, "key")?;
+                let key = read_string(cursor, "key")?;
                 Ok(AofRecord::Del { key })
             }
             TAG_EXPIRE => {
-                let key = read_string(&mut cursor, "key")?;
-                let raw = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let raw = format::read_i64(cursor)?;
                 let seconds = u64::try_from(raw).map_err(|_| {
                     FormatError::InvalidData(format!(
                         "EXPIRE seconds is negative ({raw}) in AOF record"
@@ -711,8 +716,8 @@ impl AofRecord {
                 Ok(AofRecord::Expire { key, seconds })
             }
             TAG_LPUSH | TAG_RPUSH => {
-                let key = read_string(&mut cursor, "key")?;
-                let values = read_bytes_list(&mut cursor, "list")?;
+                let key = read_string(cursor, "key")?;
+                let values = read_bytes_list(cursor, "list")?;
                 if tag == TAG_LPUSH {
                     Ok(AofRecord::LPush { key, values })
                 } else {
@@ -720,31 +725,31 @@ impl AofRecord {
                 }
             }
             TAG_LPOP => {
-                let key = read_string(&mut cursor, "key")?;
+                let key = read_string(cursor, "key")?;
                 Ok(AofRecord::LPop { key })
             }
             TAG_RPOP => {
-                let key = read_string(&mut cursor, "key")?;
+                let key = read_string(cursor, "key")?;
                 Ok(AofRecord::RPop { key })
             }
             TAG_LSET => {
-                let key = read_string(&mut cursor, "key")?;
-                let index = format::read_i64(&mut cursor)?;
-                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                let key = read_string(cursor, "key")?;
+                let index = format::read_i64(cursor)?;
+                let value = Bytes::from(format::read_bytes(cursor)?);
                 Ok(AofRecord::LSet { key, index, value })
             }
             TAG_LTRIM => {
-                let key = read_string(&mut cursor, "key")?;
-                let start = format::read_i64(&mut cursor)?;
-                let stop = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let start = format::read_i64(cursor)?;
+                let stop = format::read_i64(cursor)?;
                 Ok(AofRecord::LTrim { key, start, stop })
             }
             TAG_LINSERT => {
-                let key = read_string(&mut cursor, "key")?;
-                let before_byte = format::read_u8(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let before_byte = format::read_u8(cursor)?;
                 let before = before_byte != 0;
-                let pivot = Bytes::from(format::read_bytes(&mut cursor)?);
-                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                let pivot = Bytes::from(format::read_bytes(cursor)?);
+                let value = Bytes::from(format::read_bytes(cursor)?);
                 Ok(AofRecord::LInsert {
                     key,
                     before,
@@ -753,35 +758,35 @@ impl AofRecord {
                 })
             }
             TAG_LREM => {
-                let key = read_string(&mut cursor, "key")?;
-                let count = format::read_i64(&mut cursor)?;
-                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                let key = read_string(cursor, "key")?;
+                let count = format::read_i64(cursor)?;
+                let value = Bytes::from(format::read_bytes(cursor)?);
                 Ok(AofRecord::LRem { key, count, value })
             }
             TAG_ZADD => {
-                let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let count = format::read_u32(cursor)?;
                 format::validate_collection_count(count, "sorted set")?;
                 let mut members = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
-                    let score = format::read_f64(&mut cursor)?;
-                    let member = read_string(&mut cursor, "member")?;
+                    let score = format::read_f64(cursor)?;
+                    let member = read_string(cursor, "member")?;
                     members.push((score, member));
                 }
                 Ok(AofRecord::ZAdd { key, members })
             }
             TAG_ZREM => {
-                let key = read_string(&mut cursor, "key")?;
-                let members = read_string_list(&mut cursor, "member")?;
+                let key = read_string(cursor, "key")?;
+                let members = read_string_list(cursor, "member")?;
                 Ok(AofRecord::ZRem { key, members })
             }
             TAG_PERSIST => {
-                let key = read_string(&mut cursor, "key")?;
+                let key = read_string(cursor, "key")?;
                 Ok(AofRecord::Persist { key })
             }
             TAG_PEXPIRE => {
-                let key = read_string(&mut cursor, "key")?;
-                let raw = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let raw = format::read_i64(cursor)?;
                 let milliseconds = u64::try_from(raw).map_err(|_| {
                     FormatError::InvalidData(format!(
                         "PEXPIRE milliseconds is negative ({raw}) in AOF record"
@@ -790,8 +795,8 @@ impl AofRecord {
                 Ok(AofRecord::Pexpire { key, milliseconds })
             }
             TAG_PEXPIREAT => {
-                let key = read_string(&mut cursor, "key")?;
-                let raw = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let raw = format::read_i64(cursor)?;
                 let timestamp_ms = u64::try_from(raw).map_err(|_| {
                     FormatError::InvalidData(format!(
                         "PEXPIREAT timestamp_ms is negative ({raw}) in AOF record"
@@ -800,76 +805,76 @@ impl AofRecord {
                 Ok(AofRecord::Pexpireat { key, timestamp_ms })
             }
             TAG_INCR => {
-                let key = read_string(&mut cursor, "key")?;
+                let key = read_string(cursor, "key")?;
                 Ok(AofRecord::Incr { key })
             }
             TAG_DECR => {
-                let key = read_string(&mut cursor, "key")?;
+                let key = read_string(cursor, "key")?;
                 Ok(AofRecord::Decr { key })
             }
             TAG_HSET => {
-                let key = read_string(&mut cursor, "key")?;
-                let count = format::read_u32(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let count = format::read_u32(cursor)?;
                 format::validate_collection_count(count, "hash")?;
                 let mut fields = Vec::with_capacity(format::capped_capacity(count));
                 for _ in 0..count {
-                    let field = read_string(&mut cursor, "field")?;
-                    let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                    let field = read_string(cursor, "field")?;
+                    let value = Bytes::from(format::read_bytes(cursor)?);
                     fields.push((field, value));
                 }
                 Ok(AofRecord::HSet { key, fields })
             }
             TAG_HDEL => {
-                let key = read_string(&mut cursor, "key")?;
-                let fields = read_string_list(&mut cursor, "field")?;
+                let key = read_string(cursor, "key")?;
+                let fields = read_string_list(cursor, "field")?;
                 Ok(AofRecord::HDel { key, fields })
             }
             TAG_HINCRBY => {
-                let key = read_string(&mut cursor, "key")?;
-                let field = read_string(&mut cursor, "field")?;
-                let delta = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let field = read_string(cursor, "field")?;
+                let delta = format::read_i64(cursor)?;
                 Ok(AofRecord::HIncrBy { key, field, delta })
             }
             TAG_SADD => {
-                let key = read_string(&mut cursor, "key")?;
-                let members = read_string_list(&mut cursor, "member")?;
+                let key = read_string(cursor, "key")?;
+                let members = read_string_list(cursor, "member")?;
                 Ok(AofRecord::SAdd { key, members })
             }
             TAG_SREM => {
-                let key = read_string(&mut cursor, "key")?;
-                let members = read_string_list(&mut cursor, "member")?;
+                let key = read_string(cursor, "key")?;
+                let members = read_string_list(cursor, "member")?;
                 Ok(AofRecord::SRem { key, members })
             }
             TAG_INCRBY => {
-                let key = read_string(&mut cursor, "key")?;
-                let delta = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let delta = format::read_i64(cursor)?;
                 Ok(AofRecord::IncrBy { key, delta })
             }
             TAG_DECRBY => {
-                let key = read_string(&mut cursor, "key")?;
-                let delta = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let delta = format::read_i64(cursor)?;
                 Ok(AofRecord::DecrBy { key, delta })
             }
             TAG_APPEND => {
-                let key = read_string(&mut cursor, "key")?;
-                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                let key = read_string(cursor, "key")?;
+                let value = Bytes::from(format::read_bytes(cursor)?);
                 Ok(AofRecord::Append { key, value })
             }
             TAG_SETRANGE => {
-                let key = read_string(&mut cursor, "key")?;
-                let offset = format::read_i64(&mut cursor)? as usize;
-                let value = Bytes::from(format::read_bytes(&mut cursor)?);
+                let key = read_string(cursor, "key")?;
+                let offset = format::read_i64(cursor)? as usize;
+                let value = Bytes::from(format::read_bytes(cursor)?);
                 Ok(AofRecord::SetRange { key, offset, value })
             }
             TAG_RENAME => {
-                let key = read_string(&mut cursor, "key")?;
-                let newkey = read_string(&mut cursor, "newkey")?;
+                let key = read_string(cursor, "key")?;
+                let newkey = read_string(cursor, "newkey")?;
                 Ok(AofRecord::Rename { key, newkey })
             }
             TAG_COPY => {
-                let source = read_string(&mut cursor, "source")?;
-                let destination = read_string(&mut cursor, "destination")?;
-                let replace = format::read_u8(&mut cursor)? != 0;
+                let source = read_string(cursor, "source")?;
+                let destination = read_string(cursor, "destination")?;
+                let replace = format::read_u8(cursor)? != 0;
                 Ok(AofRecord::Copy {
                     source,
                     destination,
@@ -877,27 +882,27 @@ impl AofRecord {
                 })
             }
             TAG_SETBIT => {
-                let key = read_string(&mut cursor, "key")?;
-                let offset = format::read_i64(&mut cursor)? as u64;
-                let value = format::read_u8(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let offset = format::read_i64(cursor)? as u64;
+                let value = format::read_u8(cursor)?;
                 Ok(AofRecord::SetBit { key, offset, value })
             }
             TAG_BITOP => {
-                let op = format::read_u8(&mut cursor)?;
+                let op = format::read_u8(cursor)?;
                 if op > 3 {
                     return Err(FormatError::InvalidData(format!(
                         "BITOP: unknown op byte {op} in AOF record"
                     )));
                 }
-                let dest = read_string(&mut cursor, "dest")?;
-                let keys = read_string_list(&mut cursor, "key")?;
+                let dest = read_string(cursor, "dest")?;
+                let keys = read_string_list(cursor, "key")?;
                 Ok(AofRecord::BitOp { op, dest, keys })
             }
             #[cfg(feature = "vector")]
             TAG_VADD => {
-                let key = read_string(&mut cursor, "key")?;
-                let element = read_string(&mut cursor, "element")?;
-                let dim = format::read_u32(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let element = read_string(cursor, "element")?;
+                let dim = format::read_u32(cursor)?;
                 if dim > format::MAX_PERSISTED_VECTOR_DIMS {
                     return Err(FormatError::InvalidData(format!(
                         "AOF VADD dimension {dim} exceeds max {}",
@@ -906,12 +911,12 @@ impl AofRecord {
                 }
                 let mut vector = Vec::with_capacity(dim as usize);
                 for _ in 0..dim {
-                    vector.push(format::read_f32(&mut cursor)?);
+                    vector.push(format::read_f32(cursor)?);
                 }
-                let metric = format::read_u8(&mut cursor)?;
-                let quantization = format::read_u8(&mut cursor)?;
-                let connectivity = format::read_u32(&mut cursor)?;
-                let expansion_add = format::read_u32(&mut cursor)?;
+                let metric = format::read_u8(cursor)?;
+                let quantization = format::read_u8(cursor)?;
+                let connectivity = format::read_u32(cursor)?;
+                let expansion_add = format::read_u32(cursor)?;
                 Ok(AofRecord::VAdd {
                     key,
                     element,
@@ -924,16 +929,16 @@ impl AofRecord {
             }
             #[cfg(feature = "vector")]
             TAG_VREM => {
-                let key = read_string(&mut cursor, "key")?;
-                let element = read_string(&mut cursor, "element")?;
+                let key = read_string(cursor, "key")?;
+                let element = read_string(cursor, "element")?;
                 Ok(AofRecord::VRem { key, element })
             }
             #[cfg(feature = "protobuf")]
             TAG_PROTO_SET => {
-                let key = read_string(&mut cursor, "key")?;
-                let type_name = read_string(&mut cursor, "type_name")?;
-                let data = format::read_bytes(&mut cursor)?;
-                let expire_ms = format::read_i64(&mut cursor)?;
+                let key = read_string(cursor, "key")?;
+                let type_name = read_string(cursor, "type_name")?;
+                let data = format::read_bytes(cursor)?;
+                let expire_ms = format::read_i64(cursor)?;
                 Ok(AofRecord::ProtoSet {
                     key,
                     type_name,
@@ -943,8 +948,8 @@ impl AofRecord {
             }
             #[cfg(feature = "protobuf")]
             TAG_PROTO_REGISTER => {
-                let name = read_string(&mut cursor, "name")?;
-                let descriptor = format::read_bytes(&mut cursor)?;
+                let name = read_string(cursor, "name")?;
+                let descriptor = format::read_bytes(cursor)?;
                 Ok(AofRecord::ProtoRegister {
                     name,
                     descriptor: Bytes::from(descriptor),
@@ -1122,6 +1127,8 @@ pub struct AofReader {
     reader: BufReader<File>,
     /// Format version from the file header. v2 = plaintext, v3 = encrypted.
     version: u8,
+    /// End offset of the last complete record read. See [`AofReader::valid_len`].
+    valid_len: u64,
     #[cfg(feature = "encryption")]
     encryption_key: Option<crate::encryption::EncryptionKey>,
 }
@@ -1137,20 +1144,15 @@ impl fmt::Debug for AofReader {
 impl AofReader {
     /// Opens an AOF file and validates the header.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FormatError> {
-        let file = File::open(path.as_ref())?;
-        let mut reader = BufReader::new(file);
-        let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
-
-        if version == format::FORMAT_VERSION_ENCRYPTED {
+        let reader = Self::open_with_key(
+            path,
+            #[cfg(feature = "encryption")]
+            None,
+        )?;
+        if reader.version == format::FORMAT_VERSION_ENCRYPTED {
             return Err(FormatError::EncryptionRequired);
         }
-
-        Ok(Self {
-            reader,
-            version,
-            #[cfg(feature = "encryption")]
-            encryption_key: None,
-        })
+        Ok(reader)
     }
 
     /// Opens an AOF file with an encryption key for decrypting v3 records.
@@ -1162,293 +1164,90 @@ impl AofReader {
         path: impl AsRef<Path>,
         key: crate::encryption::EncryptionKey,
     ) -> Result<Self, FormatError> {
-        let file = File::open(path.as_ref())?;
-        let mut reader = BufReader::new(file);
-        let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
+        Self::open_with_key(path, Some(key))
+    }
 
+    fn open_with_key(
+        path: impl AsRef<Path>,
+        #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
+    ) -> Result<Self, FormatError> {
+        let mut reader = BufReader::new(File::open(path.as_ref())?);
+        let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
+        let valid_len = reader.stream_position()?;
         Ok(Self {
             reader,
             version,
-            encryption_key: Some(key),
+            valid_len,
+            #[cfg(feature = "encryption")]
+            encryption_key,
         })
     }
 
     /// Reads the next record from the AOF.
     ///
-    /// Returns `Ok(None)` at end-of-file. On a truncated record (the
-    /// server crashed mid-write), returns `Ok(None)` rather than an error
-    /// — this is the expected recovery behavior.
+    /// Returns `Ok(None)` at end of file. A record cut short by a crash
+    /// mid-write also returns `Ok(None)`; [`valid_len`](Self::valid_len)
+    /// then tells the caller where the complete records end.
     pub fn read_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
         #[cfg(feature = "encryption")]
-        if self.version == format::FORMAT_VERSION_ENCRYPTED {
-            return self.read_encrypted_record();
-        }
-
-        self.read_v2_record()
-    }
-
-    /// Reads a v2 (plaintext) record: tag + payload + crc32.
-    fn read_v2_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
-        // peek for EOF — try reading the tag byte
-        let tag = match format::read_u8(&mut self.reader) {
-            Ok(t) => t,
-            Err(FormatError::UnexpectedEof) => return Ok(None),
-            Err(e) => return Err(e),
+        let result = if self.version == format::FORMAT_VERSION_ENCRYPTED {
+            self.read_encrypted_record()
+        } else {
+            self.read_v2_record()
         };
+        #[cfg(not(feature = "encryption"))]
+        let result = self.read_v2_record();
 
-        // read the rest of the payload based on tag, building the full
-        // record bytes for CRC verification
-        let record_result = self.read_payload_for_tag(tag);
-        match record_result {
-            Ok((payload, stored_crc)) => {
-                // prepend the tag to the payload for CRC check
-                let mut full = Vec::with_capacity(1 + payload.len());
-                full.push(tag);
-                full.extend_from_slice(&payload);
-                format::verify_crc32(&full, stored_crc)?;
-                AofRecord::from_bytes(&full).map(Some)
+        match result {
+            Ok(record) => {
+                self.valid_len = self.reader.stream_position()?;
+                Ok(Some(record))
             }
-            // truncated record — treat as end of usable data
             Err(FormatError::UnexpectedEof) => Ok(None),
             Err(e) => Err(e),
         }
     }
 
+    /// Byte length of the file prefix that holds the header and every
+    /// record read so far. Anything past it after `read_record` returns
+    /// `None` is a partial record left by a crash.
+    pub fn valid_len(&self) -> u64 {
+        self.valid_len
+    }
+
+    /// Reads a v2 (plaintext) record: tag + payload + crc32.
+    fn read_v2_record(&mut self) -> Result<AofRecord, FormatError> {
+        let mut crc_reader = format::CrcReader::new(&mut self.reader);
+        let record = AofRecord::decode(&mut crc_reader)?;
+        let computed = crc_reader.finalize();
+        let stored = format::read_u32(&mut self.reader)?;
+        format::verify_crc32_values(computed, stored)?;
+        Ok(record)
+    }
+
     /// Reads a v3 (encrypted) record: nonce + len + ciphertext.
     #[cfg(feature = "encryption")]
-    fn read_encrypted_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
+    fn read_encrypted_record(&mut self) -> Result<AofRecord, FormatError> {
         let key = self
             .encryption_key
             .as_ref()
             .ok_or(FormatError::EncryptionRequired)?;
 
-        // read the 12-byte nonce
         let mut nonce = [0u8; crate::encryption::NONCE_SIZE];
-        if let Err(e) = self.reader.read_exact(&mut nonce) {
-            return if e.kind() == io::ErrorKind::UnexpectedEof {
-                Ok(None)
-            } else {
-                Err(FormatError::Io(e))
-            };
-        }
+        format::read_exact(&mut self.reader, &mut nonce)?;
 
-        // read ciphertext length and ciphertext
-        let ct_len = match format::read_u32(&mut self.reader) {
-            Ok(n) => n as usize,
-            Err(FormatError::UnexpectedEof) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-
+        let ct_len = format::read_u32(&mut self.reader)? as usize;
         if ct_len > format::MAX_FIELD_LEN {
             return Err(FormatError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("encrypted record length {ct_len} exceeds maximum"),
             )));
         }
-
         let mut ciphertext = vec![0u8; ct_len];
-        if let Err(e) = self.reader.read_exact(&mut ciphertext) {
-            return if e.kind() == io::ErrorKind::UnexpectedEof {
-                Ok(None)
-            } else {
-                Err(FormatError::Io(e))
-            };
-        }
+        format::read_exact(&mut self.reader, &mut ciphertext)?;
 
         let plaintext = crate::encryption::decrypt_record(key, &nonce, &ciphertext)?;
-        AofRecord::from_bytes(&plaintext).map(Some)
-    }
-
-    /// Reads the remaining payload bytes (after the tag) and the trailing CRC.
-    fn read_payload_for_tag(&mut self, tag: u8) -> Result<(Vec<u8>, u32), FormatError> {
-        let mut payload = Vec::new();
-        match tag {
-            TAG_SET => {
-                // key_len + key + value_len + value + expire_ms
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let value = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &value)?;
-                let expire_ms = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, expire_ms)?;
-            }
-            TAG_DEL => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-            }
-            TAG_EXPIRE => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let seconds = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, seconds)?;
-            }
-            TAG_LPUSH | TAG_RPUSH => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let count = format::read_u32(&mut self.reader)?;
-                format::validate_collection_count(count, "list")?;
-                format::write_u32(&mut payload, count)?;
-                for _ in 0..count {
-                    let val = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &val)?;
-                }
-            }
-            TAG_LPOP | TAG_RPOP => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-            }
-            TAG_ZADD => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let count = format::read_u32(&mut self.reader)?;
-                format::validate_collection_count(count, "sorted set")?;
-                format::write_u32(&mut payload, count)?;
-                for _ in 0..count {
-                    let score = format::read_f64(&mut self.reader)?;
-                    format::write_f64(&mut payload, score)?;
-                    let member = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &member)?;
-                }
-            }
-            TAG_ZREM => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let count = format::read_u32(&mut self.reader)?;
-                format::validate_collection_count(count, "sorted set")?;
-                format::write_u32(&mut payload, count)?;
-                for _ in 0..count {
-                    let member = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &member)?;
-                }
-            }
-            TAG_PERSIST => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-            }
-            TAG_PEXPIRE => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let millis = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, millis)?;
-            }
-            TAG_INCR | TAG_DECR => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-            }
-            TAG_HSET => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let count = format::read_u32(&mut self.reader)?;
-                format::validate_collection_count(count, "hash")?;
-                format::write_u32(&mut payload, count)?;
-                for _ in 0..count {
-                    let field = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &field)?;
-                    let value = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &value)?;
-                }
-            }
-            TAG_HDEL | TAG_SADD | TAG_SREM => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let count = format::read_u32(&mut self.reader)?;
-                format::validate_collection_count(count, "set")?;
-                format::write_u32(&mut payload, count)?;
-                for _ in 0..count {
-                    let item = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut payload, &item)?;
-                }
-            }
-            TAG_HINCRBY => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let field = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &field)?;
-                let delta = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, delta)?;
-            }
-            TAG_INCRBY | TAG_DECRBY => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let delta = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, delta)?;
-            }
-            TAG_APPEND => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let value = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &value)?;
-            }
-            TAG_RENAME => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let newkey = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &newkey)?;
-            }
-            TAG_COPY => {
-                let source = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &source)?;
-                let dest = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &dest)?;
-                let replace = format::read_u8(&mut self.reader)?;
-                payload.push(replace);
-            }
-            #[cfg(feature = "vector")]
-            TAG_VADD => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let element = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &element)?;
-                let dim = format::read_u32(&mut self.reader)?;
-                if dim > format::MAX_PERSISTED_VECTOR_DIMS {
-                    return Err(FormatError::InvalidData(format!(
-                        "AOF VADD dimension {dim} exceeds max {}",
-                        format::MAX_PERSISTED_VECTOR_DIMS
-                    )));
-                }
-                format::write_u32(&mut payload, dim)?;
-                for _ in 0..dim {
-                    let v = format::read_f32(&mut self.reader)?;
-                    format::write_f32(&mut payload, v)?;
-                }
-                let metric = format::read_u8(&mut self.reader)?;
-                format::write_u8(&mut payload, metric)?;
-                let quantization = format::read_u8(&mut self.reader)?;
-                format::write_u8(&mut payload, quantization)?;
-                let connectivity = format::read_u32(&mut self.reader)?;
-                format::write_u32(&mut payload, connectivity)?;
-                let expansion_add = format::read_u32(&mut self.reader)?;
-                format::write_u32(&mut payload, expansion_add)?;
-            }
-            #[cfg(feature = "vector")]
-            TAG_VREM => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let element = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &element)?;
-            }
-            #[cfg(feature = "protobuf")]
-            TAG_PROTO_SET => {
-                let key = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &key)?;
-                let type_name = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &type_name)?;
-                let data = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &data)?;
-                let expire_ms = format::read_i64(&mut self.reader)?;
-                format::write_i64(&mut payload, expire_ms)?;
-            }
-            #[cfg(feature = "protobuf")]
-            TAG_PROTO_REGISTER => {
-                let name = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &name)?;
-                let descriptor = format::read_bytes(&mut self.reader)?;
-                format::write_bytes(&mut payload, &descriptor)?;
-            }
-            _ => return Err(FormatError::UnknownTag(tag)),
-        }
-        let stored_crc = format::read_u32(&mut self.reader)?;
-        Ok((payload, stored_crc))
+        AofRecord::from_bytes(&plaintext)
     }
 }
 
@@ -1523,6 +1322,181 @@ mod tests {
         let bytes = rec.to_bytes()?;
         let decoded = AofRecord::from_bytes(&bytes)?;
         assert_eq!(rec, decoded);
+        Ok(())
+    }
+
+    /// One record of every kind the writer can produce.
+    fn one_of_each_record() -> Vec<AofRecord> {
+        let key = || String::from("k");
+        let val = || Bytes::from("v");
+        vec![
+            AofRecord::Set {
+                key: key(),
+                value: val(),
+                expire_ms: 1_000,
+            },
+            AofRecord::Del { key: key() },
+            AofRecord::Expire {
+                key: key(),
+                seconds: 60,
+            },
+            AofRecord::LPush {
+                key: key(),
+                values: vec![val()],
+            },
+            AofRecord::RPush {
+                key: key(),
+                values: vec![val(), val()],
+            },
+            AofRecord::LPop { key: key() },
+            AofRecord::RPop { key: key() },
+            AofRecord::LSet {
+                key: key(),
+                index: -1,
+                value: val(),
+            },
+            AofRecord::LTrim {
+                key: key(),
+                start: 0,
+                stop: -2,
+            },
+            AofRecord::LInsert {
+                key: key(),
+                before: true,
+                pivot: val(),
+                value: val(),
+            },
+            AofRecord::LRem {
+                key: key(),
+                count: -2,
+                value: val(),
+            },
+            AofRecord::ZAdd {
+                key: key(),
+                members: vec![(1.5, "m".into())],
+            },
+            AofRecord::ZRem {
+                key: key(),
+                members: vec!["m".into()],
+            },
+            AofRecord::Persist { key: key() },
+            AofRecord::Pexpire {
+                key: key(),
+                milliseconds: 500,
+            },
+            AofRecord::Pexpireat {
+                key: key(),
+                timestamp_ms: 1_700_000_000_000,
+            },
+            AofRecord::Incr { key: key() },
+            AofRecord::Decr { key: key() },
+            AofRecord::HSet {
+                key: key(),
+                fields: vec![("f".into(), val())],
+            },
+            AofRecord::HDel {
+                key: key(),
+                fields: vec!["f".into()],
+            },
+            AofRecord::HIncrBy {
+                key: key(),
+                field: "f".into(),
+                delta: -3,
+            },
+            AofRecord::SAdd {
+                key: key(),
+                members: vec!["m".into()],
+            },
+            AofRecord::SRem {
+                key: key(),
+                members: vec!["m".into()],
+            },
+            AofRecord::IncrBy {
+                key: key(),
+                delta: 7,
+            },
+            AofRecord::DecrBy {
+                key: key(),
+                delta: 7,
+            },
+            AofRecord::Append {
+                key: key(),
+                value: val(),
+            },
+            AofRecord::SetRange {
+                key: key(),
+                offset: 3,
+                value: val(),
+            },
+            AofRecord::SetBit {
+                key: key(),
+                offset: 9,
+                value: 1,
+            },
+            AofRecord::BitOp {
+                op: 1,
+                dest: "d".into(),
+                keys: vec![key(), key()],
+            },
+            AofRecord::Rename {
+                key: key(),
+                newkey: "n".into(),
+            },
+            AofRecord::Copy {
+                source: key(),
+                destination: "d".into(),
+                replace: true,
+            },
+            #[cfg(feature = "vector")]
+            AofRecord::VAdd {
+                key: key(),
+                element: "e".into(),
+                vector: vec![0.5, -1.0],
+                metric: 0,
+                quantization: 0,
+                connectivity: 16,
+                expansion_add: 64,
+            },
+            #[cfg(feature = "vector")]
+            AofRecord::VRem {
+                key: key(),
+                element: "e".into(),
+            },
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoSet {
+                key: key(),
+                type_name: "t.T".into(),
+                data: val(),
+                expire_ms: -1,
+            },
+            #[cfg(feature = "protobuf")]
+            AofRecord::ProtoRegister {
+                name: "t".into(),
+                descriptor: val(),
+            },
+        ]
+    }
+
+    #[test]
+    fn writer_reader_round_trip_covers_every_record_kind() -> Result {
+        let dir = temp_dir();
+        let path = dir.path().join("all.aof");
+        let records = one_of_each_record();
+        {
+            let mut writer = AofWriter::open(&path)?;
+            for record in &records {
+                writer.write_record(record)?;
+            }
+            writer.sync()?;
+        }
+
+        let mut reader = AofReader::open(&path)?;
+        let mut got = Vec::new();
+        while let Some(record) = reader.read_record()? {
+            got.push(record);
+        }
+        assert_eq!(got, records);
+        assert_eq!(reader.valid_len(), std::fs::metadata(&path)?.len());
         Ok(())
     }
 
