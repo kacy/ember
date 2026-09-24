@@ -542,3 +542,22 @@ async fn unauthenticated_client_cannot_send_large_requests() {
         "{reply:?}"
     );
 }
+
+#[tokio::test]
+async fn inline_commands_work_like_resp() {
+    let server = TestServer::start();
+    let request = b"PING\r\nSET greeting \"hello world\"\r\nGET greeting\r\nQUIT\r\n";
+    let reply = send_and_read_to_close(&server, request).await;
+    assert_eq!(reply, b"+PONG\r\n+OK\r\n$11\r\nhello world\r\n+OK\r\n");
+}
+
+#[tokio::test]
+async fn http_request_closes_the_connection() {
+    let server = TestServer::start();
+    let request = b"POST / HTTP/1.1\r\nHost: localhost\r\n\r\nSET k v\r\n";
+    let reply = send_and_read_to_close(&server, request).await;
+    assert!(reply.starts_with(b"-ERR protocol error"));
+
+    let mut c = server.connect().await;
+    assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
+}

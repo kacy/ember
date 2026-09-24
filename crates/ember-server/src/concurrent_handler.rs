@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
-use ember_protocol::{parse_frame, Command, Frame, SetExpire};
+use ember_protocol::{parse_request, Command, Frame, SetExpire};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
@@ -88,7 +88,7 @@ where
             if buf.is_empty() {
                 break;
             }
-            match parse_frame(&buf) {
+            match parse_request(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     pipeline_count += 1;
