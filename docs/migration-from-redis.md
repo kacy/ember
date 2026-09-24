@@ -190,7 +190,7 @@ Legend: `✓` supported, `~` partial or with caveats, `✗` not supported.
 | BGREWRITEAOF | ✓ | rewrites AOF from current snapshot |
 | FLUSHDB | ✓ | ASYNC mode supported |
 | CONFIG GET | ✓ | glob pattern matching |
-| CONFIG SET | ✓ | mutable: slowlog-log-slower-than, slowlog-max-len |
+| CONFIG SET | ✓ | mutable: slowlog-log-slower-than, slowlog-max-len, maxmemory, maxmemory-policy, notify-keyspace-events |
 | CONFIG REWRITE | ✓ | flushes runtime config back to file |
 | CONFIG RESETSTAT | ✗ | not implemented |
 | SLOWLOG GET | ✓ | optional count argument |
