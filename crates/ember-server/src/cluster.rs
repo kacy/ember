@@ -77,8 +77,6 @@ pub struct ClusterCoordinator {
     writes_paused: std::sync::atomic::AtomicBool,
     /// in-progress automatic failover election (we are the candidate).
     election: Mutex<Option<ElectionAttempt>>,
-    /// config epoch of the last vote we granted as a primary; enforces one vote per epoch.
-    last_voted_epoch: std::sync::atomic::AtomicU64,
     /// optional shared secret for authenticating cluster transport messages.
     secret: Option<Arc<ClusterSecret>>,
     /// the task pulling data from our primary, while this node is a replica
@@ -162,7 +160,6 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             replication_task: Mutex::new(None),
-            last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
             secret,
         };
 
@@ -225,7 +222,6 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             replication_task: Mutex::new(None),
-            last_voted_epoch: std::sync::atomic::AtomicU64::new(0),
             secret,
         };
 
@@ -1093,8 +1089,8 @@ impl ClusterCoordinator {
         // The candidate names that primary in the request, since news of
         // who replicates whom may not have reached this node yet; if it has,
         // the two must agree.
-        let may_vote = {
-            let state = self.state.read().await;
+        {
+            let mut state = self.state.write().await;
             let is_primary = state
                 .nodes
                 .get(&self.local_id)
@@ -1104,24 +1100,24 @@ impl ClusterCoordinator {
                 .get(&failed_primary)
                 .is_some_and(|primary| primary.flags.fail || primary.flags.pfail);
             let known_primary = state.nodes.get(&candidate).and_then(|c| c.replicates);
-            is_primary && primary_failing && known_primary.is_none_or(|p| p == failed_primary)
-        };
-        if !may_vote {
-            debug!("election: not voting for {candidate}; its primary looks healthy from here");
-            return;
+            if !(is_primary && primary_failing && known_primary.is_none_or(|p| p == failed_primary))
+            {
+                debug!("election: not voting for {candidate}; its primary looks healthy from here");
+                return;
+            }
+            // one vote per epoch
+            if epoch <= state.last_vote_epoch {
+                debug!(
+                    "election: already voted in epoch {} (requested {}); ignoring",
+                    state.last_vote_epoch, epoch
+                );
+                return;
+            }
+            state.last_vote_epoch = epoch;
         }
-
-        // Enforce one vote per epoch.
-        let prev = self
-            .last_voted_epoch
-            .fetch_max(epoch, std::sync::atomic::Ordering::AcqRel);
-        if prev >= epoch {
-            debug!(
-                "election: already voted in epoch {} (requested {}); ignoring",
-                prev, epoch
-            );
-            return;
-        }
+        // the vote goes to disk before it is granted, so a restart can't
+        // lead to a second vote in the same epoch
+        self.save_config().await;
 
         info!(
             "election: granting vote to candidate {} for epoch {}",
@@ -2591,22 +2587,16 @@ mod tests {
         // first request for epoch 5 should be granted (gossip queue entry added)
         coord.handle_vote_request(candidate, failed, 5).await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             5,
-            "last_voted_epoch should be 5 after granting"
+            "last_vote_epoch should be 5 after granting"
         );
 
         // second request for epoch 5 should be ignored
-        let prev_epoch = coord
-            .last_voted_epoch
-            .load(std::sync::atomic::Ordering::Acquire);
+        let prev_epoch = coord.state.read().await.last_vote_epoch;
         coord.handle_vote_request(candidate, failed, 5).await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             prev_epoch,
             "epoch should not change on duplicate request"
         );
@@ -2619,9 +2609,7 @@ mod tests {
 
         coord.handle_vote_request(NodeId::new(), healthy, 4).await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             0,
             "a primary that looks healthy here must not be voted out"
         );
@@ -2650,14 +2638,12 @@ mod tests {
             }
         }
 
-        // replica should not update last_voted_epoch
+        // replica should not update last_vote_epoch
         coord
             .handle_vote_request(NodeId::new(), primary_id, 3)
             .await;
         assert_eq!(
-            coord
-                .last_voted_epoch
-                .load(std::sync::atomic::Ordering::Acquire),
+            coord.state.read().await.last_vote_epoch,
             0,
             "replica must not grant votes"
         );
