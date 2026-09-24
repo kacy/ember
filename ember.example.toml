@@ -34,6 +34,8 @@
 # appendfsync = "everysec"        # fsync policy: "always", "everysec", "no"
 # active-expiry-interval-ms = 100 # background expiry sweep interval
 # aof-fsync-interval-secs = 1    # fsync interval when appendfsync = "everysec"
+# save-interval-secs = 0         # background save every N seconds (0 = disabled)
+# encryption-key-file = ""        # 32-byte key that encrypts the AOF and snapshots (encryption builds)
 
 # --- monitoring ---
 
@@ -48,6 +50,15 @@
 # tls-key-file = ""               # path to server private key (PEM)
 # tls-ca-cert-file = ""           # CA cert for client verification (PEM)
 # tls-auth-clients = "no"         # require client certificates ("yes" or "no")
+
+# --- notifications ---
+
+# notify-keyspace-events = ""     # keyspace event classes to publish, as in Redis (e.g. "KEA")
+
+# --- protobuf and grpc ---
+
+# protobuf = false                # enable PROTO.* commands (protobuf builds)
+# grpc-port = 6380                # gRPC listener port, 0 = disabled (grpc builds)
 
 # --- protocol limits ---
 
