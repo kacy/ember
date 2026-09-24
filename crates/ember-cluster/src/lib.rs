@@ -41,7 +41,7 @@ mod raft_transport;
 mod slots;
 mod topology;
 
-pub use auth::ClusterSecret;
+pub use auth::{ClusterSecret, TAG_LEN};
 pub use election::Election;
 pub use error::ClusterError;
 pub use gossip::{
