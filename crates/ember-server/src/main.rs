@@ -563,6 +563,13 @@ async fn main() {
         encryption_key,
     );
 
+    if let Some(ref pcfg) = persistence {
+        if let Err(e) = ember_persistence::manifest::check_shard_count(&pcfg.data_dir, shard_count)
+        {
+            exit_err(format!("error: {e}"));
+        }
+    }
+
     if let Some(total) = max_memory {
         if config::per_shard_memory(total, shard_count) == 0 {
             exit_err(format!(
