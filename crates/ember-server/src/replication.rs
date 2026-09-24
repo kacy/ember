@@ -740,6 +740,21 @@ pub fn aof_record_to_shard_request(record: &AofRecord) -> Option<ShardRequest> {
             nx: false,
             xx: false,
         }),
+        AofRecord::SetExpireAt {
+            key,
+            value,
+            timestamp_ms,
+        } => Some(match ember_persistence::aof::ms_until(*timestamp_ms) {
+            Some(ms) => ShardRequest::Set {
+                key: key.clone(),
+                value: value.clone(),
+                expire: Some(Duration::from_millis(ms)),
+                nx: false,
+                xx: false,
+            },
+            // already expired by the time it arrived
+            None => ShardRequest::Del { key: key.clone() },
+        }),
         AofRecord::Del { key } => Some(ShardRequest::Del { key: key.clone() }),
         AofRecord::Expire { key, seconds } => Some(ShardRequest::Expire {
             key: key.clone(),
