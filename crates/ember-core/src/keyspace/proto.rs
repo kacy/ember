@@ -121,7 +121,6 @@ impl Keyspace {
         let mut keys = Vec::with_capacity(count);
         let mut position = 0u64;
         let target_count = if count == 0 { 10 } else { count };
-        let compiled = pattern.map(GlobPattern::new);
 
         for (key, entry) in self.entries.iter() {
             if entry.is_expired() {
@@ -150,8 +149,8 @@ impl Keyspace {
             }
 
             // optional key pattern
-            if let Some(ref pat) = compiled {
-                if !pat.matches(key) {
+            if let Some(pat) = pattern {
+                if !glob_match(pat, key) {
                     position += 1;
                     continue;
                 }

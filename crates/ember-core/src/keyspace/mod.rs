@@ -17,6 +17,7 @@ use rand::Rng;
 use tracing::warn;
 
 use crate::dropper::DropHandle;
+use crate::glob::glob_match;
 use crate::memory::{self, MemoryTracker};
 use crate::time;
 use crate::types::sorted_set::{ScoreBound, SortedSet, ZAddFlags};
@@ -1109,11 +1110,10 @@ impl Keyspace {
                 "KEYS on large keyspace, consider SCAN instead"
             );
         }
-        let compiled = GlobPattern::new(pattern);
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
-            .filter(|(key, _)| compiled.matches(key))
+            .filter(|(key, _)| glob_match(pattern, key))
             .map(|(key, _)| String::from(&**key))
             .collect()
     }
@@ -1298,29 +1298,27 @@ impl Keyspace {
         pattern: Option<&str>,
         type_name: Option<&str>,
     ) -> (u64, Vec<String>) {
-        let compiled = pattern.map(GlobPattern::new);
         self.scan_entries(cursor, count, |key, entry| {
             let Value::Proto { type_name: t, .. } = &entry.value else {
                 return false;
             };
             type_name.is_none_or(|wanted| t.as_str() == wanted)
-                && compiled.as_ref().is_none_or(|pat| pat.matches(key))
+                && pattern.is_none_or(|pat| glob_match(pat, key))
         })
     }
 
     /// Scans keys starting from a cursor position.
     ///
     /// Returns the next cursor (0 if scan complete) and a batch of keys.
-    /// The `pattern` argument supports glob-style matching (`*`, `?`, `[abc]`).
+    /// The `pattern` argument uses the glob rules in [`crate::glob`].
     pub fn scan_keys(
         &self,
         cursor: u64,
         count: usize,
         pattern: Option<&str>,
     ) -> (u64, Vec<String>) {
-        let compiled = pattern.map(GlobPattern::new);
         self.scan_entries(cursor, count, |key, _| {
-            compiled.as_ref().is_none_or(|pat| pat.matches(key))
+            pattern.is_none_or(|pat| glob_match(pat, key))
         })
     }
 
@@ -1533,130 +1531,6 @@ pub(crate) fn format_float(val: f64) -> String {
         let formatted = format!("{}", reparsed);
         formatted
     }
-}
-
-/// Glob-style pattern matching for SCAN's MATCH option.
-///
-/// Supports:
-/// - `*` matches any sequence of characters (including empty)
-/// - `?` matches exactly one character
-/// - `[abc]` matches one character from the set
-/// - `[^abc]` or `[!abc]` matches one character NOT in the set
-///
-/// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
-/// worst-case performance, where n is pattern length and m is text length.
-///
-/// Prefer [`GlobPattern::new`] + [`GlobPattern::matches`] when matching
-/// the same pattern against many strings (KEYS, SCAN) to avoid
-/// re-collecting the pattern chars on every call.
-pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
-    let pat: Vec<char> = pattern.chars().collect();
-    glob_match_compiled(&pat, text)
-}
-
-/// Pre-compiled glob pattern that avoids re-allocating pattern chars
-/// on every match call. Use for KEYS/SCAN where the same pattern is
-/// tested against every key in the keyspace.
-pub(crate) struct GlobPattern {
-    chars: Vec<char>,
-}
-
-impl GlobPattern {
-    pub(crate) fn new(pattern: &str) -> Self {
-        Self {
-            chars: pattern.chars().collect(),
-        }
-    }
-
-    pub(crate) fn matches(&self, text: &str) -> bool {
-        glob_match_compiled(&self.chars, text)
-    }
-}
-
-/// Core glob matching against a pre-compiled pattern char slice.
-fn glob_match_compiled(pat: &[char], text: &str) -> bool {
-    let txt: Vec<char> = text.chars().collect();
-
-    let mut pi = 0; // pattern index
-    let mut ti = 0; // text index
-
-    // backtracking state for the most recent '*'
-    let mut star_pi: Option<usize> = None;
-    let mut star_ti: usize = 0;
-
-    while ti < txt.len() || pi < pat.len() {
-        if pi < pat.len() {
-            match pat[pi] {
-                '*' => {
-                    // record star position and try matching zero chars first
-                    star_pi = Some(pi);
-                    star_ti = ti;
-                    pi += 1;
-                    continue;
-                }
-                '?' if ti < txt.len() => {
-                    pi += 1;
-                    ti += 1;
-                    continue;
-                }
-                '[' if ti < txt.len() => {
-                    // parse character class
-                    let tc = txt[ti];
-                    let mut j = pi + 1;
-                    let mut negated = false;
-                    let mut matched = false;
-
-                    if j < pat.len() && (pat[j] == '^' || pat[j] == '!') {
-                        negated = true;
-                        j += 1;
-                    }
-
-                    while j < pat.len() && pat[j] != ']' {
-                        if pat[j] == tc {
-                            matched = true;
-                        }
-                        j += 1;
-                    }
-
-                    if negated {
-                        matched = !matched;
-                    }
-
-                    if matched && j < pat.len() {
-                        pi = j + 1; // skip past ']'
-                        ti += 1;
-                        continue;
-                    }
-                    // fall through to backtrack
-                }
-                c if ti < txt.len() && c == txt[ti] => {
-                    pi += 1;
-                    ti += 1;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // mismatch or end of pattern — try backtracking to last '*'
-        if let Some(sp) = star_pi {
-            pi = sp + 1;
-            star_ti += 1;
-            ti = star_ti;
-            if ti > txt.len() {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-
-    // skip trailing '*' in pattern
-    while pi < pat.len() && pat[pi] == '*' {
-        pi += 1;
-    }
-
-    pi == pat.len()
 }
 
 #[cfg(test)]
@@ -2255,36 +2129,6 @@ mod tests {
         let (_, keys) = ks.scan_keys(0, 10, None);
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], "live");
-    }
-
-    #[test]
-    fn glob_match_star() {
-        assert!(super::glob_match("user:*", "user:123"));
-        assert!(super::glob_match("user:*", "user:"));
-        assert!(super::glob_match("*:data", "foo:data"));
-        assert!(!super::glob_match("user:*", "item:123"));
-    }
-
-    #[test]
-    fn glob_match_question() {
-        assert!(super::glob_match("key?", "key1"));
-        assert!(super::glob_match("key?", "keya"));
-        assert!(!super::glob_match("key?", "key"));
-        assert!(!super::glob_match("key?", "key12"));
-    }
-
-    #[test]
-    fn glob_match_brackets() {
-        assert!(super::glob_match("key[abc]", "keya"));
-        assert!(super::glob_match("key[abc]", "keyb"));
-        assert!(!super::glob_match("key[abc]", "keyd"));
-    }
-
-    #[test]
-    fn glob_match_literal() {
-        assert!(super::glob_match("exact", "exact"));
-        assert!(!super::glob_match("exact", "exactnot"));
-        assert!(!super::glob_match("exact", "notexact"));
     }
 
     // --- persist/pttl/pexpire ---
