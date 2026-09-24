@@ -248,11 +248,23 @@ fn load_snapshot(
         )));
     }
 
-    let mut entries = Vec::new();
+    // entries store the TTL left when the snapshot was written. the file's
+    // modification time is that moment, so the time since then has passed
+    // for every key too.
+    let written_ago_ms = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map_or(0, |d| d.as_millis().min(i64::MAX as u128) as i64);
 
+    let mut entries = Vec::new();
     while let Some(entry) = reader.read_entry()? {
-        // entry.expire_ms is -1 for no expiry, or remaining ms
-        entries.push((entry.key, entry.value, entry.expire_ms));
+        // -1 for no expiry, otherwise the ms left; 0 marks it expired
+        let ttl = match entry.expire_ms {
+            ms if ms < 0 => -1,
+            ms => (ms - written_ago_ms).max(0),
+        };
+        entries.push((entry.key, entry.value, ttl));
     }
 
     reader.verify_footer()?;
@@ -531,20 +543,10 @@ fn replay_aof(
             }
             AofRecord::Pexpireat { key, timestamp_ms } => {
                 if let Some(entry) = map.get_mut(&key) {
-                    // Convert the absolute unix timestamp to a remaining TTL
-                    // relative to now. This preserves the exact wall-clock
-                    // deadline across restarts.
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    if timestamp_ms <= now_ms {
-                        // Already expired — mark as 0 so the filter removes it.
-                        entry.1 = 0;
-                    } else {
-                        let remaining = timestamp_ms.saturating_sub(now_ms);
-                        entry.1 = remaining.min(i64::MAX as u64) as i64;
-                    }
+                    // the deadline is absolute, so it holds across restarts.
+                    // 0 marks a key already expired, for the filter below.
+                    entry.1 =
+                        aof::ms_until(timestamp_ms).map_or(0, |ms| ms.min(i64::MAX as u64) as i64);
                 }
             }
             AofRecord::Incr { key } => {
@@ -676,6 +678,25 @@ fn replay_aof(
                     map.insert(newkey, entry);
                 }
             }
+            AofRecord::SetExpireAt {
+                key,
+                value,
+                timestamp_ms,
+            } => match aof::ms_until(timestamp_ms) {
+                Some(ms) => {
+                    map.insert(
+                        key,
+                        (
+                            RecoveredValue::String(value),
+                            ms.min(i64::MAX as u64) as i64,
+                        ),
+                    );
+                }
+                // the value this SET wrote has expired since
+                None => {
+                    map.remove(&key);
+                }
+            },
             AofRecord::FlushAll => map.clear(),
             AofRecord::Restore { key, ttl_ms, data } => {
                 let value = snapshot::deserialize_snap_value(&data)?;
@@ -951,6 +972,55 @@ mod tests {
         assert_eq!(result.entries.len(), 1);
         assert!(result.entries[0].ttl.is_none());
         assert!(matches!(&result.entries[0].value, RecoveredValue::String(v) if v == "x"));
+    }
+
+    #[test]
+    fn set_with_a_passed_deadline_does_not_come_back() {
+        let dir = temp_dir();
+        let now = aof::unix_now_ms();
+        let set_at = |key: &str, timestamp_ms| AofRecord::SetExpireAt {
+            key: key.into(),
+            value: Bytes::from("v"),
+            timestamp_ms,
+        };
+        write_aof(
+            dir.path(),
+            &[set_at("gone", now - 1_000), set_at("kept", now + 60_000)],
+        );
+
+        let result = recover_shard(dir.path(), 0);
+        assert_eq!(sorted_keys(&result), ["kept"]);
+        let ttl = result.entries[0].ttl.expect("kept has a ttl");
+        assert!(ttl <= Duration::from_secs(60) && ttl > Duration::from_secs(50));
+    }
+
+    #[test]
+    fn snapshot_ttls_count_the_time_since_it_was_written() {
+        let dir = temp_dir();
+        let path = snapshot::snapshot_path(dir.path(), 0);
+        {
+            let mut writer = SnapshotWriter::create(&path, 0).unwrap();
+            for (key, expire_ms) in [("short", 60_000), ("forever", -1)] {
+                writer
+                    .write_entry(&SnapEntry {
+                        key: key.into(),
+                        value: SnapValue::String(Bytes::from("v")),
+                        expire_ms,
+                    })
+                    .unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        // the snapshot was taken an hour ago
+        let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(hour_ago)
+            .unwrap();
+
+        assert_eq!(sorted_keys(&recover_shard(dir.path(), 0)), ["forever"]);
     }
 
     #[test]
