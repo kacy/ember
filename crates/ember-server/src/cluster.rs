@@ -337,14 +337,7 @@ impl ClusterCoordinator {
 
     /// Returns an error `Frame` for the given `RaftProposalError`.
     fn raft_error_frame(e: RaftProposalError) -> Frame {
-        let msg = match e {
-            RaftProposalError::NotLeader(Some(node)) => {
-                format!("not leader, leader at {}", node.addr)
-            }
-            RaftProposalError::NotLeader(None) => "no leader elected, retry shortly".into(),
-            RaftProposalError::Fatal(msg) => format!("raft error: {msg}"),
-        };
-        Frame::Error(format!("ERR {msg}"))
+        Frame::Error(format!("ERR {e}"))
     }
 
     /// Returns a snapshot of cluster health for the /health HTTP endpoint.
