@@ -35,12 +35,20 @@ pub const DEFAULT_MAX_COMMAND_MEMORY: usize = 128 * 1024 * 1024;
 /// Peeks at the first bulk element to avoid a full `Command::from_frame`
 /// round-trip on unauthenticated connections.
 pub fn is_auth_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"AUTH");
-        }
-    }
-    false
+    is_command_frame(frame, &[b"AUTH"])
+}
+
+/// Checks whether a raw frame is one of the named commands, compared
+/// without case. Lets the connection loop route special commands before
+/// parsing the whole frame.
+pub fn is_command_frame(frame: &Frame, names: &[&[u8]]) -> bool {
+    let Frame::Array(parts) = frame else {
+        return false;
+    };
+    let Some(Frame::Bulk(name)) = parts.first() else {
+        return false;
+    };
+    names.iter().any(|n| name.eq_ignore_ascii_case(n))
 }
 
 /// Checks if a raw frame represents a command allowed before authentication.
@@ -381,12 +389,7 @@ pub fn validate_command_sizes(
 
 /// Checks if a raw frame is a MONITOR command.
 pub fn is_monitor_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"MONITOR");
-        }
-    }
-    false
+    is_command_frame(frame, &[b"MONITOR"])
 }
 
 /// Event broadcast to MONITOR subscribers.
