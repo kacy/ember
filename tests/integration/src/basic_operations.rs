@@ -561,3 +561,62 @@ async fn http_request_closes_the_connection() {
     let mut c = server.connect().await;
     assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
 }
+
+/// Encodes a command as a RESP array.
+fn resp(args: &[&str]) -> Vec<u8> {
+    let mut out = format!("*{}\r\n", args.len()).into_bytes();
+    for arg in args {
+        out.extend(format!("${}\r\n{arg}\r\n", arg.len()).into_bytes());
+    }
+    out
+}
+
+#[tokio::test]
+async fn commands_after_unsubscribe_run_in_order() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["SUBSCRIBE", "ch"]),
+        resp(&["UNSUBSCRIBE", "ch"]),
+        resp(&["SET", "k", "v"]),
+        resp(&["GET", "k"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    let reply = String::from_utf8_lossy(&reply);
+    let unsubscribed = reply.find("unsubscribe").expect("no unsubscribe reply");
+    assert!(unsubscribed < reply.find("+OK").unwrap(), "{reply}");
+    assert!(reply.ends_with("+OK\r\n$1\r\nv\r\n+OK\r\n"), "{reply}");
+}
+
+#[tokio::test]
+async fn blocking_pop_inside_multi_is_queued() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["MULTI"]),
+        resp(&["BLPOP", "q", "0"]),
+        resp(&["EXEC"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    let reply = String::from_utf8_lossy(&reply);
+    assert!(reply.starts_with("+OK\r\n+QUEUED\r\n*1\r\n-"), "{reply}");
+}
+
+#[tokio::test]
+async fn commands_after_blocking_pop_wait_for_it() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["RPUSH", "q", "x"]),
+        resp(&["BLPOP", "q", "0"]),
+        resp(&["LLEN", "q"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    assert_eq!(
+        String::from_utf8_lossy(&reply),
+        ":1\r\n*2\r\n$1\r\nq\r\n$1\r\nx\r\n:0\r\n+OK\r\n"
+    );
+}

@@ -370,8 +370,10 @@ pub(super) enum SubscriberExit {
 
 /// In this mode the connection can only process SUBSCRIBE, UNSUBSCRIBE,
 /// PSUBSCRIBE, PUNSUBSCRIBE, and PING. All other commands return an error.
-/// Returns to the caller when all subscriptions are removed or the client
-/// disconnects.
+/// `first` is the command that entered the mode.
+///
+/// Returns when the last subscription is removed, leaving any later frames
+/// in `buf` for normal mode, or when the connection should close.
 pub(super) async fn handle_subscriber_mode<S>(
     stream: &mut S,
     buf: &mut BytesMut,
@@ -379,7 +381,7 @@ pub(super) async fn handle_subscriber_mode<S>(
     ctx: &Arc<ServerContext>,
     pubsub: &Arc<PubSubManager>,
     session: &Session,
-    initial_frames: Vec<Frame>,
+    first: Frame,
 ) -> Result<SubscriberExit, Box<dyn std::error::Error>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -391,122 +393,103 @@ where
         channels: HashMap::new(),
         patterns: HashMap::new(),
     };
-    let Subscriptions {
-        channels: channel_rxs,
-        patterns: pattern_rxs,
-        ..
-    } = &mut subs;
+    handle_subscriber_frame(first, ctx, session, &mut subs, out);
 
-    // process the initial subscribe commands
-    for frame in initial_frames {
-        match Command::from_frame(frame) {
-            Ok(cmd) => handle_sub_command(cmd, ctx, pubsub, channel_rxs, pattern_rxs, out),
-            Err(e) => Frame::Error(format!("ERR {e}")).serialize(out),
-        }
-    }
-
-    if !out.is_empty() {
-        stream.write_all(out).await?;
-        out.clear();
-    }
-
-    // main subscriber loop
     loop {
-        let total_subs = channel_rxs.len() + pattern_rxs.len();
-        if total_subs == 0 {
-            // no more subscriptions: back to normal mode, as in Redis
-            return Ok(SubscriberExit::Unsubscribed);
+        // the client may have pipelined more commands behind the first one
+        let exit = run_buffered_frames(buf, out, ctx, session, &mut subs);
+        if !out.is_empty() {
+            stream.write_all(out).await?;
+            out.clear();
+        }
+        if let Some(exit) = exit {
+            return Ok(exit);
         }
 
         tokio::select! {
-            // check for incoming messages from any subscription
-            msg = recv_any_message(channel_rxs, pattern_rxs) => {
+            msg = recv_any_message(&mut subs.channels, &mut subs.patterns) => {
                 if let Some(msg) = msg {
                     serialize_push_message(&msg, out);
-                    stream.write_all(out).await?;
-                    out.clear();
                 }
             }
-
-            // check for new commands from the client (with idle timeout)
             result = tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(buf)) => {
-                let result = match result {
-                    Ok(inner) => inner,
-                    Err(_) => {
-                        // idle timeout — clean up and close
-                        return Ok(SubscriberExit::Close);
-                    }
-                };
-                // guard against unbounded buffer growth
-                if buf.len() > ctx.limits.max_buf_size {
-                    return Ok(SubscriberExit::Close);
-                }
                 match result {
-                    Ok(0) => {
-                        // client disconnected — clean up subscriptions
+                    Ok(Ok(0)) | Err(_) => return Ok(SubscriberExit::Close),
+                    Ok(Ok(_)) if buf.len() > ctx.limits.max_buf_size => {
                         return Ok(SubscriberExit::Close);
                     }
-                    Ok(_) => {
-                        // parse and handle subscriber commands
-                        loop {
-                            match parse_request(buf) {
-                                Ok(Some((frame, consumed))) => {
-                                    let _ = buf.split_to(consumed);
-                                    match Command::from_frame(frame) {
-                                        Ok(cmd) => match &cmd {
-                                            Command::Subscribe { .. }
-                                            | Command::Unsubscribe { .. }
-                                            | Command::PSubscribe { .. }
-                                            | Command::PUnsubscribe { .. } => {
-                                                // the caller checked the frames that
-                                                // started subscriber mode; later ones
-                                                // are checked here
-                                                match session.check(&cmd) {
-                                                    Some(err) => err.serialize(out),
-                                                    None => handle_sub_command(
-                                                        cmd, ctx, pubsub, channel_rxs,
-                                                        pattern_rxs, out,
-                                                    ),
-                                                }
-                                            }
-                                            Command::Ping(msg) => {
-                                                let resp = match msg {
-                                                    Some(m) => Frame::Bulk(m.clone()),
-                                                    None => Frame::Simple("PONG".into()),
-                                                };
-                                                resp.serialize(out);
-                                            }
-                                            _ => {
-                                                Frame::Error(
-                                                    "ERR only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING are allowed in this context".into()
-                                                ).serialize(out);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            Frame::Error(format!("ERR {e}")).serialize(out);
-                                        }
-                                    }
-                                }
-                                Ok(None) => break,
-                                Err(e) => {
-                                    Frame::Error(format!("ERR protocol error: {e}")).serialize(out);
-                                    stream.write_all(out).await?;
-                                    return Ok(SubscriberExit::Close);
-                                }
-                            }
-                        }
-
-                        if !out.is_empty() {
-                            stream.write_all(out).await?;
-                            out.clear();
-                        }
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => return Err(e.into()),
                 }
             }
         }
+    }
+}
+
+/// Runs the complete frames in `buf`. Stops once no subscriptions are
+/// left, so the frames after the last UNSUBSCRIBE go to normal mode.
+/// Returns how subscriber mode should end, or `None` to keep going.
+fn run_buffered_frames(
+    buf: &mut BytesMut,
+    out: &mut BytesMut,
+    ctx: &Arc<ServerContext>,
+    session: &Session,
+    subs: &mut Subscriptions<'_>,
+) -> Option<SubscriberExit> {
+    loop {
+        if subs.channels.is_empty() && subs.patterns.is_empty() {
+            // no more subscriptions: back to normal mode, as in Redis
+            return Some(SubscriberExit::Unsubscribed);
+        }
+        match parse_request(buf) {
+            Ok(Some((frame, consumed))) => {
+                let _ = buf.split_to(consumed);
+                handle_subscriber_frame(frame, ctx, session, subs, out);
+            }
+            Ok(None) => return None,
+            Err(e) => {
+                Frame::Error(format!("ERR protocol error: {e}")).serialize(out);
+                return Some(SubscriberExit::Close);
+            }
+        }
+    }
+}
+
+/// Runs one command in subscriber mode.
+fn handle_subscriber_frame(
+    frame: Frame,
+    ctx: &Arc<ServerContext>,
+    session: &Session,
+    subs: &mut Subscriptions<'_>,
+    out: &mut BytesMut,
+) {
+    let cmd = match Command::from_frame(frame) {
+        Ok(cmd) => cmd,
+        Err(e) => return Frame::Error(format!("ERR {e}")).serialize(out),
+    };
+    match cmd {
+        Command::Subscribe { .. }
+        | Command::Unsubscribe { .. }
+        | Command::PSubscribe { .. }
+        | Command::PUnsubscribe { .. } => match session.check(&cmd) {
+            Some(err) => err.serialize(out),
+            None => handle_sub_command(
+                cmd,
+                ctx,
+                subs.pubsub,
+                &mut subs.channels,
+                &mut subs.patterns,
+                out,
+            ),
+        },
+        Command::Ping(msg) => match msg {
+            Some(m) => Frame::Bulk(m).serialize(out),
+            None => Frame::Simple("PONG".into()).serialize(out),
+        },
+        _ => Frame::Error(
+            "ERR only (P)SUBSCRIBE / (P)UNSUBSCRIBE / PING are allowed in this context".into(),
+        )
+        .serialize(out),
     }
 }
 
