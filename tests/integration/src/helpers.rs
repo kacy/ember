@@ -51,6 +51,8 @@ pub struct ServerOptions {
     /// Failure-detection timeout in ms (--cluster-node-timeout).
     /// Lower values make failover tests converge faster.
     pub cluster_node_timeout_ms: Option<u64>,
+    /// Seconds before an idle connection is closed (--idle-timeout-secs).
+    pub idle_timeout_secs: Option<u64>,
 }
 
 impl TestServer {
@@ -121,6 +123,9 @@ impl TestServer {
         if let Some(timeout_ms) = opts.cluster_node_timeout_ms {
             cmd.arg("--cluster-node-timeout")
                 .arg(timeout_ms.to_string());
+        }
+        if let Some(secs) = opts.idle_timeout_secs {
+            cmd.arg("--idle-timeout-secs").arg(secs.to_string());
         }
 
         let data_dir = if opts.appendonly || opts.cluster_enabled {

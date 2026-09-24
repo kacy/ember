@@ -329,6 +329,8 @@ where
         if out.capacity() > RETAINED_BUFFER_MAX {
             out = BytesMut::with_capacity(ctx.limits.buf_capacity);
         }
+        // set when the parse loop stops before the end of `buf`
+        let mut cut_short = false;
         loop {
             if buf.is_empty() {
                 break;
@@ -336,9 +338,14 @@ where
             match parse_request(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
+                    // MONITOR, SUBSCRIBE and blocking pops change how the
+                    // connection reads, so each one ends the batch. the
+                    // frames after it wait in `buf` until it is done.
+                    let ends_batch = is_mode_frame(&frame);
                     frames.push(frame);
-                    if frames.len() >= ctx.limits.max_pipeline_depth {
-                        break; // process this batch, remaining data stays in buf
+                    if ends_batch || frames.len() >= ctx.limits.max_pipeline_depth {
+                        cut_short = true;
+                        break;
                     }
                 }
                 Ok(None) => break, // need more data
@@ -350,10 +357,10 @@ where
                 }
             }
         }
-        // frames past the depth limit are still in `buf`. the client may be
+        // frames after the batch are still in `buf`. the client may be
         // waiting for replies before it sends more, so blocking on a read
         // here would stall the connection.
-        skip_read = frames.len() >= ctx.limits.max_pipeline_depth;
+        skip_read = cut_short;
 
         // commands after a QUIT are never run
         if let Some(quit_at) = frames.iter().position(|f| is_command_frame(f, &[b"QUIT"])) {
@@ -363,6 +370,9 @@ where
 
         // pick up ACL SETUSER/DELUSER changes to this connection's user
         session.refresh(ctx);
+
+        // handled after the rest of the batch, see below
+        let mode_frame = frames.pop_if(|f| is_mode_frame(f));
 
         // before authentication, or when the batch contains AUTH, process
         // frames serially so an AUTH takes effect for the frames after it.
@@ -401,183 +411,6 @@ where
                     Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
                 }
             }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-            }
-            continue;
-        }
-
-        // MONITOR, SUBSCRIBE and blocking pops enter their own loops
-        // below instead of going through normal dispatch, so each checks
-        // ACL permissions itself before entering.
-
-        // check for MONITOR — enters a dedicated output loop
-        if frames.iter().any(is_monitor_frame) {
-            // process any non-MONITOR frames first
-            for frame in frames.drain(..) {
-                if is_monitor_frame(&frame) {
-                    if let Some(err) = session.check_frame(&frame) {
-                        err.serialize(&mut out);
-                        continue;
-                    }
-                    // write +OK and enter monitor mode
-                    Frame::Simple("OK".into()).serialize(&mut out);
-                    stream.write_all(&out).await?;
-                    out.clear();
-                    handler::handle_monitor_mode(&mut stream, &mut buf, ctx, &peer_addr_str)
-                        .await?;
-                    return Ok(());
-                }
-                let response = dispatch::process(
-                    frame,
-                    &engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    &mut asking,
-                    &peer_addr_str,
-                    client_id,
-                    &session,
-                )
-                .await;
-                response.serialize(&mut out);
-            }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-            }
-            continue;
-        }
-
-        let enter_sub = frames.iter().any(is_subscribe_frame);
-
-        if enter_sub {
-            // process any non-subscribe commands that came before
-            let mut sub_frames = Vec::new();
-            for frame in frames.drain(..) {
-                if is_subscribe_frame(&frame) {
-                    match session.check_frame(&frame) {
-                        Some(err) => err.serialize(&mut out),
-                        None => sub_frames.push(frame),
-                    }
-                } else {
-                    let response = dispatch::process(
-                        frame,
-                        &engine,
-                        ctx,
-                        slow_log,
-                        pubsub,
-                        &mut asking,
-                        &peer_addr_str,
-                        client_id,
-                        &session,
-                    )
-                    .await;
-                    response.serialize(&mut out);
-                }
-            }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-                out.clear();
-            }
-
-            // every subscribe was denied, so stay in normal mode
-            if sub_frames.is_empty() {
-                continue;
-            }
-
-            // enter subscriber mode — this blocks until all subscriptions
-            // are removed or the client disconnects
-            match handler::handle_subscriber_mode(
-                &mut stream,
-                &mut buf,
-                &mut out,
-                ctx,
-                pubsub,
-                &session,
-                sub_frames,
-            )
-            .await?
-            {
-                handler::SubscriberExit::Close => return Ok(()),
-                // back to normal mode; commands pipelined after the last
-                // UNSUBSCRIBE may already be in the buffer
-                handler::SubscriberExit::Unsubscribed => {
-                    skip_read = !buf.is_empty();
-                    continue;
-                }
-            }
-        }
-
-        // check for blocking list operations (BLPOP/BRPOP). these break
-        // the pipeline model because they may block the connection. process
-        // any preceding non-blocking frames first, then handle the blocking
-        // op, then continue with any remaining frames.
-        if frames.iter().any(is_blocking_pop_frame) {
-            let mut remaining = Vec::new();
-            let mut blocking_frame = None;
-
-            for frame in frames.drain(..) {
-                if blocking_frame.is_some() {
-                    remaining.push(frame);
-                } else if is_blocking_pop_frame(&frame) {
-                    blocking_frame = Some(frame);
-                } else {
-                    let response = dispatch::process(
-                        frame,
-                        &engine,
-                        ctx,
-                        slow_log,
-                        pubsub,
-                        &mut asking,
-                        &peer_addr_str,
-                        client_id,
-                        &session,
-                    )
-                    .await;
-                    response.serialize(&mut out);
-                }
-            }
-
-            // flush any preceding responses
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-                out.clear();
-            }
-
-            // handle the blocking pop
-            if let Some(frame) = blocking_frame {
-                let response = match session.check_frame(&frame) {
-                    Some(err) => err,
-                    None => {
-                        handler::handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking)
-                            .await
-                    }
-                };
-                response.serialize(&mut out);
-                stream.write_all(&out).await?;
-                out.clear();
-            }
-
-            // process any remaining frames after the blocking op
-            for frame in remaining {
-                let response = dispatch::process(
-                    frame,
-                    &engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    &mut asking,
-                    &peer_addr_str,
-                    client_id,
-                    &session,
-                )
-                .await;
-                response.serialize(&mut out);
-            }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-            }
-            continue;
         }
 
         // two-phase pipeline: dispatch all commands to shards first,
@@ -764,6 +597,67 @@ where
             }
         }
 
+        // MONITOR, SUBSCRIBE and blocking pops run after the frames before
+        // them, and enter their own loops instead of normal dispatch
+        if let Some(frame) = mode_frame {
+            if !session.is_authenticated() {
+                on_auth_failure("noauth");
+                Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
+            } else if !matches!(tx_state, TransactionState::None) {
+                // inside MULTI they are queued like any other command
+                handler::handle_frame_with_tx(
+                    frame,
+                    &mut tx_state,
+                    &mut watched_keys,
+                    &engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    &mut asking,
+                    &peer_addr_str,
+                    client_id,
+                    &session,
+                )
+                .await
+                .serialize(&mut out);
+            } else if let Some(err) = session.check_frame(&frame) {
+                err.serialize(&mut out);
+            } else {
+                // replies to the earlier frames go out first
+                if !out.is_empty() {
+                    stream.write_all(&out).await?;
+                    out.clear();
+                }
+                if is_monitor_frame(&frame) {
+                    stream.write_all(b"+OK\r\n").await?;
+                    handler::handle_monitor_mode(&mut stream, &mut buf, ctx, &peer_addr_str)
+                        .await?;
+                    return Ok(());
+                } else if is_subscribe_frame(&frame) {
+                    let exit = handler::handle_subscriber_mode(
+                        &mut stream,
+                        &mut buf,
+                        &mut out,
+                        ctx,
+                        pubsub,
+                        &session,
+                        frame,
+                    )
+                    .await?;
+                    if let handler::SubscriberExit::Close = exit {
+                        return Ok(());
+                    }
+                    // commands sent after the last UNSUBSCRIBE may
+                    // already be in the buffer
+                    skip_read = !buf.is_empty();
+                } else {
+                    handler::handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking)
+                        .await
+                        .serialize(&mut out);
+                }
+            }
+        }
+
         if !out.is_empty() {
             stream.write_all(&out).await?;
 
@@ -846,6 +740,12 @@ pub(super) fn is_transaction_frame(frame: &Frame) -> bool {
 /// Checks if a raw frame is a BLPOP or BRPOP command.
 pub(super) fn is_blocking_pop_frame(frame: &Frame) -> bool {
     is_command_frame(frame, &[b"BLPOP", b"BRPOP"])
+}
+
+/// Checks if a raw frame is MONITOR, a (P)(UN)SUBSCRIBE or a blocking pop:
+/// the commands that leave the normal request-reply loop.
+fn is_mode_frame(frame: &Frame) -> bool {
+    is_monitor_frame(frame) || is_subscribe_frame(frame) || is_blocking_pop_frame(frame)
 }
 
 /// Checks if a raw frame is a SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE command.
