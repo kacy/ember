@@ -925,6 +925,27 @@ async fn run_shard(prepared: PreparedShard) {
         _ => None,
     };
 
+    // encryption was turned on or off since the AOF was written. recovery
+    // already loaded its contents, so save them as a snapshot and start the
+    // AOF over in the new format before anything is appended.
+    if aof_writer.as_ref().is_some_and(AofWriter::needs_rewrite) {
+        info!(shard_id, "aof format changed, rewriting it from a snapshot");
+        if let ShardResponse::Err(e) = persistence::handle_snapshot(
+            &keyspace,
+            &persistence,
+            &mut aof_writer,
+            shard_id,
+            #[cfg(feature = "protobuf")]
+            &schema_registry,
+        ) {
+            error!(
+                shard_id,
+                "aof rewrite after a format change failed, not writing to it: {e}"
+            );
+            aof_writer = None;
+        }
+    }
+
     let fsync_policy = persistence
         .as_ref()
         .map(|p| p.fsync_policy)
