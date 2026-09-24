@@ -254,9 +254,8 @@ impl Keyspace {
             Value::String(ref b) => b.clone(),
             _ => unreachable!("type checked above"),
         };
-        self.memory.remove_with_size(
-            entry.cached_value_size as usize + key.len() + memory::ENTRY_OVERHEAD,
-        );
+        self.memory
+            .remove_with_size(entry.value_size() + key.len() + memory::ENTRY_OVERHEAD);
         self.decrement_expiry_if_set(&entry);
         self.remove_version(key);
         Ok(Some(bytes))

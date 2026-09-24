@@ -279,19 +279,20 @@ pub(crate) struct Entry {
     pub(crate) value: Value,
     /// Monotonic expiry timestamp in ms. 0 = no expiry.
     pub(crate) expires_at_ms: u64,
-    /// Cached result of `memory::value_size(&self.value)`. Updated on
-    /// every mutation so that memory accounting is O(1) instead of
-    /// walking entire collections. Using u32 saves 4 bytes per entry;
-    /// max value size is 512 MB which fits comfortably in u32 (~4 GB).
-    pub(crate) cached_value_size: u32,
+    /// Cached result of `memory::value_size(&self.value)`, so memory
+    /// accounting is O(1) instead of walking whole collections. A u32
+    /// saves 4 bytes per entry. Collections can outgrow it, so
+    /// `SIZE_NOT_CACHED` marks a size read from the value instead. Access
+    /// it only through `value_size` and the setters below.
+    cached_value_size: u32,
     /// Monotonic last access time in seconds since process start (for LRU).
     /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
     pub(crate) last_access_secs: u32,
 }
 
 impl Entry {
-    fn new(value: Value, ttl: Option<Duration>) -> Self {
-        let cached_value_size = memory::value_size(&value) as u32;
+    pub(crate) fn new(value: Value, ttl: Option<Duration>) -> Self {
+        let cached_value_size = cache_size(memory::value_size(&value));
         Self {
             value,
             expires_at_ms: time::expiry_from_duration(ttl),
@@ -318,8 +319,45 @@ impl Entry {
     /// Returns the full estimated memory footprint of this entry
     /// (key + value + overhead) using the cached value size.
     fn entry_size(&self, key: &str) -> usize {
-        key.len() + self.cached_value_size as usize + memory::ENTRY_OVERHEAD
+        key.len() + self.value_size() + memory::ENTRY_OVERHEAD
     }
+
+    /// Returns the estimated size of the value.
+    pub(crate) fn value_size(&self) -> usize {
+        match self.cached_value_size {
+            SIZE_NOT_CACHED => memory::value_size(&self.value),
+            size => size as usize,
+        }
+    }
+
+    pub(crate) fn set_value_size(&mut self, size: usize) {
+        self.cached_value_size = cache_size(size);
+    }
+
+    /// Adds `bytes` to the cached size. A size that is not cached is read
+    /// from the value, which already includes the change.
+    pub(crate) fn grow_value_size(&mut self, bytes: usize) {
+        if self.cached_value_size != SIZE_NOT_CACHED {
+            self.set_value_size(self.cached_value_size as usize + bytes);
+        }
+    }
+
+    /// Subtracts `bytes` from the cached size, stopping at zero.
+    pub(crate) fn shrink_value_size(&mut self, bytes: usize) {
+        if self.cached_value_size != SIZE_NOT_CACHED {
+            self.set_value_size((self.cached_value_size as usize).saturating_sub(bytes));
+        }
+    }
+}
+
+/// Marks a value size too large for `Entry::cached_value_size`.
+const SIZE_NOT_CACHED: u32 = u32::MAX;
+
+fn cache_size(size: usize) -> u32 {
+    u32::try_from(size)
+        .ok()
+        .filter(|&s| s != SIZE_NOT_CACHED)
+        .unwrap_or(SIZE_NOT_CACHED)
 }
 
 /// Result of a TTL query, matching Redis semantics.
@@ -506,8 +544,7 @@ impl Keyspace {
         } else {
             self.memory.shrink_by(removed_bytes);
             if let Some(entry) = self.entries.get_mut(key) {
-                entry.cached_value_size =
-                    (entry.cached_value_size as usize).saturating_sub(removed_bytes) as u32;
+                entry.shrink_value_size(removed_bytes);
             }
         }
     }
@@ -572,7 +609,7 @@ impl Keyspace {
         // re-lookup after mutation (f consumed the borrow)
         let entry = self.entries.get_mut(key)?;
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size as u32;
+        entry.set_value_size(new_value_size);
         let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_size, new_size);
         self.bump_version(key);
@@ -1870,6 +1907,23 @@ mod tests {
 
         // original key should still be there
         assert!(ks.exists("a"));
+    }
+
+    #[test]
+    fn value_sizes_past_u32_fall_back_to_the_value() {
+        let mut entry = Entry::new(Value::String(Bytes::from("abc")), None);
+        let real = entry.value_size();
+
+        entry.set_value_size(u32::MAX as usize + 10);
+        // the cache cannot hold that size, so it is read from the value
+        assert_eq!(entry.value_size(), real);
+        entry.grow_value_size(5);
+        assert_eq!(entry.value_size(), real);
+
+        entry.set_value_size(100);
+        entry.grow_value_size(5);
+        entry.shrink_value_size(200);
+        assert_eq!(entry.value_size(), 0);
     }
 
     #[test]

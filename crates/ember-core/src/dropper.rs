@@ -134,12 +134,7 @@ mod tests {
         for i in 0..10 {
             entries.insert(
                 CompactString::from(format!("key-{i}").as_str()),
-                Entry {
-                    value: Value::String(Bytes::from(format!("val-{i}"))),
-                    expires_at_ms: 0,
-                    cached_value_size: 0,
-                    last_access_secs: 0,
-                },
+                Entry::new(Value::String(Bytes::from(format!("val-{i}"))), None),
             );
         }
         handle.defer_entries(entries);
