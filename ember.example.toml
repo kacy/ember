@@ -70,7 +70,7 @@
 
 # [cluster.gossip]
 # protocol-period-ms = 1000       # SWIM protocol period
-# probe-timeout-ms = 500          # direct probe timeout
+# probe-timeout-ms = 0            # direct probe timeout (0 = half of node-timeout-ms)
 # suspicion-multiplier = 5        # suspicion duration multiplier
 # indirect-probes = 3             # number of indirect probes
 # max-piggyback = 10              # max piggybacked updates per message

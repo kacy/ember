@@ -72,13 +72,6 @@ use crate::types::sorted_set::{ScoreBound, ZAddFlags};
 use crate::types::Value;
 use ember_protocol::command::{BitOpKind, BitRange};
 
-/// How often the shard runs active expiration. 100ms matches
-/// Redis's hz=10 default and keeps CPU overhead negligible.
-const EXPIRY_TICK: Duration = Duration::from_millis(100);
-
-/// How often to fsync when using the `EverySec` policy.
-const FSYNC_INTERVAL: Duration = Duration::from_secs(1);
-
 /// A mutation event broadcast to replication subscribers.
 ///
 /// Published after every successful mutation on the hot path. The
@@ -805,6 +798,9 @@ async fn run_shard(prepared: PreparedShard) {
         schema_registry,
     } = prepared;
     let shard_id = config.shard_id;
+    // tokio's interval panics on zero, so hold both to at least 1ms
+    let expiry_interval = config.expiry_interval.max(Duration::from_millis(1));
+    let fsync_interval = config.fsync_interval.max(Duration::from_millis(1));
     let mut keyspace = Keyspace::with_config(config);
 
     if let Some(handle) = drop_handle.clone() {
@@ -963,10 +959,10 @@ async fn run_shard(prepared: PreparedShard) {
     let mut disk_full: bool = false;
 
     // -- tickers --
-    let mut expiry_tick = tokio::time::interval(EXPIRY_TICK);
+    let mut expiry_tick = tokio::time::interval(expiry_interval);
     expiry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    let mut fsync_tick = tokio::time::interval(FSYNC_INTERVAL);
+    let mut fsync_tick = tokio::time::interval(fsync_interval);
     fsync_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {

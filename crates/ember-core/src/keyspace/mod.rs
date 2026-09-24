@@ -239,6 +239,11 @@ pub struct ShardConfig {
     pub eviction_policy: EvictionPolicy,
     /// Numeric identifier for this shard (used for persistence file naming).
     pub shard_id: u16,
+    /// How often the shard samples keys for active expiration. 100ms
+    /// matches Redis's hz=10 default.
+    pub expiry_interval: Duration,
+    /// How often the AOF is fsynced under the `EverySec` policy.
+    pub fsync_interval: Duration,
 }
 
 impl Default for ShardConfig {
@@ -247,6 +252,8 @@ impl Default for ShardConfig {
             max_memory: None,
             eviction_policy: EvictionPolicy::NoEviction,
             shard_id: 0,
+            expiry_interval: Duration::from_millis(100),
+            fsync_interval: Duration::from_secs(1),
         }
     }
 }
