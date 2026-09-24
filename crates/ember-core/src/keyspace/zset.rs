@@ -605,7 +605,7 @@ impl Keyspace {
         self.remove_if_expired(dest);
         if let Some(old) = self.entries.swap_remove(dest) {
             self.memory.remove(dest, &old.value);
-            self.decrement_expiry_if_set(&old);
+            self.untrack_expiry(dest, &old);
             self.defer_drop(old.value);
         }
 

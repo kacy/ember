@@ -278,6 +278,11 @@ pub enum SetResult {
 /// on that. Remove entries only with `swap_remove`: `shift_remove` is O(n).
 pub(crate) type EntryMap = indexmap::IndexMap<CompactString, Entry, ahash::RandomState>;
 
+/// The keys that have a TTL. Active expiry samples from this set, so it
+/// finds expired keys even when most keys have no TTL. It is an `IndexSet`
+/// for the same O(1) random picks as [`EntryMap`].
+type ExpirySet = indexmap::IndexSet<CompactString, ahash::RandomState>;
+
 /// A single entry in the keyspace: a value plus optional expiration
 /// and last access time for LRU approximation.
 ///
@@ -430,8 +435,8 @@ pub struct Keyspace {
     entries: EntryMap,
     memory: MemoryTracker,
     config: ShardConfig,
-    /// Number of entries that currently have an expiration set.
-    expiry_count: usize,
+    /// Keys that currently have an expiration set.
+    expiring: ExpirySet,
     /// Cumulative count of keys removed by expiration (lazy + active).
     expired_total: u64,
     /// Cumulative count of keys removed by eviction.
@@ -473,7 +478,7 @@ impl Keyspace {
             entries: EntryMap::default(),
             memory: MemoryTracker::new(),
             config,
-            expiry_count: 0,
+            expiring: ExpirySet::default(),
             expired_total: 0,
             evicted_total: 0,
             oom_rejections: 0,
@@ -532,11 +537,9 @@ impl Keyspace {
         self.versions.clear();
     }
 
-    /// Decrements the expiry count if the entry had a TTL set.
-    fn decrement_expiry_if_set(&mut self, entry: &Entry) {
-        if entry.expires_at_ms != 0 {
-            self.expiry_count = self.expiry_count.saturating_sub(1);
-        }
+    /// Stops tracking the TTL of `key`, whose `entry` was just removed.
+    fn untrack_expiry(&mut self, key: &str, entry: &Entry) {
+        self.track_expiry(key, entry.expires_at_ms != 0, false);
     }
 
     /// Cleans up after removing an element from a collection (list, sorted
@@ -554,7 +557,7 @@ impl Keyspace {
     ) {
         if is_empty {
             if let Some(removed) = self.entries.swap_remove(key) {
-                self.decrement_expiry_if_set(&removed);
+                self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_size);
         } else {
@@ -632,12 +635,16 @@ impl Keyspace {
         Some(result)
     }
 
-    /// Adjusts the expiry count when replacing an entry whose TTL status
-    /// may have changed (e.g. SET overwriting an existing key).
-    fn adjust_expiry_count(&mut self, had_expiry: bool, has_expiry: bool) {
+    /// Updates the set of keys with a TTL when `key` goes from having one
+    /// or not (`had_expiry`) to having one or not (`has_expiry`).
+    fn track_expiry(&mut self, key: &str, had_expiry: bool, has_expiry: bool) {
         match (had_expiry, has_expiry) {
-            (false, true) => self.expiry_count += 1,
-            (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
+            (false, true) => {
+                self.expiring.insert(key.into());
+            }
+            (true, false) => {
+                self.expiring.swap_remove(key);
+            }
             _ => {}
         }
     }
@@ -661,7 +668,7 @@ impl Keyspace {
             return false;
         };
         self.memory.remove(&key, &entry.value);
-        self.decrement_expiry_if_set(&entry);
+        self.untrack_expiry(&key, &entry);
         self.evicted_total += 1;
         self.remove_version(&key);
         self.defer_drop(entry.value);
@@ -746,7 +753,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
-            self.decrement_expiry_if_set(&entry);
+            self.untrack_expiry(key, &entry);
             self.remove_version(key);
             self.defer_drop(entry.value);
             true
@@ -766,7 +773,7 @@ impl Keyspace {
         }
         if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
-            self.decrement_expiry_if_set(&entry);
+            self.untrack_expiry(key, &entry);
             self.remove_version(key);
             // always defer for UNLINK, regardless of value size
             if let Some(ref handle) = self.drop_handle {
@@ -784,7 +791,7 @@ impl Keyspace {
     pub(crate) fn flush_async(&mut self) -> EntryMap {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
-        self.expiry_count = 0;
+        self.expiring.clear();
         self.versions.clear();
         old
     }
@@ -923,7 +930,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(seconds.saturating_mul(1000));
                 self.bump_version(key);
@@ -975,7 +982,7 @@ impl Keyspace {
             Some(entry) => {
                 if entry.expires_at_ms != 0 {
                     entry.expires_at_ms = 0;
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                    self.expiring.swap_remove(key);
                     self.bump_version(key);
                     true
                 } else {
@@ -1014,7 +1021,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(millis);
                 self.bump_version(key);
@@ -1035,7 +1042,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::unix_ms_to_monotonic_ms(unix_secs.saturating_mul(1000));
                 self.bump_version(key);
@@ -1056,7 +1063,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::unix_ms_to_monotonic_ms(unix_ms);
                 self.bump_version(key);
@@ -1155,19 +1162,17 @@ impl Keyspace {
 
         // update memory tracking for old key removal
         self.memory.remove(key, &entry.value);
-        self.decrement_expiry_if_set(&entry);
+        self.untrack_expiry(key, &entry);
 
         // remove destination if it exists
         if let Some(old_dest) = self.entries.swap_remove(newkey) {
             self.memory.remove(newkey, &old_dest.value);
-            self.decrement_expiry_if_set(&old_dest);
+            self.untrack_expiry(newkey, &old_dest);
         }
 
         // re-insert with the new key name, preserving value and expiry
         self.memory.add(newkey, &entry.value);
-        if entry.expires_at_ms != 0 {
-            self.expiry_count += 1;
-        }
+        self.track_expiry(newkey, false, entry.expires_at_ms != 0);
         self.remove_version(key);
         self.entries.insert(CompactString::from(newkey), entry);
         self.bump_version(newkey);
@@ -1216,16 +1221,14 @@ impl Keyspace {
         // remove old destination if replacing
         if let Some(old_dest) = self.entries.swap_remove(dest) {
             self.memory.remove(dest, &old_dest.value);
-            self.decrement_expiry_if_set(&old_dest);
+            self.untrack_expiry(dest, &old_dest);
             self.defer_drop(old_dest.value);
         }
 
         // insert the clone
         self.memory.add(dest, &cloned_value);
         let has_expiry = cloned_expire.is_some();
-        if has_expiry {
-            self.expiry_count += 1;
-        }
+        self.track_expiry(dest, false, has_expiry);
         let mut entry = Entry::new(cloned_value, None);
         // preserve the source's absolute expiry timestamp
         if let Some(ts) = cloned_expire {
@@ -1258,7 +1261,7 @@ impl Keyspace {
         KeyspaceStats {
             key_count: self.memory.key_count(),
             used_bytes: self.memory.used_bytes(),
-            keys_with_expiry: self.expiry_count,
+            keys_with_expiry: self.expiring.len(),
             keys_expired: self.expired_total,
             keys_evicted: self.evicted_total,
             oom_rejections: self.oom_rejections,
@@ -1276,7 +1279,7 @@ impl Keyspace {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.memory.reset();
-        self.expiry_count = 0;
+        self.expiring.clear();
         self.versions.clear();
     }
 
@@ -1402,12 +1405,10 @@ impl Keyspace {
         // if replacing an existing entry, adjust memory tracking
         if let Some(old) = self.entries.get(key.as_str()) {
             self.memory.replace(&key, &old.value, &value);
-            self.adjust_expiry_count(old.expires_at_ms != 0, has_expiry);
+            self.track_expiry(&key, old.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &value);
-            if has_expiry {
-                self.expiry_count += 1;
-            }
+            self.track_expiry(&key, false, has_expiry);
         }
 
         let entry = Entry::new(value, ttl);
@@ -1415,21 +1416,23 @@ impl Keyspace {
         self.bump_version(&key);
     }
 
-    /// Samples up to `count` random keys and removes any that have expired.
+    /// Samples up to `count` random keys that have a TTL and removes any
+    /// that have expired.
     ///
     /// Expired key names are appended to `out` so the caller can emit
     /// keyspace notifications. Returns the number of keys removed.
     pub(crate) fn expire_sample(&mut self, count: usize, out: &mut Vec<String>) -> usize {
-        let len = self.entries.len();
+        let len = self.expiring.len();
         if len == 0 {
             return 0;
         }
-        // distinct positions, so a pass over a small keyspace sees every key
+        // distinct positions, so a pass over a small set sees every key
         let positions = rand::seq::index::sample(&mut rand::rng(), len, count.min(len));
         let expired: Vec<String> = positions
             .into_iter()
             .filter_map(|i| {
-                let (key, entry) = self.entries.get_index(i)?;
+                let key = self.expiring.get_index(i)?;
+                let entry = self.entries.get(key)?;
                 entry.is_expired().then(|| key.to_string())
             })
             .collect();
@@ -1450,7 +1453,7 @@ impl Keyspace {
     fn remove_expired_entry(&mut self, key: &str) {
         if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
-            self.decrement_expiry_if_set(&entry);
+            self.untrack_expiry(key, &entry);
             self.expired_total += 1;
             self.remove_version(key);
             self.defer_drop(entry.value);
@@ -1467,13 +1470,7 @@ impl Keyspace {
             .unwrap_or(false);
 
         if expired {
-            if let Some(entry) = self.entries.swap_remove(key) {
-                self.memory.remove(key, &entry.value);
-                self.decrement_expiry_if_set(&entry);
-                self.expired_total += 1;
-                self.remove_version(key);
-                self.defer_drop(entry.value);
-            }
+            self.remove_expired_entry(key);
         }
         expired
     }
