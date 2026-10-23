@@ -10,70 +10,53 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard};
 
 use ember_core::glob_match;
+use ember_protocol::command::category as cat;
 use ember_protocol::types::Frame;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 // ---------------------------------------------------------------------------
-// category bitmask constants
+// categories
 // ---------------------------------------------------------------------------
 
-pub const CAT_READ: u64 = 1 << 0;
-pub const CAT_WRITE: u64 = 1 << 1;
-pub const CAT_STRING: u64 = 1 << 2;
-pub const CAT_LIST: u64 = 1 << 3;
-pub const CAT_SET: u64 = 1 << 4;
-pub const CAT_SORTEDSET: u64 = 1 << 5;
-pub const CAT_HASH: u64 = 1 << 6;
-pub const CAT_KEYSPACE: u64 = 1 << 7;
-pub const CAT_SERVER: u64 = 1 << 8;
-pub const CAT_CONNECTION: u64 = 1 << 9;
-pub const CAT_TRANSACTION: u64 = 1 << 10;
-pub const CAT_PUBSUB: u64 = 1 << 11;
-pub const CAT_FAST: u64 = 1 << 12;
-pub const CAT_SLOW: u64 = 1 << 13;
-pub const CAT_ADMIN: u64 = 1 << 14;
-pub const CAT_DANGEROUS: u64 = 1 << 15;
-pub const CAT_CLUSTER: u64 = 1 << 16;
-
 /// All category flags OR'd together.
-const ALL_CATEGORIES: u64 = CAT_READ
-    | CAT_WRITE
-    | CAT_STRING
-    | CAT_LIST
-    | CAT_SET
-    | CAT_SORTEDSET
-    | CAT_HASH
-    | CAT_KEYSPACE
-    | CAT_SERVER
-    | CAT_CONNECTION
-    | CAT_TRANSACTION
-    | CAT_PUBSUB
-    | CAT_FAST
-    | CAT_SLOW
-    | CAT_ADMIN
-    | CAT_DANGEROUS
-    | CAT_CLUSTER;
+const ALL_CATEGORIES: u64 = cat::READ
+    | cat::WRITE
+    | cat::STRING
+    | cat::LIST
+    | cat::SET
+    | cat::SORTEDSET
+    | cat::HASH
+    | cat::KEYSPACE
+    | cat::SERVER
+    | cat::CONNECTION
+    | cat::TRANSACTION
+    | cat::PUBSUB
+    | cat::FAST
+    | cat::SLOW
+    | cat::ADMIN
+    | cat::DANGEROUS
+    | cat::CLUSTER;
 
 /// All known category names, sorted alphabetically.
 const CATEGORY_NAMES: &[(&str, u64)] = &[
-    ("admin", CAT_ADMIN),
-    ("cluster", CAT_CLUSTER),
-    ("connection", CAT_CONNECTION),
-    ("dangerous", CAT_DANGEROUS),
-    ("fast", CAT_FAST),
-    ("hash", CAT_HASH),
-    ("keyspace", CAT_KEYSPACE),
-    ("list", CAT_LIST),
-    ("pubsub", CAT_PUBSUB),
-    ("read", CAT_READ),
-    ("server", CAT_SERVER),
-    ("set", CAT_SET),
-    ("slow", CAT_SLOW),
-    ("sortedset", CAT_SORTEDSET),
-    ("string", CAT_STRING),
-    ("transaction", CAT_TRANSACTION),
-    ("write", CAT_WRITE),
+    ("admin", cat::ADMIN),
+    ("cluster", cat::CLUSTER),
+    ("connection", cat::CONNECTION),
+    ("dangerous", cat::DANGEROUS),
+    ("fast", cat::FAST),
+    ("hash", cat::HASH),
+    ("keyspace", cat::KEYSPACE),
+    ("list", cat::LIST),
+    ("pubsub", cat::PUBSUB),
+    ("read", cat::READ),
+    ("server", cat::SERVER),
+    ("set", cat::SET),
+    ("slow", cat::SLOW),
+    ("sortedset", cat::SORTEDSET),
+    ("string", cat::STRING),
+    ("transaction", cat::TRANSACTION),
+    ("write", cat::WRITE),
 ];
 
 /// Resolves a category name (case-insensitive) to its bitmask.
@@ -1099,11 +1082,11 @@ mod tests {
     fn rule_categories() {
         let mut user = AclUser::new();
         apply_rule(&mut user, "+@read").unwrap();
-        assert_eq!(user.allowed_categories & CAT_READ, CAT_READ);
+        assert_eq!(user.allowed_categories & cat::READ, cat::READ);
 
         apply_rule(&mut user, "-@read").unwrap();
-        assert_eq!(user.allowed_categories & CAT_READ, 0);
-        assert_eq!(user.denied_categories & CAT_READ, CAT_READ);
+        assert_eq!(user.allowed_categories & cat::READ, 0);
+        assert_eq!(user.denied_categories & cat::READ, cat::READ);
     }
 
     #[test]
@@ -1188,7 +1171,9 @@ mod tests {
     fn permission_check_unrestricted() {
         let user = AclUser::unrestricted();
         let cmd = ember_protocol::Command::Get { key: "foo".into() };
-        assert!(check_permission(&user, &cmd, "get", CAT_READ | CAT_STRING | CAT_FAST).is_none());
+        assert!(
+            check_permission(&user, &cmd, "get", cat::READ | cat::STRING | cat::FAST).is_none()
+        );
     }
 
     #[test]
@@ -1204,7 +1189,7 @@ mod tests {
             nx: false,
             xx: false,
         };
-        let result = check_permission(&user, &cmd, "set", CAT_WRITE | CAT_STRING | CAT_SLOW);
+        let result = check_permission(&user, &cmd, "set", cat::WRITE | cat::STRING | cat::SLOW);
         assert!(result.is_some());
         if let Some(Frame::Error(msg)) = result {
             assert!(msg.contains("NOPERM"));
@@ -1215,8 +1200,8 @@ mod tests {
     fn permission_check_denied_category() {
         let mut user = AclUser::unrestricted();
         user.allcommands = false;
-        user.allowed_categories = CAT_READ | CAT_STRING | CAT_FAST;
-        user.denied_categories = CAT_WRITE;
+        user.allowed_categories = cat::READ | cat::STRING | cat::FAST;
+        user.denied_categories = cat::WRITE;
 
         let cmd = ember_protocol::Command::Set {
             key: "foo".into(),
@@ -1226,7 +1211,7 @@ mod tests {
             xx: false,
         };
         // SET has WRITE category — should be denied
-        let result = check_permission(&user, &cmd, "set", CAT_WRITE | CAT_STRING | CAT_SLOW);
+        let result = check_permission(&user, &cmd, "set", cat::WRITE | cat::STRING | cat::SLOW);
         assert!(result.is_some());
     }
 
@@ -1234,7 +1219,7 @@ mod tests {
     fn permission_check_allowed_command_overrides_denied_category() {
         let mut user = AclUser::unrestricted();
         user.allcommands = false;
-        user.denied_categories = CAT_WRITE;
+        user.denied_categories = cat::WRITE;
         user.allowed_commands.insert("set".into());
 
         let cmd = ember_protocol::Command::Set {
@@ -1245,7 +1230,7 @@ mod tests {
             xx: false,
         };
         // SET is explicitly allowed even though WRITE category is denied
-        let result = check_permission(&user, &cmd, "set", CAT_WRITE | CAT_STRING | CAT_SLOW);
+        let result = check_permission(&user, &cmd, "set", cat::WRITE | cat::STRING | cat::SLOW);
         assert!(result.is_none());
     }
 
@@ -1258,12 +1243,12 @@ mod tests {
         let allowed = ember_protocol::Command::Get {
             key: "user:123".into(),
         };
-        assert!(check_permission(&user, &allowed, "get", CAT_READ).is_none());
+        assert!(check_permission(&user, &allowed, "get", cat::READ).is_none());
 
         let denied = ember_protocol::Command::Get {
             key: "session:abc".into(),
         };
-        let result = check_permission(&user, &denied, "get", CAT_READ);
+        let result = check_permission(&user, &denied, "get", cat::READ);
         assert!(result.is_some());
         if let Some(Frame::Error(msg)) = result {
             assert!(msg.contains("NOPERM"));
@@ -1282,13 +1267,13 @@ mod tests {
             key: "secret:x".into(),
             value: bytes::Bytes::from("v"),
         };
-        assert!(check_permission(&user, &getset, "getset", CAT_WRITE).is_some());
+        assert!(check_permission(&user, &getset, "getset", cat::WRITE).is_some());
 
         let store = ember_protocol::Command::SUnionStore {
             dest: "user:mine".into(),
             keys: vec!["secret:a".into()],
         };
-        assert!(check_permission(&user, &store, "sunionstore", CAT_WRITE).is_some());
+        assert!(check_permission(&user, &store, "sunionstore", cat::WRITE).is_some());
     }
 
     #[test]
@@ -1369,7 +1354,7 @@ mod tests {
         assert!(alice.enabled);
         assert!(alice.verify_password("pass"));
         assert!(!alice.verify_password("wrong"));
-        assert_eq!(alice.allowed_categories & CAT_READ, CAT_READ);
+        assert_eq!(alice.allowed_categories & cat::READ, cat::READ);
         assert_eq!(alice.key_patterns, vec!["user:*"]);
     }
 
@@ -1425,8 +1410,8 @@ mod tests {
 
     #[test]
     fn category_from_name_case_insensitive() {
-        assert_eq!(category_from_name("READ"), Some(CAT_READ));
-        assert_eq!(category_from_name("Read"), Some(CAT_READ));
+        assert_eq!(category_from_name("READ"), Some(cat::READ));
+        assert_eq!(category_from_name("Read"), Some(cat::READ));
         assert_eq!(category_from_name("nope"), None);
     }
 }

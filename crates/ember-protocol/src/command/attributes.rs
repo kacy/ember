@@ -7,6 +7,27 @@ use bytes::Bytes;
 
 use super::Command;
 
+/// ACL category bits, as returned by [`Command::acl_categories`].
+pub mod category {
+    pub const READ: u64 = 1 << 0;
+    pub const WRITE: u64 = 1 << 1;
+    pub const STRING: u64 = 1 << 2;
+    pub const LIST: u64 = 1 << 3;
+    pub const SET: u64 = 1 << 4;
+    pub const SORTEDSET: u64 = 1 << 5;
+    pub const HASH: u64 = 1 << 6;
+    pub const KEYSPACE: u64 = 1 << 7;
+    pub const SERVER: u64 = 1 << 8;
+    pub const CONNECTION: u64 = 1 << 9;
+    pub const TRANSACTION: u64 = 1 << 10;
+    pub const PUBSUB: u64 = 1 << 11;
+    pub const FAST: u64 = 1 << 12;
+    pub const SLOW: u64 = 1 << 13;
+    pub const ADMIN: u64 = 1 << 14;
+    pub const DANGEROUS: u64 = 1 << 15;
+    pub const CLUSTER: u64 = 1 << 16;
+}
+
 impl Command {
     /// Returns the lowercase command name as a static string.
     ///
@@ -345,34 +366,10 @@ impl Command {
 
     /// Returns the ACL category bitmask for this command.
     ///
-    /// Each bit corresponds to a category (read, write, string, list, etc.)
-    /// as defined in `ember-server/src/acl.rs`. Used by the permission check
-    /// to determine whether a user has access to a command.
-    ///
-    /// The bit values match the constants in the acl module:
-    /// READ=1<<0, WRITE=1<<1, STRING=1<<2, LIST=1<<3, SET=1<<4,
-    /// SORTEDSET=1<<5, HASH=1<<6, KEYSPACE=1<<7, SERVER=1<<8,
-    /// CONNECTION=1<<9, TRANSACTION=1<<10, PUBSUB=1<<11, FAST=1<<12,
-    /// SLOW=1<<13, ADMIN=1<<14, DANGEROUS=1<<15, CLUSTER=1<<16
+    /// Each bit is one of the constants in [`category`]. The permission check
+    /// compares this mask with the categories a user may run.
     pub fn acl_categories(&self) -> u64 {
-        // bitmask constants (duplicated from acl.rs to avoid cross-crate dep)
-        const READ: u64 = 1 << 0;
-        const WRITE: u64 = 1 << 1;
-        const STRING: u64 = 1 << 2;
-        const LIST: u64 = 1 << 3;
-        const SET: u64 = 1 << 4;
-        const SORTEDSET: u64 = 1 << 5;
-        const HASH: u64 = 1 << 6;
-        const KEYSPACE: u64 = 1 << 7;
-        const SERVER: u64 = 1 << 8;
-        const CONNECTION: u64 = 1 << 9;
-        const TRANSACTION: u64 = 1 << 10;
-        const PUBSUB: u64 = 1 << 11;
-        const FAST: u64 = 1 << 12;
-        const SLOW: u64 = 1 << 13;
-        const ADMIN: u64 = 1 << 14;
-        const DANGEROUS: u64 = 1 << 15;
-        const CLUSTER: u64 = 1 << 16;
+        use category::*;
 
         match self {
             // connection
