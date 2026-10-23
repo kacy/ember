@@ -5,13 +5,16 @@
 //! replayed record runs the same code as the write that logged it.
 //!
 //! 1. The snapshot's entries go to [`Recover::restore`], except those whose
-//!    TTL ran out while the server was down. A snapshot that fails to load
-//!    is skipped, and the shard starts from the AOF alone.
+//!    TTL ran out while the server was down.
 //! 2. A first pass over the AOF decodes every record without applying any.
 //!    It cuts off a record left partial by a crash and finds where replay
-//!    starts. An AOF that is corrupt in the middle is skipped entirely, so
-//!    it can't leave a partial, inconsistent prefix applied.
+//!    starts.
 //! 3. A second pass hands the records from that point to [`Recover::apply`].
+//!
+//! A file that can't be read fails recovery with a [`RecoveryError`]: it is
+//! corrupt in the middle, encrypted with a key that wasn't given, or in a
+//! format this build doesn't support. The shard must not start then. If it
+//! did, its next save would replace the file with the little it recovered.
 //!
 //! Replay starts after the last checkpoint that names the loaded snapshot:
 //! the records before it are already in the snapshot, as when truncating
@@ -21,10 +24,10 @@
 //! the AOF was truncated. Its records are all in the snapshot, so none are
 //! replayed, and the caller must rewrite the file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tracing::{error, warn};
+use tracing::warn;
 
 use crate::aof::{self, AofReader, AofRecord};
 use crate::format::FormatError;
@@ -60,8 +63,21 @@ pub struct RecoveryResult {
     pub stale_aof: bool,
 }
 
+/// A file recovery couldn't read. Nothing was changed on disk.
+#[derive(Debug, thiserror::Error)]
+pub enum RecoveryError {
+    #[error("failed to load snapshot {}: {source}", path.display())]
+    Snapshot { path: PathBuf, source: FormatError },
+    #[error("failed to read aof {}: {source}", path.display())]
+    Aof { path: PathBuf, source: FormatError },
+}
+
 /// Recovers a shard's state from its snapshot and AOF into `target`.
-pub fn recover_shard(data_dir: &Path, shard_id: u16, target: &mut impl Recover) -> RecoveryResult {
+pub fn recover_shard(
+    data_dir: &Path,
+    shard_id: u16,
+    target: &mut impl Recover,
+) -> Result<RecoveryResult, RecoveryError> {
     recover_shard_impl(data_dir, shard_id, None, target)
 }
 
@@ -73,7 +89,7 @@ pub fn recover_shard_encrypted(
     shard_id: u16,
     key: &crate::encryption::EncryptionKey,
     target: &mut impl Recover,
-) -> RecoveryResult {
+) -> Result<RecoveryResult, RecoveryError> {
     recover_shard_impl(data_dir, shard_id, Some(key), target)
 }
 
@@ -82,54 +98,43 @@ fn recover_shard_impl(
     shard_id: u16,
     #[allow(unused_variables)] key: Option<EncryptionKeyRef<'_>>,
     target: &mut impl Recover,
-) -> RecoveryResult {
+) -> Result<RecoveryResult, RecoveryError> {
     let mut result = RecoveryResult::default();
 
     let snap_path = snapshot::snapshot_path(data_dir, shard_id);
     let mut snapshot_crc = None;
     if snap_path.exists() {
-        match load_snapshot(&snap_path, shard_id, key) {
-            Ok((entries, crc)) => {
-                for (key, value, ttl) in entries {
-                    target.restore(key, value, ttl);
-                }
-                result.loaded_snapshot = true;
-                snapshot_crc = Some(crc);
-            }
-            Err(e) => warn!(shard_id, "failed to load snapshot, starting empty: {e}"),
+        let (entries, crc) =
+            load_snapshot(&snap_path, shard_id, key).map_err(|source| RecoveryError::Snapshot {
+                path: snap_path.clone(),
+                source,
+            })?;
+        for (key, value, ttl) in entries {
+            target.restore(key, value, ttl);
         }
+        result.loaded_snapshot = true;
+        snapshot_crc = Some(crc);
     }
 
     let aof_path = aof::aof_path(data_dir, shard_id);
     if !aof_path.exists() {
-        return result;
+        return Ok(result);
     }
-    let start = match scan_aof(&aof_path, snapshot_crc, key) {
-        Ok(scan) => {
-            if scan.stale {
-                warn!(
-                    shard_id,
-                    "aof was written before the snapshot; skipping its records"
-                );
-                result.stale_aof = true;
-            }
-            scan.start
-        }
-        Err(e) => {
-            warn!(
-                shard_id,
-                "aof is corrupt mid-file; skipped all of it and recovered snapshot state \
-                 only (writes since the last snapshot are lost): {e}"
-            );
-            return result;
-        }
+    let aof_error = |source| RecoveryError::Aof {
+        path: aof_path.clone(),
+        source,
     };
-    match replay_aof(&aof_path, start, key, target) {
-        Ok(count) => result.replayed_aof = count > 0,
-        // the first pass read the same file without trouble
-        Err(e) => error!(shard_id, "aof replay failed after a clean scan: {e}"),
+    let scan = scan_aof(&aof_path, snapshot_crc, key).map_err(aof_error)?;
+    if scan.stale {
+        warn!(
+            shard_id,
+            "aof was written before the snapshot; skipping its records"
+        );
+        result.stale_aof = true;
     }
-    result
+    let count = replay_aof(&aof_path, scan.start, key, target).map_err(aof_error)?;
+    result.replayed_aof = count > 0;
+    Ok(result)
 }
 
 /// A snapshot entry as (key, value, TTL left).
@@ -309,7 +314,7 @@ mod tests {
 
     fn recover(dir: &Path) -> (Recorded, RecoveryResult) {
         let mut target = Recorded::default();
-        let result = recover_shard(dir, 0, &mut target);
+        let result = recover_shard(dir, 0, &mut target).expect("recovery");
         (target, result)
     }
 
@@ -397,18 +402,19 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_snapshot_is_skipped_and_the_aof_still_replays() {
+    fn corrupt_snapshot_fails_recovery() {
         let dir = temp_dir();
         std::fs::write(snapshot::snapshot_path(dir.path(), 0), b"garbage").unwrap();
         write_aof(dir.path(), &[del("a")]);
 
-        let (target, result) = recover(dir.path());
-        assert!(!result.loaded_snapshot);
-        assert_eq!(target.applied, [del("a")]);
+        let mut target = Recorded::default();
+        let err = recover_shard(dir.path(), 0, &mut target).unwrap_err();
+        assert!(matches!(err, RecoveryError::Snapshot { .. }), "{err}");
+        assert!(target.applied.is_empty());
     }
 
     #[test]
-    fn aof_corrupt_mid_file_replays_nothing() {
+    fn aof_corrupt_mid_file_fails_recovery_and_applies_nothing() {
         // applying the good records before the damage could leave a
         // prefix that doesn't match any state the server was in
         let dir = temp_dir();
@@ -416,10 +422,35 @@ mod tests {
         let path = aof::aof_path(dir.path(), 0);
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[ends[1] as usize - 1] ^= 0xFF; // the second record's CRC
-        std::fs::write(&path, bytes).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
 
-        let (target, result) = recover(dir.path());
-        assert!(!result.replayed_aof);
+        let mut target = Recorded::default();
+        let err = recover_shard(dir.path(), 0, &mut target).unwrap_err();
+        assert!(matches!(err, RecoveryError::Aof { .. }), "{err}");
+        assert!(target.applied.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_aof_fails_recovery_without_its_key() {
+        use crate::encryption::EncryptionKey;
+
+        let dir = temp_dir();
+        let path = aof::aof_path(dir.path(), 0);
+        let mut writer =
+            AofWriter::open_encrypted(&path, EncryptionKey::from_bytes([0x42; 32])).unwrap();
+        writer.write_record(&del("a")).unwrap();
+        writer.sync().unwrap();
+        drop(writer);
+
+        let mut target = Recorded::default();
+        let err = recover_shard(dir.path(), 0, &mut target).unwrap_err();
+        assert!(matches!(err, RecoveryError::Aof { .. }), "{err}");
+
+        let wrong = EncryptionKey::from_bytes([0xFF; 32]);
+        let err = recover_shard_encrypted(dir.path(), 0, &wrong, &mut target).unwrap_err();
+        assert!(matches!(err, RecoveryError::Aof { .. }), "{err}");
         assert!(target.applied.is_empty());
     }
 

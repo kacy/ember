@@ -324,13 +324,25 @@ async fn run_shard(prepared: PreparedShard) {
     // -- recovery --
     let mut stale_aof = false;
     if let Some(ref pcfg) = persistence {
-        stale_aof = persistence::recover(
+        match persistence::recover(
             &mut keyspace,
             pcfg,
             shard_id,
             #[cfg(feature = "protobuf")]
             &schema_registry,
-        );
+        ) {
+            Ok(stale) => stale_aof = stale,
+            // stop before the AOF writer opens or a save runs, so the
+            // files stay as they are. dropping `rx` makes every request
+            // to this shard fail, and `Engine::wait_ready` reports it.
+            Err(e) => {
+                error!(
+                    shard_id,
+                    "{e}; the shard is not starting and its files are untouched"
+                );
+                return;
+            }
+        }
     }
 
     // -- AOF writer --
@@ -619,8 +631,16 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     // consume the request to move owned data into AOF records (avoids cloning).
     // response is &mut so VAddBatch can steal applied entries instead of cloning
     // vectors — the connection handler only uses added_count.
+    // keys evicted to make room come first, since they left before the
+    // write applied. a write that then failed still evicted them.
     let kept_ttl = aof::incr_float_ttl(ctx.keyspace, &request, &response);
-    let mut records = aof::to_aof_records(request, &mut response);
+    let mut records: SmallVec<[AofRecord; 1]> = ctx
+        .keyspace
+        .take_evicted()
+        .into_iter()
+        .map(|key| AofRecord::Del { key })
+        .collect();
+    records.extend(aof::to_aof_records(request, &mut response));
     records.extend(kept_ttl);
 
     // write AOF records for successful mutations

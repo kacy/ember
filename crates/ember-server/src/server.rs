@@ -247,6 +247,14 @@ impl ConnectionHandles {
 }
 
 /// Sends the protected mode rejection message and closes the connection.
+/// Waits for every shard to load its data. Fails when a shard couldn't
+/// read its files, so the server exits instead of running without them.
+async fn wait_for_shards(engine: &Engine) -> Result<(), std::io::Error> {
+    engine.wait_ready().await.map_err(|_| {
+        std::io::Error::other("a shard failed to load its data files; the log has the reason")
+    })
+}
+
 async fn reject_protected_mode(mut stream: TcpStream) {
     let msg = "-DENIED Ember is running in protected mode \
                because no password is set. In this mode \
@@ -298,6 +306,7 @@ pub async fn run_concurrent(
 
     // Also create the sharded engine for fallback on complex commands
     let engine = Engine::with_config(shard_count, config);
+    wait_for_shards(&engine).await?;
 
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
@@ -819,6 +828,9 @@ pub async fn run_threaded(
                 })
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
+
+    // the shards recover on the worker threads started above
+    wait_for_shards(&engine).await?;
 
     info!(
         "listening on {addr} with {shard_count} shards, thread-per-core (max {max_conn} connections)"
