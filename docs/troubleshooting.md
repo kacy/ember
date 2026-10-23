@@ -8,7 +8,7 @@ common problems and how to fix them.
 
 **"DENIED: protected mode is enabled"**
 
-ember runs in protected mode by default when no password is set and no explicit bind address is configured. this prevents accidental exposure on public interfaces.
+ember turns on protected mode when no password is set and the server is bound to a non-loopback address such as `0.0.0.0`. it then accepts RESP and gRPC connections from loopback clients only, so a server without a password is not exposed on a public interface by accident.
 
 fix: either set a password with `requirepass <password>` in your config, or explicitly bind to the loopback interface with `bind 127.0.0.1`.
 
@@ -120,6 +120,16 @@ startup time is proportional to the size of the data being replayed. a large AOF
 
 - run `BGREWRITEAOF` periodically to compact the AOF down to the minimal set of records needed to reconstruct the current state
 - if you have both a snapshot and an AOF, ember uses the snapshot as a base and only replays the AOF tail — keeping snapshots recent reduces replay time significantly
+
+---
+
+**server exits at startup with "failed to load snapshot" or "failed to read aof"**
+
+a shard couldn't read one of its files, so the server stopped without changing any of them. the log line names the file and the reason.
+
+- `file is encrypted but no encryption key was provided` or `decryption failed`: start with the `encryption-key-file` that wrote the files
+- `unsupported format version`: the files need a newer build, or one with the `encryption` feature
+- `crc32 mismatch`, `invalid magic bytes` or `unknown record tag`: the file is damaged. restore it from a backup, or move it out of `data-dir` to start without it. moving it out loses the data it holds
 
 ---
 

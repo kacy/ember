@@ -20,19 +20,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use bytes::BytesMut;
 use ember_core::{ConcurrentKeyspace, Engine, TtlResult};
-use ember_protocol::{parse_frame, Command, Frame, SetExpire};
-use subtle::ConstantTimeEq;
+use ember_protocol::{parse_request, Command, Frame, SetExpire};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::connection_common::{
-    frame_to_monitor_args, get_rss_bytes, human_bytes, initial_acl_user, is_allowed_before_auth,
-    is_auth_frame, is_monitor_frame, try_auth, validate_command_sizes, MonitorEvent,
+    frame_to_monitor_args, get_rss_bytes, human_bytes, is_allowed_before_auth, is_auth_frame,
+    is_command_frame, is_monitor_frame, validate_command_sizes, MonitorEvent, Session,
     TransactionState,
 };
 use crate::metrics::on_auth_failure;
 use crate::pubsub::PubSubManager;
 use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
+use crate::write_timeout::WriteTimeout;
 
 /// Handles a connection using the concurrent keyspace for GET/SET.
 ///
@@ -40,7 +40,7 @@ use crate::slowlog::SlowLog;
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle<S>(
-    mut stream: S,
+    stream: S,
     peer_addr: SocketAddr,
     keyspace: Arc<ConcurrentKeyspace>,
     engine: Engine, // fallback for complex commands
@@ -52,13 +52,16 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let (mut acl_user, mut current_username) = initial_acl_user(ctx);
-    let mut authenticated = acl_user.is_some();
+    let mut stream = WriteTimeout::new(stream, ctx.limits.idle_timeout);
+    let mut session = Session::new(ctx);
     let mut auth_failures: u32 = 0;
     let mut tx_state = TransactionState::None;
 
     let mut buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
     let mut out = BytesMut::with_capacity(ctx.limits.buf_capacity);
+    // set when the last batch stopped at the pipeline depth limit with
+    // frames still in `buf`, so the next one runs them before reading
+    let mut skip_read = false;
 
     loop {
         if buf.len() > ctx.limits.max_buf_size {
@@ -69,12 +72,17 @@ where
             return Ok(());
         }
 
-        match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
-            Ok(Ok(0)) => return Ok(()),
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => return Ok(()),
+        if !skip_read {
+            match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
+                Ok(Ok(0)) => return Ok(()),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => return Ok(()),
+            }
         }
+
+        // pick up ACL SETUSER/DELUSER changes to this connection's user
+        session.refresh(ctx);
 
         // parse frames using split_to — O(1) pointer adjustment, no
         // memcpy for unconsumed data. bulk strings are copied during
@@ -88,20 +96,26 @@ where
             if buf.is_empty() {
                 break;
             }
-            match parse_frame(&buf) {
+            match parse_request(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
                     pipeline_count += 1;
 
-                    if !authenticated {
+                    // QUIT closes the connection once the replies before it
+                    // are written. commands after it never run.
+                    if is_command_frame(&frame, &[b"QUIT"]) {
+                        Frame::Simple("OK".into()).serialize(&mut out);
+                        let _ = stream.write_all(&out).await;
+                        return Ok(());
+                    }
+
+                    // AUTH always goes through the session, so on an
+                    // authenticated connection it switches the user
+                    if !session.is_authenticated() || is_auth_frame(&frame) {
                         if is_auth_frame(&frame) {
-                            let result = try_auth(frame, ctx);
-                            result.response.serialize(&mut out);
-                            if result.success() {
-                                authenticated = true;
-                                acl_user = result.user;
-                                current_username = result.username;
-                            } else {
+                            let (reply, ok) = session.auth(frame, ctx);
+                            reply.serialize(&mut out);
+                            if !ok {
                                 auth_failures = auth_failures.saturating_add(1);
                                 if auth_failures >= ctx.limits.max_auth_failures {
                                     Frame::Error(
@@ -114,15 +128,8 @@ where
                             }
                         } else if is_allowed_before_auth(&frame) {
                             let response = process(
-                                frame,
-                                &keyspace,
-                                &engine,
-                                ctx,
-                                slow_log,
-                                pubsub,
-                                client_id,
-                                &acl_user,
-                                &current_username,
+                                frame, &keyspace, &engine, ctx, slow_log, pubsub, client_id,
+                                &session,
                             )
                             .await;
                             response.serialize(&mut out);
@@ -132,12 +139,16 @@ where
                                 .serialize(&mut out);
                         }
                     } else if is_monitor_frame(&frame) {
-                        // enter monitor mode
-                        Frame::Simple("OK".into()).serialize(&mut out);
-                        stream.write_all(&out).await?;
-                        out.clear();
-                        handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
-                        return Ok(());
+                        if let Some(err) = session.check_frame(&frame) {
+                            err.serialize(&mut out);
+                        } else {
+                            // enter monitor mode
+                            Frame::Simple("OK".into()).serialize(&mut out);
+                            stream.write_all(&out).await?;
+                            out.clear();
+                            handle_monitor_mode(&mut stream, &mut buf, ctx, peer_addr).await?;
+                            return Ok(());
+                        }
                     } else {
                         // broadcast to MONITOR subscribers
                         if ctx.monitor_tx.receiver_count() > 0 {
@@ -164,8 +175,7 @@ where
                             slow_log,
                             pubsub,
                             client_id,
-                            &acl_user,
-                            &current_username,
+                            &session,
                         )
                         .await;
                         response.serialize(&mut out);
@@ -181,6 +191,7 @@ where
             }
         }
         // unconsumed bytes remain in buf for the next read — no copy needed
+        skip_read = pipeline_count >= ctx.limits.max_pipeline_depth;
 
         if !out.is_empty() {
             stream.write_all(&out).await?;
@@ -246,8 +257,7 @@ async fn process(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     client_id: u64,
-    acl_user: &Option<Arc<crate::acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> Frame {
     match Command::from_frame(frame) {
         Ok(cmd) => {
@@ -262,22 +272,13 @@ async fn process(
             }
 
             // ACL permission check
-            if let Some(ref user) = acl_user {
-                if !user.allcommands || !user.allkeys {
-                    if let Some(err) = crate::acl::check_permission(
-                        user,
-                        &cmd,
-                        cmd.command_name(),
-                        cmd.acl_categories(),
-                    ) {
-                        return err;
-                    }
-                }
+            if let Some(err) = session.check(&cmd) {
+                return err;
             }
 
             // intercept AclWhoAmI — needs per-connection username
             if matches!(cmd, Command::AclWhoAmI) {
-                return Frame::Bulk(Bytes::from(current_username.to_owned()));
+                return Frame::Bulk(Bytes::from(session.username().to_owned()));
             }
 
             let cmd_name = cmd.command_name();
@@ -318,8 +319,7 @@ async fn handle_frame_with_tx(
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
     client_id: u64,
-    acl_user: &Option<Arc<crate::acl::AclUser>>,
-    current_username: &str,
+    session: &Session,
 ) -> Frame {
     let cmd_name = peek_command_name(&frame);
 
@@ -347,15 +347,7 @@ async fn handle_frame_with_tx(
                 Frame::Simple("OK".into())
             } else {
                 process(
-                    frame,
-                    keyspace,
-                    engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    client_id,
-                    acl_user,
-                    current_username,
+                    frame, keyspace, engine, ctx, slow_log, pubsub, client_id, session,
                 )
                 .await
             }
@@ -384,8 +376,7 @@ async fn handle_frame_with_tx(
                             slow_log,
                             pubsub,
                             client_id,
-                            acl_user,
-                            current_username,
+                            session,
                         )
                         .await;
                         results.push(response);
@@ -403,15 +394,7 @@ async fn handle_frame_with_tx(
                 Ok(cmd) => {
                     if matches!(cmd, Command::Auth { .. } | Command::Quit) {
                         process(
-                            frame,
-                            keyspace,
-                            engine,
-                            ctx,
-                            slow_log,
-                            pubsub,
-                            client_id,
-                            acl_user,
-                            current_username,
+                            frame, keyspace, engine, ctx, slow_log, pubsub, client_id, session,
                         )
                         .await
                     } else {
@@ -444,7 +427,7 @@ fn peek_command_name(frame: &Frame) -> Option<String> {
 async fn execute_concurrent(
     cmd: Command,
     keyspace: &Arc<ConcurrentKeyspace>,
-    _engine: &Engine,
+    engine: &Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
     pubsub: &Arc<PubSubManager>,
@@ -573,9 +556,12 @@ async fn execute_concurrent(
             Err(e) => Frame::Error(e.to_string()),
         },
 
-        Command::DecrBy { key, delta } => match keyspace.incr_by(&key, -delta) {
-            Ok(val) => Frame::Integer(val),
-            Err(e) => Frame::Error(e.to_string()),
+        Command::DecrBy { key, delta } => match delta.checked_neg() {
+            Some(neg) => match keyspace.incr_by(&key, neg) {
+                Ok(val) => Frame::Integer(val),
+                Err(e) => Frame::Error(e.to_string()),
+            },
+            None => Frame::Error("ERR increment or decrement would overflow".into()),
         },
 
         Command::IncrByFloat { key, delta } => match keyspace.incr_by_float(&key, delta) {
@@ -786,21 +772,7 @@ async fn execute_concurrent(
         }
 
         Command::ConfigSet { param, value } => {
-            if let Err(e) = ctx.config.set(&param, &value) {
-                Frame::Error(e)
-            } else {
-                let key = param.to_ascii_lowercase();
-                if key == "slowlog-log-slower-than" {
-                    if let Ok(us) = value.parse::<i64>() {
-                        slow_log.update_threshold(us);
-                    }
-                } else if key == "slowlog-max-len" {
-                    if let Ok(len) = value.parse::<usize>() {
-                        slow_log.update_max_len(len);
-                    }
-                }
-                Frame::Simple("OK".into())
-            }
+            crate::connection_common::config_set(&param, &value, ctx, engine, slow_log).await
         }
 
         Command::ConfigRewrite => match &ctx.config_path {
@@ -843,38 +815,18 @@ async fn execute_concurrent(
         }
 
         // AUTH on an already-authenticated connection (re-auth)
-        Command::Auth { username, password } => match &ctx.requirepass {
-            None => Frame::Error(
-                "ERR Client sent AUTH, but no password is set. \
-                 Did you mean ACL SETUSER with >password?"
-                    .into(),
-            ),
-            Some(expected) => {
-                if let Some(ref user) = username {
-                    if user != "default" {
-                        return Frame::Error(
-                            "WRONGPASS invalid username-password pair \
-                             or user is disabled."
-                                .into(),
-                        );
-                    }
-                }
-                if bool::from(password.as_bytes().ct_eq(expected.as_bytes())) {
-                    Frame::Simple("OK".into())
-                } else {
-                    Frame::Error(
-                        "WRONGPASS invalid username-password pair \
-                         or user is disabled."
-                            .into(),
-                    )
-                }
+        Command::Auth { username, password } => {
+            let username = username.unwrap_or_else(|| "default".into());
+            match crate::acl::authenticate(&ctx.acl, &username, &password) {
+                Ok(_) => Frame::Simple("OK".into()),
+                Err(msg) => Frame::Error(msg),
             }
-        },
+        }
 
         // -- protobuf commands --
         #[cfg(feature = "protobuf")]
         Command::ProtoRegister { name, descriptor } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let result = {
@@ -885,7 +837,7 @@ async fn execute_concurrent(
             };
             match result {
                 Ok(types) => {
-                    if let Err(e) = _engine
+                    if let Err(e) = engine
                         .broadcast(|| ember_core::ShardRequest::ProtoRegisterAof {
                             name: name.clone(),
                             descriptor: descriptor.clone(),
@@ -914,7 +866,7 @@ async fn execute_concurrent(
             nx,
             xx,
         } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             {
@@ -954,7 +906,7 @@ async fn execute_concurrent(
                 nx,
                 xx,
             };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::Ok) => Frame::Simple("OK".into()),
                 Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
                 Ok(ember_core::ShardResponse::OutOfMemory) => {
@@ -967,11 +919,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoGet { key } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     Frame::Array(vec![Frame::Bulk(Bytes::from(type_name)), Frame::Bulk(data)])
                 }
@@ -986,11 +938,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoType { key } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoType { key: key.clone() };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoTypeName(Some(name))) => {
                     Frame::Bulk(Bytes::from(name))
                 }
@@ -1005,7 +957,7 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoSchemas => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let Ok(reg) = registry.read() else {
@@ -1022,7 +974,7 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDescribe { name } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let Ok(reg) = registry.read() else {
@@ -1041,11 +993,11 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoGetField { key, field_path } => {
-            let Some(registry) = _engine.schema_registry() else {
+            let Some(registry) = engine.schema_registry() else {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             };
             let req = ember_core::ShardRequest::ProtoGet { key: key.clone() };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoValue(Some((type_name, data, _ttl)))) => {
                     let Ok(reg) = registry.read() else {
                         return Frame::Error("ERR schema registry lock poisoned".into());
@@ -1070,7 +1022,7 @@ async fn execute_concurrent(
             field_path,
             value,
         } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoSetField {
@@ -1078,7 +1030,7 @@ async fn execute_concurrent(
                 field_path,
                 value,
             };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoFieldUpdated { .. }) => {
                     Frame::Simple("OK".into())
                 }
@@ -1097,14 +1049,14 @@ async fn execute_concurrent(
 
         #[cfg(feature = "protobuf")]
         Command::ProtoDelField { key, field_path } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
             let req = ember_core::ShardRequest::ProtoDelField {
                 key: key.clone(),
                 field_path,
             };
-            match _engine.route(&key, req).await {
+            match engine.route(&key, req).await {
                 Ok(ember_core::ShardResponse::ProtoFieldUpdated { .. }) => Frame::Integer(1),
                 Ok(ember_core::ShardResponse::Value(None)) => Frame::Null,
                 Ok(ember_core::ShardResponse::WrongType) => Frame::Error(
@@ -1126,10 +1078,10 @@ async fn execute_concurrent(
             count,
             type_name,
         } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let shard_count = _engine.shard_count();
+            let shard_count = engine.shard_count();
             let count = count.unwrap_or(10);
             let (shard_id, position) = if cursor == 0 {
                 (0usize, 0u64)
@@ -1151,7 +1103,7 @@ async fn execute_concurrent(
                     pattern: pattern.clone(),
                     type_name: type_name.clone(),
                 };
-                match _engine.send_to_shard(current_shard, req).await {
+                match engine.send_to_shard(current_shard, req).await {
                     Ok(ember_core::ShardResponse::Scan {
                         cursor: next_pos,
                         keys,
@@ -1196,10 +1148,10 @@ async fn execute_concurrent(
             type_name,
             count,
         } => {
-            if _engine.schema_registry().is_none() {
+            if engine.schema_registry().is_none() {
                 return Frame::Error("ERR protobuf support is not enabled".into());
             }
-            let shard_count = _engine.shard_count();
+            let shard_count = engine.shard_count();
             let count = count.unwrap_or(10);
             let (shard_id, position) = if cursor == 0 {
                 (0usize, 0u64)
@@ -1223,7 +1175,7 @@ async fn execute_concurrent(
                     field_path: field_path.clone(),
                     field_value: field_value.clone(),
                 };
-                match _engine.send_to_shard(current_shard, req).await {
+                match engine.send_to_shard(current_shard, req).await {
                     Ok(ember_core::ShardResponse::Scan {
                         cursor: next_pos,
                         keys,
@@ -1282,97 +1234,12 @@ async fn execute_concurrent(
         // -- ACL commands --
         Command::AclWhoAmI => Frame::Bulk(Bytes::from_static(b"default")),
 
-        Command::AclList => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.read() {
-                    Ok(state) => {
-                        let lines = state.list();
-                        Frame::Array(
-                            lines
-                                .into_iter()
-                                .map(|l| Frame::Bulk(Bytes::from(l)))
-                                .collect(),
-                        )
-                    }
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Array(vec![Frame::Bulk(Bytes::from(
-                    "user default on nopass +@all ~*",
-                ))])
-            }
-        }
-
-        Command::AclUsers => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.read() {
-                    Ok(state) => {
-                        let names = state.usernames();
-                        Frame::Array(
-                            names
-                                .into_iter()
-                                .map(|n| Frame::Bulk(Bytes::from(n)))
-                                .collect(),
-                        )
-                    }
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"default"))])
-            }
-        }
-
-        Command::AclGetUser { username } => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.read() {
-                    Ok(state) => match state.get_user_detail(&username) {
-                        Some(detail) => detail,
-                        None => Frame::Error(format!("ERR no such user '{username}'")),
-                    },
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else if username == "default" {
-                crate::acl::AclState::new()
-                    .get_user_detail("default")
-                    .unwrap_or(Frame::Null)
-            } else {
-                Frame::Error(format!("ERR no such user '{username}'"))
-            }
-        }
-
-        Command::AclDelUser { usernames } => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.write() {
-                    Ok(mut state) => match state.del_users(&usernames) {
-                        Ok(count) => Frame::Integer(count as i64),
-                        Err(msg) => Frame::Error(msg),
-                    },
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Error(
-                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
-                )
-            }
-        }
-
-        Command::AclSetUser { username, rules } => {
-            if let Some(ref acl) = ctx.acl {
-                match acl.write() {
-                    Ok(mut state) => match state.set_user(&username, &rules) {
-                        Ok(()) => Frame::Simple("OK".into()),
-                        Err(msg) => Frame::Error(msg),
-                    },
-                    Err(_) => Frame::Error("ERR ACL state lock poisoned".into()),
-                }
-            } else {
-                Frame::Error(
-                    "ERR ACL is not enabled. Configure ACL users to use this command.".into(),
-                )
-            }
-        }
-
-        Command::AclCat { category } => crate::acl::handle_acl_cat(category.as_deref()),
+        cmd @ (Command::AclList
+        | Command::AclUsers
+        | Command::AclGetUser { .. }
+        | Command::AclDelUser { .. }
+        | Command::AclSetUser { .. }
+        | Command::AclCat { .. }) => crate::acl::run_admin_command(&ctx.acl, cmd),
 
         // For unsupported commands, return an error
         Command::Unknown(name) => Frame::Error(format!("ERR unknown command '{name}'")),

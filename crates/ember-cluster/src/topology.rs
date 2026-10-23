@@ -312,6 +312,15 @@ impl ClusterNode {
     }
 }
 
+/// What [`ClusterState::apply_slot_claim`] changed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SlotClaimResult {
+    /// The slot map changed.
+    pub changed: bool,
+    /// The local node lost slots to a claim with a newer epoch.
+    pub local_lost: bool,
+}
+
 /// The complete state of the cluster as seen by a node.
 #[derive(Debug)]
 pub struct ClusterState {
@@ -321,6 +330,9 @@ pub struct ClusterState {
     pub local_id: NodeId,
     /// Current configuration epoch (increases on topology changes).
     pub config_epoch: u64,
+    /// The epoch of the last failover vote this node granted. Saved with
+    /// the config, so a restarted primary can't vote twice in one epoch.
+    pub last_vote_epoch: u64,
     /// Slot-to-node mapping.
     pub slot_map: SlotMap,
     /// Cluster state: ok, fail, or unknown.
@@ -361,6 +373,7 @@ impl ClusterState {
             nodes,
             local_id,
             config_epoch: 1,
+            last_vote_epoch: 0,
             slot_map,
             state: ClusterHealth::Ok,
         }
@@ -372,6 +385,7 @@ impl ClusterState {
             nodes: HashMap::new(),
             local_id,
             config_epoch: 0,
+            last_vote_epoch: 0,
             slot_map: SlotMap::new(),
             state: ClusterHealth::Unknown,
         }
@@ -450,6 +464,91 @@ impl ClusterState {
         }
 
         self.state = ClusterHealth::Ok;
+    }
+
+    /// Applies a slot claim that `node` announced over gossip with its
+    /// config epoch.
+    ///
+    /// A claimed slot goes to `node` when nobody owns it, or when the claim
+    /// beats the owner's: a higher config epoch, or on equal epochs the
+    /// higher node ID, so every node picks the same winner. A primary that
+    /// comes back after a failover still claims its old slots with its old
+    /// epoch, and loses them to the promoted replica. Slots `node` owned
+    /// and no longer claims become unowned.
+    ///
+    /// The cluster's current epoch rises to the claim's epoch, so the next
+    /// failover this node takes part in uses a newer one.
+    pub fn apply_slot_claim(
+        &mut self,
+        node: NodeId,
+        slots: &[SlotRange],
+        config_epoch: u64,
+    ) -> SlotClaimResult {
+        self.config_epoch = self.config_epoch.max(config_epoch);
+        if let Some(claimant) = self.nodes.get_mut(&node) {
+            claimant.config_epoch = config_epoch;
+        }
+
+        let mut claimed = vec![false; SLOT_COUNT as usize];
+        for range in slots {
+            for slot in range.iter() {
+                claimed[slot as usize] = true;
+            }
+        }
+
+        let mut result = SlotClaimResult::default();
+        for slot in 0..SLOT_COUNT {
+            let owner = self.slot_map.owner(slot);
+            if !claimed[slot as usize] {
+                if owner == Some(node) {
+                    self.slot_map.unassign(slot);
+                    result.changed = true;
+                }
+                continue;
+            }
+            let wins = match owner {
+                None => true,
+                Some(owner) if owner == node => false,
+                Some(owner) => {
+                    let owner_epoch = self.nodes.get(&owner).map_or(0, |n| n.config_epoch);
+                    (config_epoch, node.0) > (owner_epoch, owner.0)
+                }
+            };
+            if wins {
+                result.local_lost |= owner == Some(self.local_id);
+                self.slot_map.assign(slot, node);
+                result.changed = true;
+            }
+        }
+
+        if result.changed {
+            self.rebuild_slot_lists();
+        }
+        result
+    }
+
+    /// Gives the local node a config epoch newer than any this node has
+    /// seen, so its next slot claim beats the previous owner's. Used when it
+    /// takes a slot without an election, as Redis does for SETSLOT NODE.
+    pub fn bump_local_epoch(&mut self) -> u64 {
+        self.config_epoch += 1;
+        let epoch = self.config_epoch;
+        if let Some(local) = self.nodes.get_mut(&self.local_id) {
+            local.config_epoch = epoch;
+        }
+        epoch
+    }
+
+    /// The local node's config epoch, sent with its slot claims.
+    pub fn local_epoch(&self) -> u64 {
+        self.local_node().map_or(0, |n| n.config_epoch)
+    }
+
+    /// Recomputes every node's slot list from the slot map.
+    fn rebuild_slot_lists(&mut self) {
+        for (id, node) in self.nodes.iter_mut() {
+            node.slots = self.slot_map.slots_for_node(*id);
+        }
     }
 
     /// Promotes a replica to primary, transferring slots from its current primary.
@@ -563,14 +662,14 @@ impl ClusterState {
     /// Serializes the cluster state to the `nodes.conf` format.
     ///
     /// The output consists of a comment header, a `vars` line with the current
-    /// epoch and gossip incarnation, followed by one line per node in the
-    /// standard `CLUSTER NODES` format.
+    /// epoch, gossip incarnation and last vote epoch, followed by one line per
+    /// node in the standard `CLUSTER NODES` format.
     pub fn to_nodes_conf(&self, incarnation: u64) -> String {
         let mut out = String::new();
         out.push_str("# ember cluster config — do not edit\n");
         out.push_str(&format!(
-            "vars currentEpoch {} lastIncarnation {}\n",
-            self.config_epoch, incarnation
+            "vars currentEpoch {} lastIncarnation {} lastVoteEpoch {}\n",
+            self.config_epoch, incarnation, self.last_vote_epoch
         ));
 
         // sort by node id for deterministic output
@@ -593,6 +692,7 @@ impl ClusterState {
     pub fn from_nodes_conf(data: &str) -> Result<(Self, u64), ConfigParseError> {
         let mut config_epoch = 0u64;
         let mut incarnation = 0u64;
+        let mut last_vote_epoch = 0u64;
         let mut found_vars = false;
         let mut local_id = None;
         let mut nodes = HashMap::new();
@@ -609,7 +709,7 @@ impl ClusterState {
             // parse the vars header
             if line.starts_with("vars ") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                // vars currentEpoch <n> lastIncarnation <n>
+                // vars currentEpoch <n> lastIncarnation <n> [lastVoteEpoch <n>]
                 if parts.len() < 5 {
                     return Err(ConfigParseError::InvalidVarsLine(line.to_string()));
                 }
@@ -619,6 +719,12 @@ impl ClusterState {
                 incarnation = parts[4]
                     .parse()
                     .map_err(|_| ConfigParseError::InvalidVarsLine(line.to_string()))?;
+                // written since failover votes are saved; absent in older files
+                if let Some(value) = parts.get(6) {
+                    last_vote_epoch = value
+                        .parse()
+                        .map_err(|_| ConfigParseError::InvalidVarsLine(line.to_string()))?;
+                }
                 found_vars = true;
                 continue;
             }
@@ -722,6 +828,7 @@ impl ClusterState {
             nodes,
             local_id,
             config_epoch,
+            last_vote_epoch,
             slot_map,
             state: ClusterHealth::Unknown,
         };
@@ -947,6 +1054,7 @@ mod tests {
             n.slots = state.slot_map.slots_for_node(id2);
         }
         state.config_epoch = 5;
+        state.last_vote_epoch = 4;
         state.update_health();
 
         let conf = state.to_nodes_conf(10);
@@ -954,12 +1062,71 @@ mod tests {
 
         assert_eq!(incarnation, 10);
         assert_eq!(restored.config_epoch, 5);
+        assert_eq!(restored.last_vote_epoch, 4);
         assert_eq!(restored.local_id, id1);
         assert_eq!(restored.nodes.len(), 2);
         assert_eq!(restored.slot_map.owner(0), Some(id1));
         assert_eq!(restored.slot_map.owner(8192), Some(id2));
         assert_eq!(restored.slot_map.owner(16383), Some(id2));
         assert_eq!(restored.state, ClusterHealth::Ok);
+    }
+
+    /// A local node owning every slot at epoch 1, plus another primary.
+    fn claim_state() -> (ClusterState, NodeId) {
+        let mut local = ClusterNode::new_primary(NodeId::new(), test_addr(6379));
+        local.set_myself();
+        let mut state = ClusterState::single_node(local);
+        let other = NodeId::new();
+        state.add_node(ClusterNode::new_primary(other, test_addr(6380)));
+        (state, other)
+    }
+
+    #[test]
+    fn newer_claim_takes_slots_and_raises_the_epoch() {
+        let (mut state, other) = claim_state();
+        let result = state.apply_slot_claim(other, &[SlotRange::new(0, 9)], 5);
+        assert!(result.changed && result.local_lost);
+        assert_eq!(state.slot_map.owner(9), Some(other));
+        assert_eq!(state.slot_map.owner(10), Some(state.local_id));
+        assert_eq!(state.config_epoch, 5);
+        assert_eq!(state.nodes[&other].slots, [SlotRange::new(0, 9)]);
+    }
+
+    #[test]
+    fn stale_claim_loses() {
+        // the local node owns the slots at epoch 1, as after taking them
+        // over in a failover. the old primary comes back claiming them at
+        // its old epoch, 0, and loses
+        let (mut state, other) = claim_state();
+        let result = state.apply_slot_claim(other, &[SlotRange::new(0, 9)], 0);
+        assert!(!result.changed);
+        assert_eq!(state.slot_map.owner(0), Some(state.local_id));
+    }
+
+    #[test]
+    fn slots_left_out_of_a_claim_become_unowned() {
+        let (mut state, other) = claim_state();
+        state.apply_slot_claim(other, &[SlotRange::new(0, 9)], 5);
+        state.apply_slot_claim(other, &[SlotRange::new(0, 4)], 5);
+        assert_eq!(state.slot_map.owner(4), Some(other));
+        assert_eq!(state.slot_map.owner(5), None);
+    }
+
+    #[test]
+    fn equal_epochs_go_to_the_higher_node_id() {
+        let (mut state, other) = claim_state();
+        let local = state.local_id;
+        state.apply_slot_claim(other, &[SlotRange::new(0, 0)], 1);
+        let winner = if other.0 > local.0 { other } else { local };
+        assert_eq!(state.slot_map.owner(0), Some(winner));
+    }
+
+    #[test]
+    fn bump_local_epoch_passes_every_seen_epoch() {
+        let (mut state, other) = claim_state();
+        state.apply_slot_claim(other, &[], 7);
+        assert_eq!(state.bump_local_epoch(), 8);
+        assert_eq!(state.local_epoch(), 8);
     }
 
     #[test]

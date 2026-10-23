@@ -4,7 +4,7 @@
 //! connections and waits for in-flight requests to drain before exiting.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -247,6 +247,14 @@ impl ConnectionHandles {
 }
 
 /// Sends the protected mode rejection message and closes the connection.
+/// Waits for every shard to load its data. Fails when a shard couldn't
+/// read its files, so the server exits instead of running without them.
+async fn wait_for_shards(engine: &Engine) -> Result<(), std::io::Error> {
+    engine.wait_ready().await.map_err(|_| {
+        std::io::Error::other("a shard failed to load its data files; the log has the reason")
+    })
+}
+
 async fn reject_protected_mode(mut stream: TcpStream) {
     let msg = "-DENIED Ember is running in protected mode \
                because no password is set. In this mode \
@@ -275,6 +283,7 @@ pub async fn run_concurrent(
     metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
+    acl: crate::acl::SharedAclState,
     tls: Option<(SocketAddr, TlsConfig)>,
     config_registry: Arc<ConfigRegistry>,
     limits: ConnectionLimits,
@@ -297,6 +306,7 @@ pub async fn run_concurrent(
 
     // Also create the sharded engine for fallback on complex commands
     let engine = Engine::with_config(shard_count, config);
+    wait_for_shards(&engine).await?;
 
     let listener = TcpListener::bind(addr).await?;
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
@@ -335,7 +345,7 @@ pub async fn run_concurrent(
         cluster: None,
         limits,
         memory_used_bytes: MemoryUsedBytes::new(),
-        acl: None,
+        acl: acl.clone(),
         monitor_tx: tokio::sync::broadcast::channel(256).0,
         max_memory_limit: AtomicU64::new(max_memory.unwrap_or(0) as u64),
         replica_tracker: Arc::clone(&replica_tracker),
@@ -439,7 +449,7 @@ pub async fn run_concurrent(
 
     info!("listening on {addr} with concurrent keyspace (max {max_conn} connections)");
 
-    let shutdown = tokio::signal::ctrl_c();
+    let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
     // helper to accept from TLS listener or pend forever if disabled
@@ -466,7 +476,7 @@ pub async fn run_concurrent(
             result = listener.accept() => {
                 let (stream, peer) = result?;
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -494,7 +504,7 @@ pub async fn run_concurrent(
             result = tls_accept() => {
                 let (stream, peer, acceptor) = result?;
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -588,6 +598,7 @@ pub async fn run_threaded(
     metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
     requirepass: Option<String>,
+    acl: crate::acl::SharedAclState,
     tls: Option<(SocketAddr, TlsConfig)>,
     cluster: Option<Arc<ClusterCoordinator>>,
     config_registry: Arc<ConfigRegistry>,
@@ -626,6 +637,7 @@ pub async fn run_threaded(
         coordinator
             .start_replication_server(Arc::clone(&replica_tracker))
             .await;
+        coordinator.resume_replication().await;
     }
 
     let max_conn = max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS);
@@ -661,7 +673,7 @@ pub async fn run_threaded(
         cluster,
         limits,
         memory_used_bytes: MemoryUsedBytes::new(),
-        acl: None,
+        acl: acl.clone(),
         monitor_tx: tokio::sync::broadcast::channel(256).0,
         max_memory_limit: AtomicU64::new(max_memory.unwrap_or(0) as u64),
         replica_tracker: Arc::clone(&replica_tracker),
@@ -817,12 +829,15 @@ pub async fn run_threaded(
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
 
+    // the shards recover on the worker threads started above
+    wait_for_shards(&engine).await?;
+
     info!(
         "listening on {addr} with {shard_count} shards, thread-per-core (max {max_conn} connections)"
     );
 
     // await shutdown signal on the management runtime
-    let _ = tokio::signal::ctrl_c().await;
+    shutdown_signal().await;
     info!("shutdown signal received, stopping workers...");
     shutdown.notify_waiters();
 
@@ -909,7 +924,7 @@ async fn worker_main(
                     }
                 };
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -941,7 +956,7 @@ async fn worker_main(
                     }
                 };
 
-                if is_protected_mode_violation(&ctx, &peer) {
+                if is_protected_mode_violation(&ctx, Some(peer.ip())) {
                     reject_protected_mode(stream).await;
                     continue;
                 }
@@ -1010,12 +1025,89 @@ async fn setup_tls_listener(
 /// 1. No password is configured (requirepass is None)
 /// 2. The server is bound to a non-loopback address (e.g. 0.0.0.0)
 /// 3. The connecting client is from a non-loopback address
-fn is_protected_mode_violation(ctx: &ServerContext, peer: &SocketAddr) -> bool {
-    if ctx.requirepass.is_some() {
+///
+/// Both the RESP listeners and the gRPC service call this. A `None` peer
+/// (address unknown) is treated as remote. Addresses are canonicalized
+/// first, so an IPv4-mapped `::ffff:127.0.0.1` counts as loopback.
+pub(crate) fn is_protected_mode_violation(ctx: &ServerContext, peer: Option<IpAddr>) -> bool {
+    protected_mode_rejects(ctx.requirepass.is_some(), ctx.bind_addr.ip(), peer)
+}
+
+fn protected_mode_rejects(has_password: bool, bind: IpAddr, peer: Option<IpAddr>) -> bool {
+    if has_password || bind.to_canonical().is_loopback() {
         return false;
     }
-    if ctx.bind_addr.ip().is_loopback() {
-        return false;
+    !peer.is_some_and(|ip| ip.to_canonical().is_loopback())
+}
+
+/// Resolves on Ctrl-C, or on SIGTERM on Unix. `docker stop` and Kubernetes
+/// send SIGTERM, so without it the server skipped its graceful shutdown and
+/// the final AOF flush.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = ctrl_c => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                warn!("cannot listen for SIGTERM, only Ctrl-C will stop the server: {e}");
+                ctrl_c.await;
+            }
+        }
     }
-    !peer.ip().is_loopback()
+
+    #[cfg(not(unix))]
+    ctrl_c.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::protected_mode_rejects;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn protected_mode_rejects_only_remote_clients_without_a_password() {
+        let any = ip("0.0.0.0");
+        assert!(protected_mode_rejects(false, any, Some(ip("10.0.0.5"))));
+        assert!(!protected_mode_rejects(false, any, Some(ip("127.0.0.1"))));
+        assert!(!protected_mode_rejects(true, any, Some(ip("10.0.0.5"))));
+        assert!(!protected_mode_rejects(
+            false,
+            ip("127.0.0.1"),
+            Some(ip("10.0.0.5"))
+        ));
+    }
+
+    #[test]
+    fn protected_mode_treats_ipv4_mapped_loopback_as_loopback() {
+        let dual_stack = ip("::");
+        assert!(!protected_mode_rejects(
+            false,
+            dual_stack,
+            Some(ip("::ffff:127.0.0.1"))
+        ));
+        assert!(!protected_mode_rejects(
+            false,
+            ip("::ffff:127.0.0.1"),
+            Some(ip("10.0.0.5"))
+        ));
+    }
+
+    #[test]
+    fn protected_mode_treats_an_unknown_peer_as_remote() {
+        assert!(protected_mode_rejects(false, ip("0.0.0.0"), None));
+    }
 }

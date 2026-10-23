@@ -101,6 +101,133 @@ pub fn parse_frame(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> 
     }
 }
 
+/// Longest inline command accepted, as in Redis. Without a newline in
+/// this many bytes, the request is rejected.
+const MAX_INLINE_LEN: usize = 64 * 1024;
+
+/// Parses one client request: a RESP array, or an inline command such as
+/// `SET key "hello world"` typed into telnet or piped through `nc`.
+///
+/// Inline arguments are split on whitespace. Double-quoted arguments take
+/// the escapes `\n`, `\r`, `\t`, `\"`, `\\` and `\xHH`, and single-quoted
+/// ones take `\'`, as in Redis. Blank lines are skipped. A line that
+/// starts with `POST` or `Host:` is an error, since it means an HTTP
+/// client is talking to this port.
+///
+/// Returns the same results as [`parse_frame`].
+pub fn parse_request(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> {
+    let mut start = 0;
+    loop {
+        let rest = &buf[start..];
+        match rest.first() {
+            None => return Ok(None),
+            Some(b'*') => return Ok(parse_frame(rest)?.map(|(frame, n)| (frame, start + n))),
+            Some(_) => {}
+        }
+
+        let window = &rest[..rest.len().min(MAX_INLINE_LEN + 1)];
+        let Some(nl) = window.iter().position(|&b| b == b'\n') else {
+            if rest.len() > MAX_INLINE_LEN {
+                return Err(inline_error("inline command too long"));
+            }
+            return Ok(None);
+        };
+        let line = &rest[..nl];
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        start += nl + 1;
+
+        let args = split_inline(line)?;
+        // a web page can make a browser send an HTTP request here, and
+        // each header line would run as a command. refuse the connection
+        // at the first sign of one, as Redis does.
+        if args.first().is_some_and(|cmd| {
+            cmd.eq_ignore_ascii_case(b"POST") || cmd.eq_ignore_ascii_case(b"Host:")
+        }) {
+            return Err(inline_error("HTTP request on the RESP port"));
+        }
+        if !args.is_empty() {
+            let frame = Frame::Array(args.into_iter().map(Frame::Bulk).collect());
+            return Ok(Some((frame, start)));
+        }
+    }
+}
+
+/// Splits an inline command line into arguments. See [`parse_request`].
+fn split_inline(line: &[u8]) -> Result<Vec<Bytes>, ProtocolError> {
+    let mut args = Vec::new();
+    let mut i = 0;
+    loop {
+        while line.get(i).is_some_and(u8::is_ascii_whitespace) {
+            i += 1;
+        }
+        let Some(&first) = line.get(i) else {
+            return Ok(args);
+        };
+
+        let mut arg = Vec::new();
+        if first == b'"' || first == b'\'' {
+            i += 1;
+            loop {
+                match (line.get(i), line.get(i + 1)) {
+                    (None, _) => return Err(inline_error("unbalanced quotes in inline command")),
+                    (Some(&c), _) if c == first => break,
+                    (Some(b'\\'), Some(&next)) if first == b'\'' => {
+                        // only \' is an escape inside single quotes
+                        if next == b'\'' {
+                            arg.push(b'\'');
+                            i += 2;
+                        } else {
+                            arg.push(b'\\');
+                            i += 1;
+                        }
+                    }
+                    (Some(b'\\'), Some(&next)) => {
+                        let hex = line
+                            .get(i + 2..i + 4)
+                            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+                            .and_then(|h| {
+                                u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok()
+                            });
+                        match (next, hex) {
+                            (b'x', Some(byte)) => {
+                                arg.push(byte);
+                                i += 4;
+                                continue;
+                            }
+                            (b'n', _) => arg.push(b'\n'),
+                            (b'r', _) => arg.push(b'\r'),
+                            (b't', _) => arg.push(b'\t'),
+                            (b'b', _) => arg.push(0x08),
+                            (b'a', _) => arg.push(0x07),
+                            (other, _) => arg.push(other),
+                        }
+                        i += 2;
+                    }
+                    (Some(&c), _) => {
+                        arg.push(c);
+                        i += 1;
+                    }
+                }
+            }
+            i += 1;
+            // a closing quote must end the argument
+            if line.get(i).is_some_and(|b| !b.is_ascii_whitespace()) {
+                return Err(inline_error("unbalanced quotes in inline command"));
+            }
+        } else {
+            while let Some(&c) = line.get(i).filter(|b| !b.is_ascii_whitespace()) {
+                arg.push(c);
+                i += 1;
+            }
+        }
+        args.push(Bytes::from(arg));
+    }
+}
+
+fn inline_error(msg: &str) -> ProtocolError {
+    ProtocolError::InvalidCommandFrame(msg.into())
+}
+
 // ---------------------------------------------------------------------------
 // single-pass parser: validates and builds Frame values in one traversal
 // ---------------------------------------------------------------------------
@@ -569,5 +696,75 @@ mod tests {
         assert!(parse_i64_bytes(b"-").is_err());
         assert!(parse_i64_bytes(b"abc").is_err());
         assert!(parse_i64_bytes(b"12a").is_err());
+    }
+
+    // --- inline commands ---
+
+    fn inline(input: &str) -> Vec<String> {
+        let (frame, consumed) = parse_request(input.as_bytes()).unwrap().unwrap();
+        assert_eq!(consumed, input.len());
+        let Frame::Array(items) = frame else {
+            panic!("expected an array, got {frame:?}");
+        };
+        items
+            .into_iter()
+            .map(|f| match f {
+                Frame::Bulk(b) => String::from_utf8(b.to_vec()).unwrap(),
+                other => panic!("expected a bulk string, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inline_splits_on_whitespace() {
+        assert_eq!(inline("PING\r\n"), ["PING"]);
+        assert_eq!(inline("SET  key\tvalue\n"), ["SET", "key", "value"]);
+    }
+
+    #[test]
+    fn inline_quotes_and_escapes() {
+        assert_eq!(inline("SET k \"a b\"\r\n"), ["SET", "k", "a b"]);
+        assert_eq!(
+            inline("SET k \"x\\ny\\x41\\\"\"\r\n"),
+            ["SET", "k", "x\nyA\""]
+        );
+        assert_eq!(inline("SET k 'it\\'s'\r\n"), ["SET", "k", "it's"]);
+        assert_eq!(inline("SET k 'a\\nb'\r\n"), ["SET", "k", "a\\nb"]);
+        assert_eq!(inline("SET k \"\"\r\n"), ["SET", "k", ""]);
+    }
+
+    #[test]
+    fn inline_skips_blank_lines() {
+        assert_eq!(inline("\r\n\r\nPING\r\n"), ["PING"]);
+        assert_eq!(parse_request(b"\r\n").unwrap(), None);
+    }
+
+    #[test]
+    fn inline_waits_for_newline() {
+        assert_eq!(parse_request(b"PIN").unwrap(), None);
+    }
+
+    #[test]
+    fn inline_rejects_bad_quotes_and_long_lines() {
+        assert!(parse_request(b"SET k \"abc\r\n").is_err());
+        assert!(parse_request(b"SET k \"abc\"def\r\n").is_err());
+        assert!(parse_request(&vec![b'a'; MAX_INLINE_LEN + 1]).is_err());
+    }
+
+    #[test]
+    fn inline_rejects_http_requests() {
+        assert!(parse_request(b"POST / HTTP/1.1\r\n").is_err());
+        assert!(parse_request(b"host: localhost:6379\r\n").is_err());
+    }
+
+    #[test]
+    fn request_parses_resp_arrays_too() {
+        let input = b"*1\r\n$4\r\nPING\r\n";
+        let (frame, consumed) = parse_request(input).unwrap().unwrap();
+        assert_eq!(consumed, input.len());
+        assert_eq!(
+            frame,
+            Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"PING"))])
+        );
     }
 }

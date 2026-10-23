@@ -561,7 +561,6 @@ async fn cluster_automatic_failover_promotes_replica() {
         .await;
     cv.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
         .await;
-    drop(cv);
 
     // wait until gossip has delivered the primary's identity to the
     // replica, then attach it (REPLICATE rejects unknown node ids)
@@ -600,15 +599,18 @@ async fn cluster_automatic_failover_promotes_replica() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
-    // a write accepted by the pre-failover primary, then WAIT until the
-    // replica actually acknowledges it. async replication is otherwise
-    // racy — a fixed sleep let the marker be unreplicated at crash time on
-    // slower runners (flaked on macos CI). WAIT returning >= 1 means the
-    // write is durably on the replica, so the post-failover check below is
-    // deterministic; if it can't be confirmed, we don't assert a guarantee
-    // the system didn't make.
+    // a write accepted by the pre-failover primary. wait until the replica
+    // can serve it before crashing the primary, so the check after the
+    // failover is deterministic.
     c0.ok(&["SET", "failover:marker", "survives"]).await;
-    let marker_replicated = c0.get_int(&["WAIT", "1", "5000"]).await >= 1;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while c2.get_bulk(&["GET", "failover:marker"]).await.is_none() {
+        assert!(
+            Instant::now() <= deadline,
+            "the marker never reached the replica"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // crash the primary
     drop(c0);
@@ -616,19 +618,49 @@ async fn cluster_automatic_failover_promotes_replica() {
 
     // the replica must detect the failure, win the election (the slotless
     // voter grants the quorum vote), promote itself, and take over all
-    // slots — after which the cluster reports ok and accepts writes again
+    // slots. wait for ROLE to report master as well as for cluster_state:ok:
+    // the state still reads ok right after the kill, before anyone has
+    // noticed the failure, and a replica rightly refuses writes.
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
+        let is_master = matches!(
+            c2.cmd(&["ROLE"]).await,
+            Frame::Array(ref parts) if matches!(parts.first(), Some(Frame::Bulk(b)) if b == &b"master"[..])
+        );
         let resp = c2.cmd(&["CLUSTER", "INFO"]).await;
-        if let Frame::Bulk(ref data) = resp {
-            let text = String::from_utf8_lossy(data);
-            if text.contains("cluster_state:ok") {
-                break;
-            }
+        let state_ok = matches!(resp, Frame::Bulk(ref data)
+            if String::from_utf8_lossy(data).contains("cluster_state:ok"));
+        if is_master && state_ok {
+            break;
         }
         assert!(
             Instant::now() <= deadline,
             "replica was not promoted within 60s; last CLUSTER INFO: {resp:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // the voter must learn about the promotion too, or it would keep
+    // redirecting clients to the dead primary
+    let replica_id = c2
+        .get_bulk(&["CLUSTER", "MYID"])
+        .await
+        .expect("MYID on replica");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let nodes = match cv.cmd(&["CLUSTER", "NODES"]).await {
+            Frame::Bulk(data) => String::from_utf8_lossy(&data).into_owned(),
+            other => panic!("unexpected CLUSTER NODES reply: {other:?}"),
+        };
+        let promoted_seen = nodes
+            .lines()
+            .any(|line| line.starts_with(&replica_id) && line.contains("master"));
+        if promoted_seen {
+            break;
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "voter never saw the promotion; CLUSTER NODES:\n{nodes}"
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -640,14 +672,86 @@ async fn cluster_automatic_failover_promotes_replica() {
         Some("accepted".into())
     );
 
-    // a write confirmed replicated (via WAIT) before the crash must survive
-    // promotion. writes that could not be confirmed are best-effort under
-    // async replication, so we only assert on the confirmed case.
-    if marker_replicated {
-        assert_eq!(
-            c2.get_bulk(&["GET", "failover:marker"]).await,
-            Some("survives".into()),
-            "a replication-confirmed write was lost during promotion"
+    // a write the replica already held before the crash must survive
+    // its promotion
+    assert_eq!(
+        c2.get_bulk(&["GET", "failover:marker"]).await,
+        Some("survives".into()),
+        "a replicated write was lost during promotion"
+    );
+}
+
+#[tokio::test]
+async fn replica_matches_primary_and_wait_confirms_writes() {
+    use std::time::{Duration, Instant};
+
+    // a shared secret, so the replica has to pass the replication
+    // handshake's challenge before it gets any data
+    let opts = || ServerOptions {
+        cluster_enabled: true,
+        cluster_auth_pass: Some("cluster-secret".into()),
+        ..Default::default()
+    };
+    let primary = TestServer::start_with(ServerOptions {
+        cluster_bootstrap: true,
+        ..opts()
+    });
+    let replica = TestServer::start_with(opts());
+    let mut c0 = primary.connect().await;
+    let mut c1 = replica.connect().await;
+
+    // data that exists before the replica attaches arrives in the snapshot
+    c0.get_int(&["RPUSH", "list", "a", "b", "c"]).await;
+    c0.ok(&["SET", "counter", "5"]).await;
+
+    let primary_id = c0
+        .get_bulk(&["CLUSTER", "MYID"])
+        .await
+        .expect("MYID on primary");
+    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+        .await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(
+        c1.cmd(&["CLUSTER", "REPLICATE", &primary_id]).await,
+        Frame::Simple(_)
+    ) {
+        assert!(
+            Instant::now() <= deadline,
+            "replica never learned the primary"
         );
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
+
+    // wait for the full sync, then write through the stream
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while c1.get_bulk(&["GET", "counter"]).await.is_none() {
+        assert!(Instant::now() <= deadline, "full sync never arrived");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    c0.get_int(&["INCR", "counter"]).await;
+    c0.get_int(&["RPUSH", "list", "d"]).await;
+
+    // once WAIT counts the replica, it must already serve both writes
+    assert_eq!(c0.get_int(&["WAIT", "1", "5000"]).await, 1);
+    assert_eq!(c1.get_bulk(&["GET", "counter"]).await, Some("6".into()));
+    let list = c1.cmd(&["LRANGE", "list", "0", "-1"]).await;
+    let expected: Vec<Frame> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|v| Frame::Bulk(bytes::Bytes::from(*v)))
+        .collect();
+    assert_eq!(list, Frame::Array(expected));
+}
+
+#[test]
+fn cluster_on_a_public_address_needs_a_cluster_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(crate::helpers::server_binary())
+        .args(["--host", "0.0.0.0", "--port", "16999", "--cluster-enabled"])
+        .arg("--data-dir")
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cluster-auth-pass"), "{stderr}");
 }

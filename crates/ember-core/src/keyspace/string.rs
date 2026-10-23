@@ -126,21 +126,19 @@ impl Keyspace {
         // memory limit check — for overwrites, only the net increase matters
         let old_size = old_info.map(|(size, _)| size).unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_size);
-        if !self.enforce_memory_limit(net_increase) {
+        if !self.enforce_memory_limit(&key, net_increase) {
             return SetResult::OutOfMemory;
         }
 
         // update memory tracking and expiry count
         if let Some((_, had_expiry)) = old_info {
             self.memory.adjust(old_size, new_size);
-            self.adjust_expiry_count(had_expiry, has_expiry);
+            self.track_expiry(&key, had_expiry, has_expiry);
         } else {
             // clean up the expired entry if one exists
             self.remove_if_expired(&key);
             self.memory.add(&key, &new_value);
-            if has_expiry {
-                self.expiry_count += 1;
-            }
+            self.track_expiry(&key, false, has_expiry);
         }
 
         let entry = Entry::new(new_value, expire);
@@ -249,15 +247,14 @@ impl Keyspace {
             Some(e) if !matches!(e.value, Value::String(_)) => return Err(WrongType),
             _ => {}
         }
-        let entry = self.entries.remove(key).expect("verified above");
+        let entry = self.entries.swap_remove(key).expect("verified above");
         let bytes = match entry.value {
             Value::String(ref b) => b.clone(),
             _ => unreachable!("type checked above"),
         };
-        self.memory.remove_with_size(
-            entry.cached_value_size as usize + key.len() + memory::ENTRY_OVERHEAD,
-        );
-        self.decrement_expiry_if_set(&entry);
+        self.memory
+            .remove_with_size(entry.value_size() + key.len() + memory::ENTRY_OVERHEAD);
+        self.untrack_expiry(key, &entry);
         self.remove_version(key);
         Ok(Some(bytes))
     }
@@ -348,13 +345,13 @@ impl Keyspace {
                     entry.expires_at_ms =
                         time::now_ms().saturating_add(duration.as_millis() as u64);
                     if !had_expiry {
-                        self.expiry_count += 1;
+                        self.expiring.insert(key.into());
                     }
                 }
                 None => {
                     entry.expires_at_ms = 0;
                     if had_expiry {
-                        self.expiry_count = self.expiry_count.saturating_sub(1);
+                        self.expiring.swap_remove(key);
                     }
                 }
             }

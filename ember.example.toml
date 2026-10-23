@@ -13,12 +13,13 @@
 # shards = 0                      # worker threads (0 = auto-detect CPU cores)
 # concurrent = false              # use DashMap-backed keyspace (deprecated, will be removed)
 # requirepass = ""                # require AUTH before commands (empty = disabled)
+# aclfile = ""                    # file of "user <name> <rules...>" lines loaded at startup
 # data-dir = ""                   # directory for AOF/snapshot files
 
 # --- connections ---
 
 # maxclients = 10000              # max simultaneous client connections
-# idle-timeout-secs = 300         # close idle connections after N seconds
+# idle-timeout-secs = 300         # close connections idle, or not reading replies, for N seconds (0 = never)
 # max-pipeline-depth = 10000      # max pipelined commands per connection
 # max-auth-failures = 10          # disconnect after N failed AUTH attempts
 
@@ -33,6 +34,8 @@
 # appendfsync = "everysec"        # fsync policy: "always", "everysec", "no"
 # active-expiry-interval-ms = 100 # background expiry sweep interval
 # aof-fsync-interval-secs = 1    # fsync interval when appendfsync = "everysec"
+# save-interval-secs = 0         # background save every N seconds (0 = disabled)
+# encryption-key-file = ""        # 32-byte key that encrypts the AOF and snapshots (encryption builds)
 
 # --- monitoring ---
 
@@ -47,6 +50,15 @@
 # tls-key-file = ""               # path to server private key (PEM)
 # tls-ca-cert-file = ""           # CA cert for client verification (PEM)
 # tls-auth-clients = "no"         # require client certificates ("yes" or "no")
+
+# --- notifications ---
+
+# notify-keyspace-events = ""     # keyspace event classes to publish, as in Redis (e.g. "KEA")
+
+# --- protobuf and grpc ---
+
+# protobuf = false                # enable PROTO.* commands (protobuf builds)
+# grpc-port = 6380                # gRPC listener port, 0 = disabled (grpc builds)
 
 # --- protocol limits ---
 
@@ -65,11 +77,11 @@
 # port-offset = 10000             # gossip bus port = data port + offset
 # raft-port-offset = 10001        # raft port = data port + offset
 # node-timeout-ms = 5000          # failure detection timeout
-# auth-pass = ""                  # HMAC-SHA256 shared secret for cluster transport
+# auth-pass = ""                  # HMAC-SHA256 shared secret for gossip, raft and replication (required off loopback)
 
 # [cluster.gossip]
 # protocol-period-ms = 1000       # SWIM protocol period
-# probe-timeout-ms = 500          # direct probe timeout
+# probe-timeout-ms = 0            # direct probe timeout (0 = half of node-timeout-ms)
 # suspicion-multiplier = 5        # suspicion duration multiplier
 # indirect-probes = 3             # number of indirect probes
 # max-piggyback = 10              # max piggybacked updates per message

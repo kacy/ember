@@ -422,7 +422,7 @@ impl ConcurrentKeyspace {
         self.data
             .iter()
             .filter(|entry| !entry.value().is_expired())
-            .filter(|entry| crate::keyspace::glob_match(pattern, entry.key()))
+            .filter(|entry| crate::glob_match(pattern, entry.key()))
             .map(|entry| entry.key().to_string())
             .collect()
     }
@@ -448,7 +448,7 @@ impl ConcurrentKeyspace {
                 continue;
             }
             if let Some(pat) = pattern {
-                if !crate::keyspace::glob_match(pat, entry.key()) {
+                if !crate::glob_match(pat, entry.key()) {
                     position += 1;
                     continue;
                 }

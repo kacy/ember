@@ -282,7 +282,9 @@ pub fn spawn_stats_poller(engine: Engine, ctx: Arc<ServerContext>, poll_interval
 
                     // replication lag — how many records each replica is behind.
                     // published as max and count so alerting rules are straightforward.
-                    let lags = ctx.replica_tracker.replica_lags();
+                    let lags = ctx
+                        .replica_tracker
+                        .replica_lags(&engine.replication_offsets());
                     let replica_count = lags.len() as f64;
                     let max_lag = lags.iter().max().copied().unwrap_or(0) as f64;
                     gauge!("ember_replication_connected_replicas").set(replica_count);

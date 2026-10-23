@@ -202,11 +202,38 @@ pub(in crate::connection) async fn migrate(
     replace: bool,
     cx: &ExecCtx<'_>,
 ) -> Frame {
+    // other clients must not change the key between the dump and the local
+    // delete, or their write is lost. hold it until the move is complete.
+    let cluster = cx.ctx.cluster.as_ref();
+    if let Some(c) = cluster {
+        if !c.begin_key_transfer(key.as_bytes()).await {
+            return Frame::Error("ERR the key is already being migrated".into());
+        }
+    }
+    let reply = transfer_key(host, port, &key, timeout_ms, replace, cx).await;
+    if let Some(c) = cluster {
+        c.end_key_transfer(key.as_bytes()).await;
+    }
+    reply
+}
+
+/// Copies `key` to the target with RESTORE, then deletes it locally and
+/// marks it migrated so later commands for it are sent there with ASK.
+async fn transfer_key(
+    host: String,
+    port: u16,
+    key: &str,
+    timeout_ms: u64,
+    replace: bool,
+    cx: &ExecCtx<'_>,
+) -> Frame {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // dump the key from the local shard
-    let idx = cx.engine.shard_for_key(&key);
-    let dump_req = ShardRequest::DumpKey { key: key.clone() };
+    let idx = cx.engine.shard_for_key(key);
+    let dump_req = ShardRequest::DumpKey {
+        key: key.to_owned(),
+    };
     let dump_resp = match cx.engine.send_to_shard(idx, dump_req).await {
         Ok(r) => r,
         Err(e) => return Frame::Error(format!("ERR {e}")),
@@ -231,7 +258,7 @@ pub(in crate::connection) async fn migrate(
         // build RESTORE command as RESP3 array
         let mut parts = vec![
             Frame::Bulk(Bytes::from("RESTORE")),
-            Frame::Bulk(Bytes::from(key.clone())),
+            Frame::Bulk(Bytes::from(key.to_owned())),
             Frame::Bulk(Bytes::from(ttl_arg.to_string())),
             Frame::Bulk(Bytes::from(data)),
         ];
@@ -267,14 +294,17 @@ pub(in crate::connection) async fn migrate(
 
     match result {
         Ok(Ok(Frame::Simple(_))) => {
-            // success — delete local key and mark as migrated
-            let del_req = ShardRequest::Del { key: key.clone() };
-            let _ = cx.engine.send_to_shard(idx, del_req).await;
-
+            // the target has it: send later commands there, then drop the
+            // local copy. the key is still marked in flight, so no write can
+            // land in between.
             if let Some(c) = &cx.ctx.cluster {
                 let slot = ember_cluster::key_slot(key.as_bytes());
                 c.mark_key_migrated(slot, key.as_bytes()).await;
             }
+            let del_req = ShardRequest::Del {
+                key: key.to_owned(),
+            };
+            let _ = cx.engine.send_to_shard(idx, del_req).await;
             Frame::Simple("OK".into())
         }
         Ok(Ok(Frame::Error(e))) => Frame::Error(format!("ERR target error: {e}")),

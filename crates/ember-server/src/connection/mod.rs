@@ -12,25 +12,37 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{BufMut, BytesMut};
-use ember_core::{Engine, ShardRequest, ShardResponse};
-use ember_protocol::{parse_frame, Frame};
+use ember_core::{Engine, ShardResponse};
+use ember_protocol::{parse_request, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::connection_common::{
-    initial_acl_user, is_allowed_before_auth, is_auth_frame, is_monitor_frame, try_auth,
+    is_allowed_before_auth, is_auth_frame, is_command_frame, is_monitor_frame, Session,
     TransactionState,
 };
 use crate::metrics::on_auth_failure;
+
+/// Read buffer limit for a connection that has not authenticated yet. Big
+/// enough for AUTH with a long password.
+const UNAUTHENTICATED_MAX_BUF: usize = 64 * 1024;
+
+/// Pipelined replies are written out once this many bytes build up.
+const OUTPUT_FLUSH_BYTES: usize = 1024 * 1024;
+
+/// Largest capacity an idle connection buffer keeps.
+const RETAINED_BUFFER_MAX: usize = 1024 * 1024;
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
+use crate::write_timeout::WriteTimeout;
 
 mod dispatch;
 mod exec;
 mod execute;
 mod handler;
 mod response;
+mod route;
 
 /// A command that has been dispatched to a shard but not yet resolved.
 ///
@@ -50,6 +62,8 @@ pub(super) enum PendingResponse {
         start: Option<Instant>,
         /// Command name for metrics/slowlog.
         cmd_name: &'static str,
+        /// Keyspace event to publish if the command succeeds.
+        notify: Option<route::Notify>,
     },
 }
 
@@ -187,11 +201,9 @@ pub(super) enum ResponseTag {
 pub(super) enum PreparedDispatch {
     /// Already resolved — no shard send needed.
     Immediate(PendingResponse),
-    /// Needs to be dispatched to the given shard.
+    /// Needs to be dispatched to the route's shard.
     Routed {
-        shard_idx: usize,
-        request: ShardRequest,
-        tag: ResponseTag,
+        route: route::Route,
         start: Option<Instant>,
         cmd_name: &'static str,
     },
@@ -199,15 +211,9 @@ pub(super) enum PreparedDispatch {
 
 /// A command routed to a shard during the batch-dispatch prepare phase.
 ///
-/// Bundles the output index (position in the result vec), the shard request,
-/// the response conversion tag, and timing metadata.
-pub(super) type ShardBucketEntry = (
-    usize,
-    ShardRequest,
-    ResponseTag,
-    Option<Instant>,
-    &'static str,
-);
+/// Bundles the output index (position in the result vec), the route, and
+/// timing metadata.
+pub(super) type ShardBucketEntry = (usize, route::Route, Option<Instant>, &'static str);
 
 /// Drives a single client connection to completion.
 ///
@@ -218,7 +224,7 @@ pub(super) type ShardBucketEntry = (
 /// Generic over the stream type to support both plain TCP and TLS connections.
 /// Callers should set TCP_NODELAY on the underlying socket before calling.
 pub async fn handle<S>(
-    mut stream: S,
+    stream: S,
     peer_addr: SocketAddr,
     engine: Engine,
     ctx: &Arc<ServerContext>,
@@ -229,9 +235,12 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut stream = WriteTimeout::new(stream, ctx.limits.idle_timeout);
     // per-connection auth + ACL state.
-    let (mut acl_user, mut current_username) = initial_acl_user(ctx);
-    let mut authenticated = acl_user.is_some();
+    let mut session = Session::new(ctx);
+    // set when a batch contained QUIT; the connection closes once the
+    // replies for the commands before it are written
+    let mut quit_requested = false;
     let mut auth_failures: u32 = 0;
     // ASKING flag: set by the ASKING command, consumed by the next command.
     // allows the target node to serve importing slots during migration.
@@ -254,23 +263,24 @@ where
     // when the client isn't pipelining.
     let (reusable_tx, mut reusable_rx) = mpsc::channel::<ShardResponse>(1);
 
-    // set when try_read grabbed data after a write, so we can skip
-    // the blocking read at the top of the next iteration.
+    // set when the buffer already holds work for the next iteration: the
+    // parse loop stopped at the pipeline depth limit, or try_read grabbed
+    // data after a write. the next iteration then skips the blocking read.
     let mut skip_read = false;
 
     loop {
         // guard against unbounded buffer growth from incomplete frames
-        if buf.len() > ctx.limits.max_buf_size {
-            let msg = "ERR max buffer size exceeded, closing connection";
-            let mut err_buf = BytesMut::new();
-            Frame::Error(msg.into()).serialize(&mut err_buf);
-            let _ = stream.write_all(&err_buf).await;
+        // QUIT from the previous batch: every reply before it is written
+        if quit_requested {
+            let _ = stream.write_all(b"+OK\r\n").await;
             return Ok(());
         }
 
-        if skip_read {
-            skip_read = false;
-        } else {
+        if buf.is_empty() && buf.capacity() > RETAINED_BUFFER_MAX {
+            buf = BytesMut::with_capacity(ctx.limits.buf_capacity);
+        }
+
+        if !skip_read {
             // read some data — returns 0 on clean disconnect, times out
             // after idle_timeout to reclaim resources from abandoned connections
             match tokio::time::timeout(ctx.limits.idle_timeout, stream.read_buf(&mut buf)).await {
@@ -279,6 +289,24 @@ where
                 Ok(Err(e)) => return Err(e.into()),
                 Err(_) => return Ok(()), // idle timeout — close silently
             }
+        }
+
+        // checked after the read and before parsing, since one read can
+        // bring in a whole oversized frame. before AUTH a client gets a
+        // small buffer: it can only send AUTH and a few short commands, and
+        // a large buffer would let it hold memory and parse time without a
+        // password.
+        let buf_limit = if session.is_authenticated() {
+            ctx.limits.max_buf_size
+        } else {
+            UNAUTHENTICATED_MAX_BUF
+        };
+        if buf.len() > buf_limit {
+            let msg = "ERR max buffer size exceeded, closing connection";
+            let mut err_buf = BytesMut::new();
+            Frame::Error(msg.into()).serialize(&mut err_buf);
+            let _ = stream.write_all(&err_buf).await;
+            return Ok(());
         }
 
         // parse all complete frames from the buffer first, then dispatch
@@ -291,16 +319,28 @@ where
         // which is negligible for small values (the common case).
         out.clear();
         frames.clear();
+        // a buffer that grew for one large request or reply goes back to
+        // its normal size instead of keeping its peak for the connection
+        if out.capacity() > RETAINED_BUFFER_MAX {
+            out = BytesMut::with_capacity(ctx.limits.buf_capacity);
+        }
+        // set when the parse loop stops before the end of `buf`
+        let mut cut_short = false;
         loop {
             if buf.is_empty() {
                 break;
             }
-            match parse_frame(&buf) {
+            match parse_request(&buf) {
                 Ok(Some((frame, consumed))) => {
                     let _ = buf.split_to(consumed);
+                    // MONITOR, SUBSCRIBE and blocking pops change how the
+                    // connection reads, so each one ends the batch. the
+                    // frames after it wait in `buf` until it is done.
+                    let ends_batch = is_mode_frame(&frame);
                     frames.push(frame);
-                    if frames.len() >= ctx.limits.max_pipeline_depth {
-                        break; // process this batch, remaining data stays in buf
+                    if ends_batch || frames.len() >= ctx.limits.max_pipeline_depth {
+                        cut_short = true;
+                        break;
                     }
                 }
                 Ok(None) => break, // need more data
@@ -312,19 +352,33 @@ where
                 }
             }
         }
+        // frames after the batch are still in `buf`. the client may be
+        // waiting for replies before it sends more, so blocking on a read
+        // here would stall the connection.
+        skip_read = cut_short;
 
-        // when not yet authenticated, process frames serially so that an
-        // AUTH command in a pipeline takes effect for subsequent frames
-        if !authenticated {
+        // commands after a QUIT are never run
+        if let Some(quit_at) = frames.iter().position(|f| is_command_frame(f, &[b"QUIT"])) {
+            frames.truncate(quit_at);
+            quit_requested = true;
+        }
+
+        // pick up ACL SETUSER/DELUSER changes to this connection's user
+        session.refresh(ctx);
+
+        // handled after the rest of the batch, see below
+        let mode_frame = frames.pop_if(|f| is_mode_frame(f));
+
+        // before authentication, or when the batch contains AUTH, process
+        // frames serially so an AUTH takes effect for the frames after it.
+        // AUTH on an authenticated connection switches its user and counts
+        // toward the failure limit like any other AUTH.
+        if !session.is_authenticated() || frames.iter().any(is_auth_frame) {
             for frame in frames.drain(..) {
                 if is_auth_frame(&frame) {
-                    let result = try_auth(frame, ctx);
-                    result.response.serialize(&mut out);
-                    if result.success() {
-                        authenticated = true;
-                        acl_user = result.user;
-                        current_username = result.username;
-                    } else {
+                    let (reply, ok) = session.auth(frame, ctx);
+                    reply.serialize(&mut out);
+                    if !ok {
                         auth_failures = auth_failures.saturating_add(1);
                         if auth_failures >= ctx.limits.max_auth_failures {
                             Frame::Error("ERR too many AUTH failures, closing connection".into())
@@ -333,7 +387,7 @@ where
                             return Ok(());
                         }
                     }
-                } else if is_allowed_before_auth(&frame) {
+                } else if session.is_authenticated() || is_allowed_before_auth(&frame) {
                     let response = dispatch::process(
                         frame,
                         &engine,
@@ -343,8 +397,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -353,160 +406,6 @@ where
                     Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
                 }
             }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-            }
-            continue;
-        }
-
-        // check if any frame is a subscribe command — if so, we need
-        // to enter subscriber mode which changes the connection loop
-        // check for MONITOR — enters a dedicated output loop
-        if frames.iter().any(is_monitor_frame) {
-            // process any non-MONITOR frames first
-            for frame in frames.drain(..) {
-                if is_monitor_frame(&frame) {
-                    // write +OK and enter monitor mode
-                    Frame::Simple("OK".into()).serialize(&mut out);
-                    stream.write_all(&out).await?;
-                    out.clear();
-                    handler::handle_monitor_mode(&mut stream, &mut buf, ctx, &peer_addr_str)
-                        .await?;
-                    return Ok(());
-                }
-                let response = dispatch::process(
-                    frame,
-                    &engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    &mut asking,
-                    &peer_addr_str,
-                    client_id,
-                    &acl_user,
-                    &current_username,
-                )
-                .await;
-                response.serialize(&mut out);
-            }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-            }
-            continue;
-        }
-
-        let enter_sub = frames.iter().any(is_subscribe_frame);
-
-        if enter_sub {
-            // process any non-subscribe commands that came before
-            let mut sub_frames = Vec::new();
-            for frame in frames.drain(..) {
-                if is_subscribe_frame(&frame) {
-                    sub_frames.push(frame);
-                } else {
-                    let response = dispatch::process(
-                        frame,
-                        &engine,
-                        ctx,
-                        slow_log,
-                        pubsub,
-                        &mut asking,
-                        &peer_addr_str,
-                        client_id,
-                        &acl_user,
-                        &current_username,
-                    )
-                    .await;
-                    response.serialize(&mut out);
-                }
-            }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-                out.clear();
-            }
-
-            // enter subscriber mode — this blocks until all subscriptions
-            // are removed or the client disconnects
-            handler::handle_subscriber_mode(
-                &mut stream,
-                &mut buf,
-                &mut out,
-                ctx,
-                pubsub,
-                sub_frames,
-            )
-            .await?;
-            return Ok(());
-        }
-
-        // check for blocking list operations (BLPOP/BRPOP). these break
-        // the pipeline model because they may block the connection. process
-        // any preceding non-blocking frames first, then handle the blocking
-        // op, then continue with any remaining frames.
-        if frames.iter().any(is_blocking_pop_frame) {
-            let mut remaining = Vec::new();
-            let mut blocking_frame = None;
-
-            for frame in frames.drain(..) {
-                if blocking_frame.is_some() {
-                    remaining.push(frame);
-                } else if is_blocking_pop_frame(&frame) {
-                    blocking_frame = Some(frame);
-                } else {
-                    let response = dispatch::process(
-                        frame,
-                        &engine,
-                        ctx,
-                        slow_log,
-                        pubsub,
-                        &mut asking,
-                        &peer_addr_str,
-                        client_id,
-                        &acl_user,
-                        &current_username,
-                    )
-                    .await;
-                    response.serialize(&mut out);
-                }
-            }
-
-            // flush any preceding responses
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-                out.clear();
-            }
-
-            // handle the blocking pop
-            if let Some(frame) = blocking_frame {
-                let response =
-                    handler::handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking)
-                        .await;
-                response.serialize(&mut out);
-                stream.write_all(&out).await?;
-                out.clear();
-            }
-
-            // process any remaining frames after the blocking op
-            for frame in remaining {
-                let response = dispatch::process(
-                    frame,
-                    &engine,
-                    ctx,
-                    slow_log,
-                    pubsub,
-                    &mut asking,
-                    &peer_addr_str,
-                    client_id,
-                    &acl_user,
-                    &current_username,
-                )
-                .await;
-                response.serialize(&mut out);
-            }
-            if !out.is_empty() {
-                stream.write_all(&out).await?;
-            }
-            continue;
         }
 
         // two-phase pipeline: dispatch all commands to shards first,
@@ -534,8 +433,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     response.serialize(&mut out);
@@ -558,33 +456,37 @@ where
                     &mut asking,
                     &peer_addr_str,
                     client_id,
-                    &acl_user,
-                    &current_username,
+                    &session,
                 )
                 .await;
                 match prepared {
                     PreparedDispatch::Immediate(pr) => {
-                        let response = response::resolve_response(pr, ctx, slow_log).await;
+                        let response = response::resolve_response(pr, ctx, slow_log, pubsub).await;
                         ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                         response.serialize(&mut out);
                     }
                     PreparedDispatch::Routed {
-                        shard_idx,
-                        request,
-                        tag,
+                        route,
                         start,
                         cmd_name,
                     } => {
                         let frame = match engine
-                            .dispatch_reusable_to_shard(shard_idx, request, reusable_tx.clone())
+                            .dispatch_reusable_to_shard(
+                                route.shard_idx,
+                                route.request,
+                                reusable_tx.clone(),
+                            )
                             .await
                         {
                             Ok(()) => match reusable_rx.recv().await {
-                                Some(resp) => response::resolve_shard_response(resp, tag),
+                                Some(resp) => response::resolve_shard_response(resp, route.tag),
                                 None => Frame::Error("ERR shard unavailable".into()),
                             },
                             Err(e) => Frame::Error(format!("ERR {e}")),
                         };
+                        if let Some(notify) = route.notify {
+                            notify.send(&frame, ctx, pubsub);
+                        }
                         if let Some(start) = start {
                             let elapsed = start.elapsed();
                             slow_log.maybe_record(elapsed, cmd_name);
@@ -623,8 +525,7 @@ where
                         &mut asking,
                         &peer_addr_str,
                         client_id,
-                        &acl_user,
-                        &current_username,
+                        &session,
                     )
                     .await;
                     match prepared {
@@ -632,15 +533,13 @@ where
                             result.push(pr);
                         }
                         PreparedDispatch::Routed {
-                            shard_idx,
-                            request,
-                            tag,
+                            route,
                             start,
                             cmd_name,
                         } => {
                             // placeholder — will be replaced in phase 2
                             result.push(PendingResponse::Immediate(Frame::Null));
-                            shard_buckets[shard_idx].push((idx, request, tag, start, cmd_name));
+                            shard_buckets[route.shard_idx].push((idx, route, start, cmd_name));
                         }
                     }
                 }
@@ -653,14 +552,14 @@ where
                     let mut indices = Vec::with_capacity(bucket.len());
                     let mut requests = Vec::with_capacity(bucket.len());
                     let mut meta = Vec::with_capacity(bucket.len());
-                    for (i, req, tag, start, cmd_name) in bucket {
+                    for (i, route, start, cmd_name) in bucket {
                         indices.push(i);
-                        requests.push(req);
-                        meta.push((tag, start, cmd_name));
+                        requests.push(route.request);
+                        meta.push((route.tag, route.notify, start, cmd_name));
                     }
                     match engine.dispatch_batch_to_shard(shard_idx, requests).await {
                         Ok(receivers) => {
-                            for ((rx, (tag, start, cmd_name)), i) in
+                            for ((rx, (tag, notify, start, cmd_name)), i) in
                                 receivers.into_iter().zip(meta).zip(indices)
                             {
                                 result[i] = PendingResponse::Pending {
@@ -668,6 +567,7 @@ where
                                     tag,
                                     start,
                                     cmd_name,
+                                    notify,
                                 };
                             }
                         }
@@ -681,11 +581,78 @@ where
                     }
                 }
 
-                // phase 3: collect in original order
+                // phase 3: collect in original order. write replies out as
+                // they build up, so a long pipeline of large values does not
+                // hold every reply in memory at once
                 for p in result {
-                    let response = response::resolve_response(p, ctx, slow_log).await;
+                    let response = response::resolve_response(p, ctx, slow_log, pubsub).await;
                     ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                     response.serialize(&mut out);
+                    if out.len() >= OUTPUT_FLUSH_BYTES {
+                        stream.write_all(&out).await?;
+                        out.clear();
+                    }
+                }
+            }
+        }
+
+        // MONITOR, SUBSCRIBE and blocking pops run after the frames before
+        // them, and enter their own loops instead of normal dispatch
+        if let Some(frame) = mode_frame {
+            if !session.is_authenticated() {
+                on_auth_failure("noauth");
+                Frame::Error("NOAUTH Authentication required.".into()).serialize(&mut out);
+            } else if !matches!(tx_state, TransactionState::None) {
+                // inside MULTI they are queued like any other command
+                handler::handle_frame_with_tx(
+                    frame,
+                    &mut tx_state,
+                    &mut watched_keys,
+                    &engine,
+                    ctx,
+                    slow_log,
+                    pubsub,
+                    &mut asking,
+                    &peer_addr_str,
+                    client_id,
+                    &session,
+                )
+                .await
+                .serialize(&mut out);
+            } else if let Some(err) = session.check_frame(&frame) {
+                err.serialize(&mut out);
+            } else {
+                // replies to the earlier frames go out first
+                if !out.is_empty() {
+                    stream.write_all(&out).await?;
+                    out.clear();
+                }
+                if is_monitor_frame(&frame) {
+                    stream.write_all(b"+OK\r\n").await?;
+                    handler::handle_monitor_mode(&mut stream, &mut buf, ctx, &peer_addr_str)
+                        .await?;
+                    return Ok(());
+                } else if is_subscribe_frame(&frame) {
+                    let exit = handler::handle_subscriber_mode(
+                        &mut stream,
+                        &mut buf,
+                        &mut out,
+                        ctx,
+                        pubsub,
+                        &session,
+                        frame,
+                    )
+                    .await?;
+                    if let handler::SubscriberExit::Close = exit {
+                        return Ok(());
+                    }
+                    // commands sent after the last UNSUBSCRIBE may
+                    // already be in the buffer
+                    skip_read = !buf.is_empty();
+                } else {
+                    handler::handle_blocking_pop_cmd(frame, &engine, ctx, slow_log, &mut asking)
+                        .await
+                        .serialize(&mut out);
                 }
             }
         }
@@ -698,7 +665,7 @@ where
             // kernel buffer already. grabbing it here saves a full
             // epoll/kqueue round-trip through the tokio scheduler.
             buf.reserve(4096);
-            skip_read = std::future::poll_fn(|cx| {
+            skip_read |= std::future::poll_fn(|cx| {
                 let n = {
                     let dst = buf.chunk_mut();
                     // SAFETY: UninitSlice is repr(transparent) over
@@ -763,37 +730,27 @@ pub(super) fn peek_command_name(frame: &Frame) -> Option<&'static str> {
 /// Checks if a raw frame is a transaction-related command that requires
 /// serial execution (MULTI, EXEC, DISCARD, WATCH, UNWATCH).
 pub(super) fn is_transaction_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"MULTI")
-                || name.eq_ignore_ascii_case(b"EXEC")
-                || name.eq_ignore_ascii_case(b"DISCARD")
-                || name.eq_ignore_ascii_case(b"WATCH")
-                || name.eq_ignore_ascii_case(b"UNWATCH");
-        }
-    }
-    false
+    is_command_frame(
+        frame,
+        &[b"MULTI", b"EXEC", b"DISCARD", b"WATCH", b"UNWATCH"],
+    )
 }
 
 /// Checks if a raw frame is a BLPOP or BRPOP command.
 pub(super) fn is_blocking_pop_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"BLPOP") || name.eq_ignore_ascii_case(b"BRPOP");
-        }
-    }
-    false
+    is_command_frame(frame, &[b"BLPOP", b"BRPOP"])
+}
+
+/// Checks if a raw frame is MONITOR, a (P)(UN)SUBSCRIBE or a blocking pop:
+/// the commands that leave the normal request-reply loop.
+fn is_mode_frame(frame: &Frame) -> bool {
+    is_monitor_frame(frame) || is_subscribe_frame(frame) || is_blocking_pop_frame(frame)
 }
 
 /// Checks if a raw frame is a SUBSCRIBE/PSUBSCRIBE/UNSUBSCRIBE/PUNSUBSCRIBE command.
 pub(super) fn is_subscribe_frame(frame: &Frame) -> bool {
-    if let Frame::Array(parts) = frame {
-        if let Some(Frame::Bulk(name)) = parts.first() {
-            return name.eq_ignore_ascii_case(b"SUBSCRIBE")
-                || name.eq_ignore_ascii_case(b"PSUBSCRIBE")
-                || name.eq_ignore_ascii_case(b"UNSUBSCRIBE")
-                || name.eq_ignore_ascii_case(b"PUNSUBSCRIBE");
-        }
-    }
-    false
+    is_command_frame(
+        frame,
+        &[b"SUBSCRIBE", b"PSUBSCRIBE", b"UNSUBSCRIBE", b"PUNSUBSCRIBE"],
+    )
 }

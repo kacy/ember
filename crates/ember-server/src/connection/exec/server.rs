@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ember_core::{KeyspaceStats, ShardRequest, ShardResponse};
+use ember_core::{Engine, KeyspaceStats, ShardRequest, ShardResponse};
 use ember_protocol::Frame;
 
 use crate::connection_common::{get_rss_bytes, human_bytes};
@@ -42,49 +42,6 @@ pub(in crate::connection) async fn config_get(pattern: String, cx: &ExecCtx<'_>)
         frames.push(Frame::Bulk(Bytes::from(value)));
     }
     Frame::Array(frames)
-}
-
-pub(in crate::connection) async fn config_set(
-    param: String,
-    value: String,
-    cx: &ExecCtx<'_>,
-) -> Frame {
-    if let Err(e) = cx.ctx.config.set(&param, &value) {
-        return Frame::Error(e);
-    }
-    // apply dynamic updates for known parameters
-    let key = param.to_ascii_lowercase();
-    if key == "slowlog-log-slower-than" {
-        if let Ok(us) = value.parse::<i64>() {
-            cx.slow_log.update_threshold(us);
-        }
-    } else if key == "slowlog-max-len" {
-        if let Ok(len) = value.parse::<usize>() {
-            cx.slow_log.update_max_len(len);
-        }
-    } else if key == "maxmemory" || key == "maxmemory-policy" {
-        let limit = cx.ctx.config.memory_limit();
-        let policy = cx.ctx.config.eviction_policy();
-        // broadcast is fallible but config is already stored — log and continue
-        let _ = cx
-            .engine
-            .broadcast(move || ShardRequest::UpdateMemoryConfig {
-                max_memory: limit,
-                eviction_policy: policy,
-            })
-            .await;
-        // keep the INFO-visible limit in sync
-        cx.ctx.max_memory_limit.store(
-            limit.unwrap_or(0) as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    } else if key == "notify-keyspace-events" {
-        let flags = crate::keyspace_notifications::parse_keyspace_event_flags(&value);
-        cx.ctx
-            .keyspace_event_flags
-            .store(flags, std::sync::atomic::Ordering::Relaxed);
-    }
-    Frame::Simple("OK".into())
 }
 
 pub(in crate::connection) async fn config_rewrite(cx: &ExecCtx<'_>) -> Frame {
@@ -229,10 +186,10 @@ pub(in crate::connection) fn slowlog_reset(cx: &ExecCtx<'_>) -> Frame {
 /// immediately without sleeping.
 pub(in crate::connection) async fn handle_wait(
     ctx: &Arc<ServerContext>,
+    engine: &Engine,
     numreplicas: u64,
     timeout_ms: u64,
 ) -> Frame {
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     let needed = numreplicas as usize;
@@ -243,10 +200,12 @@ pub(in crate::connection) async fn handle_wait(
         return Frame::Integer(0);
     }
 
-    let target = tracker.write_offset.load(Ordering::Relaxed);
+    // every write this client has had a reply for is already counted in
+    // the shards' offsets, so reaching them means those writes arrived
+    let target = engine.replication_offsets();
 
     // fast path: already satisfied or no timeout needed
-    let count = tracker.count_at_or_above(target);
+    let count = tracker.count_caught_up(&target);
     if count >= needed || timeout_ms == 0 {
         return Frame::Integer(count as i64);
     }
@@ -255,7 +214,7 @@ pub(in crate::connection) async fn handle_wait(
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
-        let c = tracker.count_at_or_above(target);
+        let c = tracker.count_caught_up(&target);
         if c >= needed || tokio::time::Instant::now() >= deadline {
             return Frame::Integer(c as i64);
         }

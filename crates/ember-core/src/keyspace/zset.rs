@@ -59,7 +59,7 @@ impl Keyspace {
         if let Some(entry) = self.entries.get(key) {
             if matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty()) {
                 self.memory.remove_with_size(entry.entry_size(key));
-                self.entries.remove(key);
+                self.entries.swap_remove(key);
             }
         }
 
@@ -181,7 +181,6 @@ impl Keyspace {
         };
 
         let target = if count == 0 { 10 } else { count };
-        let compiled = pattern.map(GlobPattern::new);
         let mut result = Vec::with_capacity(target);
         let mut pos = 0u64;
         let mut done = true;
@@ -191,8 +190,8 @@ impl Keyspace {
                 pos += 1;
                 continue;
             }
-            if let Some(ref pat) = compiled {
-                if !pat.matches(member) {
+            if let Some(pat) = pattern {
+                if !glob_match(pat, member) {
                     pos += 1;
                     continue;
                 }
@@ -604,9 +603,9 @@ impl Keyspace {
     ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
         // remove any existing entry at dest (any type)
         self.remove_if_expired(dest);
-        if let Some(old) = self.entries.remove(dest) {
+        if let Some(old) = self.entries.swap_remove(dest) {
             self.memory.remove(dest, &old.value);
-            self.decrement_expiry_if_set(&old);
+            self.untrack_expiry(dest, &old);
             self.defer_drop(old.value);
         }
 

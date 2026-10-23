@@ -1,11 +1,10 @@
 //! Shared execution context and helpers for command sub-modules.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use ember_core::{Engine, ShardRequest, ShardResponse, Value};
-use ember_protocol::{Frame, SetExpire};
+use ember_protocol::Frame;
 
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
@@ -62,43 +61,6 @@ impl<'a> ExecCtx<'a> {
     }
 }
 
-/// Converts a [`SetExpire`] option to a [`Duration`] relative to now.
-///
-/// EX/PX are relative; EXAT/PXAT are unix timestamps converted to a
-/// duration by subtracting the current wall time. A past timestamp
-/// results in a zero duration (the key expires immediately).
-pub(in crate::connection) fn set_expire_to_duration(expire: SetExpire) -> Duration {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    match expire {
-        SetExpire::Ex(secs) => Duration::from_secs(secs),
-        SetExpire::Px(ms) => Duration::from_millis(ms),
-        SetExpire::ExAt(ts) => {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "system clock is before UNIX epoch; EXAT TTL calculations may be incorrect"
-                    );
-                    Duration::ZERO
-                })
-                .as_secs();
-            Duration::from_secs(ts.saturating_sub(now))
-        }
-        SetExpire::PxAt(ts_ms) => {
-            let now_ms = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "system clock is before UNIX epoch; PXAT TTL calculations may be incorrect"
-                    );
-                    Duration::ZERO
-                })
-                .as_millis() as u64;
-            Duration::from_millis(ts_ms.saturating_sub(now_ms))
-        }
-    }
-}
-
 /// Fans out a boolean-result command across shards for multiple keys
 /// and returns the count of `true` results as an integer frame.
 pub(in crate::connection) async fn multi_key_bool<F>(
@@ -131,22 +93,6 @@ pub(in crate::connection) fn wrongtype_error() -> Frame {
 #[inline]
 pub(in crate::connection) fn oom_error() -> Frame {
     Frame::Error("OOM command not allowed when used memory > 'maxmemory'".into())
-}
-
-/// Resolves a collection scan (SSCAN/HSCAN/ZSCAN) shard response into a RESP frame.
-pub(in crate::connection) fn resolve_collection_scan(
-    result: Result<ShardResponse, ember_core::ShardError>,
-) -> Frame {
-    match result {
-        Ok(ShardResponse::CollectionScan { cursor, items }) => {
-            let cursor_frame = Frame::Bulk(Bytes::from(cursor.to_string()));
-            let item_frames = items.into_iter().map(Frame::Bulk).collect();
-            Frame::Array(vec![cursor_frame, Frame::Array(item_frames)])
-        }
-        Ok(ShardResponse::WrongType) => wrongtype_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -206,56 +152,10 @@ pub(in crate::connection) fn resp_bool_int(resp: ShardResponse) -> Frame {
     }
 }
 
-/// Maps `Ok` → `Simple("OK")`.
-pub(in crate::connection) fn resp_ok(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::Ok => Frame::Simple("OK".into()),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
-/// Maps `Ok` → `Simple("OK")`, `Value(None)` → `Null` (for SET with NX/XX).
-pub(in crate::connection) fn resp_ok_or_null(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::Ok => Frame::Simple("OK".into()),
-        ShardResponse::Value(None) => Frame::Null,
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
-/// Maps `Len(n)` → `Frame::Integer(n as i64)`.
-pub(in crate::connection) fn resp_len(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::Len(n) => Frame::Integer(n as i64),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
 /// Maps `BulkString(val)` → `Frame::Bulk(Bytes::from(val))`.
 pub(in crate::connection) fn resp_bulk_string(resp: ShardResponse) -> Frame {
     match resp {
         ShardResponse::BulkString(val) => Frame::Bulk(Bytes::from(val)),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
-/// Maps `Array(items)` → `Frame::Array` of `Bulk` frames.
-pub(in crate::connection) fn resp_bulk_array(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::Array(items) => Frame::Array(items.into_iter().map(Frame::Bulk).collect()),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
-/// Maps `StringArray(items)` → `Frame::Array` of `Bulk` frames.
-pub(in crate::connection) fn resp_string_array(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::StringArray(members) => Frame::Array(
-            members
-                .into_iter()
-                .map(|m| Frame::Bulk(Bytes::from(m)))
-                .collect(),
-        ),
         other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
     }
 }
@@ -273,37 +173,4 @@ pub(in crate::connection) fn scored_to_frame(
         }
     }
     Frame::Array(frames)
-}
-
-/// Maps `Rank(Some(r))` → `Integer`, `Rank(None)` → `Null`.
-pub(in crate::connection) fn resp_rank(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::Rank(Some(r)) => Frame::Integer(r as i64),
-        ShardResponse::Rank(None) => Frame::Null,
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
-/// Maps `Score(Some(s))` → `Bulk`, `Score(None)` → `Null`.
-pub(in crate::connection) fn resp_score(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::Score(Some(s)) => Frame::Bulk(Bytes::from(format!("{s}"))),
-        ShardResponse::Score(None) => Frame::Null,
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
-}
-
-/// Maps `ZPopResult` → interleaved `[member, score, ...]` array.
-pub(in crate::connection) fn resp_zpop(resp: ShardResponse) -> Frame {
-    match resp {
-        ShardResponse::ZPopResult(items) => {
-            let mut frames = Vec::with_capacity(items.len() * 2);
-            for (member, score) in items {
-                frames.push(Frame::Bulk(Bytes::from(member)));
-                frames.push(Frame::Bulk(Bytes::from(format!("{score}"))));
-            }
-            Frame::Array(frames)
-        }
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    }
 }

@@ -1,6 +1,6 @@
 //! The keyspace: Ember's core key-value store.
 //!
-//! A `Keyspace` owns a flat `AHashMap<CompactString, Entry>` and handles
+//! A `Keyspace` owns a flat `EntryMap` (an `IndexMap` of keys to entries) and handles
 //! get, set, delete, existence checks, and TTL management. Expired
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
@@ -12,10 +12,12 @@ use ahash::AHashMap;
 use bytes::Bytes;
 use compact_str::CompactString;
 use rand::seq::IteratorRandom;
+use rand::Rng;
 
 use tracing::warn;
 
 use crate::dropper::DropHandle;
+use crate::glob::glob_match;
 use crate::memory::{self, MemoryTracker};
 use crate::time;
 use crate::types::sorted_set::{ScoreBound, SortedSet, ZAddFlags};
@@ -239,6 +241,11 @@ pub struct ShardConfig {
     pub eviction_policy: EvictionPolicy,
     /// Numeric identifier for this shard (used for persistence file naming).
     pub shard_id: u16,
+    /// How often the shard samples keys for active expiration. 100ms
+    /// matches Redis's hz=10 default.
+    pub expiry_interval: Duration,
+    /// How often the AOF is fsynced under the `EverySec` policy.
+    pub fsync_interval: Duration,
 }
 
 impl Default for ShardConfig {
@@ -247,6 +254,8 @@ impl Default for ShardConfig {
             max_memory: None,
             eviction_policy: EvictionPolicy::NoEviction,
             shard_id: 0,
+            expiry_interval: Duration::from_millis(100),
+            fsync_interval: Duration::from_secs(1),
         }
     }
 }
@@ -261,6 +270,18 @@ pub enum SetResult {
     /// NX/XX condition was not met (key existed for NX, or didn't for XX).
     Blocked,
 }
+
+/// The key-to-entry map a shard keeps.
+///
+/// An `IndexMap` stores entries in a dense vector, so a random key or a
+/// cursor position is an O(1) index. SCAN, eviction and active expiry rely
+/// on that. Remove entries only with `swap_remove`: `shift_remove` is O(n).
+pub(crate) type EntryMap = indexmap::IndexMap<CompactString, Entry, ahash::RandomState>;
+
+/// The keys that have a TTL. Active expiry samples from this set, so it
+/// finds expired keys even when most keys have no TTL. It is an `IndexSet`
+/// for the same O(1) random picks as [`EntryMap`].
+type ExpirySet = indexmap::IndexSet<CompactString, ahash::RandomState>;
 
 /// A single entry in the keyspace: a value plus optional expiration
 /// and last access time for LRU approximation.
@@ -279,19 +300,20 @@ pub(crate) struct Entry {
     pub(crate) value: Value,
     /// Monotonic expiry timestamp in ms. 0 = no expiry.
     pub(crate) expires_at_ms: u64,
-    /// Cached result of `memory::value_size(&self.value)`. Updated on
-    /// every mutation so that memory accounting is O(1) instead of
-    /// walking entire collections. Using u32 saves 4 bytes per entry;
-    /// max value size is 512 MB which fits comfortably in u32 (~4 GB).
-    pub(crate) cached_value_size: u32,
+    /// Cached result of `memory::value_size(&self.value)`, so memory
+    /// accounting is O(1) instead of walking whole collections. A u32
+    /// saves 4 bytes per entry. Collections can outgrow it, so
+    /// `SIZE_NOT_CACHED` marks a size read from the value instead. Access
+    /// it only through `value_size` and the setters below.
+    cached_value_size: u32,
     /// Monotonic last access time in seconds since process start (for LRU).
     /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
     pub(crate) last_access_secs: u32,
 }
 
 impl Entry {
-    fn new(value: Value, ttl: Option<Duration>) -> Self {
-        let cached_value_size = memory::value_size(&value) as u32;
+    pub(crate) fn new(value: Value, ttl: Option<Duration>) -> Self {
+        let cached_value_size = cache_size(memory::value_size(&value));
         Self {
             value,
             expires_at_ms: time::expiry_from_duration(ttl),
@@ -318,8 +340,45 @@ impl Entry {
     /// Returns the full estimated memory footprint of this entry
     /// (key + value + overhead) using the cached value size.
     fn entry_size(&self, key: &str) -> usize {
-        key.len() + self.cached_value_size as usize + memory::ENTRY_OVERHEAD
+        key.len() + self.value_size() + memory::ENTRY_OVERHEAD
     }
+
+    /// Returns the estimated size of the value.
+    pub(crate) fn value_size(&self) -> usize {
+        match self.cached_value_size {
+            SIZE_NOT_CACHED => memory::value_size(&self.value),
+            size => size as usize,
+        }
+    }
+
+    pub(crate) fn set_value_size(&mut self, size: usize) {
+        self.cached_value_size = cache_size(size);
+    }
+
+    /// Adds `bytes` to the cached size. A size that is not cached is read
+    /// from the value, which already includes the change.
+    pub(crate) fn grow_value_size(&mut self, bytes: usize) {
+        if self.cached_value_size != SIZE_NOT_CACHED {
+            self.set_value_size(self.cached_value_size as usize + bytes);
+        }
+    }
+
+    /// Subtracts `bytes` from the cached size, stopping at zero.
+    pub(crate) fn shrink_value_size(&mut self, bytes: usize) {
+        if self.cached_value_size != SIZE_NOT_CACHED {
+            self.set_value_size((self.cached_value_size as usize).saturating_sub(bytes));
+        }
+    }
+}
+
+/// Marks a value size too large for `Entry::cached_value_size`.
+const SIZE_NOT_CACHED: u32 = u32::MAX;
+
+fn cache_size(size: usize) -> u32 {
+    u32::try_from(size)
+        .ok()
+        .filter(|&s| s != SIZE_NOT_CACHED)
+        .unwrap_or(SIZE_NOT_CACHED)
 }
 
 /// Result of a TTL query, matching Redis semantics.
@@ -373,15 +432,17 @@ const EVICTION_SAMPLE_SIZE: usize = 16;
 /// All operations are single-threaded per shard — no internal locking.
 /// Memory usage is tracked incrementally on every mutation.
 pub struct Keyspace {
-    entries: AHashMap<CompactString, Entry>,
+    entries: EntryMap,
     memory: MemoryTracker,
     config: ShardConfig,
-    /// Number of entries that currently have an expiration set.
-    expiry_count: usize,
+    /// Keys that currently have an expiration set.
+    expiring: ExpirySet,
     /// Cumulative count of keys removed by expiration (lazy + active).
     expired_total: u64,
     /// Cumulative count of keys removed by eviction.
     evicted_total: u64,
+    /// Keys evicted since the shard last called [`Keyspace::take_evicted`].
+    evicted: Vec<String>,
     /// Cumulative count of write rejections due to memory limits.
     oom_rejections: u64,
     /// Cumulative count of successful key lookups.
@@ -416,12 +477,13 @@ impl Keyspace {
     pub fn with_config(config: ShardConfig) -> Self {
         let track_access = config.eviction_policy == EvictionPolicy::AllKeysLru;
         Self {
-            entries: AHashMap::new(),
+            entries: EntryMap::default(),
             memory: MemoryTracker::new(),
             config,
-            expiry_count: 0,
+            expiring: ExpirySet::default(),
             expired_total: 0,
             evicted_total: 0,
+            evicted: Vec::new(),
             oom_rejections: 0,
             keyspace_hits: 0,
             keyspace_misses: 0,
@@ -478,11 +540,9 @@ impl Keyspace {
         self.versions.clear();
     }
 
-    /// Decrements the expiry count if the entry had a TTL set.
-    fn decrement_expiry_if_set(&mut self, entry: &Entry) {
-        if entry.expires_at_ms != 0 {
-            self.expiry_count = self.expiry_count.saturating_sub(1);
-        }
+    /// Stops tracking the TTL of `key`, whose `entry` was just removed.
+    fn untrack_expiry(&mut self, key: &str, entry: &Entry) {
+        self.track_expiry(key, entry.expires_at_ms != 0, false);
     }
 
     /// Cleans up after removing an element from a collection (list, sorted
@@ -499,15 +559,14 @@ impl Keyspace {
         removed_bytes: usize,
     ) {
         if is_empty {
-            if let Some(removed) = self.entries.remove(key) {
-                self.decrement_expiry_if_set(&removed);
+            if let Some(removed) = self.entries.swap_remove(key) {
+                self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_size);
         } else {
             self.memory.shrink_by(removed_bytes);
             if let Some(entry) = self.entries.get_mut(key) {
-                entry.cached_value_size =
-                    (entry.cached_value_size as usize).saturating_sub(removed_bytes) as u32;
+                entry.shrink_value_size(removed_bytes);
             }
         }
     }
@@ -543,7 +602,7 @@ impl Keyspace {
         } else {
             element_increase
         };
-        if self.enforce_memory_limit(estimated_increase) {
+        if self.enforce_memory_limit(key, estimated_increase) {
             Ok(())
         } else {
             Err(WriteError::OutOfMemory)
@@ -572,90 +631,88 @@ impl Keyspace {
         // re-lookup after mutation (f consumed the borrow)
         let entry = self.entries.get_mut(key)?;
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size as u32;
+        entry.set_value_size(new_value_size);
         let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_size, new_size);
         self.bump_version(key);
         Some(result)
     }
 
-    /// Adjusts the expiry count when replacing an entry whose TTL status
-    /// may have changed (e.g. SET overwriting an existing key).
-    fn adjust_expiry_count(&mut self, had_expiry: bool, has_expiry: bool) {
+    /// Updates the set of keys with a TTL when `key` goes from having one
+    /// or not (`had_expiry`) to having one or not (`has_expiry`).
+    fn track_expiry(&mut self, key: &str, had_expiry: bool, has_expiry: bool) {
         match (had_expiry, has_expiry) {
-            (false, true) => self.expiry_count += 1,
-            (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
+            (false, true) => {
+                self.expiring.insert(key.into());
+            }
+            (true, false) => {
+                self.expiring.swap_remove(key);
+            }
             _ => {}
         }
     }
 
-    /// Tries to evict one key using LRU approximation.
+    /// Tries to evict one key using an approximate LRU.
     ///
-    /// Randomly samples `EVICTION_SAMPLE_SIZE` keys and removes the one
-    /// with the oldest `last_access` time. Returns `true` if a key was
-    /// evicted, `false` if the keyspace is empty.
-    ///
-    /// Uses reservoir sampling with k=1 to avoid allocating a Vec on
-    /// every eviction attempt. The victim key index is remembered
-    /// rather than cloned, eliminating a heap allocation on the hot path.
-    fn try_evict(&mut self) -> bool {
-        if self.entries.is_empty() {
+    /// Picks `EVICTION_SAMPLE_SIZE` random entries (every entry when there
+    /// are fewer) and removes the one with the oldest `last_access` time.
+    /// `protect` is never chosen, because the caller is about to write to
+    /// it. Returns `false` if no other key exists.
+    fn try_evict(&mut self, protect: &str) -> bool {
+        let len = self.entries.len();
+        let victim = if len <= EVICTION_SAMPLE_SIZE {
+            self.least_recently_used(0..len, protect)
+        } else {
+            let mut rng = rand::rng();
+            let samples = (0..EVICTION_SAMPLE_SIZE).map(|_| rng.random_range(0..len));
+            self.least_recently_used(samples, protect)
+        };
+        let Some((key, entry)) = victim.and_then(|i| self.entries.swap_remove_index(i)) else {
             return false;
-        }
+        };
+        self.memory.remove(&key, &entry.value);
+        self.untrack_expiry(&key, &entry);
+        self.evicted_total += 1;
+        self.remove_version(&key);
+        self.defer_drop(entry.value);
+        self.evicted.push(key.into());
+        true
+    }
 
-        let mut rng = rand::rng();
+    /// Returns the keys evicted since the last call. The shard logs them as
+    /// deletes so the AOF and replicas drop them too.
+    pub(crate) fn take_evicted(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.evicted)
+    }
 
-        // reservoir sample k=1 from the iterator, tracking the oldest
-        // entry by last_access_secs. this replaces choose_multiple() which
-        // allocates a Vec internally.
-        let mut best_key: Option<&str> = None;
-        let mut best_access = u32::MAX;
-        let mut seen = 0usize;
-
-        for (key, entry) in &self.entries {
-            // reservoir sampling: include this item with probability
-            // EVICTION_SAMPLE_SIZE / (seen + 1), capped once we have
-            // enough candidates
-            seen += 1;
-            if seen <= EVICTION_SAMPLE_SIZE {
-                if entry.last_access_secs < best_access {
-                    best_access = entry.last_access_secs;
-                    best_key = Some(&**key);
-                }
-            } else {
-                use rand::Rng;
-                let j = rng.random_range(0..seen);
-                if j < EVICTION_SAMPLE_SIZE && entry.last_access_secs < best_access {
-                    best_access = entry.last_access_secs;
-                    best_key = Some(&**key);
-                }
-            }
-        }
-
-        if let Some(victim) = best_key {
-            // own the key to break the immutable borrow on self.entries
-            let victim = victim.to_owned();
-            if let Some(entry) = self.entries.remove(victim.as_str()) {
-                self.memory.remove(&victim, &entry.value);
-                self.decrement_expiry_if_set(&entry);
-                self.evicted_total += 1;
-                self.remove_version(&victim);
-                self.defer_drop(entry.value);
-                return true;
-            }
-        }
-        false
+    /// Returns the position, among `positions`, of the entry accessed least
+    /// recently, skipping `protect`.
+    fn least_recently_used(
+        &self,
+        positions: impl Iterator<Item = usize>,
+        protect: &str,
+    ) -> Option<usize> {
+        positions
+            .filter(|&i| {
+                self.entries
+                    .get_index(i)
+                    .is_some_and(|(key, _)| key.as_str() != protect)
+            })
+            .min_by_key(|&i| self.entries[i].last_access_secs)
     }
 
     /// Checks whether the memory limit allows a write that would increase
     /// usage by `estimated_increase` bytes. Attempts eviction if the
     /// policy allows it. Returns `true` if the write can proceed.
     ///
+    /// `protect` is the key being written. Eviction skips it, so the caller
+    /// can rely on the entry it already checked still being there.
+    ///
     /// The comparison uses [`memory::effective_limit`] rather than the raw
     /// configured maximum. This reserves headroom for allocator overhead
     /// and fragmentation that our per-entry estimates can't account for,
     /// preventing the OS from OOM-killing us before eviction triggers.
-    fn enforce_memory_limit(&mut self, estimated_increase: usize) -> bool {
+    fn enforce_memory_limit(&mut self, protect: &str, estimated_increase: usize) -> bool {
         if let Some(max) = self.config.max_memory {
             let limit = memory::effective_limit(max);
             while self.memory.used_bytes() + estimated_increase > limit {
@@ -675,7 +732,7 @@ impl Keyspace {
                         return false;
                     }
                     EvictionPolicy::AllKeysLru => {
-                        if !self.try_evict() {
+                        if !self.try_evict(protect) {
                             self.oom_rejections += 1;
                             if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000)
                             {
@@ -704,9 +761,9 @@ impl Keyspace {
         if self.remove_if_expired(key) {
             return false;
         }
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
-            self.decrement_expiry_if_set(&entry);
+            self.untrack_expiry(key, &entry);
             self.remove_version(key);
             self.defer_drop(entry.value);
             true
@@ -724,9 +781,9 @@ impl Keyspace {
         if self.remove_if_expired(key) {
             return false;
         }
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
-            self.decrement_expiry_if_set(&entry);
+            self.untrack_expiry(key, &entry);
             self.remove_version(key);
             // always defer for UNLINK, regardless of value size
             if let Some(ref handle) = self.drop_handle {
@@ -741,10 +798,10 @@ impl Keyspace {
     /// Replaces the entries map with an empty one and resets memory
     /// tracking. Returns the old entries so the caller can send them
     /// to the background drop thread.
-    pub(crate) fn flush_async(&mut self) -> AHashMap<CompactString, Entry> {
+    pub(crate) fn flush_async(&mut self) -> EntryMap {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
-        self.expiry_count = 0;
+        self.expiring.clear();
         self.versions.clear();
         old
     }
@@ -759,14 +816,16 @@ impl Keyspace {
 
     /// Returns a random key from the keyspace, or `None` if empty.
     ///
-    /// Uses reservoir sampling from the hash map iterator. Expired keys
-    /// are skipped (and lazily cleaned up with bounded retries).
+    /// Expired keys that come up are removed, with a bounded number of
+    /// retries.
     pub fn random_key(&mut self) -> Option<String> {
-        // bounded retries in case we keep hitting expired keys
+        let mut rng = rand::rng();
         for _ in 0..5 {
-            let mut rng = rand::rng();
-            let key = self.entries.keys().choose(&mut rng)?.clone();
-
+            let len = self.entries.len();
+            if len == 0 {
+                return None;
+            }
+            let key = self.entries.get_index(rng.random_range(0..len))?.0.clone();
             if self.remove_if_expired(&key) {
                 continue;
             }
@@ -881,7 +940,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(seconds.saturating_mul(1000));
                 self.bump_version(key);
@@ -933,7 +992,7 @@ impl Keyspace {
             Some(entry) => {
                 if entry.expires_at_ms != 0 {
                     entry.expires_at_ms = 0;
-                    self.expiry_count = self.expiry_count.saturating_sub(1);
+                    self.expiring.swap_remove(key);
                     self.bump_version(key);
                     true
                 } else {
@@ -972,7 +1031,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::now_ms().saturating_add(millis);
                 self.bump_version(key);
@@ -993,7 +1052,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::unix_ms_to_monotonic_ms(unix_secs.saturating_mul(1000));
                 self.bump_version(key);
@@ -1014,7 +1073,7 @@ impl Keyspace {
         match self.entries.get_mut(key) {
             Some(entry) => {
                 if entry.expires_at_ms == 0 {
-                    self.expiry_count += 1;
+                    self.expiring.insert(key.into());
                 }
                 entry.expires_at_ms = time::unix_ms_to_monotonic_ms(unix_ms);
                 self.bump_version(key);
@@ -1068,11 +1127,10 @@ impl Keyspace {
                 "KEYS on large keyspace, consider SCAN instead"
             );
         }
-        let compiled = GlobPattern::new(pattern);
         self.entries
             .iter()
             .filter(|(_, entry)| !entry.is_expired())
-            .filter(|(key, _)| compiled.matches(key))
+            .filter(|(key, _)| glob_match(pattern, key))
             .map(|(key, _)| String::from(&**key))
             .collect()
     }
@@ -1107,26 +1165,24 @@ impl Keyspace {
         self.remove_if_expired(key);
         self.remove_if_expired(newkey);
 
-        let entry = match self.entries.remove(key) {
+        let entry = match self.entries.swap_remove(key) {
             Some(entry) => entry,
             None => return Err(RenameError::NoSuchKey),
         };
 
         // update memory tracking for old key removal
         self.memory.remove(key, &entry.value);
-        self.decrement_expiry_if_set(&entry);
+        self.untrack_expiry(key, &entry);
 
         // remove destination if it exists
-        if let Some(old_dest) = self.entries.remove(newkey) {
+        if let Some(old_dest) = self.entries.swap_remove(newkey) {
             self.memory.remove(newkey, &old_dest.value);
-            self.decrement_expiry_if_set(&old_dest);
+            self.untrack_expiry(newkey, &old_dest);
         }
 
         // re-insert with the new key name, preserving value and expiry
         self.memory.add(newkey, &entry.value);
-        if entry.expires_at_ms != 0 {
-            self.expiry_count += 1;
-        }
+        self.track_expiry(newkey, false, entry.expires_at_ms != 0);
         self.remove_version(key);
         self.entries.insert(CompactString::from(newkey), entry);
         self.bump_version(newkey);
@@ -1168,23 +1224,21 @@ impl Keyspace {
             .map(|e| e.entry_size(dest))
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_dest_size);
-        if !self.enforce_memory_limit(net_increase) {
+        if !self.enforce_memory_limit(dest, net_increase) {
             return Err(CopyError::OutOfMemory);
         }
 
         // remove old destination if replacing
-        if let Some(old_dest) = self.entries.remove(dest) {
+        if let Some(old_dest) = self.entries.swap_remove(dest) {
             self.memory.remove(dest, &old_dest.value);
-            self.decrement_expiry_if_set(&old_dest);
+            self.untrack_expiry(dest, &old_dest);
             self.defer_drop(old_dest.value);
         }
 
         // insert the clone
         self.memory.add(dest, &cloned_value);
         let has_expiry = cloned_expire.is_some();
-        if has_expiry {
-            self.expiry_count += 1;
-        }
+        self.track_expiry(dest, false, has_expiry);
         let mut entry = Entry::new(cloned_value, None);
         // preserve the source's absolute expiry timestamp
         if let Some(ts) = cloned_expire {
@@ -1193,6 +1247,11 @@ impl Keyspace {
         self.entries.insert(CompactString::from(dest), entry);
         self.bump_version(dest);
         Ok(true)
+    }
+
+    /// Returns the memory limit and eviction policy.
+    pub fn memory_config(&self) -> (Option<usize>, EvictionPolicy) {
+        (self.config.max_memory, self.config.eviction_policy)
     }
 
     /// Updates the memory limit and eviction policy in-place.
@@ -1217,7 +1276,7 @@ impl Keyspace {
         KeyspaceStats {
             key_count: self.memory.key_count(),
             used_bytes: self.memory.used_bytes(),
-            keys_with_expiry: self.expiry_count,
+            keys_with_expiry: self.expiring.len(),
             keys_expired: self.expired_total,
             keys_evicted: self.evicted_total,
             oom_rejections: self.oom_rejections,
@@ -1235,7 +1294,7 @@ impl Keyspace {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.memory.reset();
-        self.expiry_count = 0;
+        self.expiring.clear();
         self.versions.clear();
     }
 
@@ -1257,104 +1316,64 @@ impl Keyspace {
         pattern: Option<&str>,
         type_name: Option<&str>,
     ) -> (u64, Vec<String>) {
-        let mut keys = Vec::with_capacity(count);
-        let mut position = 0u64;
-        let target_count = if count == 0 { 10 } else { count };
-        let compiled = pattern.map(GlobPattern::new);
-
-        for (key, entry) in self.entries.iter() {
-            if entry.is_expired() {
-                continue;
-            }
-
-            if position < cursor {
-                position += 1;
-                continue;
-            }
-
-            // only proto entries
-            let entry_type = match &entry.value {
-                Value::Proto { type_name: t, .. } => t.as_str(),
-                _ => {
-                    position += 1;
-                    continue;
-                }
+        self.scan_entries(cursor, count, |key, entry| {
+            let Value::Proto { type_name: t, .. } = &entry.value else {
+                return false;
             };
-
-            // optional type filter
-            if let Some(wanted) = type_name {
-                if entry_type != wanted {
-                    position += 1;
-                    continue;
-                }
-            }
-
-            // optional key pattern
-            if let Some(ref pat) = compiled {
-                if !pat.matches(key) {
-                    position += 1;
-                    continue;
-                }
-            }
-
-            keys.push(String::from(&**key));
-            position += 1;
-
-            if keys.len() >= target_count {
-                return (position, keys);
-            }
-        }
-
-        (0, keys)
+            type_name.is_none_or(|wanted| t.as_str() == wanted)
+                && pattern.is_none_or(|pat| glob_match(pat, key))
+        })
     }
 
     /// Scans keys starting from a cursor position.
     ///
     /// Returns the next cursor (0 if scan complete) and a batch of keys.
-    /// The `pattern` argument supports glob-style matching (`*`, `?`, `[abc]`).
+    /// The `pattern` argument uses the glob rules in [`crate::glob`].
     pub fn scan_keys(
         &self,
         cursor: u64,
         count: usize,
         pattern: Option<&str>,
     ) -> (u64, Vec<String>) {
-        let mut keys = Vec::with_capacity(count);
-        let mut position = 0u64;
-        let target_count = if count == 0 { 10 } else { count };
+        self.scan_entries(cursor, count, |key, _| {
+            pattern.is_none_or(|pat| glob_match(pat, key))
+        })
+    }
 
-        let compiled = pattern.map(GlobPattern::new);
-
-        for (key, entry) in self.entries.iter() {
-            // skip expired entries
-            if entry.is_expired() {
-                continue;
-            }
-
-            // skip entries before cursor
-            if position < cursor {
-                position += 1;
-                continue;
-            }
-
-            // pattern matching
-            if let Some(ref pat) = compiled {
-                if !pat.matches(key) {
-                    position += 1;
-                    continue;
-                }
-            }
-
-            keys.push(String::from(&**key));
-            position += 1;
-
-            if keys.len() >= target_count {
-                // return position as next cursor
-                return (position, keys);
+    /// Walks entries down from the cursor, collecting live keys that pass
+    /// `keep`, until `count` are found or the walk reaches the start.
+    ///
+    /// The cursor is the number of positions left to visit: 0 starts a
+    /// scan, and a returned 0 means it is done. Each call costs O(count)
+    /// plus the entries skipped. Walking down from the end keeps Redis's
+    /// guarantee that a key present for the whole scan is returned:
+    /// `swap_remove` only moves the last entry, which the walk has already
+    /// passed, into a lower slot. It may be returned twice. Keys added
+    /// during the scan go at the end and may be missed, as Redis allows.
+    fn scan_entries(
+        &self,
+        cursor: u64,
+        count: usize,
+        keep: impl Fn(&str, &Entry) -> bool,
+    ) -> (u64, Vec<String>) {
+        let target = if count == 0 { 10 } else { count };
+        let len = self.entries.len();
+        let mut position = match cursor {
+            0 => len,
+            c => usize::try_from(c).map_or(len, |c| c.min(len)),
+        };
+        let mut keys = Vec::with_capacity(target.min(position));
+        while position > 0 && keys.len() < target {
+            position -= 1;
+            let (key, entry) = &self
+                .entries
+                .get_index(position)
+                .expect("position is below len");
+            if !entry.is_expired() && keep(key, entry) {
+                keys.push(key.to_string());
             }
         }
-
-        // scan complete
-        (0, keys)
+        (position as u64, keys)
     }
 
     /// Returns the value and remaining TTL in milliseconds for a single key.
@@ -1401,12 +1420,10 @@ impl Keyspace {
         // if replacing an existing entry, adjust memory tracking
         if let Some(old) = self.entries.get(key.as_str()) {
             self.memory.replace(&key, &old.value, &value);
-            self.adjust_expiry_count(old.expires_at_ms != 0, has_expiry);
+            self.track_expiry(&key, old.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &value);
-            if has_expiry {
-                self.expiry_count += 1;
-            }
+            self.track_expiry(&key, false, has_expiry);
         }
 
         let entry = Entry::new(value, ttl);
@@ -1414,29 +1431,29 @@ impl Keyspace {
         self.bump_version(&key);
     }
 
-    /// Randomly samples up to `count` keys and removes any that have expired.
-    ///
-    /// Samples up to `count` random keys and removes any that have expired.
+    /// Samples up to `count` random keys that have a TTL and removes any
+    /// that have expired.
     ///
     /// Expired key names are appended to `out` so the caller can emit
     /// keyspace notifications. Returns the number of keys removed.
     pub(crate) fn expire_sample(&mut self, count: usize, out: &mut Vec<String>) -> usize {
-        if self.entries.is_empty() {
+        let len = self.expiring.len();
+        if len == 0 {
             return 0;
         }
-
-        let mut rng = rand::rng();
-
-        let keys_to_check: Vec<String> = self
-            .entries
-            .keys()
-            .choose_multiple(&mut rng, count)
+        // distinct positions, so a pass over a small set sees every key
+        let positions = rand::seq::index::sample(&mut rand::rng(), len, count.min(len));
+        let expired: Vec<String> = positions
             .into_iter()
-            .map(|k| String::from(&**k))
+            .filter_map(|i| {
+                let key = self.expiring.get_index(i)?;
+                let entry = self.entries.get(key)?;
+                entry.is_expired().then(|| key.to_string())
+            })
             .collect();
 
         let mut removed = 0;
-        for key in keys_to_check {
+        for key in expired {
             if self.remove_if_expired(&key) {
                 out.push(key);
                 removed += 1;
@@ -1449,9 +1466,9 @@ impl Keyspace {
     /// fused lookup paths that check expiry inline via `get_mut()` and
     /// need a second probe only on the rare expired path.
     fn remove_expired_entry(&mut self, key: &str) {
-        if let Some(entry) = self.entries.remove(key) {
+        if let Some(entry) = self.entries.swap_remove(key) {
             self.memory.remove(key, &entry.value);
-            self.decrement_expiry_if_set(&entry);
+            self.untrack_expiry(key, &entry);
             self.expired_total += 1;
             self.remove_version(key);
             self.defer_drop(entry.value);
@@ -1468,13 +1485,7 @@ impl Keyspace {
             .unwrap_or(false);
 
         if expired {
-            if let Some(entry) = self.entries.remove(key) {
-                self.memory.remove(key, &entry.value);
-                self.decrement_expiry_if_set(&entry);
-                self.expired_total += 1;
-                self.remove_version(key);
-                self.defer_drop(entry.value);
-            }
+            self.remove_expired_entry(key);
         }
         expired
     }
@@ -1534,1319 +1545,5 @@ pub(crate) fn format_float(val: f64) -> String {
     }
 }
 
-/// Glob-style pattern matching for SCAN's MATCH option.
-///
-/// Supports:
-/// - `*` matches any sequence of characters (including empty)
-/// - `?` matches exactly one character
-/// - `[abc]` matches one character from the set
-/// - `[^abc]` or `[!abc]` matches one character NOT in the set
-///
-/// Uses an iterative two-pointer algorithm with backtracking for O(n*m)
-/// worst-case performance, where n is pattern length and m is text length.
-///
-/// Prefer [`GlobPattern::new`] + [`GlobPattern::matches`] when matching
-/// the same pattern against many strings (KEYS, SCAN) to avoid
-/// re-collecting the pattern chars on every call.
-pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
-    let pat: Vec<char> = pattern.chars().collect();
-    glob_match_compiled(&pat, text)
-}
-
-/// Pre-compiled glob pattern that avoids re-allocating pattern chars
-/// on every match call. Use for KEYS/SCAN where the same pattern is
-/// tested against every key in the keyspace.
-pub(crate) struct GlobPattern {
-    chars: Vec<char>,
-}
-
-impl GlobPattern {
-    pub(crate) fn new(pattern: &str) -> Self {
-        Self {
-            chars: pattern.chars().collect(),
-        }
-    }
-
-    pub(crate) fn matches(&self, text: &str) -> bool {
-        glob_match_compiled(&self.chars, text)
-    }
-}
-
-/// Core glob matching against a pre-compiled pattern char slice.
-fn glob_match_compiled(pat: &[char], text: &str) -> bool {
-    let txt: Vec<char> = text.chars().collect();
-
-    let mut pi = 0; // pattern index
-    let mut ti = 0; // text index
-
-    // backtracking state for the most recent '*'
-    let mut star_pi: Option<usize> = None;
-    let mut star_ti: usize = 0;
-
-    while ti < txt.len() || pi < pat.len() {
-        if pi < pat.len() {
-            match pat[pi] {
-                '*' => {
-                    // record star position and try matching zero chars first
-                    star_pi = Some(pi);
-                    star_ti = ti;
-                    pi += 1;
-                    continue;
-                }
-                '?' if ti < txt.len() => {
-                    pi += 1;
-                    ti += 1;
-                    continue;
-                }
-                '[' if ti < txt.len() => {
-                    // parse character class
-                    let tc = txt[ti];
-                    let mut j = pi + 1;
-                    let mut negated = false;
-                    let mut matched = false;
-
-                    if j < pat.len() && (pat[j] == '^' || pat[j] == '!') {
-                        negated = true;
-                        j += 1;
-                    }
-
-                    while j < pat.len() && pat[j] != ']' {
-                        if pat[j] == tc {
-                            matched = true;
-                        }
-                        j += 1;
-                    }
-
-                    if negated {
-                        matched = !matched;
-                    }
-
-                    if matched && j < pat.len() {
-                        pi = j + 1; // skip past ']'
-                        ti += 1;
-                        continue;
-                    }
-                    // fall through to backtrack
-                }
-                c if ti < txt.len() && c == txt[ti] => {
-                    pi += 1;
-                    ti += 1;
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // mismatch or end of pattern — try backtracking to last '*'
-        if let Some(sp) = star_pi {
-            pi = sp + 1;
-            star_ti += 1;
-            ti = star_ti;
-            if ti > txt.len() {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-
-    // skip trailing '*' in pattern
-    while pi < pat.len() && pat[pi] == '*' {
-        pi += 1;
-    }
-
-    pi == pat.len()
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::thread;
-
-    #[test]
-    fn del_existing() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        assert!(ks.del("key"));
-        assert_eq!(ks.get("key").unwrap(), None);
-    }
-
-    #[test]
-    fn del_missing() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.del("nope"));
-    }
-
-    #[test]
-    fn exists_present_and_absent() {
-        let mut ks = Keyspace::new();
-        ks.set("yes".into(), Bytes::from("here"), None, false, false);
-        assert!(ks.exists("yes"));
-        assert!(!ks.exists("no"));
-    }
-
-    #[test]
-    fn ttl_no_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        assert_eq!(ks.ttl("key"), TtlResult::NoExpiry);
-    }
-
-    #[test]
-    fn ttl_not_found() {
-        let mut ks = Keyspace::new();
-        assert_eq!(ks.ttl("missing"), TtlResult::NotFound);
-    }
-
-    #[test]
-    fn ttl_with_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "key".into(),
-            Bytes::from("val"),
-            Some(Duration::from_secs(100)),
-            false,
-            false,
-        );
-        match ks.ttl("key") {
-            TtlResult::Seconds(s) => assert!((98..=100).contains(&s)),
-            other => panic!("expected Seconds, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ttl_expired_key() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "temp".into(),
-            Bytes::from("val"),
-            Some(Duration::from_millis(10)),
-            false,
-            false,
-        );
-        thread::sleep(Duration::from_millis(30));
-        assert_eq!(ks.ttl("temp"), TtlResult::NotFound);
-    }
-
-    #[test]
-    fn expire_existing_key() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        assert!(ks.expire("key", 60));
-        match ks.ttl("key") {
-            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
-            other => panic!("expected Seconds, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn expire_missing_key() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.expire("nope", 60));
-    }
-
-    #[test]
-    fn del_expired_key_returns_false() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "temp".into(),
-            Bytes::from("val"),
-            Some(Duration::from_millis(10)),
-            false,
-            false,
-        );
-        thread::sleep(Duration::from_millis(30));
-        // key is expired, del should return false (not found)
-        assert!(!ks.del("temp"));
-    }
-
-    // -- memory tracking tests --
-
-    #[test]
-    fn memory_increases_on_set() {
-        let mut ks = Keyspace::new();
-        assert_eq!(ks.stats().used_bytes, 0);
-        ks.set("key".into(), Bytes::from("value"), None, false, false);
-        assert!(ks.stats().used_bytes > 0);
-        assert_eq!(ks.stats().key_count, 1);
-    }
-
-    #[test]
-    fn memory_decreases_on_del() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("value"), None, false, false);
-        let after_set = ks.stats().used_bytes;
-        ks.del("key");
-        assert_eq!(ks.stats().used_bytes, 0);
-        assert!(after_set > 0);
-    }
-
-    #[test]
-    fn memory_adjusts_on_overwrite() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("short"), None, false, false);
-        let small = ks.stats().used_bytes;
-
-        ks.set(
-            "key".into(),
-            Bytes::from("a much longer value"),
-            None,
-            false,
-            false,
-        );
-        let large = ks.stats().used_bytes;
-
-        assert!(large > small);
-        assert_eq!(ks.stats().key_count, 1);
-    }
-
-    #[test]
-    fn memory_decreases_on_expired_removal() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "temp".into(),
-            Bytes::from("data"),
-            Some(Duration::from_millis(10)),
-            false,
-            false,
-        );
-        assert!(ks.stats().used_bytes > 0);
-        thread::sleep(Duration::from_millis(30));
-        // trigger lazy expiration
-        let _ = ks.get("temp");
-        assert_eq!(ks.stats().used_bytes, 0);
-        assert_eq!(ks.stats().key_count, 0);
-    }
-
-    #[test]
-    fn stats_tracks_expiry_count() {
-        let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(100)),
-            false,
-            false,
-        );
-        ks.set(
-            "c".into(),
-            Bytes::from("3"),
-            Some(Duration::from_secs(200)),
-            false,
-            false,
-        );
-
-        let stats = ks.stats();
-        assert_eq!(stats.key_count, 3);
-        assert_eq!(stats.keys_with_expiry, 2);
-    }
-
-    // -- eviction tests --
-
-    #[test]
-    fn noeviction_returns_oom_when_full() {
-        // one entry with key "a" + value "val" = 1 + 3 + 104 = 108 bytes
-        // set limit so one entry fits but two don't
-        let config = ShardConfig {
-            max_memory: Some(130),
-            eviction_policy: EvictionPolicy::NoEviction,
-            ..ShardConfig::default()
-        };
-        let mut ks = Keyspace::with_config(config);
-
-        // first key should fit
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("val"), None, false, false),
-            SetResult::Ok
-        );
-
-        // second key should push us over the limit
-        let result = ks.set("b".into(), Bytes::from("val"), None, false, false);
-        assert_eq!(result, SetResult::OutOfMemory);
-
-        // original key should still be there
-        assert!(ks.exists("a"));
-    }
-
-    #[test]
-    fn lru_eviction_makes_room() {
-        let config = ShardConfig {
-            max_memory: Some(130),
-            eviction_policy: EvictionPolicy::AllKeysLru,
-            ..ShardConfig::default()
-        };
-        let mut ks = Keyspace::with_config(config);
-
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("val"), None, false, false),
-            SetResult::Ok
-        );
-
-        // this should trigger eviction of "a" to make room
-        assert_eq!(
-            ks.set("b".into(), Bytes::from("val"), None, false, false),
-            SetResult::Ok
-        );
-
-        // "a" should have been evicted
-        assert!(!ks.exists("a"));
-        assert!(ks.exists("b"));
-    }
-
-    #[test]
-    fn safety_margin_rejects_near_raw_limit() {
-        // one entry = 1 (key) + 3 (val) + ENTRY_OVERHEAD (104) = 108 bytes.
-        // configure max_memory = 120. effective limit = 120 * 90 / 100 = 108.
-        // the entry fills exactly the effective limit, so a second entry should
-        // be rejected even though the raw limit has 12 bytes of headroom.
-        let config = ShardConfig {
-            max_memory: Some(120),
-            eviction_policy: EvictionPolicy::NoEviction,
-            ..ShardConfig::default()
-        };
-        let mut ks = Keyspace::with_config(config);
-
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("val"), None, false, false),
-            SetResult::Ok
-        );
-
-        let result = ks.set("b".into(), Bytes::from("val"), None, false, false);
-        assert_eq!(result, SetResult::OutOfMemory);
-    }
-
-    #[test]
-    fn overwrite_same_size_succeeds_at_limit() {
-        let config = ShardConfig {
-            max_memory: Some(130),
-            eviction_policy: EvictionPolicy::NoEviction,
-            ..ShardConfig::default()
-        };
-        let mut ks = Keyspace::with_config(config);
-
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("val"), None, false, false),
-            SetResult::Ok
-        );
-
-        // overwriting with same-size value should succeed — no net increase
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("new"), None, false, false),
-            SetResult::Ok
-        );
-        assert_eq!(
-            ks.get("a").unwrap(),
-            Some(Value::String(Bytes::from("new")))
-        );
-    }
-
-    #[test]
-    fn overwrite_larger_value_respects_limit() {
-        let config = ShardConfig {
-            max_memory: Some(130),
-            eviction_policy: EvictionPolicy::NoEviction,
-            ..ShardConfig::default()
-        };
-        let mut ks = Keyspace::with_config(config);
-
-        assert_eq!(
-            ks.set("a".into(), Bytes::from("val"), None, false, false),
-            SetResult::Ok
-        );
-
-        // overwriting with a much larger value should fail if it exceeds limit
-        let big_value = "x".repeat(200);
-        let result = ks.set("a".into(), Bytes::from(big_value), None, false, false);
-        assert_eq!(result, SetResult::OutOfMemory);
-
-        // original value should still be intact
-        assert_eq!(
-            ks.get("a").unwrap(),
-            Some(Value::String(Bytes::from("val")))
-        );
-    }
-
-    // -- iter_entries tests --
-
-    #[test]
-    fn iter_entries_returns_live_entries() {
-        let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(100)),
-            false,
-            false,
-        );
-
-        let entries: Vec<_> = ks.iter_entries().collect();
-        assert_eq!(entries.len(), 2);
-    }
-
-    #[test]
-    fn iter_entries_skips_expired() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "dead".into(),
-            Bytes::from("gone"),
-            Some(Duration::from_millis(1)),
-            false,
-            false,
-        );
-        ks.set("alive".into(), Bytes::from("here"), None, false, false);
-        thread::sleep(Duration::from_millis(10));
-
-        let entries: Vec<_> = ks.iter_entries().collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, "alive");
-    }
-
-    #[test]
-    fn iter_entries_ttl_for_no_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set("permanent".into(), Bytes::from("val"), None, false, false);
-
-        let entries: Vec<_> = ks.iter_entries().collect();
-        assert_eq!(entries[0].2, -1);
-    }
-
-    // -- restore tests --
-
-    #[test]
-    fn restore_adds_entry() {
-        let mut ks = Keyspace::new();
-        ks.restore("restored".into(), Value::String(Bytes::from("data")), None);
-        assert_eq!(
-            ks.get("restored").unwrap(),
-            Some(Value::String(Bytes::from("data")))
-        );
-        assert_eq!(ks.stats().key_count, 1);
-    }
-
-    #[test]
-    fn restore_with_zero_ttl_expires_immediately() {
-        let mut ks = Keyspace::new();
-        // TTL of 0 should create entry that expires immediately
-        ks.restore(
-            "short-lived".into(),
-            Value::String(Bytes::from("data")),
-            Some(Duration::from_millis(1)),
-        );
-        // Entry exists but will be expired on access
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(ks.get("short-lived").is_err() || ks.get("short-lived").unwrap().is_none());
-    }
-
-    #[test]
-    fn restore_overwrites_existing() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("old"), None, false, false);
-        ks.restore("key".into(), Value::String(Bytes::from("new")), None);
-        assert_eq!(
-            ks.get("key").unwrap(),
-            Some(Value::String(Bytes::from("new")))
-        );
-        assert_eq!(ks.stats().key_count, 1);
-    }
-
-    #[test]
-    fn restore_bypasses_memory_limit() {
-        let config = ShardConfig {
-            max_memory: Some(50), // very small
-            eviction_policy: EvictionPolicy::NoEviction,
-            ..ShardConfig::default()
-        };
-        let mut ks = Keyspace::with_config(config);
-
-        // normal set would fail due to memory limit
-        ks.restore(
-            "big".into(),
-            Value::String(Bytes::from("x".repeat(200))),
-            None,
-        );
-        assert_eq!(ks.stats().key_count, 1);
-    }
-
-    #[test]
-    fn no_limit_never_rejects() {
-        // default config has no memory limit
-        let mut ks = Keyspace::new();
-        for i in 0..100 {
-            assert_eq!(
-                ks.set(format!("key:{i}"), Bytes::from("value"), None, false, false),
-                SetResult::Ok
-            );
-        }
-        assert_eq!(ks.len(), 100);
-    }
-
-    #[test]
-    fn clear_removes_all_keys() {
-        let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set(
-            "b".into(),
-            Bytes::from("2"),
-            Some(Duration::from_secs(60)),
-            false,
-            false,
-        );
-        ks.lpush("list", &[Bytes::from("x")]).unwrap();
-
-        assert_eq!(ks.len(), 3);
-        assert!(ks.stats().used_bytes > 0);
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-
-        ks.clear();
-
-        assert_eq!(ks.len(), 0);
-        assert!(ks.is_empty());
-        assert_eq!(ks.stats().used_bytes, 0);
-        assert_eq!(ks.stats().keys_with_expiry, 0);
-    }
-
-    // --- scan ---
-
-    #[test]
-    fn scan_returns_keys() {
-        let mut ks = Keyspace::new();
-        ks.set("key1".into(), Bytes::from("a"), None, false, false);
-        ks.set("key2".into(), Bytes::from("b"), None, false, false);
-        ks.set("key3".into(), Bytes::from("c"), None, false, false);
-
-        let (cursor, keys) = ks.scan_keys(0, 10, None);
-        assert_eq!(cursor, 0); // complete in one pass
-        assert_eq!(keys.len(), 3);
-    }
-
-    #[test]
-    fn scan_empty_keyspace() {
-        let ks = Keyspace::new();
-        let (cursor, keys) = ks.scan_keys(0, 10, None);
-        assert_eq!(cursor, 0);
-        assert!(keys.is_empty());
-    }
-
-    #[test]
-    fn scan_with_pattern() {
-        let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
-        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
-        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
-
-        let (cursor, keys) = ks.scan_keys(0, 10, Some("user:*"));
-        assert_eq!(cursor, 0);
-        assert_eq!(keys.len(), 2);
-        for k in &keys {
-            assert!(k.starts_with("user:"));
-        }
-    }
-
-    #[test]
-    fn scan_with_count_limit() {
-        let mut ks = Keyspace::new();
-        for i in 0..10 {
-            ks.set(format!("k{i}"), Bytes::from("v"), None, false, false);
-        }
-
-        // first batch
-        let (cursor, keys) = ks.scan_keys(0, 3, None);
-        assert!(!keys.is_empty());
-        assert!(keys.len() <= 3);
-
-        // if there are more keys, cursor should be non-zero
-        if cursor != 0 {
-            let (cursor2, keys2) = ks.scan_keys(cursor, 3, None);
-            assert!(!keys2.is_empty());
-            // continue until complete
-            let _ = (cursor2, keys2);
-        }
-    }
-
-    #[test]
-    fn scan_skips_expired_keys() {
-        let mut ks = Keyspace::new();
-        ks.set("live".into(), Bytes::from("a"), None, false, false);
-        ks.set(
-            "expired".into(),
-            Bytes::from("b"),
-            Some(Duration::from_millis(1)),
-            false,
-            false,
-        );
-
-        std::thread::sleep(Duration::from_millis(5));
-
-        let (_, keys) = ks.scan_keys(0, 10, None);
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0], "live");
-    }
-
-    #[test]
-    fn glob_match_star() {
-        assert!(super::glob_match("user:*", "user:123"));
-        assert!(super::glob_match("user:*", "user:"));
-        assert!(super::glob_match("*:data", "foo:data"));
-        assert!(!super::glob_match("user:*", "item:123"));
-    }
-
-    #[test]
-    fn glob_match_question() {
-        assert!(super::glob_match("key?", "key1"));
-        assert!(super::glob_match("key?", "keya"));
-        assert!(!super::glob_match("key?", "key"));
-        assert!(!super::glob_match("key?", "key12"));
-    }
-
-    #[test]
-    fn glob_match_brackets() {
-        assert!(super::glob_match("key[abc]", "keya"));
-        assert!(super::glob_match("key[abc]", "keyb"));
-        assert!(!super::glob_match("key[abc]", "keyd"));
-    }
-
-    #[test]
-    fn glob_match_literal() {
-        assert!(super::glob_match("exact", "exact"));
-        assert!(!super::glob_match("exact", "exactnot"));
-        assert!(!super::glob_match("exact", "notexact"));
-    }
-
-    // --- persist/pttl/pexpire ---
-
-    #[test]
-    fn persist_removes_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "key".into(),
-            Bytes::from("val"),
-            Some(Duration::from_secs(60)),
-            false,
-            false,
-        );
-        assert!(matches!(ks.ttl("key"), TtlResult::Seconds(_)));
-
-        assert!(ks.persist("key"));
-        assert_eq!(ks.ttl("key"), TtlResult::NoExpiry);
-        assert_eq!(ks.stats().keys_with_expiry, 0);
-    }
-
-    #[test]
-    fn persist_returns_false_without_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        assert!(!ks.persist("key"));
-    }
-
-    #[test]
-    fn persist_returns_false_for_missing_key() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.persist("missing"));
-    }
-
-    #[test]
-    fn pttl_returns_milliseconds() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "key".into(),
-            Bytes::from("val"),
-            Some(Duration::from_secs(60)),
-            false,
-            false,
-        );
-        match ks.pttl("key") {
-            TtlResult::Milliseconds(ms) => assert!(ms > 59_000 && ms <= 60_000),
-            other => panic!("expected Milliseconds, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn pttl_no_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        assert_eq!(ks.pttl("key"), TtlResult::NoExpiry);
-    }
-
-    #[test]
-    fn pttl_not_found() {
-        let mut ks = Keyspace::new();
-        assert_eq!(ks.pttl("missing"), TtlResult::NotFound);
-    }
-
-    #[test]
-    fn pexpire_sets_ttl_in_millis() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        assert!(ks.pexpire("key", 5000));
-        match ks.pttl("key") {
-            TtlResult::Milliseconds(ms) => assert!(ms > 4000 && ms <= 5000),
-            other => panic!("expected Milliseconds, got {other:?}"),
-        }
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-    }
-
-    #[test]
-    fn pexpire_missing_key_returns_false() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.pexpire("missing", 5000));
-    }
-
-    #[test]
-    fn pexpire_overwrites_existing_ttl() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "key".into(),
-            Bytes::from("val"),
-            Some(Duration::from_secs(60)),
-            false,
-            false,
-        );
-        assert!(ks.pexpire("key", 500));
-        match ks.pttl("key") {
-            TtlResult::Milliseconds(ms) => assert!(ms <= 500),
-            other => panic!("expected Milliseconds, got {other:?}"),
-        }
-        // expiry count shouldn't double-count
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-    }
-
-    // --- expireat / pexpireat ---
-
-    #[test]
-    fn expireat_sets_expiry_on_existing_key() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), None, false, false);
-        let future_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 60;
-        assert!(ks.expireat("k", future_secs));
-        assert!(matches!(ks.ttl("k"), TtlResult::Seconds(_)));
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-    }
-
-    #[test]
-    fn expireat_missing_key_returns_false() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.expireat("missing", 9_999_999_999));
-    }
-
-    #[test]
-    fn expireat_does_not_double_count_expiry() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let mut ks = Keyspace::new();
-        let base = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        ks.set(
-            "k".into(),
-            Bytes::from("v"),
-            Some(Duration::from_secs(30)),
-            false,
-            false,
-        );
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-        assert!(ks.expireat("k", base + 120));
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-    }
-
-    #[test]
-    fn pexpireat_sets_expiry_in_ms() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), None, false, false);
-        let future_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-            + 60_000;
-        assert!(ks.pexpireat("k", future_ms));
-        assert!(matches!(ks.pttl("k"), TtlResult::Milliseconds(_)));
-        assert_eq!(ks.stats().keys_with_expiry, 1);
-    }
-
-    #[test]
-    fn pexpireat_missing_key_returns_false() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.pexpireat("missing", 9_999_999_999_000));
-    }
-
-    // --- keys tests ---
-
-    #[test]
-    fn keys_match_all() {
-        let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set("b".into(), Bytes::from("2"), None, false, false);
-        ks.set("c".into(), Bytes::from("3"), None, false, false);
-        let mut result = ks.keys("*");
-        result.sort();
-        assert_eq!(result, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn keys_with_pattern() {
-        let mut ks = Keyspace::new();
-        ks.set("user:1".into(), Bytes::from("a"), None, false, false);
-        ks.set("user:2".into(), Bytes::from("b"), None, false, false);
-        ks.set("item:1".into(), Bytes::from("c"), None, false, false);
-        let mut result = ks.keys("user:*");
-        result.sort();
-        assert_eq!(result, vec!["user:1", "user:2"]);
-    }
-
-    #[test]
-    fn keys_skips_expired() {
-        let mut ks = Keyspace::new();
-        ks.set("live".into(), Bytes::from("a"), None, false, false);
-        ks.set(
-            "dead".into(),
-            Bytes::from("b"),
-            Some(Duration::from_millis(1)),
-            false,
-            false,
-        );
-        thread::sleep(Duration::from_millis(5));
-        let result = ks.keys("*");
-        assert_eq!(result, vec!["live"]);
-    }
-
-    #[test]
-    fn keys_empty_keyspace() {
-        let ks = Keyspace::new();
-        assert!(ks.keys("*").is_empty());
-    }
-
-    // --- rename tests ---
-
-    #[test]
-    fn rename_basic() {
-        let mut ks = Keyspace::new();
-        ks.set("old".into(), Bytes::from("value"), None, false, false);
-        ks.rename("old", "new").unwrap();
-        assert!(!ks.exists("old"));
-        assert_eq!(
-            ks.get("new").unwrap(),
-            Some(Value::String(Bytes::from("value")))
-        );
-    }
-
-    #[test]
-    fn rename_preserves_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "old".into(),
-            Bytes::from("val"),
-            Some(Duration::from_secs(60)),
-            false,
-            false,
-        );
-        ks.rename("old", "new").unwrap();
-        match ks.ttl("new") {
-            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
-            other => panic!("expected TTL preserved, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn rename_overwrites_destination() {
-        let mut ks = Keyspace::new();
-        ks.set("src".into(), Bytes::from("new_val"), None, false, false);
-        ks.set("dst".into(), Bytes::from("old_val"), None, false, false);
-        ks.rename("src", "dst").unwrap();
-        assert!(!ks.exists("src"));
-        assert_eq!(
-            ks.get("dst").unwrap(),
-            Some(Value::String(Bytes::from("new_val")))
-        );
-        assert_eq!(ks.len(), 1);
-    }
-
-    #[test]
-    fn rename_missing_key_returns_error() {
-        let mut ks = Keyspace::new();
-        let err = ks.rename("missing", "new").unwrap_err();
-        assert_eq!(err, RenameError::NoSuchKey);
-    }
-
-    #[test]
-    fn rename_same_key() {
-        let mut ks = Keyspace::new();
-        ks.set("key".into(), Bytes::from("val"), None, false, false);
-        // renaming to itself should succeed (Redis behavior)
-        ks.rename("key", "key").unwrap();
-        assert_eq!(
-            ks.get("key").unwrap(),
-            Some(Value::String(Bytes::from("val")))
-        );
-    }
-
-    #[test]
-    fn rename_tracks_memory() {
-        let mut ks = Keyspace::new();
-        ks.set("old".into(), Bytes::from("value"), None, false, false);
-        let before = ks.stats().used_bytes;
-        ks.rename("old", "new").unwrap();
-        let after = ks.stats().used_bytes;
-        // same key length, so memory should be the same
-        assert_eq!(before, after);
-        assert_eq!(ks.stats().key_count, 1);
-    }
-
-    #[test]
-    fn zero_ttl_expires_immediately() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "key".into(),
-            Bytes::from("val"),
-            Some(Duration::ZERO),
-            false,
-            false,
-        );
-
-        // key should be expired immediately
-        std::thread::sleep(Duration::from_millis(1));
-        assert!(ks.get("key").unwrap().is_none());
-    }
-
-    #[test]
-    fn very_small_ttl_expires_quickly() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "key".into(),
-            Bytes::from("val"),
-            Some(Duration::from_millis(1)),
-            false,
-            false,
-        );
-
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(ks.get("key").unwrap().is_none());
-    }
-
-    #[test]
-    fn count_keys_in_slot_empty() {
-        let ks = Keyspace::new();
-        assert_eq!(ks.count_keys_in_slot(0), 0);
-    }
-
-    #[test]
-    fn count_keys_in_slot_matches() {
-        let mut ks = Keyspace::new();
-        // insert a few keys and count those in a specific slot
-        ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set("b".into(), Bytes::from("2"), None, false, false);
-        ks.set("c".into(), Bytes::from("3"), None, false, false);
-
-        let slot_a = ember_protocol::slots::key_slot(b"a");
-        let count = ks.count_keys_in_slot(slot_a);
-        // at minimum, "a" should be in its own slot
-        assert!(count >= 1);
-    }
-
-    #[test]
-    fn count_keys_in_slot_skips_expired() {
-        let mut ks = Keyspace::new();
-        let slot = ember_protocol::slots::key_slot(b"temp");
-        ks.set(
-            "temp".into(),
-            Bytes::from("gone"),
-            Some(Duration::from_millis(0)),
-            false,
-            false,
-        );
-        // key is expired — should not be counted
-        thread::sleep(Duration::from_millis(5));
-        assert_eq!(ks.count_keys_in_slot(slot), 0);
-    }
-
-    #[test]
-    fn get_keys_in_slot_returns_matching() {
-        let mut ks = Keyspace::new();
-        ks.set("x".into(), Bytes::from("1"), None, false, false);
-        ks.set("y".into(), Bytes::from("2"), None, false, false);
-
-        let slot_x = ember_protocol::slots::key_slot(b"x");
-        let keys = ks.get_keys_in_slot(slot_x, 100);
-        assert!(keys.contains(&"x".to_string()));
-    }
-
-    #[test]
-    fn get_keys_in_slot_respects_count_limit() {
-        let mut ks = Keyspace::new();
-        // insert several keys — some might share a slot
-        for i in 0..100 {
-            ks.set(format!("key:{i}"), Bytes::from("v"), None, false, false);
-        }
-        // ask for at most 3 keys from slot 0
-        let keys = ks.get_keys_in_slot(0, 3);
-        assert!(keys.len() <= 3);
-    }
-
-    // --- key_version (WATCH support) ---
-    //
-    // Version tracking uses a lazily-populated side table. `key_version()`
-    // inserts the key into the table on first call (simulating WATCH).
-    // Subsequent mutations only bump the version if the key is tracked.
-
-    #[test]
-    fn key_version_returns_none_for_missing() {
-        let mut ks = Keyspace::new();
-        assert_eq!(ks.key_version("nope"), None);
-    }
-
-    #[test]
-    fn key_version_changes_on_set() {
-        let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v1"), None, false, false);
-        // first call registers the key in the version table (like WATCH)
-        let v1 = ks.key_version("k").expect("key should exist");
-        ks.set("k".into(), Bytes::from("v2"), None, false, false);
-        let v2 = ks.key_version("k").expect("key should exist");
-        assert!(v2 > v1, "version should increase on overwrite");
-    }
-
-    #[test]
-    fn key_version_none_after_del() {
-        let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), None, false, false);
-        assert!(ks.key_version("k").is_some());
-        ks.del("k");
-        assert_eq!(ks.key_version("k"), None);
-    }
-
-    #[test]
-    fn key_version_changes_on_list_push() {
-        let mut ks = Keyspace::new();
-        ks.lpush("list", &[Bytes::from("a")]).unwrap();
-        let v1 = ks.key_version("list").expect("list should exist");
-        ks.rpush("list", &[Bytes::from("b")]).unwrap();
-        let v2 = ks.key_version("list").expect("list should exist");
-        assert!(v2 > v1, "version should increase on rpush");
-    }
-
-    #[test]
-    fn key_version_changes_on_hash_set() {
-        let mut ks = Keyspace::new();
-        ks.hset("h", &[("f1".into(), Bytes::from("v1"))]).unwrap();
-        let v1 = ks.key_version("h").expect("hash should exist");
-        ks.hset("h", &[("f2".into(), Bytes::from("v2"))]).unwrap();
-        let v2 = ks.key_version("h").expect("hash should exist");
-        assert!(v2 > v1, "version should increase on hset");
-    }
-
-    #[test]
-    fn key_version_changes_on_expire() {
-        let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), None, false, false);
-        let v1 = ks.key_version("k").expect("key should exist");
-        ks.expire("k", 100);
-        let v2 = ks.key_version("k").expect("key should exist");
-        assert!(v2 > v1, "version should increase on expire");
-    }
-
-    #[test]
-    fn key_version_stable_without_watch() {
-        // if key_version is never called, mutations don't create
-        // version entries — the side table stays empty
-        let mut ks = Keyspace::new();
-        ks.set("a".into(), Bytes::from("1"), None, false, false);
-        ks.set("a".into(), Bytes::from("2"), None, false, false);
-        // first call to key_version returns a snapshot
-        let v1 = ks.key_version("a").unwrap();
-        // no mutation between calls — version is stable
-        let v2 = ks.key_version("a").unwrap();
-        assert_eq!(v1, v2, "version should be stable without mutations");
-    }
-
-    // --- copy tests ---
-
-    #[test]
-    fn copy_basic() {
-        let mut ks = Keyspace::new();
-        ks.set("src".into(), Bytes::from("hello"), None, false, false);
-        assert_eq!(ks.copy("src", "dst", false), Ok(true));
-        assert_eq!(
-            ks.get("dst").unwrap(),
-            Some(Value::String(Bytes::from("hello")))
-        );
-        // source should still exist
-        assert!(ks.exists("src"));
-    }
-
-    #[test]
-    fn copy_preserves_expiry() {
-        let mut ks = Keyspace::new();
-        ks.set(
-            "src".into(),
-            Bytes::from("val"),
-            Some(Duration::from_secs(60)),
-            false,
-            false,
-        );
-        assert_eq!(ks.copy("src", "dst", false), Ok(true));
-        match ks.ttl("dst") {
-            TtlResult::Seconds(s) => assert!((58..=60).contains(&s)),
-            other => panic!("expected TTL preserved, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn copy_no_replace_returns_false() {
-        let mut ks = Keyspace::new();
-        ks.set("src".into(), Bytes::from("a"), None, false, false);
-        ks.set("dst".into(), Bytes::from("b"), None, false, false);
-        assert_eq!(ks.copy("src", "dst", false), Ok(false));
-        // destination should be unchanged
-        assert_eq!(
-            ks.get("dst").unwrap(),
-            Some(Value::String(Bytes::from("b")))
-        );
-    }
-
-    #[test]
-    fn copy_replace_overwrites() {
-        let mut ks = Keyspace::new();
-        ks.set("src".into(), Bytes::from("new"), None, false, false);
-        ks.set("dst".into(), Bytes::from("old"), None, false, false);
-        assert_eq!(ks.copy("src", "dst", true), Ok(true));
-        assert_eq!(
-            ks.get("dst").unwrap(),
-            Some(Value::String(Bytes::from("new")))
-        );
-    }
-
-    #[test]
-    fn copy_missing_source() {
-        let mut ks = Keyspace::new();
-        assert_eq!(ks.copy("missing", "dst", false), Err(CopyError::NoSuchKey));
-    }
-
-    #[test]
-    fn copy_tracks_memory() {
-        let mut ks = Keyspace::new();
-        ks.set("src".into(), Bytes::from("value"), None, false, false);
-        let before = ks.stats().used_bytes;
-        ks.copy("src", "dst", false).unwrap();
-        let after = ks.stats().used_bytes;
-        // memory should roughly double (two entries with same value)
-        assert!(after > before);
-        assert_eq!(ks.stats().key_count, 2);
-    }
-
-    // --- random_key ---
-
-    #[test]
-    fn random_key_empty() {
-        let mut ks = Keyspace::new();
-        assert_eq!(ks.random_key(), None);
-    }
-
-    #[test]
-    fn random_key_returns_existing() {
-        let mut ks = Keyspace::new();
-        ks.set("only".into(), Bytes::from("val"), None, false, false);
-        assert_eq!(ks.random_key(), Some("only".into()));
-    }
-
-    // --- touch ---
-
-    #[test]
-    fn touch_existing_key() {
-        let mut ks = Keyspace::new();
-        ks.set("k".into(), Bytes::from("v"), None, false, false);
-        assert!(ks.touch("k"));
-    }
-
-    #[test]
-    fn touch_missing_key() {
-        let mut ks = Keyspace::new();
-        assert!(!ks.touch("missing"));
-    }
-
-    // --- sort ---
-
-    #[test]
-    fn sort_list_numeric() {
-        let mut ks = Keyspace::new();
-        let _ = ks.lpush(
-            "nums",
-            &[Bytes::from("3"), Bytes::from("1"), Bytes::from("2")],
-        );
-        let result = ks.sort("nums", false, false, None).unwrap();
-        assert_eq!(
-            result,
-            vec![Bytes::from("1"), Bytes::from("2"), Bytes::from("3")]
-        );
-    }
-
-    #[test]
-    fn sort_list_alpha_desc() {
-        let mut ks = Keyspace::new();
-        let _ = ks.lpush(
-            "words",
-            &[
-                Bytes::from("banana"),
-                Bytes::from("apple"),
-                Bytes::from("cherry"),
-            ],
-        );
-        let result = ks.sort("words", true, true, None).unwrap();
-        assert_eq!(
-            result,
-            vec![
-                Bytes::from("cherry"),
-                Bytes::from("banana"),
-                Bytes::from("apple")
-            ]
-        );
-    }
-
-    #[test]
-    fn sort_with_limit() {
-        let mut ks = Keyspace::new();
-        let _ = ks.lpush(
-            "nums",
-            &[
-                Bytes::from("4"),
-                Bytes::from("3"),
-                Bytes::from("2"),
-                Bytes::from("1"),
-            ],
-        );
-        let result = ks.sort("nums", false, false, Some((1, 2))).unwrap();
-        assert_eq!(result, vec![Bytes::from("2"), Bytes::from("3")]);
-    }
-
-    #[test]
-    fn sort_set_alpha() {
-        let mut ks = Keyspace::new();
-        let members: Vec<String> = vec!["c".into(), "a".into(), "b".into()];
-        let _ = ks.sadd("myset", &members);
-        let result = ks.sort("myset", false, true, None).unwrap();
-        assert_eq!(
-            result,
-            vec![Bytes::from("a"), Bytes::from("b"), Bytes::from("c")]
-        );
-    }
-
-    #[test]
-    fn sort_missing_key() {
-        let mut ks = Keyspace::new();
-        let result = ks.sort("nope", false, false, None).unwrap();
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn sort_wrong_type() {
-        let mut ks = Keyspace::new();
-        ks.set("str".into(), Bytes::from("hello"), None, false, false);
-        let result = ks.sort("str", false, false, None);
-        assert!(result.is_err());
-    }
-}
+mod tests;
