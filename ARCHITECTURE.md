@@ -198,7 +198,7 @@ recovery reads the files in `ember-persistence` and writes into the shard's keys
 1. load the snapshot if one exists, leaving out keys whose TTL ran out while the server was down
 2. read the whole AOF once without applying anything, to find where replay starts and to catch corruption
 3. replay the AOF on top. each record becomes the request that wrote it and runs through the shard's normal dispatch, so replay behaves exactly like the original commands
-4. if the snapshot is corrupt, start from the AOF alone. if the AOF is corrupt partway through, skip it entirely rather than apply a prefix of it
+4. if a file can't be read, the server exits without changing it. this covers a file that is corrupt partway through, one encrypted with a key that wasn't given, and one in a format the build doesn't support. a shard that started anyway would save its partial state over the file at the next rewrite or snapshot. a partial record at the end of the AOF, left by a crash during a write, is cut off and does not stop the start
 
 memory limits are off during replay, since every recovered key was stored once already.
 
