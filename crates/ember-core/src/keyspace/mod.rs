@@ -441,6 +441,8 @@ pub struct Keyspace {
     expired_total: u64,
     /// Cumulative count of keys removed by eviction.
     evicted_total: u64,
+    /// Keys evicted since the shard last called [`Keyspace::take_evicted`].
+    evicted: Vec<String>,
     /// Cumulative count of write rejections due to memory limits.
     oom_rejections: u64,
     /// Cumulative count of successful key lookups.
@@ -481,6 +483,7 @@ impl Keyspace {
             expiring: ExpirySet::default(),
             expired_total: 0,
             evicted_total: 0,
+            evicted: Vec::new(),
             oom_rejections: 0,
             keyspace_hits: 0,
             keyspace_misses: 0,
@@ -672,7 +675,14 @@ impl Keyspace {
         self.evicted_total += 1;
         self.remove_version(&key);
         self.defer_drop(entry.value);
+        self.evicted.push(key.into());
         true
+    }
+
+    /// Returns the keys evicted since the last call. The shard logs them as
+    /// deletes so the AOF and replicas drop them too.
+    pub(crate) fn take_evicted(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.evicted)
     }
 
     /// Returns the position, among `positions`, of the entry accessed least

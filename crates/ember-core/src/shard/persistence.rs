@@ -658,6 +658,10 @@ mod tests {
 
     /// Starts shard 0 with an AOF (fsync always) in `dir`.
     fn spawn_persistent_shard(dir: &std::path::Path) -> ShardHandle {
+        spawn_persistent_shard_with(dir, ShardConfig::default())
+    }
+
+    fn spawn_persistent_shard_with(dir: &std::path::Path, config: ShardConfig) -> ShardHandle {
         let pcfg = ShardPersistenceConfig {
             data_dir: dir.to_owned(),
             append_only: true,
@@ -667,7 +671,7 @@ mod tests {
         };
         spawn_shard(
             16,
-            ShardConfig::default(),
+            config,
             Some(pcfg),
             None,
             None,
@@ -784,6 +788,43 @@ mod tests {
             .collect();
         files.sort();
         files
+    }
+
+    #[tokio::test]
+    async fn evicted_keys_stay_gone_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ShardConfig {
+            max_memory: Some(8 * 1024),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let handle = spawn_persistent_shard_with(dir.path(), config.clone());
+        for i in 0..20 {
+            let resp = handle
+                .send(ShardRequest::Set {
+                    key: format!("k{i}"),
+                    value: Bytes::from(vec![b'x'; 1024]),
+                    expire: None,
+                    nx: false,
+                    xx: false,
+                })
+                .await
+                .unwrap();
+            assert!(matches!(resp, ShardResponse::Ok), "{resp:?}");
+        }
+        let ShardResponse::KeyCount(kept) = handle.send(ShardRequest::DbSize).await.unwrap() else {
+            panic!("expected a key count");
+        };
+        assert!(kept < 20, "nothing was evicted");
+
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let handle = spawn_persistent_shard_with(dir.path(), config);
+        let resp = handle.send(ShardRequest::DbSize).await.unwrap();
+        assert!(
+            matches!(resp, ShardResponse::KeyCount(n) if n == kept),
+            "{resp:?}"
+        );
     }
 
     #[tokio::test]
