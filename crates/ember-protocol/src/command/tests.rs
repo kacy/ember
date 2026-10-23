@@ -3295,6 +3295,24 @@ fn is_write_returns_false_for_reads() {
 }
 
 #[test]
+fn is_write_follows_the_write_category() {
+    let is_write = |args: &[&str]| Command::from_frame(cmd(args)).unwrap().is_write();
+
+    assert!(is_write(&["SETRANGE", "k", "0", "v"]));
+    assert!(is_write(&["HINCRBYFLOAT", "k", "f", "1.5"]));
+    assert!(is_write(&["ZUNIONSTORE", "d", "1", "k"]));
+    assert!(is_write(&["ZINTERSTORE", "d", "1", "k"]));
+    assert!(is_write(&["ZDIFFSTORE", "d", "1", "k"]));
+    assert!(is_write(&["MIGRATE", "h", "6379", "k", "0", "1000"]));
+    assert!(is_write(&["SORT", "k", "STORE", "d"]));
+    assert!(is_write(&["EXEC"]));
+
+    assert!(!is_write(&["SORT", "k"]));
+    assert!(!is_write(&["CONFIG", "SET", "maxmemory", "1mb"]));
+    assert!(!is_write(&["BGSAVE"]));
+}
+
+#[test]
 fn primary_key_returns_first_key() {
     assert_eq!(
         Command::Get {

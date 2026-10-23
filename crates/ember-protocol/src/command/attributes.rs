@@ -7,6 +7,27 @@ use bytes::Bytes;
 
 use super::Command;
 
+/// ACL category bits, as returned by [`Command::acl_categories`].
+pub mod category {
+    pub const READ: u64 = 1 << 0;
+    pub const WRITE: u64 = 1 << 1;
+    pub const STRING: u64 = 1 << 2;
+    pub const LIST: u64 = 1 << 3;
+    pub const SET: u64 = 1 << 4;
+    pub const SORTEDSET: u64 = 1 << 5;
+    pub const HASH: u64 = 1 << 6;
+    pub const KEYSPACE: u64 = 1 << 7;
+    pub const SERVER: u64 = 1 << 8;
+    pub const CONNECTION: u64 = 1 << 9;
+    pub const TRANSACTION: u64 = 1 << 10;
+    pub const PUBSUB: u64 = 1 << 11;
+    pub const FAST: u64 = 1 << 12;
+    pub const SLOW: u64 = 1 << 13;
+    pub const ADMIN: u64 = 1 << 14;
+    pub const DANGEROUS: u64 = 1 << 15;
+    pub const CLUSTER: u64 = 1 << 16;
+}
+
 impl Command {
     /// Returns the lowercase command name as a static string.
     ///
@@ -254,127 +275,30 @@ impl Command {
         }
     }
 
-    /// Returns `true` if this command mutates state.
+    /// Returns `true` if this command writes to the keyspace.
     ///
-    /// Used by the replica write-rejection layer: any command matching this
-    /// predicate is redirected to the primary via MOVED rather than executed
-    /// locally on a read-only replica.
+    /// A command is a write when its ACL categories include `write`.
+    /// Replicas redirect these to the primary with MOVED, and a failover
+    /// pause rejects them. SORT is a write only with STORE. EXEC counts as a
+    /// write so that a pause rejects the whole transaction rather than only
+    /// the writes inside it.
     pub fn is_write(&self) -> bool {
-        matches!(
-            self,
-            // string mutations
-            Command::Set { .. }
-                | Command::MSet { .. }
-                | Command::MSetNx { .. }
-                | Command::GetSet { .. }
-                | Command::Append { .. }
-                | Command::Incr { .. }
-                | Command::Decr { .. }
-                | Command::IncrBy { .. }
-                | Command::DecrBy { .. }
-                | Command::IncrByFloat { .. }
-                | Command::SetBit { .. }
-                | Command::BitOp { .. }
-            // key lifecycle
-                | Command::Del { .. }
-                | Command::Unlink { .. }
-                | Command::Rename { .. }
-                | Command::Copy { .. }
-                | Command::Expire { .. }
-                | Command::Expireat { .. }
-                | Command::Pexpire { .. }
-                | Command::Pexpireat { .. }
-                | Command::Persist { .. }
-            // list
-                | Command::LPush { .. }
-                | Command::RPush { .. }
-                | Command::LPop { .. }
-                | Command::RPop { .. }
-                | Command::BLPop { .. }
-                | Command::BRPop { .. }
-                | Command::LSet { .. }
-                | Command::LTrim { .. }
-                | Command::LInsert { .. }
-                | Command::LRem { .. }
-                | Command::LMove { .. }
-            // string extras
-                | Command::GetDel { .. }
-                | Command::GetEx { .. }
-            // sorted set
-                | Command::ZAdd { .. }
-                | Command::ZRem { .. }
-                | Command::ZIncrBy { .. }
-                | Command::ZPopMin { .. }
-                | Command::ZPopMax { .. }
-                | Command::Lmpop { .. }
-                | Command::Zmpop { .. }
-            // hash
-                | Command::HSet { .. }
-                | Command::HDel { .. }
-                | Command::HIncrBy { .. }
-            // set
-                | Command::SAdd { .. }
-                | Command::SRem { .. }
-                | Command::SUnionStore { .. }
-                | Command::SInterStore { .. }
-                | Command::SDiffStore { .. }
-                | Command::SPop { .. }
-                | Command::SMove { .. }
-            // server / persistence
-                | Command::FlushDb { .. }
-                | Command::FlushAll { .. }
-                | Command::ConfigSet { .. }
-                | Command::Exec
-                | Command::BgRewriteAof
-                | Command::BgSave
-                | Command::Restore { .. }
-            // vector
-                | Command::VAdd { .. }
-                | Command::VAddBatch { .. }
-                | Command::VRem { .. }
-            // protobuf
-                | Command::ProtoRegister { .. }
-                | Command::ProtoSet { .. }
-                | Command::ProtoSetField { .. }
-                | Command::ProtoDelField { .. }
-            // acl mutations
-                | Command::AclSetUser { .. }
-                | Command::AclDelUser { .. }
-        ) || matches!(self, Command::Sort { store: Some(_), .. })
+        match self {
+            Command::Sort { store, .. } => store.is_some(),
+            Command::Exec => true,
+            _ => self.acl_categories() & category::WRITE != 0,
+        }
     }
 
     /// Returns the ACL category bitmask for this command.
     ///
-    /// Each bit corresponds to a category (read, write, string, list, etc.)
-    /// as defined in `ember-server/src/acl.rs`. Used by the permission check
-    /// to determine whether a user has access to a command.
-    ///
-    /// The bit values match the constants in the acl module:
-    /// READ=1<<0, WRITE=1<<1, STRING=1<<2, LIST=1<<3, SET=1<<4,
-    /// SORTEDSET=1<<5, HASH=1<<6, KEYSPACE=1<<7, SERVER=1<<8,
-    /// CONNECTION=1<<9, TRANSACTION=1<<10, PUBSUB=1<<11, FAST=1<<12,
-    /// SLOW=1<<13, ADMIN=1<<14, DANGEROUS=1<<15, CLUSTER=1<<16
+    /// Each bit is one of the constants in [`category`]. The permission check
+    /// compares this mask with the categories a user may run. As in Redis,
+    /// every admin command is also dangerous.
     pub fn acl_categories(&self) -> u64 {
-        // bitmask constants (duplicated from acl.rs to avoid cross-crate dep)
-        const READ: u64 = 1 << 0;
-        const WRITE: u64 = 1 << 1;
-        const STRING: u64 = 1 << 2;
-        const LIST: u64 = 1 << 3;
-        const SET: u64 = 1 << 4;
-        const SORTEDSET: u64 = 1 << 5;
-        const HASH: u64 = 1 << 6;
-        const KEYSPACE: u64 = 1 << 7;
-        const SERVER: u64 = 1 << 8;
-        const CONNECTION: u64 = 1 << 9;
-        const TRANSACTION: u64 = 1 << 10;
-        const PUBSUB: u64 = 1 << 11;
-        const FAST: u64 = 1 << 12;
-        const SLOW: u64 = 1 << 13;
-        const ADMIN: u64 = 1 << 14;
-        const DANGEROUS: u64 = 1 << 15;
-        const CLUSTER: u64 = 1 << 16;
+        use category::*;
 
-        match self {
+        let categories = match self {
             // connection
             Command::Ping(_) | Command::Echo(_) => CONNECTION | FAST,
             Command::Auth { .. } | Command::Quit => CONNECTION | FAST,
@@ -563,7 +487,9 @@ impl Command {
             | Command::ClusterFailover { .. }
             | Command::ClusterCountKeysInSlot { .. }
             | Command::ClusterGetKeysInSlot { .. } => CLUSTER | ADMIN | SLOW,
-            Command::Migrate { .. } | Command::Restore { .. } => CLUSTER | KEYSPACE | WRITE | SLOW,
+            Command::Migrate { .. } | Command::Restore { .. } => {
+                CLUSTER | KEYSPACE | WRITE | DANGEROUS | SLOW
+            }
             Command::Asking => CLUSTER | FAST,
 
             // pub/sub
@@ -609,6 +535,11 @@ impl Command {
             Command::HIncrByFloat { .. } => WRITE | HASH | FAST,
 
             Command::Unknown(_) => 0,
+        };
+        if categories & ADMIN != 0 {
+            categories | DANGEROUS
+        } else {
+            categories
         }
     }
 
