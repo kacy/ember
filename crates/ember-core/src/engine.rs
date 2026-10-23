@@ -220,6 +220,16 @@ impl Engine {
         self.expired_tx.as_ref().map(|tx| tx.subscribe())
     }
 
+    /// Waits until every shard has loaded its data and is serving requests.
+    ///
+    /// A shard recovers before it reads its first request, so a request
+    /// answered by every shard means all of them have finished. An error
+    /// means a shard stopped because it couldn't read its files. The shard
+    /// logs the reason.
+    pub async fn wait_ready(&self) -> Result<(), ShardError> {
+        self.broadcast(|| ShardRequest::DbSize).await.map(drop)
+    }
+
     /// Sends a request to a specific shard by index.
     ///
     /// Used by SCAN to iterate through shards sequentially.

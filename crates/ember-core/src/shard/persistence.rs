@@ -7,7 +7,7 @@ pub(super) fn recover(
     pcfg: &ShardPersistenceConfig,
     shard_id: u16,
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
-) -> bool {
+) -> Result<bool, recovery::RecoveryError> {
     // everything recovered was stored once already, so it must neither be
     // refused for memory nor evict other recovered keys
     let (max_memory, eviction_policy) = keyspace.memory_config();
@@ -29,6 +29,7 @@ pub(super) fn recover(
     let result = recovery::recover_shard(&pcfg.data_dir, shard_id, &mut target);
 
     keyspace.update_memory_config(max_memory, eviction_policy);
+    let result = result?;
     if result.loaded_snapshot || result.replayed_aof {
         info!(
             shard_id,
@@ -38,7 +39,7 @@ pub(super) fn recover(
             "recovered shard state"
         );
     }
-    result.stale_aof
+    Ok(result.stale_aof)
 }
 
 /// Recovers into the keyspace. An AOF record becomes the request that
@@ -336,7 +337,8 @@ mod tests {
             0,
             #[cfg(feature = "protobuf")]
             &None,
-        );
+        )
+        .unwrap();
         (ks, stale)
     }
 
@@ -768,6 +770,98 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(resp, ShardResponse::Bool(false)));
+    }
+
+    /// Reads every file in `dir`, sorted by name.
+    fn read_files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[tokio::test]
+    async fn unreadable_snapshot_stops_the_shard_and_leaves_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_persistent_shard(dir.path());
+        handle
+            .send(ShardRequest::Incr { key: "n".into() })
+            .await
+            .unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let snap = ember_persistence::snapshot::snapshot_path(dir.path(), 0);
+        std::fs::write(&snap, b"garbage").unwrap();
+        let before = read_files(dir.path());
+
+        let handle = spawn_persistent_shard(dir.path());
+        let resp = handle.send(ShardRequest::DbSize).await;
+        assert!(matches!(resp, Err(ShardError::Unavailable)), "{resp:?}");
+        assert_eq!(read_files(dir.path()), before);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn encrypted_files_survive_a_start_without_the_key() {
+        use ember_persistence::encryption::EncryptionKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let spawn = |encryption_key: Option<EncryptionKey>| {
+            let pcfg = ShardPersistenceConfig {
+                data_dir: dir.path().to_owned(),
+                append_only: true,
+                fsync_policy: FsyncPolicy::Always,
+                encryption_key,
+            };
+            spawn_shard(
+                16,
+                ShardConfig::default(),
+                Some(pcfg),
+                None,
+                None,
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            )
+        };
+        let key = EncryptionKey::from_bytes([7; 32]);
+
+        let handle = spawn(Some(key.clone()));
+        handle
+            .send(ShardRequest::Incr {
+                key: "saved".into(),
+            })
+            .await
+            .unwrap();
+        handle.send(ShardRequest::Snapshot).await.unwrap();
+        handle
+            .send(ShardRequest::Incr {
+                key: "logged".into(),
+            })
+            .await
+            .unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let before = read_files(dir.path());
+
+        for wrong in [None, Some(EncryptionKey::from_bytes([8; 32]))] {
+            let handle = spawn(wrong);
+            let resp = handle.send(ShardRequest::DbSize).await;
+            assert!(matches!(resp, Err(ShardError::Unavailable)), "{resp:?}");
+            drop(handle);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(read_files(dir.path()), before);
+        }
+
+        let handle = spawn(Some(key));
+        assert_eq!(get(&handle, "saved").await, Some(Bytes::from("1")));
+        assert_eq!(get(&handle, "logged").await, Some(Bytes::from("1")));
     }
 
     #[cfg(feature = "encryption")]
