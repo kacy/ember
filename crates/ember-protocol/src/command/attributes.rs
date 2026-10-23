@@ -293,11 +293,12 @@ impl Command {
     /// Returns the ACL category bitmask for this command.
     ///
     /// Each bit is one of the constants in [`category`]. The permission check
-    /// compares this mask with the categories a user may run.
+    /// compares this mask with the categories a user may run. As in Redis,
+    /// every admin command is also dangerous.
     pub fn acl_categories(&self) -> u64 {
         use category::*;
 
-        match self {
+        let categories = match self {
             // connection
             Command::Ping(_) | Command::Echo(_) => CONNECTION | FAST,
             Command::Auth { .. } | Command::Quit => CONNECTION | FAST,
@@ -486,7 +487,9 @@ impl Command {
             | Command::ClusterFailover { .. }
             | Command::ClusterCountKeysInSlot { .. }
             | Command::ClusterGetKeysInSlot { .. } => CLUSTER | ADMIN | SLOW,
-            Command::Migrate { .. } | Command::Restore { .. } => CLUSTER | KEYSPACE | WRITE | SLOW,
+            Command::Migrate { .. } | Command::Restore { .. } => {
+                CLUSTER | KEYSPACE | WRITE | DANGEROUS | SLOW
+            }
             Command::Asking => CLUSTER | FAST,
 
             // pub/sub
@@ -532,6 +535,11 @@ impl Command {
             Command::HIncrByFloat { .. } => WRITE | HASH | FAST,
 
             Command::Unknown(_) => 0,
+        };
+        if categories & ADMIN != 0 {
+            categories | DANGEROUS
+        } else {
+            categories
         }
     }
 

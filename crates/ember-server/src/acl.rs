@@ -1298,6 +1298,34 @@ mod tests {
     }
 
     #[test]
+    fn no_dangerous_blocks_admin_commands() {
+        let mut user = AclUser::new();
+        for rule in ["on", "nopass", "+@all", "-@dangerous", "allkeys"] {
+            apply_rule(&mut user, rule).unwrap();
+        }
+        for args in [
+            &["ACL", "SETUSER", "self", "allcommands"][..],
+            &["CONFIG", "SET", "maxmemory", "0"],
+            &["MONITOR"],
+            &["CLIENT", "LIST"],
+            &["SLOWLOG", "RESET"],
+            &["BGSAVE"],
+            &["CLUSTER", "FORGET", "abc"],
+            &["MIGRATE", "h", "6379", "k", "0", "1000"],
+            &["RESTORE", "k", "0", "v"],
+        ] {
+            let frame = Frame::Array(
+                args.iter()
+                    .map(|a| Frame::Bulk(bytes::Bytes::copy_from_slice(a.as_bytes())))
+                    .collect(),
+            );
+            let cmd = ember_protocol::Command::from_frame(frame).unwrap();
+            let denied = check_permission(&user, &cmd, cmd.command_name(), cmd.acl_categories());
+            assert!(denied.is_some(), "{args:?} should need @dangerous");
+        }
+    }
+
+    #[test]
     fn key_pattern_after_allkeys_keeps_every_key() {
         let mut user = AclUser::new();
         apply_rule(&mut user, "allkeys").unwrap();
