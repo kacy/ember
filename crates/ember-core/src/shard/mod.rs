@@ -324,13 +324,25 @@ async fn run_shard(prepared: PreparedShard) {
     // -- recovery --
     let mut stale_aof = false;
     if let Some(ref pcfg) = persistence {
-        stale_aof = persistence::recover(
+        match persistence::recover(
             &mut keyspace,
             pcfg,
             shard_id,
             #[cfg(feature = "protobuf")]
             &schema_registry,
-        );
+        ) {
+            Ok(stale) => stale_aof = stale,
+            // stop before the AOF writer opens or a save runs, so the
+            // files stay as they are. dropping `rx` makes every request
+            // to this shard fail, and `Engine::wait_ready` reports it.
+            Err(e) => {
+                error!(
+                    shard_id,
+                    "{e}; the shard is not starting and its files are untouched"
+                );
+                return;
+            }
+        }
     }
 
     // -- AOF writer --
