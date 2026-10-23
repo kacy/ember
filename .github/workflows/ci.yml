@@ -165,6 +165,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: install cargo-audit
-        run: cargo install cargo-audit
+        run: cargo +stable install cargo-audit --locked
       - name: audit
         run: cargo audit

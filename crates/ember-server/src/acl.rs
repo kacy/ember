@@ -1,77 +1,62 @@
 //! Per-user access control (ACL) for ember.
 //!
-//! Provides fine-grained command and key permissions on a per-user basis.
-//! When no ACL users are configured, the system falls back to legacy
-//! `requirepass` behavior with zero overhead — permission checks are
-//! branch-predicted away behind two boolean fast paths.
+//! Provides command and key permissions per user. ACL is always active: the
+//! `default` user takes its password from `requirepass` (or has none), and
+//! `--aclfile` or ACL SETUSER add more users. A user with access to every
+//! command and key skips the detailed checks through two boolean flags.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard};
 
+use ember_core::glob_match;
+use ember_protocol::command::category as cat;
 use ember_protocol::types::Frame;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 // ---------------------------------------------------------------------------
-// category bitmask constants
+// categories
 // ---------------------------------------------------------------------------
 
-pub const CAT_READ: u64 = 1 << 0;
-pub const CAT_WRITE: u64 = 1 << 1;
-pub const CAT_STRING: u64 = 1 << 2;
-pub const CAT_LIST: u64 = 1 << 3;
-pub const CAT_SET: u64 = 1 << 4;
-pub const CAT_SORTEDSET: u64 = 1 << 5;
-pub const CAT_HASH: u64 = 1 << 6;
-pub const CAT_KEYSPACE: u64 = 1 << 7;
-pub const CAT_SERVER: u64 = 1 << 8;
-pub const CAT_CONNECTION: u64 = 1 << 9;
-pub const CAT_TRANSACTION: u64 = 1 << 10;
-pub const CAT_PUBSUB: u64 = 1 << 11;
-pub const CAT_FAST: u64 = 1 << 12;
-pub const CAT_SLOW: u64 = 1 << 13;
-pub const CAT_ADMIN: u64 = 1 << 14;
-pub const CAT_DANGEROUS: u64 = 1 << 15;
-pub const CAT_CLUSTER: u64 = 1 << 16;
-
 /// All category flags OR'd together.
-const ALL_CATEGORIES: u64 = CAT_READ
-    | CAT_WRITE
-    | CAT_STRING
-    | CAT_LIST
-    | CAT_SET
-    | CAT_SORTEDSET
-    | CAT_HASH
-    | CAT_KEYSPACE
-    | CAT_SERVER
-    | CAT_CONNECTION
-    | CAT_TRANSACTION
-    | CAT_PUBSUB
-    | CAT_FAST
-    | CAT_SLOW
-    | CAT_ADMIN
-    | CAT_DANGEROUS
-    | CAT_CLUSTER;
+const ALL_CATEGORIES: u64 = cat::READ
+    | cat::WRITE
+    | cat::STRING
+    | cat::LIST
+    | cat::SET
+    | cat::SORTEDSET
+    | cat::HASH
+    | cat::KEYSPACE
+    | cat::SERVER
+    | cat::CONNECTION
+    | cat::TRANSACTION
+    | cat::PUBSUB
+    | cat::FAST
+    | cat::SLOW
+    | cat::ADMIN
+    | cat::DANGEROUS
+    | cat::CLUSTER;
 
 /// All known category names, sorted alphabetically.
 const CATEGORY_NAMES: &[(&str, u64)] = &[
-    ("admin", CAT_ADMIN),
-    ("cluster", CAT_CLUSTER),
-    ("connection", CAT_CONNECTION),
-    ("dangerous", CAT_DANGEROUS),
-    ("fast", CAT_FAST),
-    ("hash", CAT_HASH),
-    ("keyspace", CAT_KEYSPACE),
-    ("list", CAT_LIST),
-    ("pubsub", CAT_PUBSUB),
-    ("read", CAT_READ),
-    ("server", CAT_SERVER),
-    ("set", CAT_SET),
-    ("slow", CAT_SLOW),
-    ("sortedset", CAT_SORTEDSET),
-    ("string", CAT_STRING),
-    ("transaction", CAT_TRANSACTION),
-    ("write", CAT_WRITE),
+    ("admin", cat::ADMIN),
+    ("cluster", cat::CLUSTER),
+    ("connection", cat::CONNECTION),
+    ("dangerous", cat::DANGEROUS),
+    ("fast", cat::FAST),
+    ("hash", cat::HASH),
+    ("keyspace", cat::KEYSPACE),
+    ("list", cat::LIST),
+    ("pubsub", cat::PUBSUB),
+    ("read", cat::READ),
+    ("server", cat::SERVER),
+    ("set", cat::SET),
+    ("slow", cat::SLOW),
+    ("sortedset", cat::SORTEDSET),
+    ("string", cat::STRING),
+    ("transaction", cat::TRANSACTION),
+    ("write", cat::WRITE),
 ];
 
 /// Resolves a category name (case-insensitive) to its bitmask.
@@ -284,6 +269,9 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
                     .ok_or_else(|| format!("ERR unknown ACL category '{cat_name}'"))?;
                 user.denied_categories |= flag;
                 user.allowed_categories &= !flag;
+                // any deny ends the allow-everything fast path, or
+                // `+@all -@dangerous` would still allow FLUSHALL
+                user.allcommands = false;
             }
         }
         _ if rule.starts_with('+') => {
@@ -301,14 +289,18 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
             }
             user.allowed_commands.remove(&cmd);
             user.denied_commands.insert(cmd);
+            user.allcommands = false;
         }
         _ if rule.starts_with('~') => {
             let pattern = &rule[1..];
             if pattern.is_empty() {
                 return Err("ERR empty key pattern".into());
             }
-            user.allkeys = false;
-            user.key_patterns.push(pattern.to_string());
+            // `allkeys` already matches every key. adding a pattern after it
+            // must not narrow access down to that one pattern.
+            if !user.allkeys {
+                user.key_patterns.push(pattern.to_string());
+            }
         }
         _ => {
             return Err(format!("ERR unrecognized ACL rule '{rule}'"));
@@ -361,8 +353,7 @@ pub fn check_permission(
 
     // check key permission
     if !user.allkeys {
-        let keys = extract_keys(cmd);
-        for key in keys {
+        for key in cmd.keys().iter() {
             if !user.key_patterns.iter().any(|pat| glob_match(pat, key)) {
                 return Some(Frame::Error(format!(
                     "NOPERM this user has no permissions to access the '{key}' key"
@@ -372,139 +363,6 @@ pub fn check_permission(
     }
 
     None
-}
-
-/// Extracts all keys referenced by a command.
-///
-/// Returns references to the key strings inside the command. Multi-key
-/// commands return all keys; keyless commands return an empty vec.
-fn extract_keys(cmd: &ember_protocol::Command) -> Vec<&str> {
-    use ember_protocol::Command;
-    match cmd {
-        // single-key commands
-        Command::Get { key }
-        | Command::Set { key, .. }
-        | Command::Incr { key }
-        | Command::Decr { key }
-        | Command::IncrBy { key, .. }
-        | Command::DecrBy { key, .. }
-        | Command::IncrByFloat { key, .. }
-        | Command::Append { key, .. }
-        | Command::Strlen { key }
-        | Command::Expire { key, .. }
-        | Command::Pexpire { key, .. }
-        | Command::Ttl { key }
-        | Command::Pttl { key }
-        | Command::Persist { key }
-        | Command::Type { key }
-        | Command::ObjectEncoding { key }
-        | Command::ObjectRefcount { key }
-        | Command::LPush { key, .. }
-        | Command::RPush { key, .. }
-        | Command::LPop { key, .. }
-        | Command::RPop { key, .. }
-        | Command::LRange { key, .. }
-        | Command::LLen { key }
-        | Command::ZAdd { key, .. }
-        | Command::ZRem { key, .. }
-        | Command::ZScore { key, .. }
-        | Command::ZRank { key, .. }
-        | Command::ZRange { key, .. }
-        | Command::ZCard { key }
-        | Command::HSet { key, .. }
-        | Command::HGet { key, .. }
-        | Command::HGetAll { key }
-        | Command::HDel { key, .. }
-        | Command::HExists { key, .. }
-        | Command::HLen { key }
-        | Command::HIncrBy { key, .. }
-        | Command::HKeys { key }
-        | Command::HVals { key }
-        | Command::HMGet { key, .. }
-        | Command::SAdd { key, .. }
-        | Command::SRem { key, .. }
-        | Command::SMembers { key }
-        | Command::SIsMember { key, .. }
-        | Command::SCard { key }
-        | Command::SScan { key, .. }
-        | Command::HScan { key, .. }
-        | Command::ZScan { key, .. }
-        | Command::Restore { key, .. }
-        | Command::VAdd { key, .. }
-        | Command::VAddBatch { key, .. }
-        | Command::VSim { key, .. }
-        | Command::VRem { key, .. }
-        | Command::VGet { key, .. }
-        | Command::VCard { key }
-        | Command::VDim { key }
-        | Command::VInfo { key }
-        | Command::ProtoSet { key, .. }
-        | Command::ProtoGet { key }
-        | Command::ProtoType { key }
-        | Command::ProtoGetField { key, .. }
-        | Command::ProtoSetField { key, .. }
-        | Command::ProtoDelField { key, .. } => vec![key.as_str()],
-
-        // two-key commands
-        Command::Rename { key, newkey } => vec![key.as_str(), newkey.as_str()],
-        Command::Copy {
-            source,
-            destination,
-            ..
-        } => vec![source.as_str(), destination.as_str()],
-
-        // multi-key commands
-        Command::Del { keys }
-        | Command::Unlink { keys }
-        | Command::Exists { keys }
-        | Command::MGet { keys }
-        | Command::BLPop { keys, .. }
-        | Command::BRPop { keys, .. }
-        | Command::Watch { keys } => keys.iter().map(String::as_str).collect(),
-
-        Command::MSet { pairs } => pairs.iter().map(|(k, _)| k.as_str()).collect(),
-
-        // keyless commands
-        _ => Vec::new(),
-    }
-}
-
-/// Simple glob pattern matcher supporting `*` and `?`.
-///
-/// Case-sensitive, matching Redis ACL key pattern behavior.
-pub fn glob_match(pattern: &str, text: &str) -> bool {
-    let pat = pattern.as_bytes();
-    let txt = text.as_bytes();
-    glob_match_bytes(pat, txt)
-}
-
-fn glob_match_bytes(pat: &[u8], txt: &[u8]) -> bool {
-    let mut pi = 0;
-    let mut ti = 0;
-    let mut star_pi = usize::MAX;
-    let mut star_ti = 0;
-
-    while ti < txt.len() {
-        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == txt[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < pat.len() && pat[pi] == b'*' {
-            star_pi = pi;
-            star_ti = ti;
-            pi += 1;
-        } else if star_pi != usize::MAX {
-            pi = star_pi + 1;
-            star_ti += 1;
-            ti = star_ti;
-        } else {
-            return false;
-        }
-    }
-
-    while pi < pat.len() && pat[pi] == b'*' {
-        pi += 1;
-    }
-    pi == pat.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -519,11 +377,41 @@ pub struct AclState {
 }
 
 impl AclState {
-    /// Creates a new ACL state with just the default user.
-    pub fn new() -> Self {
+    /// Creates the ACL state with only the `default` user.
+    ///
+    /// The default user can run every command on every key. With a
+    /// `requirepass` it must authenticate with that password; without one
+    /// it needs no password, so new connections start authenticated.
+    pub fn new(requirepass: Option<&str>) -> Self {
+        let mut default = AclUser::unrestricted();
+        if let Some(password) = requirepass {
+            default.nopass = false;
+            default.password_hashes.push(sha256_hash(password));
+        }
         let mut users = HashMap::new();
-        users.insert("default".into(), AclUser::unrestricted());
+        users.insert("default".into(), default);
         Self { users }
+    }
+
+    /// Loads users from an ACL file in the Redis format: one
+    /// `user <name> <rule> ...` line per user. Blank lines and lines
+    /// starting with `#` are skipped. Each line's rules apply on top of any
+    /// existing user with that name, including `default`.
+    pub fn load_file(&mut self, contents: &str) -> Result<(), String> {
+        for (i, line) in contents.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let mut words = line.split_whitespace();
+            let (Some("user"), Some(name)) = (words.next(), words.next()) else {
+                return Err(format!("line {}: expected 'user <name> <rules...>'", i + 1));
+            };
+            let rules: Vec<String> = words.map(str::to_owned).collect();
+            self.set_user(name, &rules)
+                .map_err(|e| format!("line {}: {e}", i + 1))?;
+        }
+        Ok(())
     }
 
     /// Returns a reference to a user by name.
@@ -749,11 +637,103 @@ fn sorted_set(set: &HashSet<String>) -> Vec<&str> {
 // convenience type alias
 // ---------------------------------------------------------------------------
 
-/// The shared ACL state, wrapped for concurrent access.
-///
-/// `None` = legacy mode (no ACL configured, zero overhead).
-/// `Some(...)` = ACL is active, read lock on AUTH, write lock on SETUSER/DELUSER.
-pub type SharedAclState = Option<Arc<RwLock<AclState>>>;
+/// The ACL users shared by every connection, plus a generation number that
+/// changes whenever a user is added, changed or deleted. Connections compare
+/// the generation, a single atomic load, to learn that their copy of their
+/// user is stale.
+#[derive(Debug)]
+pub struct Acl {
+    users: RwLock<AclState>,
+    generation: AtomicU64,
+}
+
+impl Acl {
+    pub fn new(users: AclState) -> Self {
+        Self {
+            users: RwLock::new(users),
+            generation: AtomicU64::new(0),
+        }
+    }
+
+    pub fn read(&self) -> LockResult<RwLockReadGuard<'_, AclState>> {
+        self.users.read()
+    }
+
+    /// Changes the users under the write lock and bumps the generation.
+    /// Returns `None` if the lock is poisoned.
+    fn modify<T>(&self, change: impl FnOnce(&mut AclState) -> T) -> Option<T> {
+        let mut users = self.users.write().ok()?;
+        let result = change(&mut users);
+        self.generation.fetch_add(1, Ordering::Release);
+        Some(result)
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+}
+
+pub type SharedAclState = Arc<Acl>;
+
+const WRONGPASS: &str = "WRONGPASS invalid username-password pair or user is disabled.";
+const LOCK_POISONED: &str = "ERR ACL state lock poisoned";
+
+/// Checks a username and password against the ACL users and returns a copy
+/// of the user on success. Every AUTH path calls this.
+pub fn authenticate(
+    acl: &SharedAclState,
+    username: &str,
+    password: &str,
+) -> Result<AclUser, String> {
+    let state = acl.read().map_err(|_| LOCK_POISONED.to_string())?;
+    match state.get_user(username) {
+        Some(user) if username == "default" && user.nopass => {
+            Err("ERR Client sent AUTH, but no password is set. \
+             Did you mean ACL SETUSER with >password?"
+                .into())
+        }
+        Some(user) if user.enabled && user.verify_password(password) => Ok(user.clone()),
+        _ => Err(WRONGPASS.into()),
+    }
+}
+
+/// Runs ACL LIST, USERS, GETUSER, SETUSER, DELUSER and CAT. Both connection
+/// handlers call this. ACL WHOAMI needs the connection's user, so the
+/// handlers answer it themselves.
+pub fn run_admin_command(acl: &SharedAclState, cmd: ember_protocol::Command) -> Frame {
+    use ember_protocol::Command;
+
+    let bulk_array = |items: Vec<String>| {
+        Frame::Array(items.into_iter().map(|i| Frame::Bulk(i.into())).collect())
+    };
+    let reply = match cmd {
+        Command::AclList => acl.read().ok().map(|state| bulk_array(state.list())),
+        Command::AclUsers => acl.read().ok().map(|state| bulk_array(state.usernames())),
+        Command::AclGetUser { username } => acl.read().ok().map(|state| {
+            state
+                .get_user_detail(&username)
+                .unwrap_or_else(|| Frame::Error(format!("ERR no such user '{username}'")))
+        }),
+        Command::AclSetUser { username, rules } => {
+            acl.modify(|state| match state.set_user(&username, &rules) {
+                Ok(()) => Frame::Simple("OK".into()),
+                Err(msg) => Frame::Error(msg),
+            })
+        }
+        Command::AclDelUser { usernames } => {
+            acl.modify(|state| match state.del_users(&usernames) {
+                Ok(count) => Frame::Integer(count as i64),
+                Err(msg) => Frame::Error(msg),
+            })
+        }
+        Command::AclCat { category } => Some(handle_acl_cat(category.as_deref())),
+        other => Some(Frame::Error(format!(
+            "ERR '{}' is not an ACL admin command",
+            other.command_name()
+        ))),
+    };
+    reply.unwrap_or_else(|| Frame::Error(LOCK_POISONED.into()))
+}
 
 // ---------------------------------------------------------------------------
 // ACL CAT handler
@@ -1038,7 +1018,7 @@ mod tests {
 
     #[test]
     fn default_user_is_unrestricted() {
-        let state = AclState::new();
+        let state = AclState::new(None);
         let user = state.get_user("default").expect("default user must exist");
         assert!(user.enabled);
         assert!(user.nopass);
@@ -1048,7 +1028,7 @@ mod tests {
 
     #[test]
     fn cannot_delete_default_user() {
-        let mut state = AclState::new();
+        let mut state = AclState::new(None);
         let result = state.del_users(&["default".into()]);
         assert!(result.is_err());
         assert!(state.get_user("default").is_some());
@@ -1102,11 +1082,11 @@ mod tests {
     fn rule_categories() {
         let mut user = AclUser::new();
         apply_rule(&mut user, "+@read").unwrap();
-        assert_eq!(user.allowed_categories & CAT_READ, CAT_READ);
+        assert_eq!(user.allowed_categories & cat::READ, cat::READ);
 
         apply_rule(&mut user, "-@read").unwrap();
-        assert_eq!(user.allowed_categories & CAT_READ, 0);
-        assert_eq!(user.denied_categories & CAT_READ, CAT_READ);
+        assert_eq!(user.allowed_categories & cat::READ, 0);
+        assert_eq!(user.denied_categories & cat::READ, cat::READ);
     }
 
     #[test]
@@ -1188,36 +1168,12 @@ mod tests {
     }
 
     #[test]
-    fn glob_match_star() {
-        assert!(glob_match("user:*", "user:123"));
-        assert!(glob_match("user:*", "user:"));
-        assert!(!glob_match("user:*", "session:123"));
-        assert!(glob_match("*", "anything"));
-    }
-
-    #[test]
-    fn glob_match_question_mark() {
-        assert!(glob_match("user:?", "user:a"));
-        assert!(!glob_match("user:?", "user:ab"));
-    }
-
-    #[test]
-    fn glob_match_exact() {
-        assert!(glob_match("hello", "hello"));
-        assert!(!glob_match("hello", "world"));
-    }
-
-    #[test]
-    fn glob_match_complex() {
-        assert!(glob_match("*:*", "user:123"));
-        assert!(glob_match("cache:*:data", "cache:session:data"));
-    }
-
-    #[test]
     fn permission_check_unrestricted() {
         let user = AclUser::unrestricted();
         let cmd = ember_protocol::Command::Get { key: "foo".into() };
-        assert!(check_permission(&user, &cmd, "get", CAT_READ | CAT_STRING | CAT_FAST).is_none());
+        assert!(
+            check_permission(&user, &cmd, "get", cat::READ | cat::STRING | cat::FAST).is_none()
+        );
     }
 
     #[test]
@@ -1233,7 +1189,7 @@ mod tests {
             nx: false,
             xx: false,
         };
-        let result = check_permission(&user, &cmd, "set", CAT_WRITE | CAT_STRING | CAT_SLOW);
+        let result = check_permission(&user, &cmd, "set", cat::WRITE | cat::STRING | cat::SLOW);
         assert!(result.is_some());
         if let Some(Frame::Error(msg)) = result {
             assert!(msg.contains("NOPERM"));
@@ -1244,8 +1200,8 @@ mod tests {
     fn permission_check_denied_category() {
         let mut user = AclUser::unrestricted();
         user.allcommands = false;
-        user.allowed_categories = CAT_READ | CAT_STRING | CAT_FAST;
-        user.denied_categories = CAT_WRITE;
+        user.allowed_categories = cat::READ | cat::STRING | cat::FAST;
+        user.denied_categories = cat::WRITE;
 
         let cmd = ember_protocol::Command::Set {
             key: "foo".into(),
@@ -1255,7 +1211,7 @@ mod tests {
             xx: false,
         };
         // SET has WRITE category — should be denied
-        let result = check_permission(&user, &cmd, "set", CAT_WRITE | CAT_STRING | CAT_SLOW);
+        let result = check_permission(&user, &cmd, "set", cat::WRITE | cat::STRING | cat::SLOW);
         assert!(result.is_some());
     }
 
@@ -1263,7 +1219,7 @@ mod tests {
     fn permission_check_allowed_command_overrides_denied_category() {
         let mut user = AclUser::unrestricted();
         user.allcommands = false;
-        user.denied_categories = CAT_WRITE;
+        user.denied_categories = cat::WRITE;
         user.allowed_commands.insert("set".into());
 
         let cmd = ember_protocol::Command::Set {
@@ -1274,7 +1230,7 @@ mod tests {
             xx: false,
         };
         // SET is explicitly allowed even though WRITE category is denied
-        let result = check_permission(&user, &cmd, "set", CAT_WRITE | CAT_STRING | CAT_SLOW);
+        let result = check_permission(&user, &cmd, "set", cat::WRITE | cat::STRING | cat::SLOW);
         assert!(result.is_none());
     }
 
@@ -1287,12 +1243,12 @@ mod tests {
         let allowed = ember_protocol::Command::Get {
             key: "user:123".into(),
         };
-        assert!(check_permission(&user, &allowed, "get", CAT_READ).is_none());
+        assert!(check_permission(&user, &allowed, "get", cat::READ).is_none());
 
         let denied = ember_protocol::Command::Get {
             key: "session:abc".into(),
         };
-        let result = check_permission(&user, &denied, "get", CAT_READ);
+        let result = check_permission(&user, &denied, "get", cat::READ);
         assert!(result.is_some());
         if let Some(Frame::Error(msg)) = result {
             assert!(msg.contains("NOPERM"));
@@ -1301,8 +1257,111 @@ mod tests {
     }
 
     #[test]
+    fn permission_check_covers_keys_of_every_command() {
+        // these commands used to skip the key check entirely
+        let mut user = AclUser::unrestricted();
+        user.allkeys = false;
+        user.key_patterns = vec!["user:*".into()];
+
+        let getset = ember_protocol::Command::GetSet {
+            key: "secret:x".into(),
+            value: bytes::Bytes::from("v"),
+        };
+        assert!(check_permission(&user, &getset, "getset", cat::WRITE).is_some());
+
+        let store = ember_protocol::Command::SUnionStore {
+            dest: "user:mine".into(),
+            keys: vec!["secret:a".into()],
+        };
+        assert!(check_permission(&user, &store, "sunionstore", cat::WRITE).is_some());
+    }
+
+    #[test]
+    fn deny_rules_after_allow_all_take_effect() {
+        let mut user = AclUser::new();
+        for rule in [
+            "on",
+            "nopass",
+            "+@all",
+            "-@dangerous",
+            "-flushall",
+            "allkeys",
+        ] {
+            apply_rule(&mut user, rule).unwrap();
+        }
+        let flushall = ember_protocol::Command::FlushAll { async_mode: false };
+        let categories = flushall.acl_categories();
+        assert!(check_permission(&user, &flushall, "flushall", categories).is_some());
+
+        let get = ember_protocol::Command::Get { key: "k".into() };
+        assert!(check_permission(&user, &get, "get", get.acl_categories()).is_none());
+    }
+
+    #[test]
+    fn no_dangerous_blocks_admin_commands() {
+        let mut user = AclUser::new();
+        for rule in ["on", "nopass", "+@all", "-@dangerous", "allkeys"] {
+            apply_rule(&mut user, rule).unwrap();
+        }
+        for args in [
+            &["ACL", "SETUSER", "self", "allcommands"][..],
+            &["CONFIG", "SET", "maxmemory", "0"],
+            &["MONITOR"],
+            &["CLIENT", "LIST"],
+            &["SLOWLOG", "RESET"],
+            &["BGSAVE"],
+            &["CLUSTER", "FORGET", "abc"],
+            &["MIGRATE", "h", "6379", "k", "0", "1000"],
+            &["RESTORE", "k", "0", "v"],
+        ] {
+            let frame = Frame::Array(
+                args.iter()
+                    .map(|a| Frame::Bulk(bytes::Bytes::copy_from_slice(a.as_bytes())))
+                    .collect(),
+            );
+            let cmd = ember_protocol::Command::from_frame(frame).unwrap();
+            let denied = check_permission(&user, &cmd, cmd.command_name(), cmd.acl_categories());
+            assert!(denied.is_some(), "{args:?} should need @dangerous");
+        }
+    }
+
+    #[test]
+    fn key_pattern_after_allkeys_keeps_every_key() {
+        let mut user = AclUser::new();
+        apply_rule(&mut user, "allkeys").unwrap();
+        apply_rule(&mut user, "~user:*").unwrap();
+        assert!(user.allkeys);
+    }
+
+    #[test]
+    fn default_user_takes_its_password_from_requirepass() {
+        let open = AclState::new(None);
+        assert!(open.get_user("default").unwrap().nopass);
+
+        let acl: SharedAclState = Arc::new(Acl::new(AclState::new(Some("secret"))));
+        assert!(authenticate(&acl, "default", "secret").is_ok());
+        assert!(authenticate(&acl, "default", "wrong").is_err());
+    }
+
+    #[test]
+    fn acl_file_adds_users_and_reports_bad_lines() {
+        let mut state = AclState::new(None);
+        state
+            .load_file("# comment\n\nuser app on >pw +get ~app:*\n")
+            .unwrap();
+        let acl: SharedAclState = Arc::new(Acl::new(state));
+        let app = authenticate(&acl, "app", "pw").unwrap();
+        assert_eq!(app.key_patterns, vec!["app:*"]);
+
+        let err = AclState::new(None).load_file("user\n").unwrap_err();
+        assert!(err.starts_with("line 1"));
+        let err = AclState::new(None).load_file("user x bogus\n").unwrap_err();
+        assert!(err.contains("bogus"));
+    }
+
+    #[test]
     fn setuser_and_list() {
-        let mut state = AclState::new();
+        let mut state = AclState::new(None);
         state
             .set_user(
                 "alice",
@@ -1323,13 +1382,13 @@ mod tests {
         assert!(alice.enabled);
         assert!(alice.verify_password("pass"));
         assert!(!alice.verify_password("wrong"));
-        assert_eq!(alice.allowed_categories & CAT_READ, CAT_READ);
+        assert_eq!(alice.allowed_categories & cat::READ, cat::READ);
         assert_eq!(alice.key_patterns, vec!["user:*"]);
     }
 
     #[test]
     fn deluser() {
-        let mut state = AclState::new();
+        let mut state = AclState::new(None);
         state.set_user("bob", &["on".into()]).unwrap();
         assert!(state.get_user("bob").is_some());
 
@@ -1340,7 +1399,7 @@ mod tests {
 
     #[test]
     fn format_user_round_trip() {
-        let mut state = AclState::new();
+        let mut state = AclState::new(None);
         state
             .set_user(
                 "test",
@@ -1379,8 +1438,8 @@ mod tests {
 
     #[test]
     fn category_from_name_case_insensitive() {
-        assert_eq!(category_from_name("READ"), Some(CAT_READ));
-        assert_eq!(category_from_name("Read"), Some(CAT_READ));
+        assert_eq!(category_from_name("READ"), Some(cat::READ));
+        assert_eq!(category_from_name("Read"), Some(cat::READ));
         assert_eq!(category_from_name("nope"), None);
     }
 }

@@ -76,6 +76,8 @@ pub struct MemberState {
     /// The primary this member replicates from, if it is a replica.
     pub replicates: Option<NodeId>,
     pub slots: Vec<SlotRange>,
+    /// The config epoch of the member's latest slot claim.
+    pub config_epoch: u64,
 }
 
 /// Health status of a member.
@@ -90,8 +92,9 @@ pub enum MemberStatus {
 /// Events emitted by the gossip engine.
 #[derive(Debug, Clone)]
 pub enum GossipEvent {
-    /// A new node joined the cluster.
-    MemberJoined(NodeId, SocketAddr, Vec<SlotRange>),
+    /// A new node joined the cluster, with the slots it claims and the
+    /// config epoch of the claim.
+    MemberJoined(NodeId, SocketAddr, Vec<SlotRange>, u64),
     /// A node is suspected to be failing.
     MemberSuspected(NodeId),
     /// A node has been confirmed dead.
@@ -100,13 +103,15 @@ pub enum GossipEvent {
     MemberLeft(NodeId),
     /// A node that was suspected is now alive.
     MemberAlive(NodeId),
-    /// A node's slot ownership changed.
-    SlotsChanged(NodeId, Vec<SlotRange>),
+    /// A node's slot claim changed. Fields: node ID, slots, config epoch.
+    SlotsChanged(NodeId, Vec<SlotRange>, u64),
     /// A node's role changed. Fields: node ID, is_primary, replicates.
     RoleChanged(NodeId, bool, Option<NodeId>),
     /// A replica requested votes for a failover election.
     VoteRequested {
         candidate: NodeId,
+        /// The primary the candidate wants to replace.
+        failed_primary: NodeId,
         epoch: u64,
         /// Candidate's replication offset at the time of the request.
         offset: u64,
@@ -139,10 +144,14 @@ pub struct GossipEngine {
     next_seq: u64,
     /// Pending probes awaiting acknowledgment.
     pending_probes: HashMap<u64, PendingProbe>,
-    /// Channel for emitting events.
+    /// Channel the events go to. See [`GossipEngine::take_events`].
     event_tx: mpsc::Sender<GossipEvent>,
+    /// Events produced since the last `take_events` call.
+    pending_events: Vec<GossipEvent>,
     /// Slot ranges owned by the local node, included in Welcome replies.
     local_slots: Vec<SlotRange>,
+    /// The local node's config epoch, sent with its slot claims.
+    local_config_epoch: u64,
     /// Active PingReq relays waiting for an Ack from the target.
     relay_pending: HashMap<u64, RelayEntry>,
 }
@@ -181,7 +190,9 @@ impl GossipEngine {
             next_seq: 1,
             pending_probes: HashMap::new(),
             event_tx,
+            pending_events: Vec::new(),
             local_slots: Vec::new(),
+            local_config_epoch: 0,
             relay_pending: HashMap::new(),
         }
     }
@@ -193,6 +204,16 @@ impl GossipEngine {
 
     /// Returns the local node's incarnation number.
     pub fn local_incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
+    /// Increments the local incarnation and returns the new value.
+    ///
+    /// Peers apply an update about this node only when its incarnation is
+    /// newer than the last one they saw, so a change to this node's own role
+    /// or slots must bump it first.
+    pub fn bump_incarnation(&mut self) -> u64 {
+        self.incarnation += 1;
         self.incarnation
     }
 
@@ -231,18 +252,26 @@ impl GossipEngine {
     /// Called after ADDSLOTS/DELSLOTS/SETSLOT NODE to keep the gossip
     /// engine's view in sync. The updated slots are included in Welcome
     /// replies so joining nodes learn the full slot map.
-    pub fn set_local_slots(&mut self, slots: Vec<SlotRange>) {
+    pub fn set_local_slots(&mut self, slots: Vec<SlotRange>, config_epoch: u64) {
         self.local_slots = slots;
+        self.local_config_epoch = config_epoch;
     }
 
     /// Queues a slot ownership update for gossip propagation.
     ///
     /// The update will be piggybacked on the next outgoing Ping or Ack
     /// message, spreading to the cluster via epidemic dissemination.
-    pub fn queue_slots_update(&mut self, node: NodeId, incarnation: u64, slots: Vec<SlotRange>) {
+    pub fn queue_slots_update(
+        &mut self,
+        node: NodeId,
+        incarnation: u64,
+        config_epoch: u64,
+        slots: Vec<SlotRange>,
+    ) {
         self.queue_update(NodeUpdate::SlotsChanged {
             node,
             incarnation,
+            config_epoch,
             slots,
         });
     }
@@ -266,28 +295,54 @@ impl GossipEngine {
         });
     }
 
-    /// Queues a vote request for gossip propagation.
-    ///
-    /// Called by a replica that is starting an automatic failover election.
-    /// The update will be piggybacked on the next outgoing Ping or Ack.
-    pub fn queue_vote_request(&mut self, candidate: NodeId, epoch: u64, offset: u64) {
-        self.queue_update(NodeUpdate::VoteRequest {
-            candidate,
-            epoch,
-            offset,
-        });
+    /// Builds the message asking `voter` for its vote. Election messages go
+    /// straight to the node they are for, never piggybacked, so the
+    /// receiver can check the sender. `None` if `voter` is unknown.
+    pub fn vote_request(
+        &self,
+        voter: NodeId,
+        failed_primary: NodeId,
+        epoch: u64,
+        offset: u64,
+    ) -> Option<(SocketAddr, GossipMessage)> {
+        self.election_message(
+            voter,
+            NodeUpdate::VoteRequest {
+                candidate: self.local_id,
+                failed_primary,
+                epoch,
+                offset,
+            },
+        )
     }
 
-    /// Queues a vote grant for gossip propagation.
-    ///
-    /// Called by a primary that has decided to vote for the given candidate.
-    /// The update will be piggybacked on the next outgoing Ping or Ack.
-    pub fn queue_vote_granted(&mut self, from: NodeId, candidate: NodeId, epoch: u64) {
-        self.queue_update(NodeUpdate::VoteGranted {
-            from,
+    /// Builds the message granting `candidate` this node's vote for `epoch`.
+    pub fn vote_granted(
+        &self,
+        candidate: NodeId,
+        epoch: u64,
+    ) -> Option<(SocketAddr, GossipMessage)> {
+        self.election_message(
             candidate,
-            epoch,
-        });
+            NodeUpdate::VoteGranted {
+                from: self.local_id,
+                candidate,
+                epoch,
+            },
+        )
+    }
+
+    fn election_message(
+        &self,
+        to: NodeId,
+        update: NodeUpdate,
+    ) -> Option<(SocketAddr, GossipMessage)> {
+        let addr = self.members.get(&to)?.addr;
+        let msg = GossipMessage::Election {
+            sender: self.local_id,
+            update,
+        };
+        Some((addr, msg))
     }
 
     /// Adds a seed node to bootstrap cluster discovery.
@@ -304,6 +359,7 @@ impl GossipEngine {
             is_primary: false,
             replicates: None,
             slots: Vec::new(),
+            config_epoch: 0,
         });
     }
 
@@ -313,7 +369,7 @@ impl GossipEngine {
     /// produce a single reply back to `from`, but PingReq forwards a Ping
     /// to a different host, and relayed Acks route back to the original
     /// requester.
-    pub async fn handle_message(
+    pub fn handle_message(
         &mut self,
         msg: GossipMessage,
         from: SocketAddr,
@@ -325,7 +381,7 @@ impl GossipEngine {
                 updates,
             } => {
                 trace!("received ping seq={} from {}", seq, sender);
-                self.apply_updates(&updates).await;
+                self.apply_updates(&updates);
                 self.ensure_member(sender, from);
 
                 // Reply with ACK
@@ -383,7 +439,7 @@ impl GossipEngine {
                 updates,
             } => {
                 trace!("received ack seq={} from {}", seq, sender);
-                self.apply_updates(&updates).await;
+                self.apply_updates(&updates);
                 self.ensure_member(sender, from);
 
                 let mut outgoing = Vec::new();
@@ -394,7 +450,7 @@ impl GossipEngine {
                         == Some(MemberStatus::Suspect)
                     {
                         // Node recovered from suspicion
-                        self.mark_alive(probe.target).await;
+                        self.mark_alive(probe.target);
                     }
                 }
 
@@ -421,8 +477,12 @@ impl GossipEngine {
                 let sender_is_new = !self.members.contains_key(&sender);
                 self.ensure_member(sender, sender_addr);
                 if sender_is_new {
-                    self.emit(GossipEvent::MemberJoined(sender, sender_addr, Vec::new()))
-                        .await;
+                    self.emit(GossipEvent::MemberJoined(
+                        sender,
+                        sender_addr,
+                        Vec::new(),
+                        0,
+                    ));
                 }
 
                 // Broadcast alive update
@@ -442,6 +502,7 @@ impl GossipEngine {
                         addr: m.addr,
                         incarnation: m.incarnation,
                         is_primary: m.is_primary,
+                        config_epoch: m.config_epoch,
                         slots: m.slots.clone(),
                     })
                     .collect();
@@ -452,6 +513,7 @@ impl GossipEngine {
                     addr: self.local_addr,
                     incarnation: self.incarnation,
                     is_primary: true,
+                    config_epoch: self.local_config_epoch,
                     slots: self.local_slots.clone(),
                 });
 
@@ -473,13 +535,12 @@ impl GossipEngine {
                 let sender_is_new = !self.members.contains_key(&sender);
                 self.ensure_member(sender, from);
                 if sender_is_new {
-                    let sender_slots = self
+                    let (sender_slots, epoch) = self
                         .members
                         .get(&sender)
-                        .map(|m| m.slots.clone())
+                        .map(|m| (m.slots.clone(), m.config_epoch))
                         .unwrap_or_default();
-                    self.emit(GossipEvent::MemberJoined(sender, from, sender_slots))
-                        .await;
+                    self.emit(GossipEvent::MemberJoined(sender, from, sender_slots, epoch));
                 }
 
                 for member in members {
@@ -499,10 +560,35 @@ impl GossipEngine {
                             is_primary: member.is_primary,
                             replicates: None,
                             slots: slots.clone(),
+                            config_epoch: member.config_epoch,
                         });
-                        self.emit(GossipEvent::MemberJoined(member.id, member.addr, slots))
-                            .await;
+                        self.emit(GossipEvent::MemberJoined(
+                            member.id,
+                            member.addr,
+                            slots,
+                            member.config_epoch,
+                        ));
                     }
+                }
+                vec![]
+            }
+
+            GossipMessage::Election { sender, update } => {
+                // the node the vote is from must have sent it, from the
+                // address this node knows for it. every node shares the
+                // cluster secret, so the message alone doesn't prove that.
+                let from_sender = self.members.get(&sender).is_some_and(|m| m.addr == from);
+                let names_sender = match update {
+                    NodeUpdate::VoteRequest { candidate, .. } => candidate == sender,
+                    NodeUpdate::VoteGranted { from: voter, .. } => voter == sender,
+                    _ => false,
+                };
+                if from_sender && names_sender {
+                    self.apply_vote(update);
+                } else {
+                    debug!(
+                        "ignoring election message claiming to be from {sender} sent from {from}"
+                    );
                 }
                 vec![]
             }
@@ -510,6 +596,7 @@ impl GossipEngine {
             GossipMessage::SlotsAnnounce {
                 sender,
                 incarnation,
+                config_epoch,
                 slots,
             } => {
                 // Treat as a piggybacked SlotsChanged update from the sender.
@@ -517,9 +604,9 @@ impl GossipEngine {
                 self.apply_updates(&[NodeUpdate::SlotsChanged {
                     node: sender,
                     incarnation,
+                    config_epoch,
                     slots,
-                }])
-                .await;
+                }]);
                 vec![]
             }
         }
@@ -572,6 +659,7 @@ impl GossipEngine {
             updates.push(NodeUpdate::SlotsChanged {
                 node: self.local_id,
                 incarnation: self.incarnation,
+                config_epoch: self.local_config_epoch,
                 slots: self.local_slots.clone(),
             });
         }
@@ -616,55 +704,86 @@ impl GossipEngine {
             is_primary: false,
             replicates: None,
             slots: Vec::new(),
+            config_epoch: 0,
         });
     }
 
-    /// Sends a gossip event to the external event channel.
+    /// Records an event for the next [`take_events`](Self::take_events).
+    fn emit(&mut self, event: GossipEvent) {
+        self.pending_events.push(event);
+    }
+
+    /// Takes the events produced since the last call, with the channel they
+    /// go to.
     ///
-    /// Logs a warning when the channel is closed (receiver dropped). This
-    /// normally only happens during shutdown, so seeing the message in steady
-    /// state indicates a bug in the event consumer.
-    async fn emit(&self, event: GossipEvent) {
-        if self.event_tx.send(event).await.is_err() {
-            warn!("gossip event channel closed, dropping event");
+    /// The engine never sends events itself. Callers hold its lock while
+    /// they call `tick` or `handle_message`, and the event consumer takes
+    /// the same lock, so sending while locked could deadlock once the
+    /// channel fills. Callers release the lock, then call
+    /// [`PendingEvents::send`].
+    pub fn take_events(&mut self) -> PendingEvents {
+        PendingEvents {
+            tx: self.event_tx.clone(),
+            events: std::mem::take(&mut self.pending_events),
         }
     }
 
-    async fn apply_updates(&mut self, updates: &[NodeUpdate]) {
+    /// Whether an update about `node` at `incarnation` is believable. Nodes
+    /// raise their own incarnation one step at a time, so a claim far ahead
+    /// of what we know is a bug or an attempt to use up the incarnation
+    /// space. That includes claims about the local node: refuting one would
+    /// copy its incarnation. A node we haven't heard of yet has no baseline.
+    fn plausible_incarnation(&self, node: NodeId, incarnation: u64) -> bool {
+        let known = if node == self.local_id {
+            Some(self.incarnation)
+        } else {
+            self.members.get(&node).map(|member| member.incarnation)
+        };
+        incarnation <= MAX_INCARNATION
+            && known.is_none_or(|known| incarnation <= known.saturating_add(MAX_INCARNATION_JUMP))
+    }
+
+    fn apply_updates(&mut self, updates: &[NodeUpdate]) {
         for update in updates {
+            let subject = match update {
+                NodeUpdate::Alive {
+                    node, incarnation, ..
+                }
+                | NodeUpdate::Suspect { node, incarnation }
+                | NodeUpdate::Dead { node, incarnation }
+                | NodeUpdate::SlotsChanged {
+                    node, incarnation, ..
+                }
+                | NodeUpdate::RoleChanged {
+                    node, incarnation, ..
+                } => Some((*node, *incarnation)),
+                _ => None,
+            };
+            if let Some((node, incarnation)) = subject {
+                if !self.plausible_incarnation(node, incarnation) {
+                    warn!("rejecting gossip update for {node} with incarnation {incarnation}");
+                    continue;
+                }
+            }
+
             match update {
                 NodeUpdate::Alive {
                     node,
                     addr,
                     incarnation,
                 } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting alive update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // Someone thinks we're alive, good
                         continue;
                     }
                     if let Some(member) = self.members.get_mut(node) {
                         if *incarnation > member.incarnation {
-                            let jump = incarnation - member.incarnation;
-                            if jump > MAX_INCARNATION_JUMP {
-                                warn!(
-                                    "rejecting alive update for {}: incarnation jump {} exceeds limit",
-                                    node, jump
-                                );
-                                continue;
-                            }
                             member.incarnation = *incarnation;
                             member.addr = *addr;
                             if member.state != MemberStatus::Alive {
                                 member.state = MemberStatus::Alive;
                                 member.state_change = Instant::now();
-                                self.emit(GossipEvent::MemberAlive(*node)).await;
+                                self.emit(GossipEvent::MemberAlive(*node));
                             }
                         }
                     } else {
@@ -679,21 +798,14 @@ impl GossipEngine {
                                 is_primary: false,
                                 replicates: None,
                                 slots: Vec::new(),
+                                config_epoch: 0,
                             },
                         );
-                        self.emit(GossipEvent::MemberJoined(*node, *addr, Vec::new()))
-                            .await;
+                        self.emit(GossipEvent::MemberJoined(*node, *addr, Vec::new(), 0));
                     }
                 }
 
                 NodeUpdate::Suspect { node, incarnation } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting suspect update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // Refute suspicion by incrementing our incarnation
                         if *incarnation >= self.incarnation {
@@ -711,19 +823,12 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Suspect;
                             member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberSuspected(*node)).await;
+                            self.emit(GossipEvent::MemberSuspected(*node));
                         }
                     }
                 }
 
                 NodeUpdate::Dead { node, incarnation } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting dead update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // Refute death claim
                         self.incarnation = incarnation.saturating_add(1);
@@ -739,7 +844,7 @@ impl GossipEngine {
                         {
                             member.state = MemberStatus::Dead;
                             member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberFailed(*node)).await;
+                            self.emit(GossipEvent::MemberFailed(*node));
                         }
                     }
                 }
@@ -752,7 +857,7 @@ impl GossipEngine {
                         if member.state != MemberStatus::Left {
                             member.state = MemberStatus::Left;
                             member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberLeft(*node)).await;
+                            self.emit(GossipEvent::MemberLeft(*node));
                         }
                     }
                 }
@@ -760,33 +865,25 @@ impl GossipEngine {
                 NodeUpdate::SlotsChanged {
                     node,
                     incarnation,
+                    config_epoch,
                     slots,
                 } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting slots update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         continue;
                     }
                     // clone the slot list once before the mutable borrow so we
                     // can move it into the event after the borrow is released
                     let owned = slots.clone();
-                    let should_emit = if let Some(member) = self.members.get_mut(node) {
-                        if *incarnation >= member.incarnation {
+                    let should_emit = match self.members.get_mut(node) {
+                        Some(member) if *incarnation >= member.incarnation => {
                             member.slots = owned.clone();
+                            member.config_epoch = *config_epoch;
                             true
-                        } else {
-                            false
                         }
-                    } else {
-                        false
+                        _ => false,
                     };
                     if should_emit {
-                        self.emit(GossipEvent::SlotsChanged(*node, owned)).await;
+                        self.emit(GossipEvent::SlotsChanged(*node, owned, *config_epoch));
                     }
                 }
 
@@ -796,13 +893,6 @@ impl GossipEngine {
                     is_primary,
                     replicates,
                 } => {
-                    if *incarnation > MAX_INCARNATION {
-                        warn!(
-                            "rejecting role update for {} with excessive incarnation {}",
-                            node, incarnation
-                        );
-                        continue;
-                    }
                     if *node == self.local_id {
                         // we know our own role
                         continue;
@@ -812,51 +902,50 @@ impl GossipEngine {
                             member.incarnation = *incarnation;
                             member.is_primary = *is_primary;
                             member.replicates = *replicates;
-                            self.emit(GossipEvent::RoleChanged(*node, *is_primary, *replicates))
-                                .await;
+                            self.emit(GossipEvent::RoleChanged(*node, *is_primary, *replicates));
                         }
                     }
                 }
 
-                NodeUpdate::VoteRequest {
-                    candidate,
-                    epoch,
-                    offset,
-                } => {
-                    // Relay to the server layer to decide whether to grant.
-                    // No incarnation check needed: epoch ordering is handled upstream.
-                    if *candidate != self.local_id {
-                        self.emit(GossipEvent::VoteRequested {
-                            candidate: *candidate,
-                            epoch: *epoch,
-                            offset: *offset,
-                        })
-                        .await;
-                    }
-                }
-
-                NodeUpdate::VoteGranted {
-                    from,
-                    candidate,
-                    epoch,
-                } => {
-                    self.emit(GossipEvent::VoteGranted {
-                        from: *from,
-                        candidate: *candidate,
-                        epoch: *epoch,
-                    })
-                    .await;
-                }
+                // votes only count when sent directly, see GossipMessage::Election
+                NodeUpdate::VoteRequest { .. } | NodeUpdate::VoteGranted { .. } => {}
             }
         }
     }
 
-    async fn mark_alive(&mut self, node: NodeId) {
+    /// Reports a vote request or grant that arrived in an election message.
+    fn apply_vote(&mut self, update: NodeUpdate) {
+        match update {
+            NodeUpdate::VoteRequest {
+                candidate,
+                failed_primary,
+                epoch,
+                offset,
+            } => self.emit(GossipEvent::VoteRequested {
+                candidate,
+                failed_primary,
+                epoch,
+                offset,
+            }),
+            NodeUpdate::VoteGranted {
+                from,
+                candidate,
+                epoch,
+            } => self.emit(GossipEvent::VoteGranted {
+                from,
+                candidate,
+                epoch,
+            }),
+            _ => {}
+        }
+    }
+
+    fn mark_alive(&mut self, node: NodeId) {
         if let Some(member) = self.members.get_mut(&node) {
             if member.state == MemberStatus::Suspect {
                 member.state = MemberStatus::Alive;
                 member.state_change = Instant::now();
-                self.emit(GossipEvent::MemberAlive(node)).await;
+                self.emit(GossipEvent::MemberAlive(node));
             }
         }
     }
@@ -906,6 +995,7 @@ impl GossipEngine {
                     node: target,
                     incarnation: inc,
                 });
+                self.emit(GossipEvent::MemberSuspected(target));
             }
         }
 
@@ -941,6 +1031,7 @@ impl GossipEngine {
                     node: target,
                     incarnation,
                 });
+                self.emit(GossipEvent::MemberSuspected(target));
                 continue;
             }
 
@@ -1017,6 +1108,9 @@ impl GossipEngine {
                     node: id,
                     incarnation,
                 });
+                // this node reached the verdict itself, so act on it here
+                // rather than wait for a peer's Dead update to come back
+                self.emit(GossipEvent::MemberFailed(id));
             }
         }
     }
@@ -1036,6 +1130,26 @@ impl GossipEngine {
     fn collect_updates(&mut self) -> Vec<NodeUpdate> {
         let count = self.pending_updates.len().min(self.config.max_piggyback);
         self.pending_updates.drain(..count).collect()
+    }
+}
+
+/// Events taken from a [`GossipEngine`], ready to send once its lock is
+/// released.
+pub struct PendingEvents {
+    tx: mpsc::Sender<GossipEvent>,
+    events: Vec<GossipEvent>,
+}
+
+impl PendingEvents {
+    /// Sends the events in order. A closed channel normally means shutdown;
+    /// in steady state it points to a bug in the event consumer.
+    pub async fn send(self) {
+        for event in self.events {
+            if self.tx.send(event).await.is_err() {
+                warn!("gossip event channel closed, dropping event");
+                return;
+            }
+        }
     }
 }
 
@@ -1079,7 +1193,7 @@ mod tests {
             updates: vec![],
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
         assert_eq!(responses.len(), 1);
         assert!(matches!(responses[0].1, GossipMessage::Ack { .. }));
         assert_eq!(responses[0].0.port(), 6380);
@@ -1098,7 +1212,7 @@ mod tests {
             sender_addr: test_addr(6380),
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
         assert_eq!(responses.len(), 1);
         assert!(matches!(responses[0].1, GossipMessage::Welcome { .. }));
         assert_eq!(engine.alive_count(), 1);
@@ -1162,6 +1276,7 @@ mod tests {
         let updates = vec![NodeUpdate::SlotsChanged {
             node: remote,
             incarnation: 1,
+            config_epoch: 1,
             slots: slots.clone(),
         }];
 
@@ -1170,15 +1285,16 @@ mod tests {
             sender: remote,
             updates,
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // member should have updated slots
         let member = engine.members.get(&remote).unwrap();
         assert_eq!(member.slots, slots);
 
         // should have emitted a SlotsChanged event
+        engine.take_events().send().await;
         let event = rx.try_recv().unwrap();
-        assert!(matches!(event, GossipEvent::SlotsChanged(id, _) if id == remote));
+        assert!(matches!(event, GossipEvent::SlotsChanged(id, _, _) if id == remote));
     }
 
     #[tokio::test]
@@ -1200,6 +1316,7 @@ mod tests {
                 is_primary: true,
                 replicates: None,
                 slots: vec![SlotRange::new(0, 5460)],
+                config_epoch: 0,
             },
         );
 
@@ -1210,16 +1327,18 @@ mod tests {
             updates: vec![NodeUpdate::SlotsChanged {
                 node: remote,
                 incarnation: 3, // stale
+                config_epoch: 1,
                 slots: vec![],
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // slots should NOT have been cleared
         let member = engine.members.get(&remote).unwrap();
         assert_eq!(member.slots.len(), 1);
 
         // no SlotsChanged event should have been emitted
+        engine.take_events().send().await;
         assert!(rx.try_recv().is_err());
     }
 
@@ -1229,7 +1348,7 @@ mod tests {
         let local_id = NodeId::new();
         let mut engine = GossipEngine::new(local_id, test_addr(6379), GossipConfig::default(), tx);
 
-        engine.set_local_slots(vec![SlotRange::new(0, 16383)]);
+        engine.set_local_slots(vec![SlotRange::new(0, 16383)], 1);
 
         let joiner = NodeId::new();
         let msg = GossipMessage::Join {
@@ -1237,7 +1356,7 @@ mod tests {
             sender_addr: test_addr(6380),
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
         assert_eq!(responses.len(), 1);
         match &responses[0].1 {
             GossipMessage::Welcome { members, .. } => {
@@ -1266,11 +1385,12 @@ mod tests {
                 addr: test_addr(6381),
                 incarnation: 1,
                 is_primary: true,
+                config_epoch: 1,
                 slots: slots.clone(),
             }],
         };
 
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // member should be added with slots
         let member = engine.members.get(&member_id).unwrap();
@@ -1280,8 +1400,9 @@ mod tests {
         // then for each new member in the members list.
         // Drain until we find the one for member_id.
         let mut found = false;
+        engine.take_events().send().await;
         while let Ok(event) = rx.try_recv() {
-            if let GossipEvent::MemberJoined(id, _, s) = event {
+            if let GossipEvent::MemberJoined(id, _, s, _) = event {
                 if id == member_id {
                     assert_eq!(s, slots);
                     found = true;
@@ -1346,7 +1467,7 @@ mod tests {
             target_addr,
         };
 
-        let responses = engine.handle_message(msg, test_addr(6380)).await;
+        let responses = engine.handle_message(msg, test_addr(6380));
 
         // should forward a Ping to the target address
         assert_eq!(responses.len(), 1);
@@ -1375,7 +1496,7 @@ mod tests {
             target,
             target_addr,
         };
-        let responses = engine.handle_message(msg, requester_addr).await;
+        let responses = engine.handle_message(msg, requester_addr);
         let relay_seq = match &responses[0].1 {
             GossipMessage::Ping { seq, .. } => *seq,
             other => panic!("expected Ping, got {other:?}"),
@@ -1388,7 +1509,7 @@ mod tests {
             sender: target_sender,
             updates: vec![],
         };
-        let responses = engine.handle_message(ack, target_addr).await;
+        let responses = engine.handle_message(ack, target_addr);
 
         // should forward an Ack with the original seq back to the requester
         assert_eq!(responses.len(), 1);
@@ -1481,7 +1602,7 @@ mod tests {
                 replicates: Some(primary),
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         let member = engine.members.get(&remote).unwrap();
         assert!(!member.is_primary);
@@ -1490,6 +1611,7 @@ mod tests {
 
         // should have emitted RoleChanged
         let mut found = false;
+        engine.take_events().send().await;
         while let Ok(event) = rx.try_recv() {
             if let GossipEvent::RoleChanged(id, is_primary, replicates) = event {
                 if id == remote {
@@ -1521,6 +1643,7 @@ mod tests {
                 is_primary: true,
                 replicates: None,
                 slots: vec![],
+                config_epoch: 0,
             },
         );
 
@@ -1535,7 +1658,7 @@ mod tests {
                 replicates: None,
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // member should still be primary
         let member = engine.members.get(&remote).unwrap();
@@ -1543,6 +1666,7 @@ mod tests {
 
         // drain events (MemberAlive from the Ping sender, but no RoleChanged)
         let mut role_changed = false;
+        engine.take_events().send().await;
         while let Ok(event) = rx.try_recv() {
             if matches!(event, GossipEvent::RoleChanged(..)) {
                 role_changed = true;
@@ -1574,7 +1698,7 @@ mod tests {
                 incarnation: MAX_INCARNATION_JUMP + 1,
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         // incarnation should NOT have changed
         let member = engine.members.get(&remote).unwrap();
@@ -1603,12 +1727,119 @@ mod tests {
                 incarnation: MAX_INCARNATION_JUMP,
             }],
         };
-        engine.handle_message(msg, test_addr(6380)).await;
+        engine.handle_message(msg, test_addr(6380));
 
         let member = engine.members.get(&remote).unwrap();
         assert_eq!(
             member.incarnation, MAX_INCARNATION_JUMP,
             "valid incarnation jump should be accepted"
         );
+    }
+
+    #[tokio::test]
+    async fn dead_update_far_ahead_is_ignored() {
+        let (tx, _rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+        let remote = NodeId::new();
+        engine.add_seed(remote, test_addr(6380));
+
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![NodeUpdate::Dead {
+                node: remote,
+                incarnation: MAX_INCARNATION_JUMP + 1,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6381));
+
+        assert_ne!(engine.members[&remote].state, MemberStatus::Dead);
+    }
+
+    #[tokio::test]
+    async fn suspicion_of_self_far_ahead_does_not_raise_incarnation() {
+        let (tx, _rx) = mpsc::channel(16);
+        let local = NodeId::new();
+        let mut engine = GossipEngine::new(local, test_addr(6379), GossipConfig::default(), tx);
+        let before = engine.incarnation;
+
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![NodeUpdate::Suspect {
+                node: local,
+                incarnation: MAX_INCARNATION / 2,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6381));
+
+        assert_eq!(engine.incarnation, before);
+    }
+
+    /// Delivers `msg` from `from` to an engine that knows `voter` at
+    /// port 6380, and returns the events it produced.
+    async fn deliver_vote(msg: GossipMessage, voter: NodeId, from: SocketAddr) -> Vec<GossipEvent> {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+        engine.add_seed(voter, test_addr(6380));
+        engine.handle_message(msg, from);
+        engine.take_events().send().await;
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn grant(from: NodeId) -> NodeUpdate {
+        NodeUpdate::VoteGranted {
+            from,
+            candidate: NodeId::new(),
+            epoch: 2,
+        }
+    }
+
+    #[tokio::test]
+    async fn vote_from_the_voters_address_counts() {
+        let voter = NodeId::new();
+        let msg = GossipMessage::Election {
+            sender: voter,
+            update: grant(voter),
+        };
+        let events = deliver_vote(msg, voter, test_addr(6380)).await;
+        assert!(matches!(events[..], [GossipEvent::VoteGranted { from, .. }] if from == voter));
+    }
+
+    #[tokio::test]
+    async fn vote_from_another_address_is_ignored() {
+        let voter = NodeId::new();
+        let msg = GossipMessage::Election {
+            sender: voter,
+            update: grant(voter),
+        };
+        assert!(deliver_vote(msg, voter, test_addr(6390)).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vote_for_someone_else_is_ignored() {
+        // the sender is known, but the vote names another voter
+        let voter = NodeId::new();
+        let msg = GossipMessage::Election {
+            sender: voter,
+            update: grant(NodeId::new()),
+        };
+        assert!(deliver_vote(msg, voter, test_addr(6380)).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn piggybacked_vote_is_ignored() {
+        let voter = NodeId::new();
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: voter,
+            updates: vec![grant(voter)],
+        };
+        let events = deliver_vote(msg, voter, test_addr(6380)).await;
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, GossipEvent::VoteGranted { .. })));
     }
 }

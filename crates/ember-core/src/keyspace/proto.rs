@@ -36,23 +36,16 @@ impl Keyspace {
             .unwrap_or(0);
         let net_increase = new_size.saturating_sub(old_size);
 
-        if !self.enforce_memory_limit(net_increase) {
+        if !self.enforce_memory_limit(&key, net_increase) {
             return SetResult::OutOfMemory;
         }
 
         if let Some(old_entry) = self.entries.get(key.as_str()) {
             self.memory.replace(&key, &old_entry.value, &new_value);
-            let had_expiry = old_entry.expires_at_ms != 0;
-            match (had_expiry, has_expiry) {
-                (false, true) => self.expiry_count += 1,
-                (true, false) => self.expiry_count = self.expiry_count.saturating_sub(1),
-                _ => {}
-            }
+            self.track_expiry(&key, old_entry.expires_at_ms != 0, has_expiry);
         } else {
             self.memory.add(&key, &new_value);
-            if has_expiry {
-                self.expiry_count += 1;
-            }
+            self.track_expiry(&key, false, has_expiry);
         }
 
         let entry = Entry::new(new_value, expire);
@@ -121,7 +114,6 @@ impl Keyspace {
         let mut keys = Vec::with_capacity(count);
         let mut position = 0u64;
         let target_count = if count == 0 { 10 } else { count };
-        let compiled = pattern.map(GlobPattern::new);
 
         for (key, entry) in self.entries.iter() {
             if entry.is_expired() {
@@ -150,8 +142,8 @@ impl Keyspace {
             }
 
             // optional key pattern
-            if let Some(ref pat) = compiled {
-                if !pat.matches(key) {
+            if let Some(pat) = pattern {
+                if !glob_match(pat, key) {
                     position += 1;
                     continue;
                 }

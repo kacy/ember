@@ -5,9 +5,13 @@
 //!
 //! 1. Target marks slot as IMPORTING from source
 //! 2. Source marks slot as MIGRATING to target
-//! 3. Keys are streamed in batches from source to target
-//! 4. During migration, reads go to source, writes get ASK redirect to target
-//! 5. Final batch completes, ownership transfers via Raft
+//! 3. MIGRATE moves keys one at a time: it copies each key to the target
+//!    with RESTORE, then deletes it on the source
+//! 4. The source serves keys that have not moved yet. While MIGRATE copies a
+//!    key, commands for it get TRYAGAIN; once it has moved, they get an ASK
+//!    redirect to the target
+//! 5. `CLUSTER SETSLOT <slot> NODE` hands the slot to the target, through
+//!    Raft when Raft is running and through gossip otherwise
 //!
 //! # Example
 //!
@@ -181,6 +185,8 @@ pub struct MigrationManager {
     incoming: HashMap<u16, Migration>,
     /// Keys that have been migrated but not yet confirmed.
     pending_keys: HashMap<u16, HashSet<Vec<u8>>>,
+    /// Keys a MIGRATE is copying to another node right now.
+    in_flight: HashSet<Vec<u8>>,
 }
 
 impl MigrationManager {
@@ -265,6 +271,22 @@ impl MigrationManager {
         if let Some(migration) = self.outgoing.get_mut(&slot) {
             migration.record_migrated(1);
         }
+    }
+
+    /// Marks a key as being copied by MIGRATE. Returns `false` if another
+    /// MIGRATE is already copying it.
+    pub fn begin_key_transfer(&mut self, key: &[u8]) -> bool {
+        self.in_flight.insert(key.to_vec())
+    }
+
+    /// Clears the mark set by [`begin_key_transfer`](Self::begin_key_transfer).
+    pub fn end_key_transfer(&mut self, key: &[u8]) {
+        self.in_flight.remove(key);
+    }
+
+    /// Whether MIGRATE is copying this key right now.
+    pub fn is_key_in_flight(&self, key: &[u8]) -> bool {
+        self.in_flight.contains(key)
     }
 
     /// Check if a specific key has been migrated.
@@ -462,6 +484,19 @@ impl Default for MigrationConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_can_be_in_flight_for_one_transfer_at_a_time() {
+        let mut manager = MigrationManager::new();
+        assert!(manager.begin_key_transfer(b"k"));
+        assert!(manager.is_key_in_flight(b"k"));
+        assert!(!manager.begin_key_transfer(b"k"));
+        assert!(!manager.is_key_in_flight(b"other"));
+
+        manager.end_key_transfer(b"k");
+        assert!(!manager.is_key_in_flight(b"k"));
+        assert!(manager.begin_key_transfer(b"k"));
+    }
 
     fn node_id() -> NodeId {
         NodeId::new()

@@ -30,7 +30,7 @@ ember binds to `127.0.0.1` by default. if you expose it to a network:
 - use a firewall to restrict access to trusted clients
 - consider running behind a reverse proxy with TLS termination
 - use `--requirepass` for password authentication (redis-compatible AUTH command)
-- enable ACL for per-user access control with `ACL SETUSER` commands
+- add per-user command and key permissions with `ACL SETUSER`, or load users at startup from `--aclfile` (one `user <name> <rules...>` line per user, as in redis). users added with `ACL SETUSER` live in memory only and are lost on restart
 - TLS is available via `--tls-port`, with optional mTLS for client certificates
 
 ### per-ip rate limiting

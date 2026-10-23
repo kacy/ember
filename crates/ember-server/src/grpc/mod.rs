@@ -64,13 +64,14 @@ impl EmberService {
     ///
     /// When `requirepass` is configured on the server, every gRPC request
     /// must carry a matching `authorization` metadata header. Comparison
-    /// uses constant-time equality to prevent timing side-channels.
+    /// uses constant-time equality to prevent timing side-channels. Without
+    /// a password, protected mode applies as it does for RESP clients.
     pub fn into_service(
         self,
     ) -> InterceptedService<proto::ember_cache_server::EmberCacheServer<Self>, AuthInterceptor>
     {
         let interceptor = AuthInterceptor {
-            requirepass: self.ctx.requirepass.clone(),
+            ctx: Arc::clone(&self.ctx),
         };
         let svc = proto::ember_cache_server::EmberCacheServer::new(self)
             .max_decoding_message_size(4 * 1024 * 1024) // 4 MB
@@ -113,12 +114,19 @@ impl EmberService {
 /// When `requirepass` is `None`, all requests pass through.
 #[derive(Clone)]
 pub struct AuthInterceptor {
-    requirepass: Option<String>,
+    ctx: Arc<ServerContext>,
 }
 
 impl tonic::service::Interceptor for AuthInterceptor {
     fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
-        let password = match &self.requirepass {
+        // the same protected mode the RESP listeners apply
+        let peer = req.remote_addr().map(|addr| addr.ip());
+        if crate::server::is_protected_mode_violation(&self.ctx, peer) {
+            return Err(Status::permission_denied(
+                "protected mode: no password is set, so only loopback clients may connect",
+            ));
+        }
+        let password = match &self.ctx.requirepass {
             Some(pw) => pw,
             None => return Ok(req),
         };

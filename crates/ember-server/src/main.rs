@@ -19,6 +19,7 @@ mod replication;
 mod server;
 mod slowlog;
 mod tls;
+mod write_timeout;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -113,6 +114,11 @@ struct Args {
     #[arg(long, env = "EMBER_REQUIREPASS_FILE")]
     requirepass_file: Option<PathBuf>,
 
+    /// ACL file with one `user <name> <rules...>` line per user, loaded at
+    /// startup on top of the default user
+    #[arg(long, env = "EMBER_ACLFILE")]
+    aclfile: Option<PathBuf>,
+
     // -- TLS options (matching redis) --
     /// port for TLS connections. when set, enables TLS alongside plain TCP
     #[arg(long, env = "EMBER_TLS_PORT")]
@@ -152,10 +158,10 @@ struct Args {
     protobuf: bool,
 
     // -- gRPC options --
-    /// port for gRPC connections. set to 0 to disable even when compiled with grpc.
+    /// port for gRPC connections (default 6380). set to 0 to disable it.
     #[cfg(feature = "grpc")]
-    #[arg(long, default_value_t = 6380, env = "EMBER_GRPC_PORT")]
-    grpc_port: u16,
+    #[arg(long, env = "EMBER_GRPC_PORT")]
+    grpc_port: Option<u16>,
 
     /// disable gRPC listener even when compiled with the grpc feature
     #[cfg(feature = "grpc")]
@@ -233,6 +239,9 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     if let Some(ref dir) = args.data_dir {
         cfg.data_dir = dir.to_string_lossy().into_owned();
     }
+    if let Some(ref path) = args.aclfile {
+        cfg.aclfile = path.to_string_lossy().into_owned();
+    }
     if args.appendonly {
         cfg.appendonly = true;
     }
@@ -302,6 +311,34 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     if let Some(ref pass) = args.cluster_auth_pass {
         cfg.cluster.auth_pass = pass.clone();
     }
+    #[cfg(feature = "encryption")]
+    if let Some(ref path) = args.encryption_key_file {
+        cfg.encryption_key_file = path.to_string_lossy().into_owned();
+    }
+    #[cfg(feature = "protobuf")]
+    if args.protobuf {
+        cfg.protobuf = true;
+    }
+    #[cfg(feature = "grpc")]
+    if let Some(port) = args.grpc_port {
+        cfg.grpc_port = port;
+    }
+    #[cfg(feature = "grpc")]
+    if args.no_grpc {
+        cfg.grpc_port = 0;
+    }
+}
+
+/// Exits if the config asks for a feature this build doesn't have, so a
+/// server that was meant to encrypt its files never writes them in plain
+/// text.
+fn check_features(cfg: &EmberConfig) {
+    if !cfg!(feature = "encryption") && !cfg.encryption_key_file.is_empty() {
+        exit_err("encryption-key-file is set, but this build has no encryption support");
+    }
+    if !cfg!(feature = "protobuf") && cfg.protobuf {
+        exit_err("protobuf is enabled, but this build has no protobuf support");
+    }
 }
 
 /// Prints `msg` to stderr and exits with code 1.
@@ -312,6 +349,25 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
 fn exit_err(msg: impl std::fmt::Display) -> ! {
     eprintln!("{msg}");
     std::process::exit(1);
+}
+
+/// Builds the ACL state: the `default` user from `requirepass`, plus any
+/// users in the ACL file. Exits on an unreadable or invalid file.
+fn build_acl_state(cfg: &EmberConfig) -> acl::SharedAclState {
+    let mut state = acl::AclState::new(cfg.requirepass().as_deref());
+    if !cfg.aclfile.is_empty() {
+        let contents = std::fs::read_to_string(&cfg.aclfile).unwrap_or_else(|e| {
+            exit_err(format!(
+                "error: failed to read aclfile '{}': {e}",
+                cfg.aclfile
+            ))
+        });
+        if let Err(e) = state.load_file(&contents) {
+            exit_err(format!("error: invalid aclfile '{}': {e}", cfg.aclfile));
+        }
+        info!(path = %cfg.aclfile, "loaded ACL users");
+    }
+    Arc::new(acl::Acl::new(state))
 }
 
 /// Resolves the password from either `--requirepass` or `--requirepass-file`.
@@ -494,6 +550,7 @@ async fn main() {
         None => EmberConfig::default(),
     };
     apply_args(&mut cfg, &args);
+    check_features(&cfg);
 
     // resolve file-based credentials
     resolve_password(&mut cfg, &args);
@@ -516,8 +573,10 @@ async fn main() {
 
     // load encryption key if configured
     #[cfg(feature = "encryption")]
-    let encryption_key = if let Some(ref key_path) = args.encryption_key_file {
-        match ember_persistence::encryption::EncryptionKey::from_file(key_path) {
+    let encryption_key = if !cfg.encryption_key_file.is_empty() {
+        match ember_persistence::encryption::EncryptionKey::from_file(std::path::Path::new(
+            &cfg.encryption_key_file,
+        )) {
             Ok(key) => Some(key),
             Err(e) => exit_err(format!("failed to load encryption key: {e}")),
         }
@@ -536,7 +595,21 @@ async fn main() {
         encryption_key,
     );
 
-    #[allow(unused_mut)]
+    if let Some(ref pcfg) = persistence {
+        if let Err(e) = ember_persistence::manifest::check_shard_count(&pcfg.data_dir, shard_count)
+        {
+            exit_err(format!("error: {e}"));
+        }
+    }
+
+    if let Some(total) = max_memory {
+        if config::per_shard_memory(total, shard_count) == 0 {
+            exit_err(format!(
+                "maxmemory ({total} bytes) is too small to split across {shard_count} shards"
+            ));
+        }
+    }
+
     let mut engine_config = build_engine_config(
         max_memory,
         eviction_policy,
@@ -544,9 +617,13 @@ async fn main() {
         persistence,
         cfg.engine.shard_channel_buffer,
     );
+    engine_config.shard.expiry_interval =
+        std::time::Duration::from_millis(cfg.active_expiry_interval_ms);
+    engine_config.shard.fsync_interval =
+        std::time::Duration::from_secs(cfg.aof_fsync_interval_secs);
 
     #[cfg(feature = "protobuf")]
-    if args.protobuf {
+    if cfg.protobuf {
         engine_config.schema_registry = Some(ember_core::schema::SchemaRegistry::shared());
         info!("protobuf value storage enabled");
 
@@ -614,6 +691,13 @@ async fn main() {
     }
     if cluster_secret.is_some() {
         info!("cluster transport authentication enabled");
+    } else if cfg.cluster.enabled && !addr.ip().to_canonical().is_loopback() {
+        // gossip, Raft and replication would accept anyone who can reach
+        // them: slot takeovers, forced failovers, a full copy of the data
+        exit_err(
+            "error: cluster mode on a non-loopback address requires cluster-auth-pass \
+             (or --cluster-auth-pass-file). set the same secret on every node.",
+        );
     }
 
     // build TLS config if tls-port is set
@@ -627,6 +711,11 @@ async fn main() {
             "no" | "false" | "0" => false,
             _ => exit_err("tls-auth-clients must be 'yes' or 'no'"),
         };
+        if auth_clients && cfg.tls_ca_cert_file.is_empty() {
+            // without a CA there is nothing to verify client certificates
+            // against, so TLS would quietly accept every client
+            exit_err("tls-auth-clients requires tls-ca-cert-file");
+        }
 
         let tls_addr = parse_bind_addr(&cfg.bind, tls_port, "TLS");
 
@@ -692,7 +781,12 @@ async fn main() {
 
         let gossip_config = GossipConfig {
             gossip_port_offset: cfg.cluster.port_offset,
-            probe_timeout: std::time::Duration::from_millis(cfg.cluster.node_timeout_ms / 2),
+            probe_timeout: std::time::Duration::from_millis(
+                match cfg.cluster.gossip.probe_timeout_ms {
+                    0 => cfg.cluster.node_timeout_ms / 2,
+                    ms => ms,
+                },
+            ),
             protocol_period: std::time::Duration::from_millis(
                 cfg.cluster.gossip.protocol_period_ms,
             ),
@@ -838,9 +932,9 @@ async fn main() {
 
     // build grpc address if enabled
     #[cfg(feature = "grpc")]
-    let grpc_addr = if !args.no_grpc && args.grpc_port != 0 {
-        let addr = parse_bind_addr(&cfg.bind, args.grpc_port, "gRPC");
-        info!(grpc_port = args.grpc_port, "gRPC enabled");
+    let grpc_addr = if cfg.grpc_port != 0 {
+        let addr = parse_bind_addr(&cfg.bind, cfg.grpc_port, "gRPC");
+        info!(grpc_port = cfg.grpc_port, "gRPC enabled");
         Some(addr)
     } else {
         None
@@ -850,6 +944,7 @@ async fn main() {
     let config_registry = Arc::new(cfg.to_registry());
 
     let requirepass = cfg.requirepass();
+    let acl = build_acl_state(&cfg);
 
     let config_path = args.config.clone();
 
@@ -869,6 +964,7 @@ async fn main() {
             metrics_handle,
             slowlog_config,
             requirepass,
+            acl,
             tls_config,
             config_registry,
             limits,
@@ -892,6 +988,7 @@ async fn main() {
             metrics_handle,
             slowlog_config,
             requirepass,
+            acl,
             tls_config,
             cluster,
             config_registry,

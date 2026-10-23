@@ -1,9 +1,9 @@
 //! Active expiration via random sampling.
 //!
-//! Instead of maintaining a time wheel or sorted expiry index, we
-//! periodically sample random keys and evict any that have expired.
-//! This is the same algorithm Redis uses — simple, memory-free, and
-//! effective across all TTL ranges.
+//! Each shard periodically samples random keys that have a TTL and removes
+//! the ones that have expired, as Redis does. The keyspace keeps the set of
+//! keys with a TTL, so keys without one never take up sample slots. There is
+//! no time wheel or sorted index of deadlines.
 
 use crate::keyspace::Keyspace;
 
@@ -45,6 +45,24 @@ mod tests {
     use bytes::Bytes;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn finds_expired_keys_among_many_without_ttl() {
+        let mut ks = Keyspace::new();
+        for i in 0..10_000 {
+            ks.set(format!("plain:{i}"), Bytes::from("v"), None, false, false);
+        }
+        for i in 0..10 {
+            let ttl = Some(Duration::from_millis(10));
+            ks.set(format!("temp:{i}"), Bytes::from("v"), ttl, false, false);
+        }
+        thread::sleep(Duration::from_millis(30));
+
+        let removed = run_expiration_cycle(&mut ks);
+        assert_eq!(removed.len(), 10);
+        assert_eq!(ks.len(), 10_000);
+        assert_eq!(ks.stats().keys_with_expiry, 0);
+    }
 
     #[test]
     fn no_expired_keys_removes_nothing() {

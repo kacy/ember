@@ -59,38 +59,32 @@ impl Keyspace {
     /// `Ok(Some(items))` with 1–count elements otherwise. Removes the key
     /// when the list becomes empty. Returns `Err(WrongType)` on type mismatch.
     pub fn lpop_count(&mut self, key: &str, count: usize) -> Result<Option<Vec<Bytes>>, WrongType> {
-        let mut items = Vec::with_capacity(count);
-        for _ in 0..count {
-            match self.lpop(key)? {
-                Some(v) => items.push(v),
-                None => break,
-            }
-        }
-        if items.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(items))
-        }
+        self.pop_count(key, count, true)
     }
 
-    /// Pops up to `count` values from the tail of a list.
-    ///
-    /// Returns `Ok(None)` if the key doesn't exist or is empty. Returns
-    /// `Ok(Some(items))` with 1–count elements otherwise. Removes the key
-    /// when the list becomes empty. Returns `Err(WrongType)` on type mismatch.
+    /// Pops up to `count` values from the tail of a list. Same contract as
+    /// [`lpop_count`](Self::lpop_count).
     pub fn rpop_count(&mut self, key: &str, count: usize) -> Result<Option<Vec<Bytes>>, WrongType> {
-        let mut items = Vec::with_capacity(count);
-        for _ in 0..count {
-            match self.rpop(key)? {
+        self.pop_count(key, count, false)
+    }
+
+    /// Pops from one end until the list is empty or `count` values are
+    /// collected. The vec grows as values arrive because `count` comes from
+    /// the client and can be far larger than the list.
+    fn pop_count(
+        &mut self,
+        key: &str,
+        count: usize,
+        left: bool,
+    ) -> Result<Option<Vec<Bytes>>, WrongType> {
+        let mut items = Vec::new();
+        while items.len() < count {
+            match self.list_pop(key, left)? {
                 Some(v) => items.push(v),
                 None => break,
             }
         }
-        if items.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(items))
-        }
+        Ok((!items.is_empty()).then_some(items))
     }
 
     /// Returns a range of elements from a list by index.
@@ -186,9 +180,9 @@ impl Keyspace {
             let entry = self.entries.get_mut(key).expect("key confirmed to exist");
             entry.touch(self.track_access);
             if delta > 0 {
-                entry.cached_value_size += delta as u32;
+                entry.grow_value_size(delta as usize);
             } else if delta < 0 {
-                entry.cached_value_size = entry.cached_value_size.saturating_sub((-delta) as u32);
+                entry.shrink_value_size(delta.unsigned_abs());
             }
         }
         self.bump_version(key);
@@ -240,7 +234,7 @@ impl Keyspace {
             entry.touch(self.track_access);
             let nvs = if !empty {
                 let size = memory::value_size(&entry.value);
-                entry.cached_value_size = size as u32;
+                entry.set_value_size(size);
                 size
             } else {
                 0
@@ -252,8 +246,8 @@ impl Keyspace {
         self.bump_version(key);
 
         if is_empty {
-            if let Some(removed) = self.entries.remove(key) {
-                self.decrement_expiry_if_set(&removed);
+            if let Some(removed) = self.entries.swap_remove(key) {
+                self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_entry_size);
         } else {
@@ -300,7 +294,7 @@ impl Keyspace {
         };
 
         let element_cost = memory::VECDEQUE_ELEMENT_OVERHEAD + value.len();
-        if !self.enforce_memory_limit(element_cost) {
+        if !self.enforce_memory_limit(key, element_cost) {
             return Err(WriteError::OutOfMemory);
         }
 
@@ -321,7 +315,7 @@ impl Keyspace {
             deque.insert(insert_pos, value);
             let len = deque.len() as i64;
             entry.touch(self.track_access);
-            entry.cached_value_size += element_cost as u32;
+            entry.grow_value_size(element_cost);
             len
         };
 
@@ -402,8 +396,7 @@ impl Keyspace {
             entry.touch(self.track_access);
 
             if !empty {
-                entry.cached_value_size =
-                    (entry.cached_value_size as usize).saturating_sub(bytes) as u32;
+                entry.shrink_value_size(bytes);
             }
 
             (n, bytes, empty)
@@ -412,8 +405,8 @@ impl Keyspace {
         self.bump_version(key);
 
         if is_empty {
-            if let Some(removed) = self.entries.remove(key) {
-                self.decrement_expiry_if_set(&removed);
+            if let Some(removed) = self.entries.swap_remove(key) {
+                self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_entry_size);
         } else {
@@ -531,7 +524,7 @@ impl Keyspace {
             }
             let len = deque.len();
             entry.touch(self.track_access);
-            entry.cached_value_size += element_increase as u32;
+            entry.grow_value_size(element_increase);
             len
         };
 
@@ -577,7 +570,12 @@ impl Keyspace {
         let Some(value) = popped else {
             return Ok(None);
         };
-        self.list_push(destination, std::slice::from_ref(&value), dst_left)?;
+        if let Err(e) = self.list_push(destination, std::slice::from_ref(&value), dst_left) {
+            // put the element back so a failed move changes nothing. the pop
+            // just freed at least the memory this push needs.
+            let _ = self.list_push(source, std::slice::from_ref(&value), src_left);
+            return Err(e);
+        }
         Ok(Some(value))
     }
 
@@ -1415,6 +1413,59 @@ mod tests {
         assert_eq!(result, Some(vec![Bytes::from("x"), Bytes::from("y")]));
         // key deleted after emptied
         assert!(!ks.exists("l"));
+    }
+
+    #[test]
+    fn pop_count_accepts_counts_far_beyond_list_size() {
+        let mut ks = Keyspace::new();
+        ks.rpush("l", &[Bytes::from("x"), Bytes::from("y")])
+            .unwrap();
+        assert_eq!(
+            ks.lpop_count("l", usize::MAX).unwrap(),
+            Some(vec![Bytes::from("x"), Bytes::from("y")])
+        );
+        ks.rpush("l", &[Bytes::from("z")]).unwrap();
+        assert_eq!(
+            ks.rpop_count("l", usize::MAX).unwrap(),
+            Some(vec![Bytes::from("z")])
+        );
+    }
+
+    #[test]
+    fn push_under_lru_never_evicts_the_target_list() {
+        // with one list and allkeys-lru, eviction's only candidate is the
+        // list being pushed to. the push must fail with OOM instead.
+        let config = ShardConfig {
+            max_memory: Some(2048),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let mut ks = Keyspace::with_config(config);
+        let value = Bytes::from(vec![b'x'; 64]);
+        let mut pushed = 0;
+        while ks.rpush("q", std::slice::from_ref(&value)).is_ok() {
+            pushed += 1;
+            assert!(pushed < 1000, "memory limit never reached");
+        }
+        assert_eq!(ks.llen("q").unwrap(), pushed);
+    }
+
+    #[test]
+    fn lmove_that_runs_out_of_memory_keeps_the_element() {
+        let mut ks = Keyspace::new();
+        ks.rpush("src", &[Bytes::from("a"), Bytes::from("b")])
+            .unwrap();
+        // room for the existing list, but not for a new destination key
+        let used = ks.stats().used_bytes;
+        ks.update_memory_config(Some(used * 100 / 90 + 1), EvictionPolicy::NoEviction);
+
+        let result = ks.lmove("src", "dst", true, false);
+        assert!(matches!(result, Err(WriteError::OutOfMemory)));
+        assert_eq!(
+            ks.lrange("src", 0, -1).unwrap(),
+            vec![Bytes::from("a"), Bytes::from("b")]
+        );
+        assert!(!ks.exists("dst"));
     }
 
     #[test]

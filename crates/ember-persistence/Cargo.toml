@@ -10,7 +10,7 @@ categories.workspace = true
 readme = "README.md"
 
 [features]
-encryption = ["aes-gcm", "rand"]
+encryption = ["aes-gcm", "hkdf", "rand", "sha2", "zeroize"]
 protobuf = []
 vector = []
 
@@ -21,7 +21,10 @@ crc32fast = { workspace = true }
 tracing = { workspace = true }
 
 # optional: encryption at rest (AES-256-GCM)
-aes-gcm = { version = "0.10", optional = true }
+aes-gcm = { version = "0.10", optional = true, features = ["zeroize"] }
+hkdf = { version = "0.12", optional = true }
+sha2 = { workspace = true, optional = true }
+zeroize = { version = "1", optional = true, features = ["derive"] }
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]

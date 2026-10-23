@@ -1,32 +1,82 @@
 use super::*;
 
-/// Writes a snapshot of the current keyspace.
-pub(super) fn handle_snapshot(
-    keyspace: &Keyspace,
-    persistence: &Option<ShardPersistenceConfig>,
+/// Loads the shard's snapshot and replays its AOF into `keyspace`. Returns
+/// whether the AOF was older than the snapshot and has to be rewritten.
+pub(super) fn recover(
+    keyspace: &mut Keyspace,
+    pcfg: &ShardPersistenceConfig,
     shard_id: u16,
-) -> ShardResponse {
-    let pcfg = match persistence {
-        Some(p) => p,
-        None => return ShardResponse::Err("persistence not configured".into()),
-    };
+    #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
+) -> Result<bool, recovery::RecoveryError> {
+    // everything recovered was stored once already, so it must neither be
+    // refused for memory nor evict other recovered keys
+    let (max_memory, eviction_policy) = keyspace.memory_config();
+    keyspace.update_memory_config(None, EvictionPolicy::NoEviction);
 
-    let path = snapshot::snapshot_path(&pcfg.data_dir, shard_id);
-    let result = write_snapshot(
-        keyspace,
-        &path,
-        shard_id,
-        #[cfg(feature = "encryption")]
-        pcfg.encryption_key.as_ref(),
-    );
-    match result {
-        Ok(count) => {
-            info!(shard_id, entries = count, "snapshot written");
-            ShardResponse::Ok
+    let mut target = KeyspaceRecovery {
+        keyspace: &mut *keyspace,
+        #[cfg(feature = "protobuf")]
+        schema_registry,
+    };
+    #[cfg(feature = "encryption")]
+    let result = match pcfg.encryption_key {
+        Some(ref key) => {
+            recovery::recover_shard_encrypted(&pcfg.data_dir, shard_id, key, &mut target)
         }
-        Err(e) => {
-            warn!(shard_id, "snapshot failed: {e}");
-            ShardResponse::Err(format!("snapshot failed: {e}"))
+        None => recovery::recover_shard(&pcfg.data_dir, shard_id, &mut target),
+    };
+    #[cfg(not(feature = "encryption"))]
+    let result = recovery::recover_shard(&pcfg.data_dir, shard_id, &mut target);
+
+    keyspace.update_memory_config(max_memory, eviction_policy);
+    let result = result?;
+    if result.loaded_snapshot || result.replayed_aof {
+        info!(
+            shard_id,
+            recovered_keys = keyspace.len(),
+            snapshot = result.loaded_snapshot,
+            aof = result.replayed_aof,
+            "recovered shard state"
+        );
+    }
+    Ok(result.stale_aof)
+}
+
+/// Recovers into the keyspace. An AOF record becomes the request that
+/// wrote it and runs through [`dispatch`], the same code as the original
+/// write, so replay can't drift from how commands behave.
+struct KeyspaceRecovery<'a> {
+    keyspace: &'a mut Keyspace,
+    #[cfg(feature = "protobuf")]
+    schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
+}
+
+impl recovery::Recover for KeyspaceRecovery<'_> {
+    fn restore(&mut self, key: String, value: SnapValue, ttl: Option<Duration>) {
+        self.keyspace.restore(key, snap_to_value(value), ttl);
+    }
+
+    fn apply(&mut self, record: AofRecord) {
+        #[cfg(feature = "protobuf")]
+        if let AofRecord::ProtoRegister { name, descriptor } = record {
+            if let Some(registry) = self.schema_registry {
+                if let Ok(mut registry) = registry.write() {
+                    registry.restore(name, descriptor);
+                }
+            }
+            return;
+        }
+        let Some(mut request) = aof::from_aof_record(&record) else {
+            return;
+        };
+        let response = dispatch(
+            self.keyspace,
+            &mut request,
+            #[cfg(feature = "protobuf")]
+            self.schema_registry,
+        );
+        if let ShardResponse::Err(e) = response {
+            warn!("aof replay: a record failed to apply: {e}");
         }
     }
 }
@@ -36,7 +86,11 @@ pub(super) fn handle_snapshot(
 /// Used by the replication server to capture a snapshot for transmission
 /// to a new replica. The format matches the file-based snapshot and can
 /// be loaded via [`ember_persistence::snapshot::read_snapshot_from_bytes`].
-pub(super) fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> ShardResponse {
+pub(super) fn handle_serialize_snapshot(
+    keyspace: &Keyspace,
+    shard_id: u16,
+    offset: u64,
+) -> ShardResponse {
     let entries: Vec<SnapEntry> = keyspace
         .iter_entries()
         .map(|(key, value, expire_ms)| SnapEntry {
@@ -47,7 +101,11 @@ pub(super) fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> S
         .collect();
 
     match snapshot::write_snapshot_bytes(shard_id, &entries) {
-        Ok(data) => ShardResponse::SnapshotData { shard_id, data },
+        Ok(data) => ShardResponse::SnapshotData {
+            shard_id,
+            offset,
+            data,
+        },
         Err(e) => {
             warn!(shard_id, "snapshot serialization failed: {e}");
             ShardResponse::Err(format!("snapshot failed: {e}"))
@@ -55,11 +113,17 @@ pub(super) fn handle_serialize_snapshot(keyspace: &Keyspace, shard_id: u16) -> S
     }
 }
 
-/// Writes a snapshot and then truncates the AOF.
+/// Writes a snapshot, then truncates the AOF.
+///
+/// BGSAVE, BGREWRITEAOF and the periodic save all come here. The snapshot
+/// holds every write the AOF recorded, so the AOF must be emptied once the
+/// snapshot is on disk. Otherwise recovery loads the snapshot and replays
+/// the same writes on top of it, applying INCR, APPEND, LPUSH and similar
+/// records twice.
 ///
 /// When protobuf is enabled, re-persists all registered schemas to the
 /// AOF after truncation so they survive the next restart.
-pub(super) fn handle_rewrite(
+pub(super) fn handle_snapshot(
     keyspace: &Keyspace,
     persistence: &Option<ShardPersistenceConfig>,
     aof_writer: &mut Option<AofWriter>,
@@ -80,11 +144,21 @@ pub(super) fn handle_rewrite(
         pcfg.encryption_key.as_ref(),
     );
     match result {
-        Ok(count) => {
-            // truncate AOF after successful snapshot
+        Ok((count, snapshot_crc)) => {
             if let Some(ref mut writer) = aof_writer {
-                if let Err(e) = writer.truncate() {
-                    warn!(shard_id, "aof truncate after rewrite failed: {e}");
+                if let Err(e) = writer.truncate(snapshot_crc) {
+                    // the old AOF stays in use. mark where the snapshot
+                    // takes over, so recovery skips the records before it
+                    // and replays the ones after.
+                    let checkpoint = AofRecord::Checkpoint { snapshot_crc };
+                    if let Err(e) = writer
+                        .write_record(&checkpoint)
+                        .and_then(|()| writer.sync())
+                    {
+                        warn!(shard_id, "aof checkpoint after snapshot failed: {e}");
+                    }
+                    warn!(shard_id, "aof truncate after snapshot failed: {e}");
+                    return ShardResponse::Err(format!("aof truncate failed: {e}"));
                 }
 
                 // re-persist schemas so they survive the next recovery
@@ -105,15 +179,16 @@ pub(super) fn handle_rewrite(
 
                 // flush so schemas are durable before we report success
                 if let Err(e) = writer.sync() {
-                    warn!(shard_id, "aof sync after rewrite failed: {e}");
+                    warn!(shard_id, "aof sync after snapshot failed: {e}");
+                    return ShardResponse::Err(format!("aof sync failed: {e}"));
                 }
             }
-            info!(shard_id, entries = count, "aof rewrite complete");
+            info!(shard_id, entries = count, "snapshot written");
             ShardResponse::Ok
         }
         Err(e) => {
-            warn!(shard_id, "aof rewrite failed: {e}");
-            ShardResponse::Err(format!("rewrite failed: {e}"))
+            warn!(shard_id, "snapshot failed: {e}");
+            ShardResponse::Err(format!("snapshot failed: {e}"))
         }
     }
 }
@@ -189,7 +264,7 @@ pub(super) fn snap_to_value(snap: SnapValue) -> Value {
                     for (name, vec) in elements {
                         let _ = vs.add(name, &vec);
                     }
-                    Value::Vector(vs)
+                    Value::Vector(Box::new(vs))
                 }
                 Err(_) => Value::String(Bytes::new()),
             }
@@ -200,6 +275,7 @@ pub(super) fn snap_to_value(snap: SnapValue) -> Value {
 }
 
 /// Iterates the keyspace and writes all live entries to a snapshot file.
+/// Returns the number of entries and the snapshot's footer CRC.
 pub(super) fn write_snapshot(
     keyspace: &Keyspace,
     path: &std::path::Path,
@@ -207,7 +283,7 @@ pub(super) fn write_snapshot(
     #[cfg(feature = "encryption")] encryption_key: Option<
         &ember_persistence::encryption::EncryptionKey,
     >,
-) -> Result<u32, ember_persistence::format::FormatError> {
+) -> Result<(u32, u32), ember_persistence::format::FormatError> {
     #[cfg(feature = "encryption")]
     let mut writer = if let Some(key) = encryption_key {
         SnapshotWriter::create_encrypted(path, shard_id, key.clone())?
@@ -227,13 +303,115 @@ pub(super) fn write_snapshot(
         count += 1;
     }
 
-    writer.finish()?;
-    Ok(count)
+    let crc = writer.finish()?;
+    Ok((count, crc))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes `records` as shard 0's AOF in `dir` and recovers a keyspace
+    /// from it. Returns the keyspace and whether the AOF was stale.
+    fn recover_from(
+        dir: &std::path::Path,
+        records: &[AofRecord],
+        ks: Keyspace,
+    ) -> (Keyspace, bool) {
+        let mut writer = AofWriter::open(ember_persistence::aof::aof_path(dir, 0)).unwrap();
+        for record in records {
+            writer.write_record(record).unwrap();
+        }
+        writer.sync().unwrap();
+        let pcfg = ShardPersistenceConfig {
+            data_dir: dir.to_path_buf(),
+            append_only: true,
+            fsync_policy: FsyncPolicy::No,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
+        };
+        let mut ks = ks;
+        let stale = recover(
+            &mut ks,
+            &pcfg,
+            0,
+            #[cfg(feature = "protobuf")]
+            &None,
+        )
+        .unwrap();
+        (ks, stale)
+    }
+
+    fn set(key: &str, value: &str) -> AofRecord {
+        AofRecord::Set {
+            key: key.into(),
+            value: Bytes::copy_from_slice(value.as_bytes()),
+            expire_ms: -1,
+        }
+    }
+
+    fn get_string(ks: &mut Keyspace, key: &str) -> Option<Bytes> {
+        match ks.get(key).unwrap() {
+            Some(Value::String(data)) => Some(data),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn replay_runs_each_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = [
+            set("n", "10"),
+            AofRecord::Incr { key: "n".into() },
+            AofRecord::LPush {
+                key: "l".into(),
+                values: vec![Bytes::from("a"), Bytes::from("b")],
+            },
+            AofRecord::Append {
+                key: "n".into(),
+                value: Bytes::from("!"),
+            },
+        ];
+        let (mut ks, stale) = recover_from(dir.path(), &records, Keyspace::new());
+        assert!(!stale);
+        assert_eq!(get_string(&mut ks, "n"), Some(Bytes::from("11!")));
+        assert_eq!(ks.llen("l").unwrap(), 2);
+    }
+
+    #[test]
+    fn replay_applies_flush_and_passed_deadlines() {
+        let dir = tempfile::tempdir().unwrap();
+        let records = [
+            set("a", "1"),
+            AofRecord::FlushAll,
+            set("b", "2"),
+            AofRecord::SetExpireAt {
+                key: "gone".into(),
+                value: Bytes::from("x"),
+                timestamp_ms: 1,
+            },
+        ];
+        let (mut ks, _) = recover_from(dir.path(), &records, Keyspace::new());
+        assert_eq!(get_string(&mut ks, "a"), None);
+        assert_eq!(get_string(&mut ks, "b"), Some(Bytes::from("2")));
+        assert_eq!(get_string(&mut ks, "gone"), None);
+    }
+
+    #[test]
+    fn replay_ignores_the_memory_limit_and_restores_it() {
+        // every recovered key was stored once already; evicting or
+        // refusing some of them at startup would lose data
+        let dir = tempfile::tempdir().unwrap();
+        let records: Vec<AofRecord> = (0..100).map(|i| set(&format!("k{i}"), "value")).collect();
+        let config = ShardConfig {
+            max_memory: Some(1024),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let (ks, _) = recover_from(dir.path(), &records, Keyspace::with_config(config));
+        assert_eq!(ks.len(), 100);
+        assert_eq!(ks.memory_config(), (Some(1024), EvictionPolicy::AllKeysLru));
+    }
 
     #[tokio::test]
     async fn shard_round_trip() {
@@ -476,5 +654,303 @@ mod tests {
                 other => panic!("expected c=3, got {other:?}"),
             }
         }
+    }
+
+    /// Starts shard 0 with an AOF (fsync always) in `dir`.
+    fn spawn_persistent_shard(dir: &std::path::Path) -> ShardHandle {
+        spawn_persistent_shard_with(dir, ShardConfig::default())
+    }
+
+    fn spawn_persistent_shard_with(dir: &std::path::Path, config: ShardConfig) -> ShardHandle {
+        let pcfg = ShardPersistenceConfig {
+            data_dir: dir.to_owned(),
+            append_only: true,
+            fsync_policy: FsyncPolicy::Always,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
+        };
+        spawn_shard(
+            16,
+            config,
+            Some(pcfg),
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        )
+    }
+
+    /// Stops the shard, waits for its final AOF sync, and starts it again
+    /// from the same directory.
+    async fn restart(dir: &std::path::Path, handle: ShardHandle) -> ShardHandle {
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        spawn_persistent_shard(dir)
+    }
+
+    async fn get(handle: &ShardHandle, key: &str) -> Option<Bytes> {
+        match handle
+            .send(ShardRequest::Get { key: key.into() })
+            .await
+            .unwrap()
+        {
+            ShardResponse::Value(Some(Value::String(data))) => Some(data),
+            ShardResponse::Value(None) => None,
+            other => panic!("unexpected GET response {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_truncates_the_aof_so_recovery_does_not_apply_writes_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_persistent_shard(dir.path());
+        for _ in 0..3 {
+            handle
+                .send(ShardRequest::Incr { key: "n".into() })
+                .await
+                .unwrap();
+        }
+        let resp = handle.send(ShardRequest::Snapshot).await.unwrap();
+        assert!(matches!(resp, ShardResponse::Ok));
+        handle
+            .send(ShardRequest::Incr { key: "n".into() })
+            .await
+            .unwrap();
+
+        let handle = restart(dir.path(), handle).await;
+        assert_eq!(get(&handle, "n").await, Some(Bytes::from("4")));
+    }
+
+    #[tokio::test]
+    async fn flushdb_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_persistent_shard(dir.path());
+        handle
+            .send(ShardRequest::Set {
+                key: "a".into(),
+                value: Bytes::from("1"),
+                expire: None,
+                nx: false,
+                xx: false,
+            })
+            .await
+            .unwrap();
+        handle.send(ShardRequest::FlushDb).await.unwrap();
+
+        let handle = restart(dir.path(), handle).await;
+        assert_eq!(get(&handle, "a").await, None);
+    }
+
+    #[tokio::test]
+    async fn pop_by_a_woken_blpop_is_logged_after_the_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_persistent_shard(dir.path());
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let _ = handle
+            .dispatch(ShardRequest::BLPop {
+                key: "q".into(),
+                waiter: tx,
+            })
+            .await;
+        handle
+            .send(ShardRequest::LPush {
+                key: "q".into(),
+                values: vec![Bytes::from("job")],
+            })
+            .await
+            .unwrap();
+        let popped = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for BLPOP")
+            .unwrap();
+        assert_eq!(popped.1, Bytes::from("job"));
+
+        // replaying LPOP before LPUSH would leave "job" in the list
+        let handle = restart(dir.path(), handle).await;
+        let resp = handle
+            .send(ShardRequest::Exists { key: "q".into() })
+            .await
+            .unwrap();
+        assert!(matches!(resp, ShardResponse::Bool(false)));
+    }
+
+    /// Reads every file in `dir`, sorted by name.
+    fn read_files(dir: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut files: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    #[tokio::test]
+    async fn evicted_keys_stay_gone_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ShardConfig {
+            max_memory: Some(8 * 1024),
+            eviction_policy: EvictionPolicy::AllKeysLru,
+            ..ShardConfig::default()
+        };
+        let handle = spawn_persistent_shard_with(dir.path(), config.clone());
+        for i in 0..20 {
+            let resp = handle
+                .send(ShardRequest::Set {
+                    key: format!("k{i}"),
+                    value: Bytes::from(vec![b'x'; 1024]),
+                    expire: None,
+                    nx: false,
+                    xx: false,
+                })
+                .await
+                .unwrap();
+            assert!(matches!(resp, ShardResponse::Ok), "{resp:?}");
+        }
+        let ShardResponse::KeyCount(kept) = handle.send(ShardRequest::DbSize).await.unwrap() else {
+            panic!("expected a key count");
+        };
+        assert!(kept < 20, "nothing was evicted");
+
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let handle = spawn_persistent_shard_with(dir.path(), config);
+        let resp = handle.send(ShardRequest::DbSize).await.unwrap();
+        assert!(
+            matches!(resp, ShardResponse::KeyCount(n) if n == kept),
+            "{resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_snapshot_stops_the_shard_and_leaves_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_persistent_shard(dir.path());
+        handle
+            .send(ShardRequest::Incr { key: "n".into() })
+            .await
+            .unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let snap = ember_persistence::snapshot::snapshot_path(dir.path(), 0);
+        std::fs::write(&snap, b"garbage").unwrap();
+        let before = read_files(dir.path());
+
+        let handle = spawn_persistent_shard(dir.path());
+        let resp = handle.send(ShardRequest::DbSize).await;
+        assert!(matches!(resp, Err(ShardError::Unavailable)), "{resp:?}");
+        assert_eq!(read_files(dir.path()), before);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn encrypted_files_survive_a_start_without_the_key() {
+        use ember_persistence::encryption::EncryptionKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let spawn = |encryption_key: Option<EncryptionKey>| {
+            let pcfg = ShardPersistenceConfig {
+                data_dir: dir.path().to_owned(),
+                append_only: true,
+                fsync_policy: FsyncPolicy::Always,
+                encryption_key,
+            };
+            spawn_shard(
+                16,
+                ShardConfig::default(),
+                Some(pcfg),
+                None,
+                None,
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            )
+        };
+        let key = EncryptionKey::from_bytes([7; 32]);
+
+        let handle = spawn(Some(key.clone()));
+        handle
+            .send(ShardRequest::Incr {
+                key: "saved".into(),
+            })
+            .await
+            .unwrap();
+        handle.send(ShardRequest::Snapshot).await.unwrap();
+        handle
+            .send(ShardRequest::Incr {
+                key: "logged".into(),
+            })
+            .await
+            .unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let before = read_files(dir.path());
+
+        for wrong in [None, Some(EncryptionKey::from_bytes([8; 32]))] {
+            let handle = spawn(wrong);
+            let resp = handle.send(ShardRequest::DbSize).await;
+            assert!(matches!(resp, Err(ShardError::Unavailable)), "{resp:?}");
+            drop(handle);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(read_files(dir.path()), before);
+        }
+
+        let handle = spawn(Some(key));
+        assert_eq!(get(&handle, "saved").await, Some(Bytes::from("1")));
+        assert_eq!(get(&handle, "logged").await, Some(Bytes::from("1")));
+    }
+
+    #[cfg(feature = "encryption")]
+    #[tokio::test]
+    async fn turning_encryption_on_keeps_existing_data() {
+        use ember_persistence::encryption::EncryptionKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let spawn = |encryption_key: Option<EncryptionKey>| {
+            let pcfg = ShardPersistenceConfig {
+                data_dir: dir.path().to_owned(),
+                append_only: true,
+                fsync_policy: FsyncPolicy::Always,
+                encryption_key,
+            };
+            spawn_shard(
+                16,
+                ShardConfig::default(),
+                Some(pcfg),
+                None,
+                None,
+                None,
+                #[cfg(feature = "protobuf")]
+                None,
+            )
+        };
+        let set = |key: &str| ShardRequest::Set {
+            key: key.into(),
+            value: Bytes::from("v"),
+            expire: None,
+            nx: false,
+            xx: false,
+        };
+        let key = EncryptionKey::from_bytes([7; 32]);
+
+        let handle = spawn(None);
+        handle.send(set("plain")).await.unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // the plaintext AOF is rewritten encrypted, then appended to
+        let handle = spawn(Some(key.clone()));
+        handle.send(set("encrypted")).await.unwrap();
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let handle = spawn(Some(key));
+        assert_eq!(get(&handle, "plain").await, Some(Bytes::from("v")));
+        assert_eq!(get(&handle, "encrypted").await, Some(Bytes::from("v")));
     }
 }

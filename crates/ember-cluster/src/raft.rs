@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::ops::RangeBounds;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use openraft::error::{
     ClientWriteError, InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable,
@@ -27,7 +28,7 @@ use openraft::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, RwLock, Semaphore};
 use tracing::{debug, warn};
 
 use crate::raft_log::{RaftDisk, RaftDiskError};
@@ -70,7 +71,8 @@ pub enum ClusterCommand {
     },
     /// Remove a node from the cluster.
     RemoveNode { node_id: NodeId },
-    /// Assign slots to a node.
+    /// Assign unowned slots to a node. Fails if another node owns any of
+    /// them: use `TransferSlots` to move slots between nodes.
     AssignSlots {
         node_id: NodeId,
         slots: Vec<SlotRange>,
@@ -86,6 +88,14 @@ pub enum ClusterCommand {
     BeginMigration { slot: u16, from: NodeId, to: NodeId },
     /// Complete a slot migration.
     CompleteMigration { slot: u16, new_owner: NodeId },
+    /// Move the slots in `slots` that `from` owns to `to`, as in a failover.
+    /// Slots `from` doesn't own are left alone. Added after the other
+    /// variants so existing logs still decode.
+    TransferSlots {
+        from: NodeId,
+        to: NodeId,
+        slots: Vec<SlotRange>,
+    },
 }
 
 /// Response from applying a cluster command.
@@ -273,56 +283,45 @@ impl Storage {
             }
 
             ClusterCommand::AssignSlots { node_id, slots } => {
-                // validate all slot ranges before applying
-                for range in slots {
-                    if range.start > range.end || range.end >= SLOT_COUNT {
-                        return ClusterResponse::Error(format!(
-                            "invalid slot range {}..={} (max {})",
-                            range.start,
-                            range.end,
-                            SLOT_COUNT - 1
-                        ));
-                    }
+                if let Err(e) = check_ranges(slots) {
+                    return e;
                 }
                 let key = node_id.as_key();
-                if let Some(node) = state.nodes.get_mut(&key) {
-                    node.slots = slots.clone();
-                    for slot_range in slots {
-                        for slot in slot_range.start..=slot_range.end {
-                            state.slots.insert(slot, key.clone());
-                        }
-                    }
-                    ClusterResponse::Ok
-                } else {
-                    ClusterResponse::Error(format!("node {} not found", node_id))
+                if !state.nodes.contains_key(&key) {
+                    return ClusterResponse::Error(format!("node {node_id} not found"));
                 }
+                // two nodes can run ADDSLOTS for the same slot at once; the
+                // one applied second must not take it from the first
+                let busy = slots
+                    .iter()
+                    .flat_map(|range| range.start..=range.end)
+                    .find(|slot| state.slots.get(slot).is_some_and(|owner| *owner != key));
+                if let Some(slot) = busy {
+                    return ClusterResponse::Error(format!("slot {slot} is already busy"));
+                }
+                for range in slots {
+                    for slot in range.start..=range.end {
+                        state.slots.insert(slot, key.clone());
+                    }
+                }
+                rebuild_slot_lists(state);
+                ClusterResponse::Ok
             }
 
             ClusterCommand::RemoveSlots { node_id, slots } => {
-                for range in slots {
-                    if range.start > range.end || range.end >= SLOT_COUNT {
-                        return ClusterResponse::Error(format!(
-                            "invalid slot range {}..={} (max {})",
-                            range.start,
-                            range.end,
-                            SLOT_COUNT - 1
-                        ));
-                    }
+                if let Err(e) = check_ranges(slots) {
+                    return e;
                 }
                 let key = node_id.as_key();
-                for slot_range in slots {
-                    for slot in slot_range.start..=slot_range.end {
+                for range in slots {
+                    for slot in range.start..=range.end {
                         // only remove if this node is the current owner
-                        if state.slots.get(&slot).map(|s| s.as_str()) == Some(key.as_str()) {
+                        if state.slots.get(&slot) == Some(&key) {
                             state.slots.remove(&slot);
                         }
                     }
                 }
-                // rebuild node's slot list from what remains; split the borrow
-                let remaining = slots_for_node_in_state(state, &key);
-                if let Some(node) = state.nodes.get_mut(&key) {
-                    node.slots = remaining;
-                }
+                rebuild_slot_lists(state);
                 ClusterResponse::Ok
             }
 
@@ -362,8 +361,56 @@ impl Storage {
                 state.migrations.remove(slot);
                 let key = new_owner.as_key();
                 state.slots.insert(*slot, key);
+                rebuild_slot_lists(state);
                 ClusterResponse::Ok
             }
+
+            ClusterCommand::TransferSlots { from, to, slots } => {
+                if let Err(e) = check_ranges(slots) {
+                    return e;
+                }
+                let (from, to) = (from.as_key(), to.as_key());
+                if !state.nodes.contains_key(&to) {
+                    return ClusterResponse::Error(format!("node {to} not found"));
+                }
+                for range in slots {
+                    for slot in range.start..=range.end {
+                        if state.slots.get(&slot) == Some(&from) {
+                            state.slots.insert(slot, to.clone());
+                        }
+                    }
+                }
+                rebuild_slot_lists(state);
+                ClusterResponse::Ok
+            }
+        }
+    }
+}
+
+/// Returns an error response if any range is reversed or out of bounds.
+fn check_ranges(slots: &[SlotRange]) -> Result<(), ClusterResponse> {
+    match slots
+        .iter()
+        .find(|range| range.start > range.end || range.end >= SLOT_COUNT)
+    {
+        Some(range) => Err(ClusterResponse::Error(format!(
+            "invalid slot range {}..={} (max {})",
+            range.start,
+            range.end,
+            SLOT_COUNT - 1
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Recomputes every node's slot list from the slot map, so the two can't
+/// disagree after a change.
+fn rebuild_slot_lists(state: &mut ClusterStateData) {
+    let keys: Vec<String> = state.nodes.keys().cloned().collect();
+    for key in keys {
+        let slots = slots_for_node_in_state(state, &key);
+        if let Some(node) = state.nodes.get_mut(&key) {
+            node.slots = slots;
         }
     }
 }
@@ -760,6 +807,15 @@ impl RaftNetworkFactoryTrait<TypeConfig> for RaftNetworkFactory {
 /// Reads one `RaftRpc` frame, dispatches to the local Raft instance,
 /// writes one `RaftRpcResponse` frame, then closes the connection.
 /// When `secret` is `Some`, authenticated framing is used.
+/// Most Raft connections served at once. Each carries one RPC, and a
+/// cluster needs a few per peer, so more than this points to a flood.
+const MAX_RAFT_CONNECTIONS: usize = 64;
+
+/// How long a peer has to send its request before the connection is
+/// dropped. Snapshots can be up to 10 MB, which takes well under this on
+/// any link a cluster should run on.
+const RAFT_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub(crate) fn spawn_raft_listener(
     raft: Raft<TypeConfig>,
     bind_addr: SocketAddr,
@@ -775,6 +831,7 @@ pub(crate) fn spawn_raft_listener(
         };
 
         tracing::info!("raft listener on {bind_addr}");
+        let permits = Arc::new(Semaphore::new(MAX_RAFT_CONNECTIONS));
 
         loop {
             let (mut stream, peer) = match listener.accept().await {
@@ -784,25 +841,31 @@ pub(crate) fn spawn_raft_listener(
                     continue;
                 }
             };
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
+                debug!("too many raft connections, dropping {peer}");
+                continue;
+            };
 
             let raft = raft.clone();
             let secret = secret.clone();
             tokio::spawn(async move {
-                let rpc: RaftRpc = match &secret {
-                    Some(s) => match read_frame_authenticated(&mut stream, s).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            debug!("raft auth/read error from {peer}: {e}");
-                            return;
-                        }
-                    },
-                    None => match read_frame(&mut stream).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            debug!("raft read error from {peer}: {e}");
-                            return;
-                        }
-                    },
+                let _permit = permit;
+                let read = async {
+                    match &secret {
+                        Some(s) => read_frame_authenticated(&mut stream, s).await,
+                        None => read_frame(&mut stream).await,
+                    }
+                };
+                let rpc: RaftRpc = match tokio::time::timeout(RAFT_READ_TIMEOUT, read).await {
+                    Ok(Ok(rpc)) => rpc,
+                    Ok(Err(e)) => {
+                        debug!("raft read error from {peer}: {e}");
+                        return;
+                    }
+                    Err(_) => {
+                        debug!("raft request from {peer} timed out");
+                        return;
+                    }
                 };
 
                 let response = match rpc {
@@ -862,6 +925,9 @@ pub enum RaftProposalError {
     NotLeader(Option<BasicNode>),
     /// Fatal Raft error.
     Fatal(String),
+    /// The state machine refused the command, for example assigning slots
+    /// to a node Raft does not know. Nothing changed.
+    Rejected(String),
 }
 
 impl std::fmt::Display for RaftProposalError {
@@ -870,8 +936,9 @@ impl std::fmt::Display for RaftProposalError {
             RaftProposalError::NotLeader(Some(node)) => {
                 write!(f, "not leader, leader at {}", node.addr)
             }
-            RaftProposalError::NotLeader(None) => write!(f, "no leader elected"),
-            RaftProposalError::Fatal(msg) => write!(f, "raft fatal: {msg}"),
+            RaftProposalError::NotLeader(None) => write!(f, "no leader elected, retry shortly"),
+            RaftProposalError::Fatal(msg) => write!(f, "raft error: {msg}"),
+            RaftProposalError::Rejected(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -956,10 +1023,15 @@ impl RaftNode {
     /// Proposes a cluster configuration change through Raft.
     ///
     /// Blocks until the entry is committed and applied to the state machine
-    /// on a quorum of nodes. Returns `NotLeader` if this node is not the leader.
-    pub async fn propose(&self, cmd: ClusterCommand) -> Result<ClusterResponse, RaftProposalError> {
+    /// on a quorum of nodes. Returns `NotLeader` if this node is not the
+    /// leader, and `Rejected` if the state machine refused the command, so
+    /// callers cannot mistake a refusal for success.
+    pub async fn propose(&self, cmd: ClusterCommand) -> Result<(), RaftProposalError> {
         match self.raft.client_write(cmd).await {
-            Ok(resp) => Ok(resp.data),
+            Ok(resp) => match resp.data {
+                ClusterResponse::Ok => Ok(()),
+                ClusterResponse::Error(msg) => Err(RaftProposalError::Rejected(msg)),
+            },
             Err(e) => match e {
                 openraft::error::RaftError::APIError(ClientWriteError::ForwardToLeader(fwd)) => {
                     Err(RaftProposalError::NotLeader(fwd.leader_node))
@@ -1044,6 +1116,85 @@ mod tests {
         let state_arc = storage.state();
         let state = state_arc.read().await;
         assert!(state.nodes.contains_key(&node_id.as_key()));
+    }
+
+    /// A state with two nodes, `a` owning slots 0..=9.
+    fn two_nodes() -> (ClusterStateData, NodeId, NodeId) {
+        let mut state = ClusterStateData::default();
+        let (a, b) = (NodeId::new(), NodeId::new());
+        for (raft_id, node_id) in [(1, a), (2, b)] {
+            Storage::apply_command(
+                &ClusterCommand::AddNode {
+                    node_id,
+                    raft_id,
+                    addr: "127.0.0.1:6379".into(),
+                    is_primary: true,
+                },
+                &mut state,
+            );
+        }
+        let assign = ClusterCommand::AssignSlots {
+            node_id: a,
+            slots: vec![SlotRange::new(0, 9)],
+        };
+        assert_eq!(
+            Storage::apply_command(&assign, &mut state),
+            ClusterResponse::Ok
+        );
+        (state, a, b)
+    }
+
+    fn slots_of(state: &ClusterStateData, node: NodeId) -> Vec<SlotRange> {
+        state.nodes[&node.as_key()].slots.clone()
+    }
+
+    #[test]
+    fn assign_slots_refuses_another_nodes_slot() {
+        let (mut state, a, b) = two_nodes();
+        let steal = ClusterCommand::AssignSlots {
+            node_id: b,
+            slots: vec![SlotRange::new(5, 20)],
+        };
+        assert!(matches!(
+            Storage::apply_command(&steal, &mut state),
+            ClusterResponse::Error(_)
+        ));
+        assert_eq!(state.slots[&5], a.as_key());
+        assert!(!state.slots.contains_key(&20));
+    }
+
+    #[test]
+    fn assign_slots_adds_to_the_nodes_list() {
+        let (mut state, a, _) = two_nodes();
+        let more = ClusterCommand::AssignSlots {
+            node_id: a,
+            slots: vec![SlotRange::new(20, 29)],
+        };
+        assert_eq!(
+            Storage::apply_command(&more, &mut state),
+            ClusterResponse::Ok
+        );
+        assert_eq!(
+            slots_of(&state, a),
+            [SlotRange::new(0, 9), SlotRange::new(20, 29)]
+        );
+    }
+
+    #[test]
+    fn transfer_slots_moves_only_the_senders_slots() {
+        let (mut state, a, b) = two_nodes();
+        let transfer = ClusterCommand::TransferSlots {
+            from: a,
+            to: b,
+            slots: vec![SlotRange::new(0, 14)],
+        };
+        assert_eq!(
+            Storage::apply_command(&transfer, &mut state),
+            ClusterResponse::Ok
+        );
+        assert_eq!(slots_of(&state, b), [SlotRange::new(0, 9)]);
+        assert!(slots_of(&state, a).is_empty());
+        assert!(!state.slots.contains_key(&14));
     }
 
     #[tokio::test]

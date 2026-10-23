@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Duration;
 
-use ember_core::{EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig};
+use ember_core::{
+    glob_match_nocase, EngineConfig, EvictionPolicy, ShardConfig, ShardPersistenceConfig,
+};
 use ember_persistence::aof::FsyncPolicy;
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +94,12 @@ pub fn parse_fsync_policy(input: &str) -> Result<FsyncPolicy, String> {
 
 /// Builds an `EngineConfig` from parsed CLI options.
 ///
+/// Splits a server-wide memory limit evenly across shards, rounding down so
+/// the shards together never exceed the total.
+pub fn per_shard_memory(total: usize, shard_count: usize) -> usize {
+    total / shard_count.max(1)
+}
+
 /// `max_memory` is the total server limit — it gets divided evenly
 /// across shards so each shard enforces its own share.
 pub fn build_engine_config(
@@ -101,11 +109,7 @@ pub fn build_engine_config(
     persistence: Option<ShardPersistenceConfig>,
     shard_channel_buffer: usize,
 ) -> EngineConfig {
-    let per_shard_memory = max_memory.map(|total| {
-        // divide evenly, rounding down — better to be slightly
-        // conservative than to overshoot the total limit
-        total / shard_count
-    });
+    let per_shard_memory = max_memory.map(|total| per_shard_memory(total, shard_count));
 
     EngineConfig {
         shard: ShardConfig {
@@ -141,6 +145,9 @@ pub struct EmberConfig {
     pub shards: usize,
     pub concurrent: bool,
     pub requirepass: String,
+    /// Path to an ACL file with `user <name> <rules...>` lines, loaded at
+    /// startup. Empty means only the `default` user exists.
+    pub aclfile: String,
     #[serde(rename = "data-dir")]
     pub data_dir: String,
 
@@ -168,6 +175,18 @@ pub struct EmberConfig {
     /// automatically trigger a background save every N seconds. 0 = disabled.
     #[serde(rename = "save-interval-secs")]
     pub save_interval_secs: u64,
+    /// Path to a 32-byte key that encrypts the AOF and snapshots. Needs a
+    /// build with the `encryption` feature.
+    #[serde(rename = "encryption-key-file")]
+    pub encryption_key_file: String,
+
+    // -- protobuf and grpc --
+    /// Enables the PROTO.* commands. Needs a build with the `protobuf` feature.
+    pub protobuf: bool,
+    /// Port for the gRPC listener, which builds with the `grpc` feature
+    /// have. 0 disables it.
+    #[serde(rename = "grpc-port")]
+    pub grpc_port: u16,
 
     // -- monitoring --
     #[serde(rename = "metrics-port")]
@@ -222,6 +241,7 @@ impl Default for EmberConfig {
             shards: 0,
             concurrent: false,
             requirepass: String::new(),
+            aclfile: String::new(),
             data_dir: String::new(),
 
             maxclients: 10_000,
@@ -237,6 +257,10 @@ impl Default for EmberConfig {
             active_expiry_interval_ms: 100,
             aof_fsync_interval_secs: 1,
             save_interval_secs: 0,
+            encryption_key_file: String::new(),
+
+            protobuf: false,
+            grpc_port: 6380,
 
             metrics_port: 0,
             slowlog_log_slower_than: 10_000,
@@ -300,6 +324,7 @@ impl Default for ClusterConfig {
 pub struct GossipSection {
     #[serde(rename = "protocol-period-ms")]
     pub protocol_period_ms: u64,
+    /// Direct probe timeout. 0 means half of `node-timeout-ms`.
     #[serde(rename = "probe-timeout-ms")]
     pub probe_timeout_ms: u64,
     #[serde(rename = "suspicion-multiplier")]
@@ -314,7 +339,7 @@ impl Default for GossipSection {
     fn default() -> Self {
         Self {
             protocol_period_ms: 1_000,
-            probe_timeout_ms: 500,
+            probe_timeout_ms: 0,
             suspicion_multiplier: 5,
             indirect_probes: 3,
             max_piggyback: 10,
@@ -392,11 +417,19 @@ impl EmberConfig {
         if max_value_len == 0 {
             return Err("max-value-len must be > 0".into());
         }
+        if self.maxclients == 0 {
+            // a zero-permit semaphore would drop every client
+            return Err("maxclients must be > 0".into());
+        }
 
         Ok(ConnectionLimits {
             buf_capacity: self.read_buffer_capacity,
             max_buf_size,
-            idle_timeout: Duration::from_secs(self.idle_timeout_secs),
+            // 0 means no timeout, as with Redis's `timeout 0`
+            idle_timeout: match self.idle_timeout_secs {
+                0 => Duration::MAX,
+                secs => Duration::from_secs(secs),
+            },
             max_auth_failures: self.max_auth_failures,
             max_subscriptions_per_conn: self.max_subscriptions_per_connection,
             max_pattern_len: self.max_pattern_len,
@@ -599,16 +632,13 @@ impl std::fmt::Debug for ConfigRegistry {
 
 /// Parameters that can be changed at runtime via CONFIG SET.
 ///
-/// Slowlog params take effect immediately. Connection-related params
-/// (maxclients, idle-timeout-secs, max-pipeline-depth) are stored in the
-/// registry and take effect for new connections. Memory params are validated
-/// here and broadcast to shards by the server layer.
+/// Each takes effect immediately: slowlog settings update the slow log,
+/// memory settings are broadcast to the shards, and keyspace events update
+/// the notification flags. Connection limits such as maxclients are read
+/// once at startup, so they are not listed here.
 const MUTABLE_PARAMS: &[&str] = &[
     "slowlog-log-slower-than",
     "slowlog-max-len",
-    "maxclients",
-    "idle-timeout-secs",
-    "max-pipeline-depth",
     "maxmemory",
     "maxmemory-policy",
     "notify-keyspace-events",
@@ -631,7 +661,7 @@ impl ConfigRegistry {
         let params = self.params.read().unwrap_or_else(|e| e.into_inner());
         let mut results: Vec<_> = params
             .iter()
-            .filter(|(k, _)| glob_match(pattern, k))
+            .filter(|(k, _)| glob_match_nocase(pattern, k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         results.sort_by(|a, b| a.0.cmp(&b.0));
@@ -663,31 +693,6 @@ impl ConfigRegistry {
             }
             "slowlog-max-len" => {
                 value.parse::<usize>().map_err(|_| {
-                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
-                })?;
-            }
-            "maxclients" => {
-                let v = value.parse::<usize>().map_err(|_| {
-                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
-                })?;
-                if v < 1 {
-                    return Err(format!(
-                        "ERR Invalid argument '{value}' for CONFIG SET '{key}' (must be >= 1)"
-                    ));
-                }
-            }
-            "max-pipeline-depth" => {
-                let v = value.parse::<usize>().map_err(|_| {
-                    format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
-                })?;
-                if v < 1 {
-                    return Err(format!(
-                        "ERR Invalid argument '{value}' for CONFIG SET '{key}' (must be >= 1)"
-                    ));
-                }
-            }
-            "idle-timeout-secs" => {
-                value.parse::<u64>().map_err(|_| {
                     format!("ERR Invalid argument '{value}' for CONFIG SET '{key}'")
                 })?;
             }
@@ -736,122 +741,41 @@ impl ConfigRegistry {
             .unwrap_or(EvictionPolicy::NoEviction)
     }
 
-    /// Writes the current configuration to a TOML file.
+    /// Writes the runtime parameters back into the config file.
     ///
-    /// Reads all current parameter values, builds an `EmberConfig`,
-    /// serializes to TOML, and writes atomically via a temp file + rename.
-    #[allow(clippy::field_reassign_with_default)]
+    /// Loads the file as it is on disk and overlays only the parameters
+    /// CONFIG SET can change. Settings the registry does not hold, such as
+    /// requirepass, TLS, persistence and cluster options, are kept as they
+    /// are. Writes atomically through a temp file and a rename.
     pub fn rewrite(&self, config_path: &Path) -> Result<(), String> {
-        let params = self.params.read().unwrap_or_else(|e| e.into_inner());
-
-        // helpers for reading params with type-safe parsing
-        let get = |key: &str, default: &str| -> String {
-            params.get(key).cloned().unwrap_or_else(|| default.into())
-        };
-        let bad_value = |key: &str, raw: &str| -> String {
-            format!("ERR CONFIG REWRITE failed: invalid value '{raw}' for '{key}'")
-        };
-
-        let mut cfg = EmberConfig::default();
-        let raw = get("port", "6379");
-        cfg.port = raw.parse().map_err(|_| bad_value("port", &raw))?;
-        cfg.bind = get("bind-address", "127.0.0.1");
-
-        let raw = get("maxclients", "10000");
-        cfg.maxclients = raw.parse().map_err(|_| bad_value("maxclients", &raw))?;
-
-        let raw = get("idle-timeout-secs", "300");
-        cfg.idle_timeout_secs = raw
-            .parse()
-            .map_err(|_| bad_value("idle-timeout-secs", &raw))?;
-
-        let raw = get("max-pipeline-depth", "10000");
-        cfg.max_pipeline_depth = raw
-            .parse()
-            .map_err(|_| bad_value("max-pipeline-depth", &raw))?;
-
-        let raw = get("max-auth-failures", "10");
-        cfg.max_auth_failures = raw
-            .parse()
-            .map_err(|_| bad_value("max-auth-failures", &raw))?;
-
-        // memory
-        let raw = get("maxmemory", "0");
-        let maxmem_bytes: u64 = raw.parse().map_err(|_| bad_value("maxmemory", &raw))?;
-        cfg.maxmemory = if maxmem_bytes == 0 {
-            String::new()
-        } else {
-            maxmem_bytes.to_string()
-        };
-        cfg.maxmemory_policy = get("maxmemory-policy", "noeviction");
-
-        // persistence
-        cfg.appendonly = get("appendonly", "no") == "yes";
-        cfg.appendfsync = get("appendfsync", "everysec");
-
-        let raw = get("active-expiry-interval-ms", "100");
-        cfg.active_expiry_interval_ms = raw
-            .parse()
-            .map_err(|_| bad_value("active-expiry-interval-ms", &raw))?;
-
-        let raw = get("aof-fsync-interval-secs", "1");
-        cfg.aof_fsync_interval_secs = raw
-            .parse()
-            .map_err(|_| bad_value("aof-fsync-interval-secs", &raw))?;
-
-        let raw = get("save-interval-secs", "0");
-        cfg.save_interval_secs = raw
-            .parse()
-            .map_err(|_| bad_value("save-interval-secs", &raw))?;
-
-        // monitoring
-        let raw = get("slowlog-log-slower-than", "10000");
-        cfg.slowlog_log_slower_than = raw
-            .parse()
-            .map_err(|_| bad_value("slowlog-log-slower-than", &raw))?;
-
-        let raw = get("slowlog-max-len", "128");
-        cfg.slowlog_max_len = raw
-            .parse()
-            .map_err(|_| bad_value("slowlog-max-len", &raw))?;
-
-        // protocol limits
-        cfg.max_key_len = get("max-key-len", "512kb");
-        cfg.max_value_len = get("max-value-len", "512mb");
-
-        let raw = get("max-subscriptions-per-connection", "10000");
-        cfg.max_subscriptions_per_connection = raw
-            .parse()
-            .map_err(|_| bad_value("max-subscriptions-per-connection", &raw))?;
-
-        let raw = get("max-pattern-len", "256");
-        cfg.max_pattern_len = raw
-            .parse()
-            .map_err(|_| bad_value("max-pattern-len", &raw))?;
-
-        let raw = get("read-buffer-capacity", "4096");
-        cfg.read_buffer_capacity = raw
-            .parse()
-            .map_err(|_| bad_value("read-buffer-capacity", &raw))?;
-        cfg.max_buffer_size = get("max-buffer-size", "64mb");
-
-        // engine internals
-        let raw = get("shard-channel-buffer", "256");
-        cfg.engine.shard_channel_buffer = raw
-            .parse()
-            .map_err(|_| bad_value("shard-channel-buffer", &raw))?;
-
-        let raw = get("replication-broadcast-capacity", "65536");
-        cfg.engine.replication_broadcast_capacity = raw
-            .parse()
-            .map_err(|_| bad_value("replication-broadcast-capacity", &raw))?;
-
-        let raw = get("stats-poll-interval-secs", "5");
-        cfg.engine.stats_poll_interval_secs = raw
-            .parse()
-            .map_err(|_| bad_value("stats-poll-interval-secs", &raw))?;
-
-        drop(params); // release read lock before file I/O
+        let mut cfg = EmberConfig::from_file(config_path)
+            .map_err(|e| format!("ERR CONFIG REWRITE failed: {e}"))?;
+        {
+            let params = self.params.read().unwrap_or_else(|e| e.into_inner());
+            for &key in MUTABLE_PARAMS {
+                let Some(raw) = params.get(key) else {
+                    continue;
+                };
+                let bad_value =
+                    || format!("ERR CONFIG REWRITE failed: invalid value '{raw}' for '{key}'");
+                match key {
+                    "slowlog-log-slower-than" => {
+                        cfg.slowlog_log_slower_than = raw.parse().map_err(|_| bad_value())?
+                    }
+                    "slowlog-max-len" => {
+                        cfg.slowlog_max_len = raw.parse().map_err(|_| bad_value())?
+                    }
+                    "maxmemory" => cfg.maxmemory = raw.clone(),
+                    "maxmemory-policy" => cfg.maxmemory_policy = raw.clone(),
+                    "notify-keyspace-events" => cfg.notify_keyspace_events = raw.clone(),
+                    other => {
+                        return Err(format!(
+                            "ERR CONFIG REWRITE does not know how to save '{other}'"
+                        ))
+                    }
+                }
+            }
+        }
 
         let toml_str = cfg.to_toml()?;
 
@@ -863,26 +787,6 @@ impl ConfigRegistry {
             .map_err(|e| format!("ERR failed to rename config file: {e}"))?;
 
         Ok(())
-    }
-}
-
-/// Simple glob matching for CONFIG GET patterns.
-///
-/// Supports `*` (match everything), `foo*` (prefix), `*foo` (suffix),
-/// and exact match. This covers the patterns that monitoring tools use.
-fn glob_match(pattern: &str, name: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    let lower_pattern = pattern.to_ascii_lowercase();
-    let lower_name = name.to_ascii_lowercase();
-
-    if let Some(prefix) = lower_pattern.strip_suffix('*') {
-        lower_name.starts_with(prefix)
-    } else if let Some(suffix) = lower_pattern.strip_prefix('*') {
-        lower_name.ends_with(suffix)
-    } else {
-        lower_pattern == lower_name
     }
 }
 
@@ -976,23 +880,6 @@ mod tests {
     }
 
     #[test]
-    fn glob_match_wildcard() {
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("slow*", "slowlog-log-slower-than"));
-        assert!(glob_match("slow*", "slowlog-max-len"));
-        assert!(!glob_match("slow*", "maxmemory"));
-        assert!(glob_match("*memory", "maxmemory"));
-        assert!(!glob_match("*memory", "slowlog-max-len"));
-    }
-
-    #[test]
-    fn glob_match_exact() {
-        assert!(glob_match("port", "port"));
-        assert!(glob_match("PORT", "port")); // case insensitive
-        assert!(!glob_match("port", "maxmemory"));
-    }
-
-    #[test]
     fn config_registry_get_matching() {
         let mut params = HashMap::new();
         params.insert("port".into(), "6379".into());
@@ -1072,6 +959,26 @@ mod tests {
     }
 
     #[test]
+    fn example_config_lists_valid_keys_and_defaults() {
+        // uncomment every `# key = value` and `# [table]` line
+        let example = include_str!("../../../ember.example.toml");
+        let uncommented: String = example
+            .lines()
+            .filter_map(|line| {
+                let line = line.strip_prefix("# ")?;
+                let (key, _) = line.split_once(" = ").unwrap_or((line, ""));
+                let is_key =
+                    !key.is_empty() && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
+                (is_key || line.starts_with('[')).then_some(line)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let parsed: EmberConfig = toml::from_str(&uncommented).unwrap();
+        assert_eq!(parsed.to_toml(), EmberConfig::default().to_toml());
+    }
+
+    #[test]
     fn unknown_field_rejected() {
         let toml_str = r#"
             port = 6379
@@ -1090,6 +997,15 @@ mod tests {
         assert_eq!(limits.idle_timeout, Duration::from_secs(300));
         assert_eq!(limits.max_key_len, 512 * 1024);
         assert_eq!(limits.max_value_len, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn idle_timeout_zero_means_never() {
+        let cfg = EmberConfig {
+            idle_timeout_secs: 0,
+            ..Default::default()
+        };
+        assert_eq!(cfg.connection_limits().unwrap().idle_timeout, Duration::MAX);
     }
 
     #[test]
@@ -1134,24 +1050,11 @@ mod tests {
     }
 
     #[test]
-    fn config_registry_set_new_mutable_params() {
-        let cfg = EmberConfig::default();
-        let registry = cfg.to_registry();
-
-        // maxclients should be mutable
-        assert!(registry.set("maxclients", "5000").is_ok());
-        let result = registry.get_matching("maxclients");
-        assert_eq!(result[0].1, "5000");
-
-        // idle-timeout-secs should be mutable
-        assert!(registry.set("idle-timeout-secs", "60").is_ok());
-        let result = registry.get_matching("idle-timeout-secs");
-        assert_eq!(result[0].1, "60");
-
-        // max-pipeline-depth should be mutable
-        assert!(registry.set("max-pipeline-depth", "500").is_ok());
-        let result = registry.get_matching("max-pipeline-depth");
-        assert_eq!(result[0].1, "500");
+    fn config_set_rejects_limits_read_only_at_startup() {
+        let registry = EmberConfig::default().to_registry();
+        for param in ["maxclients", "idle-timeout-secs", "max-pipeline-depth"] {
+            assert!(registry.set(param, "10").is_err(), "{param}");
+        }
     }
 
     #[test]
@@ -1159,8 +1062,7 @@ mod tests {
         let cfg = EmberConfig::default();
         let registry = cfg.to_registry();
 
-        assert!(registry.set("maxclients", "not-a-number").is_err());
-        assert!(registry.set("idle-timeout-secs", "abc").is_err());
+        assert!(registry.set("slowlog-max-len", "not-a-number").is_err());
         assert!(registry.set("slowlog-log-slower-than", "xyz").is_err());
     }
 
@@ -1177,6 +1079,15 @@ mod tests {
     }
 
     #[test]
+    fn connection_limits_rejects_zero_maxclients() {
+        let cfg = EmberConfig {
+            maxclients: 0,
+            ..Default::default()
+        };
+        assert!(cfg.connection_limits().is_err());
+    }
+
+    #[test]
     fn connection_limits_rejects_zero_key_len() {
         let cfg = EmberConfig {
             max_key_len: "0".into(),
@@ -1187,44 +1098,27 @@ mod tests {
     }
 
     #[test]
-    fn config_registry_rewrite_roundtrips() {
-        let cfg = EmberConfig::default();
+    fn config_rewrite_keeps_settings_the_registry_does_not_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ember.toml");
+        std::fs::write(
+            &path,
+            "port = 7000\nrequirepass = \"s3cret\"\nappendonly = true\n",
+        )
+        .unwrap();
+
+        let cfg = EmberConfig::from_file(&path).unwrap();
         let registry = cfg.to_registry();
-
-        // change a mutable param
-        registry.set("maxclients", "5000").unwrap();
-
-        let dir = std::env::temp_dir().join("ember-test-rewrite");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test-config.toml");
-
+        registry.set("maxmemory", "100M").unwrap();
+        registry.set("slowlog-max-len", "64").unwrap();
         registry.rewrite(&path).unwrap();
 
-        // read it back and verify
         let reloaded = EmberConfig::from_file(&path).unwrap();
-        assert_eq!(reloaded.maxclients, 5000);
-        assert_eq!(reloaded.port, 6379); // unchanged
-
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir(&dir);
-    }
-
-    #[test]
-    fn config_set_maxclients_rejects_zero() {
-        let cfg = EmberConfig::default();
-        let registry = cfg.to_registry();
-        let result = registry.set("maxclients", "0");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("must be >= 1"));
-    }
-
-    #[test]
-    fn config_set_max_pipeline_depth_rejects_zero() {
-        let cfg = EmberConfig::default();
-        let registry = cfg.to_registry();
-        let result = registry.set("max-pipeline-depth", "0");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("must be >= 1"));
+        assert_eq!(reloaded.port, 7000);
+        assert_eq!(reloaded.requirepass, "s3cret");
+        assert!(reloaded.appendonly);
+        assert_eq!(reloaded.maxmemory, "100M");
+        assert_eq!(reloaded.slowlog_max_len, 64);
     }
 
     #[test]

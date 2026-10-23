@@ -41,10 +41,12 @@ mod raft_transport;
 mod slots;
 mod topology;
 
-pub use auth::ClusterSecret;
+pub use auth::{ClusterSecret, TAG_LEN};
 pub use election::Election;
 pub use error::ClusterError;
-pub use gossip::{GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus};
+pub use gossip::{
+    GossipConfig, GossipEngine, GossipEvent, MemberState, MemberStatus, PendingEvents,
+};
 pub use message::{GossipMessage, MemberInfo, NodeUpdate};
 pub use migration::{
     Migration, MigrationBatch, MigrationConfig, MigrationEntry, MigrationError, MigrationId,
@@ -59,4 +61,5 @@ pub use raft_log::RaftDiskError;
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
 pub use topology::{
     ClusterHealth, ClusterNode, ClusterState, ConfigParseError, NodeFlags, NodeId, NodeRole,
+    SlotClaimResult,
 };

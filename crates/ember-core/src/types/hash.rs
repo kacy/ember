@@ -27,6 +27,13 @@ const COMPACT_THRESHOLD: usize = 32;
 /// Size of the field count header in the packed buffer.
 const HEADER_SIZE: usize = 2;
 
+/// Whether a field fits the packed format, which stores the name length as
+/// a u16 and the value length as a u32. Longer lengths would be truncated
+/// and the buffer misread.
+fn fits_packed(name: &str, value: &[u8]) -> bool {
+    name.len() <= usize::from(u16::MAX) && u32::try_from(value.len()).is_ok()
+}
+
 /// A hash value stored as either a packed byte buffer or a full hashmap.
 ///
 /// Most Redis-style hashes have fewer than 32 fields (user profiles,
@@ -79,6 +86,12 @@ impl HashValue {
     /// Auto-promotes from Packed to Full when the field count exceeds
     /// the threshold after insertion.
     pub fn insert(&mut self, field: CompactString, value: Bytes) -> Option<Bytes> {
+        // a field too long for the packed length prefixes goes in a map
+        if let HashValue::Packed(buf) = self {
+            if !fits_packed(&field, &value) {
+                *self = HashValue::Full(drain_packed_to_map(buf));
+            }
+        }
         let result = match self {
             HashValue::Packed(buf) => {
                 // scan for existing field
@@ -211,7 +224,7 @@ impl PartialEq for HashValue {
 /// representation based on field count.
 impl From<HashMap<String, Bytes>> for HashValue {
     fn from(map: HashMap<String, Bytes>) -> Self {
-        if map.len() <= COMPACT_THRESHOLD {
+        if map.len() <= COMPACT_THRESHOLD && map.iter().all(|(k, v)| fits_packed(k, v)) {
             let mut buf = Vec::with_capacity(HEADER_SIZE + map.len() * 16);
             buf.extend_from_slice(&(map.len() as u16).to_le_bytes());
             for (k, v) in &map {
@@ -376,6 +389,18 @@ fn drain_packed_to_map(buf: &[u8]) -> HashMap<CompactString, Bytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_name_too_long_for_packed_format_is_kept_intact() {
+        let mut hash = HashValue::default();
+        hash.insert("small".into(), Bytes::from("1"));
+        let long_name = "f".repeat(70_000);
+        hash.insert(long_name.as_str().into(), Bytes::from("2"));
+
+        assert_eq!(hash.len(), 2);
+        assert_eq!(hash.get(&long_name), Some(&b"2"[..]));
+        assert_eq!(hash.get("small"), Some(&b"1"[..]));
+    }
 
     #[test]
     fn packed_insert_and_get() {

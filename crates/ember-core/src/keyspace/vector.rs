@@ -44,14 +44,14 @@ impl Keyspace {
         } else {
             per_vector
         };
-        if !self.enforce_memory_limit(estimated_increase) {
+        if !self.enforce_memory_limit(key, estimated_increase) {
             return Err(VectorWriteError::OutOfMemory);
         }
 
         if is_new {
             let vs = VectorSet::new(dim, metric, quantization, connectivity, expansion_add)
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
-            let value = Value::Vector(vs);
+            let value = Value::Vector(Box::new(vs));
             self.memory.add(key, &value);
             let entry = Entry::new(value, None);
             self.entries.insert(CompactString::from(key), entry);
@@ -73,7 +73,7 @@ impl Keyspace {
         entry.touch(self.track_access);
 
         let new_value_size = memory::value_size(&entry.value);
-        entry.cached_value_size = new_value_size as u32;
+        entry.set_value_size(new_value_size);
         let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
         self.memory.adjust(old_entry_size, new_entry_size);
         self.bump_version(key);
@@ -153,7 +153,7 @@ impl Keyspace {
         } else {
             vectors_cost
         };
-        if !self.enforce_memory_limit(estimated_increase) {
+        if !self.enforce_memory_limit(key, estimated_increase) {
             return Err(VectorWriteError::OutOfMemory);
         }
 
@@ -161,7 +161,7 @@ impl Keyspace {
         if is_new {
             let vs = VectorSet::new(dim, metric, quantization, connectivity, expansion_add)
                 .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
-            let value = Value::Vector(vs);
+            let value = Value::Vector(Box::new(vs));
             self.memory.add(key, &value);
             let new_entry = Entry::new(value, None);
             self.entries.insert(CompactString::from(key), new_entry);
@@ -197,8 +197,7 @@ impl Keyspace {
                     };
 
                     entry.touch(self.track_access);
-                    entry.cached_value_size =
-                        (entry.cached_value_size as usize).saturating_add(bytes_added) as u32;
+                    entry.grow_value_size(bytes_added);
                     self.memory.grow_by(bytes_added);
 
                     if let Some(err) = result.error {
@@ -285,14 +284,16 @@ impl Keyspace {
             entry.touch(self.track_access);
             let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
             let new_vs = memory::value_size(&entry.value);
-            entry.cached_value_size = new_vs as u32;
+            entry.set_value_size(new_vs);
             let new_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
             self.memory.adjust(old_size, new_size);
             self.bump_version(key);
 
             if is_empty {
                 self.memory.remove_with_size(new_size);
-                self.entries.remove(key);
+                if let Some(removed) = self.entries.swap_remove(key) {
+                    self.untrack_expiry(key, &removed);
+                }
             }
         }
 

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use ember_core::glob_match;
 use tokio::sync::broadcast;
 
 /// Maximum allowed byte length for a pub/sub pattern.
@@ -68,13 +69,11 @@ impl PubSubManager {
         self.subscribe_to(&self.channels, channel)
     }
 
-    /// Unsubscribe from an exact channel. Returns true if the channel
-    /// existed in the registry.
-    ///
-    /// Note: the actual receiver is dropped by the caller. This just
-    /// cleans up empty channels and adjusts the subscription count.
-    pub fn unsubscribe(&self, channel: &str) -> bool {
-        self.unsubscribe_from(&self.channels, channel)
+    /// Unsubscribe from an exact channel by handing back the receiver that
+    /// [`subscribe`](Self::subscribe) returned. The channel is removed once
+    /// no subscriber holds a receiver for it.
+    pub fn unsubscribe(&self, channel: &str, rx: broadcast::Receiver<PubMessage>) {
+        self.unsubscribe_from(&self.channels, channel, rx)
     }
 
     /// Subscribe to a glob pattern. Returns a receiver for messages
@@ -88,10 +87,10 @@ impl PubSubManager {
         Some(self.subscribe_to(&self.patterns, pattern))
     }
 
-    /// Unsubscribe from a pattern. Returns true if the pattern existed
-    /// in the registry.
-    pub fn punsubscribe(&self, pattern: &str) -> bool {
-        self.unsubscribe_from(&self.patterns, pattern)
+    /// Unsubscribe from a pattern by handing back the receiver that
+    /// [`psubscribe`](Self::psubscribe) returned.
+    pub fn punsubscribe(&self, pattern: &str, rx: broadcast::Receiver<PubMessage>) {
+        self.unsubscribe_from(&self.patterns, pattern, rx)
     }
 
     /// Subscribes to a key in the given map (channels or patterns).
@@ -108,23 +107,22 @@ impl PubSubManager {
         entry.subscribe()
     }
 
-    /// Unsubscribes from a key in the given map. Returns true if the
-    /// key existed. Removes the entry when no receivers remain.
+    /// Drops `rx` and removes the key's sender once no receivers remain.
+    ///
+    /// Taking the receiver means only a real subscriber can unsubscribe, so
+    /// the count cannot drift. It also means the receiver is gone before the
+    /// check: counting it as "ours" instead would remove a channel that
+    /// other clients still listen on. `remove_if` checks and removes under
+    /// the map's lock, so a concurrent subscribe cannot slip in between.
     fn unsubscribe_from(
         &self,
         map: &DashMap<String, broadcast::Sender<PubMessage>>,
         key: &str,
-    ) -> bool {
-        if let Some(entry) = map.get(key) {
-            self.subscription_count.fetch_sub(1, Ordering::Relaxed);
-            if entry.receiver_count() <= 1 {
-                drop(entry);
-                map.remove(key);
-            }
-            true
-        } else {
-            false
-        }
+        rx: broadcast::Receiver<PubMessage>,
+    ) {
+        drop(rx);
+        self.subscription_count.fetch_sub(1, Ordering::Relaxed);
+        map.remove_if(key, |_, tx| tx.receiver_count() == 0);
     }
 
     /// Publish a message to a channel. Returns the total number of
@@ -206,166 +204,9 @@ impl PubSubManager {
     }
 }
 
-/// Simple glob matching for pub/sub patterns.
-///
-/// Supports:
-/// - `*` matches any sequence of characters
-/// - `?` matches any single character
-/// - `[abc]` matches any character in the set
-/// - `\x` escapes the next character
-///
-/// Matching is byte-wise, which is correct for Redis-compatible pub/sub:
-/// Redis treats patterns as raw byte sequences, and all metacharacters
-/// (`*`, `?`, `[`, `\`) are ASCII so byte comparison is unambiguous.
-/// This avoids allocating `Vec<char>` on every match call.
-fn glob_match(pattern: &str, input: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), input.as_bytes())
-}
-
-/// Inner backtracking glob matcher operating on byte slices.
-///
-/// The algorithm tracks the last `*` position in both the pattern and
-/// input. On a mismatch it rewinds to that checkpoint and advances the
-/// input by one byte — standard linear-time glob matching.
-fn glob_match_inner(pat: &[u8], inp: &[u8]) -> bool {
-    let (mut pi, mut ii) = (0, 0);
-    let (mut star_pi, mut star_ii) = (usize::MAX, usize::MAX);
-
-    while ii < inp.len() {
-        if pi < pat.len() && pat[pi] == b'\\' && pi + 1 < pat.len() {
-            // escaped character — must match literally
-            pi += 1;
-            if inp[ii] == pat[pi] {
-                pi += 1;
-                ii += 1;
-                continue;
-            }
-        } else if pi < pat.len() && pat[pi] == b'?' {
-            pi += 1;
-            ii += 1;
-            continue;
-        } else if pi < pat.len() && pat[pi] == b'*' {
-            star_pi = pi;
-            star_ii = ii;
-            pi += 1;
-            continue;
-        } else if pi < pat.len() && pat[pi] == b'[' {
-            // character class
-            if let Some((matched, end)) = match_char_class(&pat[pi..], inp[ii]) {
-                if matched {
-                    pi += end;
-                    ii += 1;
-                    continue;
-                }
-            }
-        } else if pi < pat.len() && pat[pi] == inp[ii] {
-            pi += 1;
-            ii += 1;
-            continue;
-        }
-
-        // no match — backtrack to last star if possible
-        if star_pi != usize::MAX {
-            pi = star_pi + 1;
-            star_ii += 1;
-            ii = star_ii;
-            continue;
-        }
-
-        return false;
-    }
-
-    // consume trailing stars
-    while pi < pat.len() && pat[pi] == b'*' {
-        pi += 1;
-    }
-
-    pi == pat.len()
-}
-
-/// Matches a `[...]` character class against a single byte.
-/// Returns `(matched, bytes_consumed_from_pat)` when the bracket is valid.
-fn match_char_class(pat: &[u8], ch: u8) -> Option<(bool, usize)> {
-    if pat.is_empty() || pat[0] != b'[' {
-        return None;
-    }
-
-    let mut i = 1;
-    let negate = if i < pat.len() && pat[i] == b'^' {
-        i += 1;
-        true
-    } else {
-        false
-    };
-
-    let mut matched = false;
-    while i < pat.len() && pat[i] != b']' {
-        if i + 2 < pat.len() && pat[i + 1] == b'-' {
-            // range: [a-z]
-            if ch >= pat[i] && ch <= pat[i + 2] {
-                matched = true;
-            }
-            i += 3;
-        } else {
-            if ch == pat[i] {
-                matched = true;
-            }
-            i += 1;
-        }
-    }
-
-    if i < pat.len() && pat[i] == b']' {
-        Some((matched ^ negate, i + 1))
-    } else {
-        None // unterminated bracket
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn glob_exact_match() {
-        assert!(glob_match("hello", "hello"));
-        assert!(!glob_match("hello", "world"));
-    }
-
-    #[test]
-    fn glob_star_match() {
-        assert!(glob_match("news.*", "news.sports"));
-        assert!(glob_match("news.*", "news.weather.today"));
-        assert!(!glob_match("news.*", "old.news"));
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("h*o", "hello"));
-        assert!(glob_match("h*o", "ho"));
-    }
-
-    #[test]
-    fn glob_question_mark() {
-        assert!(glob_match("h?llo", "hello"));
-        assert!(glob_match("h?llo", "hallo"));
-        assert!(!glob_match("h?llo", "hllo"));
-    }
-
-    #[test]
-    fn glob_char_class() {
-        assert!(glob_match("h[ae]llo", "hello"));
-        assert!(glob_match("h[ae]llo", "hallo"));
-        assert!(!glob_match("h[ae]llo", "hillo"));
-    }
-
-    #[test]
-    fn glob_negated_class() {
-        assert!(glob_match("h[^ae]llo", "hillo"));
-        assert!(!glob_match("h[^ae]llo", "hello"));
-    }
-
-    #[test]
-    fn glob_escaped_char() {
-        assert!(glob_match("hello\\*", "hello*"));
-        assert!(!glob_match("hello\\*", "helloX"));
-    }
 
     #[test]
     fn subscribe_and_publish() {
@@ -434,11 +275,21 @@ mod tests {
     fn unsubscribe_stops_delivery() {
         let mgr = PubSubManager::new();
         let rx = mgr.subscribe("ch");
-        mgr.unsubscribe("ch");
-        drop(rx);
+        mgr.unsubscribe("ch", rx);
 
         let count = mgr.publish("ch", Bytes::from("msg"));
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn unsubscribe_keeps_the_channel_for_other_subscribers() {
+        let mgr = PubSubManager::new();
+        let rx_a = mgr.subscribe("ch");
+        let mut rx_b = mgr.subscribe("ch");
+        mgr.unsubscribe("ch", rx_a);
+
+        assert_eq!(mgr.publish("ch", Bytes::from("msg")), 1);
+        assert!(rx_b.try_recv().is_ok());
     }
 
     #[test]

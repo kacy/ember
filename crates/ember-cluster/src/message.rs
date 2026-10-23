@@ -88,8 +88,14 @@ pub enum GossipMessage {
     SlotsAnnounce {
         sender: NodeId,
         incarnation: u64,
+        config_epoch: u64,
         slots: Vec<SlotRange>,
     },
+
+    /// A failover vote request or grant, sent straight to the node it is
+    /// for and never relayed, so the receiver can check who sent it.
+    /// `update` is a `VoteRequest` or `VoteGranted`.
+    Election { sender: NodeId, update: NodeUpdate },
 }
 
 /// A state update about a node, piggybacked on protocol messages.
@@ -107,10 +113,12 @@ pub enum NodeUpdate {
     Dead { node: NodeId, incarnation: u64 },
     /// Node left the cluster gracefully.
     Left { node: NodeId },
-    /// Node's slot ownership changed.
+    /// Node's slot ownership changed. `config_epoch` is the node's config
+    /// epoch: when two nodes claim a slot, the higher epoch wins.
     SlotsChanged {
         node: NodeId,
         incarnation: u64,
+        config_epoch: u64,
         slots: Vec<SlotRange>,
     },
     /// Node's role changed (primary ↔ replica).
@@ -126,6 +134,9 @@ pub enum NodeUpdate {
     VoteRequest {
         /// The candidate requesting votes.
         candidate: NodeId,
+        /// The primary the candidate wants to replace. Voters check this
+        /// node's health themselves before granting.
+        failed_primary: NodeId,
         /// Config epoch this election is contesting.
         epoch: u64,
         /// Candidate's replication offset; higher value signals the most up-to-date replica.
@@ -149,6 +160,7 @@ pub struct MemberInfo {
     pub addr: SocketAddr,
     pub incarnation: u64,
     pub is_primary: bool,
+    pub config_epoch: u64,
     pub slots: Vec<SlotRange>,
 }
 
@@ -159,6 +171,7 @@ const MSG_ACK: u8 = 3;
 const MSG_JOIN: u8 = 4;
 const MSG_WELCOME: u8 = 5;
 const MSG_SLOTS_ANNOUNCE: u8 = 6;
+const MSG_ELECTION: u8 = 7;
 
 const UPDATE_ALIVE: u8 = 1;
 const UPDATE_SUSPECT: u8 = 2;
@@ -183,6 +196,39 @@ where
     for item in &items[..count] {
         encode_one(buf, item);
     }
+}
+
+/// Most slot ranges one node can own: every other slot, each on its own.
+/// Slot lists get this limit rather than `MAX_COLLECTION_COUNT`, which is
+/// too small for a node that owns many scattered slots after resharding.
+const MAX_SLOT_RANGES: usize = crate::SLOT_COUNT as usize / 2;
+
+/// Writes a node's slot ranges as `[count: u16][start: u16, end: u16]*`.
+fn encode_slot_ranges(buf: &mut BytesMut, ranges: &[SlotRange]) {
+    // disjoint ranges never exceed the limit, so nothing is dropped here
+    debug_assert!(ranges.len() <= MAX_SLOT_RANGES);
+    buf.put_u16_le(ranges.len().min(MAX_SLOT_RANGES) as u16);
+    for range in ranges.iter().take(MAX_SLOT_RANGES) {
+        buf.put_u16_le(range.start);
+        buf.put_u16_le(range.end);
+    }
+}
+
+fn decode_slot_ranges(buf: &mut &[u8]) -> io::Result<Vec<SlotRange>> {
+    let count = safe_get_u16_le(buf)? as usize;
+    if count > MAX_SLOT_RANGES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("slot range count {count} exceeds limit"),
+        ));
+    }
+    (0..count)
+        .map(|_| {
+            let start = safe_get_u16_le(buf)?;
+            let end = safe_get_u16_le(buf)?;
+            SlotRange::try_new(start, end)
+        })
+        .collect()
 }
 
 impl GossipMessage {
@@ -244,15 +290,19 @@ impl GossipMessage {
             GossipMessage::SlotsAnnounce {
                 sender,
                 incarnation,
+                config_epoch,
                 slots,
             } => {
                 buf.put_u8(MSG_SLOTS_ANNOUNCE);
                 encode_node_id(buf, sender);
                 buf.put_u64_le(*incarnation);
-                encode_slice(buf, slots, |b, slot| {
-                    b.put_u16_le(slot.start);
-                    b.put_u16_le(slot.end);
-                });
+                buf.put_u64_le(*config_epoch);
+                encode_slot_ranges(buf, slots);
+            }
+            GossipMessage::Election { sender, update } => {
+                buf.put_u8(MSG_ELECTION);
+                encode_node_id(buf, sender);
+                encode_update(buf, update);
             }
         }
     }
@@ -326,24 +376,19 @@ impl GossipMessage {
             MSG_SLOTS_ANNOUNCE => {
                 let sender = decode_node_id(&mut buf)?;
                 let incarnation = safe_get_u64_le(&mut buf)?;
-                let count = safe_get_u16_le(&mut buf)? as usize;
-                if count > MAX_COLLECTION_COUNT {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("slot range count {count} exceeds limit"),
-                    ));
-                }
-                let mut slots = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let start = safe_get_u16_le(&mut buf)?;
-                    let end = safe_get_u16_le(&mut buf)?;
-                    slots.push(SlotRange::try_new(start, end)?);
-                }
+                let config_epoch = safe_get_u64_le(&mut buf)?;
+                let slots = decode_slot_ranges(&mut buf)?;
                 Ok(GossipMessage::SlotsAnnounce {
                     sender,
                     incarnation,
+                    config_epoch,
                     slots,
                 })
+            }
+            MSG_ELECTION => {
+                let sender = decode_node_id(&mut buf)?;
+                let update = decode_update(&mut buf)?;
+                Ok(GossipMessage::Election { sender, update })
             }
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -488,15 +533,14 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
         NodeUpdate::SlotsChanged {
             node,
             incarnation,
+            config_epoch,
             slots,
         } => {
             buf.put_u8(UPDATE_SLOTS_CHANGED);
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
-            encode_slice(buf, slots, |b, slot| {
-                b.put_u16_le(slot.start);
-                b.put_u16_le(slot.end);
-            });
+            buf.put_u64_le(*config_epoch);
+            encode_slot_ranges(buf, slots);
         }
         NodeUpdate::RoleChanged {
             node,
@@ -520,11 +564,13 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
         }
         NodeUpdate::VoteRequest {
             candidate,
+            failed_primary,
             epoch,
             offset,
         } => {
             buf.put_u8(UPDATE_VOTE_REQUEST);
             encode_node_id(buf, candidate);
+            encode_node_id(buf, failed_primary);
             buf.put_u64_le(*epoch);
             buf.put_u64_le(*offset);
         }
@@ -586,22 +632,12 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         UPDATE_SLOTS_CHANGED => {
             let node = decode_node_id(buf)?;
             let incarnation = safe_get_u64_le(buf)?;
-            let count = safe_get_u16_le(buf)? as usize;
-            if count > MAX_COLLECTION_COUNT {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("slot range count {count} exceeds limit"),
-                ));
-            }
-            let mut slots = Vec::with_capacity(count);
-            for _ in 0..count {
-                let start = safe_get_u16_le(buf)?;
-                let end = safe_get_u16_le(buf)?;
-                slots.push(SlotRange::try_new(start, end)?);
-            }
+            let config_epoch = safe_get_u64_le(buf)?;
+            let slots = decode_slot_ranges(buf)?;
             Ok(NodeUpdate::SlotsChanged {
                 node,
                 incarnation,
+                config_epoch,
                 slots,
             })
         }
@@ -624,10 +660,12 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
         }
         UPDATE_VOTE_REQUEST => {
             let candidate = decode_node_id(buf)?;
+            let failed_primary = decode_node_id(buf)?;
             let epoch = safe_get_u64_le(buf)?;
             let offset = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::VoteRequest {
                 candidate,
+                failed_primary,
                 epoch,
                 offset,
             })
@@ -654,10 +692,8 @@ fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
     encode_socket_addr(buf, &member.addr);
     buf.put_u64_le(member.incarnation);
     buf.put_u8(if member.is_primary { 1 } else { 0 });
-    encode_slice(buf, &member.slots, |b, slot| {
-        b.put_u16_le(slot.start);
-        b.put_u16_le(slot.end);
-    });
+    buf.put_u64_le(member.config_epoch);
+    encode_slot_ranges(buf, &member.slots);
 }
 
 fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
@@ -665,24 +701,14 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
     let addr = decode_socket_addr(buf)?;
     let incarnation = safe_get_u64_le(buf)?;
     let is_primary = safe_get_u8(buf)? != 0;
-    let slot_count = safe_get_u16_le(buf)? as usize;
-    if slot_count > MAX_COLLECTION_COUNT {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("slot range count {slot_count} exceeds limit"),
-        ));
-    }
-    let mut slots = Vec::with_capacity(slot_count);
-    for _ in 0..slot_count {
-        let start = safe_get_u16_le(buf)?;
-        let end = safe_get_u16_le(buf)?;
-        slots.push(SlotRange::try_new(start, end)?);
-    }
+    let config_epoch = safe_get_u64_le(buf)?;
+    let slots = decode_slot_ranges(buf)?;
     Ok(MemberInfo {
         id,
         addr,
         incarnation,
         is_primary,
+        config_epoch,
         slots,
     })
 }
@@ -690,6 +716,24 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slot_lists_longer_than_other_collections_round_trip() {
+        // 3000 scattered single slots, past the 1024 limit used for members
+        let slots: Vec<SlotRange> = (0..3000u16)
+            .map(|i| SlotRange::try_new(i * 2, i * 2).unwrap())
+            .collect();
+        let msg = GossipMessage::SlotsAnnounce {
+            sender: NodeId::new(),
+            incarnation: 3,
+            config_epoch: 1,
+            slots: slots.clone(),
+        };
+        match GossipMessage::decode(&msg.encode()).unwrap() {
+            GossipMessage::SlotsAnnounce { slots: decoded, .. } => assert_eq!(decoded, slots),
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn test_addr() -> SocketAddr {
@@ -785,6 +829,7 @@ mod tests {
                     addr: test_addr(),
                     incarnation: 1,
                     is_primary: true,
+                    config_epoch: 1,
                     slots: vec![SlotRange::new(0, 5460)],
                 },
                 MemberInfo {
@@ -792,6 +837,7 @@ mod tests {
                     addr: test_addr(),
                     incarnation: 2,
                     is_primary: false,
+                    config_epoch: 1,
                     slots: vec![],
                 },
             ],
@@ -869,6 +915,7 @@ mod tests {
             NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 4,
+                config_epoch: 1,
                 slots: vec![SlotRange::new(0, 5460)],
             },
         ];
@@ -891,6 +938,7 @@ mod tests {
             updates: vec![NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 1,
+                config_epoch: 1,
                 slots: vec![],
             }],
         };
@@ -908,6 +956,7 @@ mod tests {
             updates: vec![NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 5,
+                config_epoch: 1,
                 slots: vec![
                     SlotRange::new(0, 5460),
                     SlotRange::new(5461, 10922),
@@ -959,6 +1008,7 @@ mod tests {
             sender: candidate,
             updates: vec![NodeUpdate::VoteRequest {
                 candidate,
+                failed_primary: NodeId::new(),
                 epoch: 5,
                 offset: 1234,
             }],
@@ -1041,5 +1091,19 @@ mod tests {
         // too short to even contain a 32-byte tag
         let result = GossipMessage::decode_authenticated(&[0u8; 16], &secret);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn election_message_round_trips() {
+        let msg = GossipMessage::Election {
+            sender: NodeId::new(),
+            update: NodeUpdate::VoteRequest {
+                candidate: NodeId::new(),
+                failed_primary: NodeId::new(),
+                epoch: 9,
+                offset: 1234,
+            },
+        };
+        assert_eq!(GossipMessage::decode(&msg.encode()).unwrap(), msg);
     }
 }

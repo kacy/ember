@@ -17,8 +17,11 @@
 //! [key_len: 4B][key][type_tag: 1B][type-specific payload][expire_ms: 8B]
 //! ```
 //!
-//! Type tags: 0=string, 1=list, 2=sorted set.
-//! `expire_ms` is the remaining TTL in milliseconds, or -1 for no expiry.
+//! Type tags: 0=string, 1=list, 2=sorted set, 3=hash, 4=set, 5=protobuf,
+//! 6=vector.
+//! `expire_ms` is the TTL left when the snapshot was written, in
+//! milliseconds, or -1 for no expiry. Recovery subtracts the time since the
+//! file was last modified.
 //! v1 entries (no type tag) are still readable for backward compatibility.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -59,11 +62,8 @@ fn read_snap_string(r: &mut impl io::Read, field: &str) -> Result<String, Format
     parse_utf8(bytes, field)
 }
 
-/// Parses a type-tagged SnapValue from a reader (v2+ format).
-///
-/// Used by `read_encrypted_entry` and `deserialize_snap_value` to parse
-/// `[type_tag][payload]`. The plaintext snapshot path has parallel logic
-/// that interleaves CRC buffer mirroring, so it stays inline.
+/// Parses a type-tagged SnapValue from a reader (v2+ format):
+/// `[type_tag][payload]`, as written by [`write_snap_value`].
 fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
     let type_tag = format::read_u8(r)?;
     match type_tag {
@@ -264,39 +264,46 @@ impl SnapEntry {
 /// key and expire_ms).
 pub fn serialize_snap_value(value: &SnapValue) -> Result<Vec<u8>, FormatError> {
     let mut buf = Vec::new();
+    write_snap_value(&mut buf, value)?;
+    Ok(buf)
+}
+
+/// Writes `[type_tag][payload]` for a value. Snapshot files, replication
+/// snapshots and DUMP payloads all use this encoding.
+fn write_snap_value(buf: &mut Vec<u8>, value: &SnapValue) -> Result<(), FormatError> {
     match value {
         SnapValue::String(data) => {
-            format::write_u8(&mut buf, TYPE_STRING)?;
-            format::write_bytes(&mut buf, data)?;
+            format::write_u8(buf, TYPE_STRING)?;
+            format::write_bytes(buf, data)?;
         }
         SnapValue::List(deque) => {
-            format::write_u8(&mut buf, TYPE_LIST)?;
-            format::write_len(&mut buf, deque.len())?;
+            format::write_u8(buf, TYPE_LIST)?;
+            format::write_len(buf, deque.len())?;
             for item in deque {
-                format::write_bytes(&mut buf, item)?;
+                format::write_bytes(buf, item)?;
             }
         }
         SnapValue::SortedSet(members) => {
-            format::write_u8(&mut buf, TYPE_SORTED_SET)?;
-            format::write_len(&mut buf, members.len())?;
+            format::write_u8(buf, TYPE_SORTED_SET)?;
+            format::write_len(buf, members.len())?;
             for (score, member) in members {
-                format::write_f64(&mut buf, *score)?;
-                format::write_bytes(&mut buf, member.as_bytes())?;
+                format::write_f64(buf, *score)?;
+                format::write_bytes(buf, member.as_bytes())?;
             }
         }
         SnapValue::Hash(map) => {
-            format::write_u8(&mut buf, TYPE_HASH)?;
-            format::write_len(&mut buf, map.len())?;
+            format::write_u8(buf, TYPE_HASH)?;
+            format::write_len(buf, map.len())?;
             for (field, value) in map {
-                format::write_bytes(&mut buf, field.as_bytes())?;
-                format::write_bytes(&mut buf, value)?;
+                format::write_bytes(buf, field.as_bytes())?;
+                format::write_bytes(buf, value)?;
             }
         }
         SnapValue::Set(set) => {
-            format::write_u8(&mut buf, TYPE_SET)?;
-            format::write_len(&mut buf, set.len())?;
+            format::write_u8(buf, TYPE_SET)?;
+            format::write_len(buf, set.len())?;
             for member in set {
-                format::write_bytes(&mut buf, member.as_bytes())?;
+                format::write_bytes(buf, member.as_bytes())?;
             }
         }
         #[cfg(feature = "vector")]
@@ -308,28 +315,54 @@ pub fn serialize_snap_value(value: &SnapValue) -> Result<Vec<u8>, FormatError> {
             dim,
             elements,
         } => {
-            format::write_u8(&mut buf, TYPE_VECTOR)?;
-            format::write_u8(&mut buf, *metric)?;
-            format::write_u8(&mut buf, *quantization)?;
-            format::write_u32(&mut buf, *connectivity)?;
-            format::write_u32(&mut buf, *expansion_add)?;
-            format::write_u32(&mut buf, *dim)?;
-            format::write_len(&mut buf, elements.len())?;
+            format::write_u8(buf, TYPE_VECTOR)?;
+            format::write_u8(buf, *metric)?;
+            format::write_u8(buf, *quantization)?;
+            format::write_u32(buf, *connectivity)?;
+            format::write_u32(buf, *expansion_add)?;
+            format::write_u32(buf, *dim)?;
+            format::write_len(buf, elements.len())?;
             for (name, vector) in elements {
-                format::write_bytes(&mut buf, name.as_bytes())?;
+                format::write_bytes(buf, name.as_bytes())?;
                 for &v in vector {
-                    format::write_f32(&mut buf, v)?;
+                    format::write_f32(buf, v)?;
                 }
             }
         }
         #[cfg(feature = "protobuf")]
         SnapValue::Proto { type_name, data } => {
-            format::write_u8(&mut buf, TYPE_PROTO)?;
-            format::write_bytes(&mut buf, type_name.as_bytes())?;
-            format::write_bytes(&mut buf, data)?;
+            format::write_u8(buf, TYPE_PROTO)?;
+            format::write_bytes(buf, type_name.as_bytes())?;
+            format::write_bytes(buf, data)?;
         }
     }
+    Ok(())
+}
+
+/// Encodes an entry as `[key][type_tag][payload][expire_ms]`.
+fn encode_entry(entry: &SnapEntry) -> Result<Vec<u8>, FormatError> {
+    let mut buf = Vec::with_capacity(entry.estimated_size());
+    format::write_bytes(&mut buf, entry.key.as_bytes())?;
+    write_snap_value(&mut buf, &entry.value)?;
+    format::write_i64(&mut buf, entry.expire_ms)?;
     Ok(buf)
+}
+
+/// Decodes an entry written by [`encode_entry`]. Format version 1 has no
+/// type tag, since every value was a string.
+fn decode_entry(r: &mut impl io::Read, version: u8) -> Result<SnapEntry, FormatError> {
+    let key = read_snap_string(r, "key")?;
+    let value = if version == 1 {
+        SnapValue::String(Bytes::from(format::read_bytes(r)?))
+    } else {
+        parse_snap_value(r)?
+    };
+    let expire_ms = format::read_i64(r)?;
+    Ok(SnapEntry {
+        key,
+        value,
+        expire_ms,
+    })
 }
 
 /// Deserializes a `SnapValue` from bytes produced by [`serialize_snap_value`].
@@ -354,7 +387,7 @@ pub struct SnapshotWriter {
     /// impl to clean up incomplete temp files.
     finished: bool,
     #[cfg(feature = "encryption")]
-    encryption_key: Option<crate::encryption::EncryptionKey>,
+    cipher: Option<crate::encryption::FileCipher>,
 }
 
 impl SnapshotWriter {
@@ -377,7 +410,7 @@ impl SnapshotWriter {
             count: 0,
             finished: false,
             #[cfg(feature = "encryption")]
-            encryption_key: None,
+            cipher: None,
         })
     }
 
@@ -399,6 +432,7 @@ impl SnapshotWriter {
         )?;
         format::write_u16(&mut writer, shard_id)?;
         format::write_u32(&mut writer, 0)?;
+        let cipher = key.write_new_file_salt(&mut writer)?;
 
         Ok(Self {
             final_path,
@@ -407,7 +441,7 @@ impl SnapshotWriter {
             hasher: crc32fast::Hasher::new(),
             count: 0,
             finished: false,
-            encryption_key: Some(key),
+            cipher: Some(cipher),
         })
     }
 
@@ -430,78 +464,11 @@ impl SnapshotWriter {
     /// When encrypted, each entry is written as `[nonce: 12B][len: 4B][ciphertext]`.
     /// The footer CRC covers the encrypted bytes (nonce + len + ciphertext).
     pub fn write_entry(&mut self, entry: &SnapEntry) -> Result<(), FormatError> {
-        let mut buf = Vec::with_capacity(entry.estimated_size());
-        format::write_bytes(&mut buf, entry.key.as_bytes())?;
-        match &entry.value {
-            SnapValue::String(data) => {
-                format::write_u8(&mut buf, TYPE_STRING)?;
-                format::write_bytes(&mut buf, data)?;
-            }
-            SnapValue::List(deque) => {
-                format::write_u8(&mut buf, TYPE_LIST)?;
-                format::write_len(&mut buf, deque.len())?;
-                for item in deque {
-                    format::write_bytes(&mut buf, item)?;
-                }
-            }
-            SnapValue::SortedSet(members) => {
-                format::write_u8(&mut buf, TYPE_SORTED_SET)?;
-                format::write_len(&mut buf, members.len())?;
-                for (score, member) in members {
-                    format::write_f64(&mut buf, *score)?;
-                    format::write_bytes(&mut buf, member.as_bytes())?;
-                }
-            }
-            SnapValue::Hash(map) => {
-                format::write_u8(&mut buf, TYPE_HASH)?;
-                format::write_len(&mut buf, map.len())?;
-                for (field, value) in map {
-                    format::write_bytes(&mut buf, field.as_bytes())?;
-                    format::write_bytes(&mut buf, value)?;
-                }
-            }
-            SnapValue::Set(set) => {
-                format::write_u8(&mut buf, TYPE_SET)?;
-                format::write_len(&mut buf, set.len())?;
-                for member in set {
-                    format::write_bytes(&mut buf, member.as_bytes())?;
-                }
-            }
-            #[cfg(feature = "vector")]
-            SnapValue::Vector {
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-                dim,
-                elements,
-            } => {
-                format::write_u8(&mut buf, TYPE_VECTOR)?;
-                format::write_u8(&mut buf, *metric)?;
-                format::write_u8(&mut buf, *quantization)?;
-                format::write_u32(&mut buf, *connectivity)?;
-                format::write_u32(&mut buf, *expansion_add)?;
-                format::write_u32(&mut buf, *dim)?;
-                format::write_len(&mut buf, elements.len())?;
-                for (name, vector) in elements {
-                    format::write_bytes(&mut buf, name.as_bytes())?;
-                    for &v in vector {
-                        format::write_f32(&mut buf, v)?;
-                    }
-                }
-            }
-            #[cfg(feature = "protobuf")]
-            SnapValue::Proto { type_name, data } => {
-                format::write_u8(&mut buf, TYPE_PROTO)?;
-                format::write_bytes(&mut buf, type_name.as_bytes())?;
-                format::write_bytes(&mut buf, data)?;
-            }
-        }
-        format::write_i64(&mut buf, entry.expire_ms)?;
+        let buf = encode_entry(entry)?;
 
         #[cfg(feature = "encryption")]
-        if let Some(ref key) = self.encryption_key {
-            let (nonce, ciphertext) = crate::encryption::encrypt_record(key, &buf)?;
+        if let Some(ref cipher) = self.cipher {
+            let (nonce, ciphertext) = cipher.encrypt(&buf)?;
             let ct_len = u32::try_from(ciphertext.len()).map_err(|_| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -527,8 +494,9 @@ impl SnapshotWriter {
     }
 
     /// Finalizes the snapshot: writes the footer CRC, flushes, and
-    /// atomically renames the temp file to the final path.
-    pub fn finish(mut self) -> Result<(), FormatError> {
+    /// atomically renames the temp file to the final path. Returns the
+    /// footer CRC, which identifies this snapshot.
+    pub fn finish(mut self) -> Result<u32, FormatError> {
         // write footer CRC — clone the hasher so we don't move out of self
         let checksum = self.hasher.clone().finalize();
         format::write_u32(&mut self.writer, checksum)?;
@@ -541,7 +509,8 @@ impl SnapshotWriter {
         {
             use std::io::{Seek, SeekFrom};
             let mut file = fs::OpenOptions::new().write(true).open(&self.tmp_path)?;
-            // header: 4 (magic) + 1 (version) + 2 (shard_id) = 7 bytes
+            // header: 4 (magic) + 1 (version) + 2 (shard_id) = 7 bytes.
+            // an encrypted file's salt comes after the count.
             file.seek(SeekFrom::Start(7))?;
             format::write_u32(&mut file, self.count)?;
             file.sync_all()?;
@@ -558,7 +527,7 @@ impl SnapshotWriter {
         }
 
         self.finished = true;
-        Ok(())
+        Ok(checksum)
     }
 }
 
@@ -578,10 +547,12 @@ pub struct SnapshotReader {
     pub entry_count: u32,
     read_so_far: u32,
     hasher: crc32fast::Hasher,
-    /// Format version — v1 has no type tags, v2 has type-tagged entries, v3 is encrypted.
+    /// Format version — v1 has no type tags, v2 has type-tagged entries,
+    /// v3 and v4 are encrypted.
     version: u8,
+    /// Set for an encrypted file.
     #[cfg(feature = "encryption")]
-    encryption_key: Option<crate::encryption::EncryptionKey>,
+    cipher: Option<crate::encryption::FileCipher>,
 }
 
 impl SnapshotReader {
@@ -592,7 +563,7 @@ impl SnapshotReader {
 
         let version = format::read_header(&mut reader, format::SNAP_MAGIC)?;
 
-        if version == format::FORMAT_VERSION_ENCRYPTED {
+        if format::is_encrypted(version) {
             return Err(FormatError::EncryptionRequired);
         }
 
@@ -607,11 +578,11 @@ impl SnapshotReader {
             hasher: crc32fast::Hasher::new(),
             version,
             #[cfg(feature = "encryption")]
-            encryption_key: None,
+            cipher: None,
         })
     }
 
-    /// Opens a snapshot file with an encryption key for decrypting v3 entries.
+    /// Opens a snapshot file with an encryption key for decrypting v3/v4 entries.
     ///
     /// Also handles v1/v2 (plaintext) files — the key is simply unused.
     #[cfg(feature = "encryption")]
@@ -625,6 +596,9 @@ impl SnapshotReader {
         let version = format::read_header(&mut reader, format::SNAP_MAGIC)?;
         let shard_id = format::read_u16(&mut reader)?;
         let entry_count = format::read_u32(&mut reader)?;
+        let cipher = format::is_encrypted(version)
+            .then(|| key.read_file_cipher(version, &mut reader))
+            .transpose()?;
 
         Ok(Self {
             reader,
@@ -633,7 +607,7 @@ impl SnapshotReader {
             read_so_far: 0,
             hasher: crc32fast::Hasher::new(),
             version,
-            encryption_key: Some(key),
+            cipher,
         })
     }
 
@@ -644,7 +618,7 @@ impl SnapshotReader {
         }
 
         #[cfg(feature = "encryption")]
-        if self.version == format::FORMAT_VERSION_ENCRYPTED {
+        if format::is_encrypted(self.version) {
             return self.read_encrypted_entry();
         }
 
@@ -653,180 +627,22 @@ impl SnapshotReader {
 
     /// Reads a plaintext (v1/v2) entry.
     fn read_plaintext_entry(&mut self) -> Result<Option<SnapEntry>, FormatError> {
-        let mut buf = Vec::new();
-
-        let key_bytes = format::read_bytes(&mut self.reader)?;
-        format::write_bytes(&mut buf, &key_bytes)?;
-
-        let value = if self.version == 1 {
-            // v1: no type tag, value is always a string
-            let value_bytes = format::read_bytes(&mut self.reader)?;
-            format::write_bytes(&mut buf, &value_bytes)?;
-            SnapValue::String(Bytes::from(value_bytes))
-        } else {
-            // v2+: type-tagged values
-            let type_tag = format::read_u8(&mut self.reader)?;
-            format::write_u8(&mut buf, type_tag)?;
-            match type_tag {
-                TYPE_STRING => {
-                    let value_bytes = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut buf, &value_bytes)?;
-                    SnapValue::String(Bytes::from(value_bytes))
-                }
-                TYPE_LIST => {
-                    let count = format::read_u32(&mut self.reader)?;
-                    format::validate_collection_count(count, "list")?;
-                    format::write_u32(&mut buf, count)?;
-                    let mut deque = VecDeque::with_capacity(format::capped_capacity(count));
-                    for _ in 0..count {
-                        let item = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &item)?;
-                        deque.push_back(Bytes::from(item));
-                    }
-                    SnapValue::List(deque)
-                }
-                TYPE_SORTED_SET => {
-                    let count = format::read_u32(&mut self.reader)?;
-                    format::validate_collection_count(count, "sorted set")?;
-                    format::write_u32(&mut buf, count)?;
-                    let mut members = Vec::with_capacity(format::capped_capacity(count));
-                    for _ in 0..count {
-                        let score = format::read_f64(&mut self.reader)?;
-                        format::write_f64(&mut buf, score)?;
-                        let member_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &member_bytes)?;
-                        let member = parse_utf8(member_bytes, "member")?;
-                        members.push((score, member));
-                    }
-                    SnapValue::SortedSet(members)
-                }
-                TYPE_HASH => {
-                    let count = format::read_u32(&mut self.reader)?;
-                    format::validate_collection_count(count, "hash")?;
-                    format::write_u32(&mut buf, count)?;
-                    let mut map = HashMap::with_capacity(format::capped_capacity(count));
-                    for _ in 0..count {
-                        let field_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &field_bytes)?;
-                        let field = parse_utf8(field_bytes, "hash field")?;
-                        let value_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &value_bytes)?;
-                        map.insert(field, Bytes::from(value_bytes));
-                    }
-                    SnapValue::Hash(map)
-                }
-                TYPE_SET => {
-                    let count = format::read_u32(&mut self.reader)?;
-                    format::validate_collection_count(count, "set")?;
-                    format::write_u32(&mut buf, count)?;
-                    let mut set = HashSet::with_capacity(format::capped_capacity(count));
-                    for _ in 0..count {
-                        let member_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &member_bytes)?;
-                        let member = parse_utf8(member_bytes, "set member")?;
-                        set.insert(member);
-                    }
-                    SnapValue::Set(set)
-                }
-                #[cfg(feature = "vector")]
-                TYPE_VECTOR => {
-                    let metric = format::read_u8(&mut self.reader)?;
-                    if metric > 2 {
-                        return Err(FormatError::InvalidData(format!(
-                            "unknown vector metric: {metric}"
-                        )));
-                    }
-                    format::write_u8(&mut buf, metric)?;
-                    let quantization = format::read_u8(&mut self.reader)?;
-                    if quantization > 2 {
-                        return Err(FormatError::InvalidData(format!(
-                            "unknown vector quantization: {quantization}"
-                        )));
-                    }
-                    format::write_u8(&mut buf, quantization)?;
-                    let connectivity = format::read_u32(&mut self.reader)?;
-                    format::write_u32(&mut buf, connectivity)?;
-                    let expansion_add = format::read_u32(&mut self.reader)?;
-                    format::write_u32(&mut buf, expansion_add)?;
-                    let dim = format::read_u32(&mut self.reader)?;
-                    if dim > format::MAX_PERSISTED_VECTOR_DIMS {
-                        return Err(FormatError::InvalidData(format!(
-                            "vector dimension {dim} exceeds max {}",
-                            format::MAX_PERSISTED_VECTOR_DIMS
-                        )));
-                    }
-                    format::write_u32(&mut buf, dim)?;
-                    let count = format::read_u32(&mut self.reader)?;
-                    if count > format::MAX_PERSISTED_VECTOR_COUNT {
-                        return Err(FormatError::InvalidData(format!(
-                            "vector element count {count} exceeds max {}",
-                            format::MAX_PERSISTED_VECTOR_COUNT
-                        )));
-                    }
-                    format::validate_vector_total(dim, count)?;
-                    format::write_u32(&mut buf, count)?;
-                    let mut elements = Vec::with_capacity(format::capped_capacity(count));
-                    for _ in 0..count {
-                        let name_bytes = format::read_bytes(&mut self.reader)?;
-                        format::write_bytes(&mut buf, &name_bytes)?;
-                        let name = parse_utf8(name_bytes, "vector element name")?;
-                        let mut vector = Vec::with_capacity(dim as usize);
-                        for _ in 0..dim {
-                            let v = format::read_f32(&mut self.reader)?;
-                            format::write_f32(&mut buf, v)?;
-                            vector.push(v);
-                        }
-                        elements.push((name, vector));
-                    }
-                    SnapValue::Vector {
-                        metric,
-                        quantization,
-                        connectivity,
-                        expansion_add,
-                        dim,
-                        elements,
-                    }
-                }
-                #[cfg(feature = "protobuf")]
-                TYPE_PROTO => {
-                    let type_name_bytes = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut buf, &type_name_bytes)?;
-                    let type_name = parse_utf8(type_name_bytes, "proto type_name")?;
-                    let data = format::read_bytes(&mut self.reader)?;
-                    format::write_bytes(&mut buf, &data)?;
-                    SnapValue::Proto {
-                        type_name,
-                        data: Bytes::from(data),
-                    }
-                }
-                _ => {
-                    return Err(FormatError::UnknownTag(type_tag));
-                }
-            }
-        };
-
-        let expire_ms = format::read_i64(&mut self.reader)?;
-        format::write_i64(&mut buf, expire_ms)?;
-        self.hasher.update(&buf);
-
-        let key = parse_utf8(key_bytes, "key")?;
-
+        // the footer CRC covers the entry bytes as stored
+        let mut reader = format::CrcReader::new(&mut self.reader);
+        let entry = decode_entry(&mut reader, self.version)?;
+        self.hasher.combine(&reader.into_hasher());
         self.read_so_far += 1;
-        Ok(Some(SnapEntry {
-            key,
-            value,
-            expire_ms,
-        }))
+        Ok(Some(entry))
     }
 
-    /// Reads an encrypted (v3) entry: nonce + len + ciphertext.
+    /// Reads an encrypted (v3/v4) entry: nonce + len + ciphertext.
     /// Decrypts to get the same bytes as a plaintext entry, then parses.
     #[cfg(feature = "encryption")]
     fn read_encrypted_entry(&mut self) -> Result<Option<SnapEntry>, FormatError> {
         use std::io::Read as _;
 
-        let key = self
-            .encryption_key
+        let cipher = self
+            .cipher
             .as_ref()
             .ok_or(FormatError::EncryptionRequired)?;
 
@@ -860,28 +676,20 @@ impl SnapshotReader {
         self.hasher.update(&ct_len_bytes);
         self.hasher.update(&ciphertext);
 
-        let plaintext = crate::encryption::decrypt_record(key, &nonce, &ciphertext)?;
-
-        let mut cursor = io::Cursor::new(&plaintext);
-        let entry_key = read_snap_string(&mut cursor, "key")?;
-        let value = parse_snap_value(&mut cursor)?;
-        let expire_ms = format::read_i64(&mut cursor)?;
-
+        let plaintext = cipher.decrypt(&nonce, &ciphertext)?;
+        let entry = decode_entry(&mut io::Cursor::new(&plaintext), format::FORMAT_VERSION)?;
         self.read_so_far += 1;
-        Ok(Some(SnapEntry {
-            key: entry_key,
-            value,
-            expire_ms,
-        }))
+        Ok(Some(entry))
     }
 
-    /// Verifies the footer CRC32 after all entries have been read.
-    /// Must be called after reading all entries.
-    pub fn verify_footer(self) -> Result<(), FormatError> {
+    /// Verifies the footer CRC32 after all entries have been read, and
+    /// returns it. Must be called after reading all entries.
+    pub fn verify_footer(self) -> Result<u32, FormatError> {
         let expected = self.hasher.finalize();
         let mut reader = self.reader;
         let stored = format::read_u32(&mut reader)?;
-        format::verify_crc32_values(expected, stored)
+        format::verify_crc32_values(expected, stored)?;
+        Ok(stored)
     }
 }
 
@@ -905,7 +713,7 @@ pub fn write_snapshot_bytes(shard_id: u16, entries: &[SnapEntry]) -> Result<Vec<
 
     let mut count = 0u32;
     for entry in entries {
-        let entry_bytes = serialize_entry(entry)?;
+        let entry_bytes = encode_entry(entry)?;
         hasher.update(&entry_bytes);
         buf.write_all(&entry_bytes)?;
         count += 1;
@@ -941,9 +749,9 @@ pub fn read_snapshot_from_bytes(data: &[u8]) -> Result<(u16, Vec<SnapEntry>), Fo
 
     let mut entries = Vec::with_capacity(entry_count.min(65536) as usize);
     for _ in 0..entry_count {
-        let (entry, entry_bytes) = read_entry_with_bytes(&mut r)?;
-        hasher.update(&entry_bytes);
-        entries.push(entry);
+        let mut reader = format::CrcReader::new(&mut r);
+        entries.push(decode_entry(&mut reader, version)?);
+        hasher.combine(&reader.into_hasher());
     }
 
     // verify footer CRC
@@ -952,216 +760,6 @@ pub fn read_snapshot_from_bytes(data: &[u8]) -> Result<(u16, Vec<SnapEntry>), Fo
     format::verify_crc32_values(expected, stored)?;
 
     Ok((shard_id, entries))
-}
-
-/// Serializes a single snapshot entry to raw bytes (no encryption).
-///
-/// Used by [`write_snapshot_bytes`] for in-memory serialization.
-fn serialize_entry(entry: &SnapEntry) -> Result<Vec<u8>, FormatError> {
-    let mut buf = Vec::with_capacity(entry.estimated_size());
-    format::write_bytes(&mut buf, entry.key.as_bytes())?;
-    match &entry.value {
-        SnapValue::String(data) => {
-            format::write_u8(&mut buf, TYPE_STRING)?;
-            format::write_bytes(&mut buf, data)?;
-        }
-        SnapValue::List(deque) => {
-            format::write_u8(&mut buf, TYPE_LIST)?;
-            format::write_len(&mut buf, deque.len())?;
-            for item in deque {
-                format::write_bytes(&mut buf, item)?;
-            }
-        }
-        SnapValue::SortedSet(members) => {
-            format::write_u8(&mut buf, TYPE_SORTED_SET)?;
-            format::write_len(&mut buf, members.len())?;
-            for (score, member) in members {
-                format::write_f64(&mut buf, *score)?;
-                format::write_bytes(&mut buf, member.as_bytes())?;
-            }
-        }
-        SnapValue::Hash(map) => {
-            format::write_u8(&mut buf, TYPE_HASH)?;
-            format::write_len(&mut buf, map.len())?;
-            for (field, value) in map {
-                format::write_bytes(&mut buf, field.as_bytes())?;
-                format::write_bytes(&mut buf, value)?;
-            }
-        }
-        SnapValue::Set(set) => {
-            format::write_u8(&mut buf, TYPE_SET)?;
-            format::write_len(&mut buf, set.len())?;
-            for member in set {
-                format::write_bytes(&mut buf, member.as_bytes())?;
-            }
-        }
-        #[cfg(feature = "vector")]
-        SnapValue::Vector {
-            metric,
-            quantization,
-            connectivity,
-            expansion_add,
-            dim,
-            elements,
-        } => {
-            format::write_u8(&mut buf, TYPE_VECTOR)?;
-            format::write_u8(&mut buf, *metric)?;
-            format::write_u8(&mut buf, *quantization)?;
-            format::write_u32(&mut buf, *connectivity)?;
-            format::write_u32(&mut buf, *expansion_add)?;
-            format::write_u32(&mut buf, *dim)?;
-            format::write_len(&mut buf, elements.len())?;
-            for (name, vector) in elements {
-                format::write_bytes(&mut buf, name.as_bytes())?;
-                for &v in vector {
-                    format::write_f32(&mut buf, v)?;
-                }
-            }
-        }
-        #[cfg(feature = "protobuf")]
-        SnapValue::Proto { type_name, data } => {
-            format::write_u8(&mut buf, TYPE_PROTO)?;
-            format::write_bytes(&mut buf, type_name.as_bytes())?;
-            format::write_bytes(&mut buf, data)?;
-        }
-    }
-    format::write_i64(&mut buf, entry.expire_ms)?;
-    Ok(buf)
-}
-
-/// Reads a single entry from a cursor and also returns the raw bytes
-/// used for CRC computation.
-fn read_entry_with_bytes(r: &mut io::Cursor<&[u8]>) -> Result<(SnapEntry, Vec<u8>), FormatError> {
-    let mut entry_bytes = Vec::new();
-
-    let key_bytes = format::read_bytes(r)?;
-    format::write_bytes(&mut entry_bytes, &key_bytes)?;
-    let key = parse_utf8(key_bytes, "key")?;
-
-    let type_tag = format::read_u8(r)?;
-    format::write_u8(&mut entry_bytes, type_tag)?;
-
-    let value = match type_tag {
-        TYPE_STRING => {
-            let v = format::read_bytes(r)?;
-            format::write_bytes(&mut entry_bytes, &v)?;
-            SnapValue::String(Bytes::from(v))
-        }
-        TYPE_LIST => {
-            let count = format::read_u32(r)?;
-            format::validate_collection_count(count, "list")?;
-            format::write_u32(&mut entry_bytes, count)?;
-            let mut deque = VecDeque::with_capacity(format::capped_capacity(count));
-            for _ in 0..count {
-                let item = format::read_bytes(r)?;
-                format::write_bytes(&mut entry_bytes, &item)?;
-                deque.push_back(Bytes::from(item));
-            }
-            SnapValue::List(deque)
-        }
-        TYPE_SORTED_SET => {
-            let count = format::read_u32(r)?;
-            format::validate_collection_count(count, "sorted set")?;
-            format::write_u32(&mut entry_bytes, count)?;
-            let mut members = Vec::with_capacity(format::capped_capacity(count));
-            for _ in 0..count {
-                let score = format::read_f64(r)?;
-                format::write_f64(&mut entry_bytes, score)?;
-                let mb = format::read_bytes(r)?;
-                format::write_bytes(&mut entry_bytes, &mb)?;
-                members.push((score, parse_utf8(mb, "member")?));
-            }
-            SnapValue::SortedSet(members)
-        }
-        TYPE_HASH => {
-            let count = format::read_u32(r)?;
-            format::validate_collection_count(count, "hash")?;
-            format::write_u32(&mut entry_bytes, count)?;
-            let mut map = HashMap::with_capacity(format::capped_capacity(count));
-            for _ in 0..count {
-                let fb = format::read_bytes(r)?;
-                format::write_bytes(&mut entry_bytes, &fb)?;
-                let field = parse_utf8(fb, "hash field")?;
-                let vb = format::read_bytes(r)?;
-                format::write_bytes(&mut entry_bytes, &vb)?;
-                map.insert(field, Bytes::from(vb));
-            }
-            SnapValue::Hash(map)
-        }
-        TYPE_SET => {
-            let count = format::read_u32(r)?;
-            format::validate_collection_count(count, "set")?;
-            format::write_u32(&mut entry_bytes, count)?;
-            let mut set = HashSet::with_capacity(format::capped_capacity(count));
-            for _ in 0..count {
-                let mb = format::read_bytes(r)?;
-                format::write_bytes(&mut entry_bytes, &mb)?;
-                set.insert(parse_utf8(mb, "set member")?);
-            }
-            SnapValue::Set(set)
-        }
-        #[cfg(feature = "vector")]
-        TYPE_VECTOR => {
-            let metric = format::read_u8(r)?;
-            format::write_u8(&mut entry_bytes, metric)?;
-            let quantization = format::read_u8(r)?;
-            format::write_u8(&mut entry_bytes, quantization)?;
-            let connectivity = format::read_u32(r)?;
-            format::write_u32(&mut entry_bytes, connectivity)?;
-            let expansion_add = format::read_u32(r)?;
-            format::write_u32(&mut entry_bytes, expansion_add)?;
-            let dim = format::read_u32(r)?;
-            format::write_u32(&mut entry_bytes, dim)?;
-            let count = format::read_u32(r)?;
-            format::write_u32(&mut entry_bytes, count)?;
-            let mut elements = Vec::with_capacity(format::capped_capacity(count));
-            for _ in 0..count {
-                let nb = format::read_bytes(r)?;
-                format::write_bytes(&mut entry_bytes, &nb)?;
-                let name = parse_utf8(nb, "vector element name")?;
-                let mut vector = Vec::with_capacity(dim as usize);
-                for _ in 0..dim {
-                    let v = format::read_f32(r)?;
-                    format::write_f32(&mut entry_bytes, v)?;
-                    vector.push(v);
-                }
-                elements.push((name, vector));
-            }
-            SnapValue::Vector {
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-                dim,
-                elements,
-            }
-        }
-        #[cfg(feature = "protobuf")]
-        TYPE_PROTO => {
-            let tn_bytes = format::read_bytes(r)?;
-            format::write_bytes(&mut entry_bytes, &tn_bytes)?;
-            let type_name = parse_utf8(tn_bytes, "proto type_name")?;
-            let data = format::read_bytes(r)?;
-            format::write_bytes(&mut entry_bytes, &data)?;
-            SnapValue::Proto {
-                type_name,
-                data: Bytes::from(data),
-            }
-        }
-        _ => return Err(FormatError::UnknownTag(type_tag)),
-    };
-
-    let expire_ms = format::read_i64(r)?;
-    format::write_i64(&mut entry_bytes, expire_ms)?;
-
-    Ok((
-        SnapEntry {
-            key,
-            value,
-            expire_ms,
-        },
-        entry_bytes,
-    ))
 }
 
 /// Returns the snapshot file path for a given shard in a data directory.
@@ -1545,6 +1143,41 @@ mod tests {
 
         fn test_key() -> EncryptionKey {
             EncryptionKey::from_bytes([0x42; 32])
+        }
+
+        #[test]
+        fn v3_snapshot_is_still_read() -> Result {
+            let dir = temp_dir();
+            let path = dir.path().join("v3.snap");
+            let key = test_key();
+            let entry = SnapEntry {
+                key: "k".into(),
+                value: SnapValue::String(Bytes::from("v")),
+                expire_ms: -1,
+            };
+
+            // a v3 file encrypts with the master key and has no salt
+            let mut file = Vec::new();
+            format::write_header_versioned(
+                &mut file,
+                format::SNAP_MAGIC,
+                format::FORMAT_VERSION_ENCRYPTED_V3,
+            )?;
+            format::write_u16(&mut file, 3)?;
+            format::write_u32(&mut file, 1)?;
+            let (nonce, ciphertext) = key.legacy_cipher().encrypt(&encode_entry(&entry)?)?;
+            let mut envelope = nonce.to_vec();
+            format::write_len(&mut envelope, ciphertext.len())?;
+            envelope.extend_from_slice(&ciphertext);
+            file.extend_from_slice(&envelope);
+            format::write_u32(&mut file, format::crc32(&envelope))?;
+            fs::write(&path, file)?;
+
+            let mut reader = SnapshotReader::open_encrypted(&path, key)?;
+            assert_eq!(reader.shard_id, 3);
+            assert_eq!(reader.read_entry()?, Some(entry));
+            reader.verify_footer()?;
+            Ok(())
         }
 
         #[test]

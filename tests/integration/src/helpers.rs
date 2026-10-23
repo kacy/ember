@@ -46,9 +46,13 @@ pub struct ServerOptions {
     pub tls_cert_file: Option<PathBuf>,
     /// PEM private key file for the TLS listener (requires tls_cert_file).
     pub tls_key_file: Option<PathBuf>,
+    /// Shared cluster secret (--cluster-auth-pass).
+    pub cluster_auth_pass: Option<String>,
     /// Failure-detection timeout in ms (--cluster-node-timeout).
     /// Lower values make failover tests converge faster.
     pub cluster_node_timeout_ms: Option<u64>,
+    /// Seconds before an idle connection is closed (--idle-timeout-secs).
+    pub idle_timeout_secs: Option<u64>,
 }
 
 impl TestServer {
@@ -113,9 +117,15 @@ impl TestServer {
         if opts.cluster_bootstrap {
             cmd.arg("--cluster-bootstrap");
         }
+        if let Some(ref pass) = opts.cluster_auth_pass {
+            cmd.arg("--cluster-auth-pass").arg(pass);
+        }
         if let Some(timeout_ms) = opts.cluster_node_timeout_ms {
             cmd.arg("--cluster-node-timeout")
                 .arg(timeout_ms.to_string());
+        }
+        if let Some(secs) = opts.idle_timeout_secs {
+            cmd.arg("--idle-timeout-secs").arg(secs.to_string());
         }
 
         let data_dir = if opts.appendonly || opts.cluster_enabled {
@@ -309,6 +319,12 @@ impl TestClient {
         }
     }
 
+    /// Writes raw bytes to the server without reading a reply.
+    #[allow(dead_code)]
+    pub async fn write_raw(&mut self, data: &[u8]) {
+        self.stream.write_all(data).await.unwrap();
+    }
+
     /// Sends a command with raw byte arguments and returns the parsed response.
     /// Useful for binary data like protobuf descriptors.
     #[allow(dead_code)]
@@ -480,7 +496,7 @@ fn find_binary(name: &str) -> PathBuf {
 }
 
 /// Locates the ember-server binary in the cargo target directory.
-fn server_binary() -> PathBuf {
+pub fn server_binary() -> PathBuf {
     find_binary("ember-server")
 }
 

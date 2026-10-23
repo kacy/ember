@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+    # rkyv 0.7 is listed in Cargo.lock only as an optional dependency of
+    # rust_decimal (via openraft -> byte-unit). Its feature is never enabled,
+    # so rkyv is not compiled into ember. Remove this entry once rust_decimal
+    # moves to rkyv 0.8.
+    "RUSTSEC-2026-0235",
+]

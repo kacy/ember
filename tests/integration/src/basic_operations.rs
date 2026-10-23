@@ -435,3 +435,212 @@ async fn msetnx_any_existing_returns_zero_and_no_changes() {
     let resp = c.cmd(&["GET", "b"]).await;
     assert!(matches!(resp, Frame::Null));
 }
+
+/// Sends each command and checks that it is rejected with an error and that
+/// the server still answers PING afterwards. Release builds abort on panic,
+/// so a panic here would take the whole server down.
+async fn assert_rejected_without_crash(server: &TestServer, commands: &[&[&str]]) {
+    let mut c = server.connect().await;
+    for command in commands {
+        let resp = c.cmd(command).await;
+        assert!(matches!(resp, Frame::Error(_)), "{command:?} gave {resp:?}");
+    }
+    let resp = c.cmd(&["PING"]).await;
+    assert!(matches!(resp, Frame::Simple(ref s) if s == "PONG"));
+}
+
+#[tokio::test]
+async fn hostile_arguments_are_rejected_without_crashing() {
+    let server = TestServer::start();
+    assert_rejected_without_crash(
+        &server,
+        &[
+            &["ZINTER", "18446744073709551615", "a"],
+            &["LMPOP", "18446744073709551615", "a", "LEFT"],
+            &["BLPOP", "k", "nan"],
+            &["ZCOUNT", "z", "nan", "1"],
+            &["SETRANGE", "s", "100000000000", "x"],
+            &["SETBIT", "b", "100000000000", "1"],
+            &["SRANDMEMBER", "set", "-9223372036854775808"],
+        ],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn concurrent_decrby_min_is_rejected_without_crashing() {
+    let server = TestServer::start_with(ServerOptions {
+        concurrent: true,
+        ..Default::default()
+    });
+    assert_rejected_without_crash(&server, &[&["DECRBY", "n", "-9223372036854775808"]]).await;
+}
+
+#[tokio::test]
+async fn pipeline_longer_than_the_depth_limit_gets_every_reply() {
+    expect_every_pipelined_reply(&TestServer::start()).await;
+}
+
+#[tokio::test]
+async fn pipeline_longer_than_the_depth_limit_gets_every_reply_concurrent() {
+    let server = TestServer::start_with(ServerOptions {
+        concurrent: true,
+        ..Default::default()
+    });
+    expect_every_pipelined_reply(&server).await;
+}
+
+/// The server parses at most 10,000 frames per batch. The rest must be
+/// processed without waiting for the client to send more bytes.
+async fn expect_every_pipelined_reply(server: &TestServer) {
+    const COUNT: usize = 10_050;
+    let mut c = server.connect().await;
+    c.write_raw(&b"*1\r\n$4\r\nPING\r\n".repeat(COUNT)).await;
+
+    for i in 0..COUNT {
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(10), c.read_frame())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for reply {i}"));
+        assert!(matches!(resp, Frame::Simple(ref s) if s == "PONG"));
+    }
+}
+
+/// Sends raw bytes on a fresh connection and returns everything the server
+/// writes back before it closes the connection.
+async fn send_and_read_to_close(server: &TestServer, request: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", server.port))
+        .await
+        .unwrap();
+    stream.write_all(request).await.unwrap();
+    let mut reply = Vec::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.read_to_end(&mut reply),
+    )
+    .await
+    .expect("server did not close the connection")
+    .unwrap();
+    reply
+}
+
+#[tokio::test]
+async fn quit_replies_and_closes_without_running_later_commands() {
+    expect_quit_to_close(&TestServer::start()).await;
+}
+
+#[tokio::test]
+async fn quit_replies_and_closes_without_running_later_commands_concurrent() {
+    let server = TestServer::start_with(ServerOptions {
+        concurrent: true,
+        ..Default::default()
+    });
+    expect_quit_to_close(&server).await;
+}
+
+async fn expect_quit_to_close(server: &TestServer) {
+    let request =
+        b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nQUIT\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
+    let reply = send_and_read_to_close(server, request).await;
+    assert_eq!(reply, b"+PONG\r\n+OK\r\n");
+
+    let mut c = server.connect().await;
+    assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
+}
+
+#[tokio::test]
+async fn unauthenticated_client_cannot_send_large_requests() {
+    let server = TestServer::start_with(ServerOptions {
+        requirepass: Some("pw".into()),
+        ..Default::default()
+    });
+    let big = vec![b'x'; 100 * 1024];
+    let mut request = format!("*2\r\n$4\r\nECHO\r\n${}\r\n", big.len()).into_bytes();
+    request.extend_from_slice(&big);
+    request.extend_from_slice(b"\r\n");
+
+    let reply = send_and_read_to_close(&server, &request).await;
+    assert!(
+        reply.starts_with(b"-ERR max buffer size exceeded"),
+        "{reply:?}"
+    );
+}
+
+#[tokio::test]
+async fn inline_commands_work_like_resp() {
+    let server = TestServer::start();
+    let request = b"PING\r\nSET greeting \"hello world\"\r\nGET greeting\r\nQUIT\r\n";
+    let reply = send_and_read_to_close(&server, request).await;
+    assert_eq!(reply, b"+PONG\r\n+OK\r\n$11\r\nhello world\r\n+OK\r\n");
+}
+
+#[tokio::test]
+async fn http_request_closes_the_connection() {
+    let server = TestServer::start();
+    let request = b"POST / HTTP/1.1\r\nHost: localhost\r\n\r\nSET k v\r\n";
+    let reply = send_and_read_to_close(&server, request).await;
+    assert!(reply.starts_with(b"-ERR protocol error"));
+
+    let mut c = server.connect().await;
+    assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
+}
+
+/// Encodes a command as a RESP array.
+fn resp(args: &[&str]) -> Vec<u8> {
+    let mut out = format!("*{}\r\n", args.len()).into_bytes();
+    for arg in args {
+        out.extend(format!("${}\r\n{arg}\r\n", arg.len()).into_bytes());
+    }
+    out
+}
+
+#[tokio::test]
+async fn commands_after_unsubscribe_run_in_order() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["SUBSCRIBE", "ch"]),
+        resp(&["UNSUBSCRIBE", "ch"]),
+        resp(&["SET", "k", "v"]),
+        resp(&["GET", "k"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    let reply = String::from_utf8_lossy(&reply);
+    let unsubscribed = reply.find("unsubscribe").expect("no unsubscribe reply");
+    assert!(unsubscribed < reply.find("+OK").unwrap(), "{reply}");
+    assert!(reply.ends_with("+OK\r\n$1\r\nv\r\n+OK\r\n"), "{reply}");
+}
+
+#[tokio::test]
+async fn blocking_pop_inside_multi_is_queued() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["MULTI"]),
+        resp(&["BLPOP", "q", "0"]),
+        resp(&["EXEC"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    let reply = String::from_utf8_lossy(&reply);
+    assert!(reply.starts_with("+OK\r\n+QUEUED\r\n*1\r\n-"), "{reply}");
+}
+
+#[tokio::test]
+async fn commands_after_blocking_pop_wait_for_it() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["RPUSH", "q", "x"]),
+        resp(&["BLPOP", "q", "0"]),
+        resp(&["LLEN", "q"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    assert_eq!(
+        String::from_utf8_lossy(&reply),
+        ":1\r\n*2\r\n$1\r\nq\r\n$1\r\nx\r\n:0\r\n+OK\r\n"
+    );
+}
