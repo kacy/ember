@@ -275,93 +275,19 @@ impl Command {
         }
     }
 
-    /// Returns `true` if this command mutates state.
+    /// Returns `true` if this command writes to the keyspace.
     ///
-    /// Used by the replica write-rejection layer: any command matching this
-    /// predicate is redirected to the primary via MOVED rather than executed
-    /// locally on a read-only replica.
+    /// A command is a write when its ACL categories include `write`.
+    /// Replicas redirect these to the primary with MOVED, and a failover
+    /// pause rejects them. SORT is a write only with STORE. EXEC counts as a
+    /// write so that a pause rejects the whole transaction rather than only
+    /// the writes inside it.
     pub fn is_write(&self) -> bool {
-        matches!(
-            self,
-            // string mutations
-            Command::Set { .. }
-                | Command::MSet { .. }
-                | Command::MSetNx { .. }
-                | Command::GetSet { .. }
-                | Command::Append { .. }
-                | Command::Incr { .. }
-                | Command::Decr { .. }
-                | Command::IncrBy { .. }
-                | Command::DecrBy { .. }
-                | Command::IncrByFloat { .. }
-                | Command::SetBit { .. }
-                | Command::BitOp { .. }
-            // key lifecycle
-                | Command::Del { .. }
-                | Command::Unlink { .. }
-                | Command::Rename { .. }
-                | Command::Copy { .. }
-                | Command::Expire { .. }
-                | Command::Expireat { .. }
-                | Command::Pexpire { .. }
-                | Command::Pexpireat { .. }
-                | Command::Persist { .. }
-            // list
-                | Command::LPush { .. }
-                | Command::RPush { .. }
-                | Command::LPop { .. }
-                | Command::RPop { .. }
-                | Command::BLPop { .. }
-                | Command::BRPop { .. }
-                | Command::LSet { .. }
-                | Command::LTrim { .. }
-                | Command::LInsert { .. }
-                | Command::LRem { .. }
-                | Command::LMove { .. }
-            // string extras
-                | Command::GetDel { .. }
-                | Command::GetEx { .. }
-            // sorted set
-                | Command::ZAdd { .. }
-                | Command::ZRem { .. }
-                | Command::ZIncrBy { .. }
-                | Command::ZPopMin { .. }
-                | Command::ZPopMax { .. }
-                | Command::Lmpop { .. }
-                | Command::Zmpop { .. }
-            // hash
-                | Command::HSet { .. }
-                | Command::HDel { .. }
-                | Command::HIncrBy { .. }
-            // set
-                | Command::SAdd { .. }
-                | Command::SRem { .. }
-                | Command::SUnionStore { .. }
-                | Command::SInterStore { .. }
-                | Command::SDiffStore { .. }
-                | Command::SPop { .. }
-                | Command::SMove { .. }
-            // server / persistence
-                | Command::FlushDb { .. }
-                | Command::FlushAll { .. }
-                | Command::ConfigSet { .. }
-                | Command::Exec
-                | Command::BgRewriteAof
-                | Command::BgSave
-                | Command::Restore { .. }
-            // vector
-                | Command::VAdd { .. }
-                | Command::VAddBatch { .. }
-                | Command::VRem { .. }
-            // protobuf
-                | Command::ProtoRegister { .. }
-                | Command::ProtoSet { .. }
-                | Command::ProtoSetField { .. }
-                | Command::ProtoDelField { .. }
-            // acl mutations
-                | Command::AclSetUser { .. }
-                | Command::AclDelUser { .. }
-        ) || matches!(self, Command::Sort { store: Some(_), .. })
+        match self {
+            Command::Sort { store, .. } => store.is_some(),
+            Command::Exec => true,
+            _ => self.acl_categories() & category::WRITE != 0,
+        }
     }
 
     /// Returns the ACL category bitmask for this command.
