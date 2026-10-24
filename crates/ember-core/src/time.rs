@@ -11,11 +11,16 @@ use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Returns current monotonic time in milliseconds since process start.
+///
+/// The count starts at 1 rather than 0, so no deadline derived from it can
+/// equal [`NO_EXPIRY`]. Otherwise a past EXPIREAT handled in the first
+/// millisecond of the clock would be stored as 0 and the key would never
+/// expire.
 #[inline]
 pub fn now_ms() -> u64 {
     static START: OnceLock<Instant> = OnceLock::new();
     let start = START.get_or_init(Instant::now);
-    start.elapsed().as_millis() as u64
+    start.elapsed().as_millis() as u64 + 1
 }
 
 /// Returns current monotonic time in seconds since process start, as u32.
