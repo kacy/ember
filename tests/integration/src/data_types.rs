@@ -789,3 +789,23 @@ async fn zrandmember_missing_key_empty() {
         other => panic!("expected empty Array, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn sort_store_replaces_dest_with_the_sorted_list() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["RPUSH", "src", "3", "1", "2"]).await;
+    c.ok(&["SET", "dst", "old"]).await;
+    assert_eq!(c.get_int(&["SORT", "src", "STORE", "dst"]).await, 3);
+    let items = c.cmd(&["LRANGE", "dst", "0", "-1"]).await;
+    let expected: Vec<Frame> = ["1", "2", "3"]
+        .iter()
+        .map(|s| Frame::Bulk(bytes::Bytes::from(*s)))
+        .collect();
+    assert_eq!(items, Frame::Array(expected));
+
+    // sorting a missing key stores nothing and removes dest
+    assert_eq!(c.get_int(&["SORT", "missing", "STORE", "dst"]).await, 0);
+    assert_eq!(c.get_int(&["EXISTS", "dst"]).await, 0);
+}

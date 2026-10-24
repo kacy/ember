@@ -128,6 +128,13 @@ pub(super) async fn execute(
             count,
         } => exec::keyspace::scan(cursor, pattern, count, &cx).await,
         Command::RandomKey => exec::keyspace::randomkey(&cx).await,
+        Command::Sort {
+            key,
+            desc,
+            alpha,
+            limit,
+            store: Some(dest),
+        } => exec::keyspace::sort_store(key, desc, alpha, limit, dest, &cx).await,
         Command::MemoryUsage { key } => exec::keyspace::memory_usage(key, &cx).await,
 
         // -- server commands --
@@ -405,7 +412,7 @@ pub(super) async fn execute(
         | Command::SUnionStore { .. }
         | Command::Set { .. }
         | Command::SetRange { .. }
-        | Command::Sort { .. }
+        | Command::Sort { store: None, .. }
         | Command::Strlen { .. }
         | Command::Ttl { .. }
         | Command::Type { .. }

@@ -214,3 +214,48 @@ pub(in crate::connection) async fn memory_usage(key: String, cx: &ExecCtx<'_>) -
     })
     .await
 }
+
+/// SORT ... STORE: sorts on the source key's shard, then replaces `dest`
+/// with the result as a list. Returns the number of stored elements.
+pub(in crate::connection) async fn sort_store(
+    key: String,
+    desc: bool,
+    alpha: bool,
+    limit: Option<(i64, i64)>,
+    dest: String,
+    cx: &ExecCtx<'_>,
+) -> Frame {
+    let src_idx = cx.engine.shard_for_key(&key);
+    let sort = ShardRequest::Sort {
+        key,
+        desc,
+        alpha,
+        limit,
+    };
+    let items = match cx.engine.send_to_shard(src_idx, sort).await {
+        Ok(ShardResponse::Array(items)) => items,
+        Ok(ShardResponse::WrongType) => return super::wrongtype_error(),
+        Ok(other) => return Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        Err(e) => return Frame::Error(format!("ERR {e}")),
+    };
+
+    let count = items.len() as i64;
+    let dst_idx = cx.engine.shard_for_key(&dest);
+    let del = ShardRequest::Del { key: dest.clone() };
+    if let Err(e) = cx.engine.send_to_shard(dst_idx, del).await {
+        return Frame::Error(format!("ERR {e}"));
+    }
+    if items.is_empty() {
+        return Frame::Integer(count);
+    }
+    let push = ShardRequest::RPush {
+        key: dest,
+        values: items,
+    };
+    match cx.engine.send_to_shard(dst_idx, push).await {
+        Ok(ShardResponse::Len(_)) => Frame::Integer(count),
+        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
+        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        Err(e) => Frame::Error(format!("ERR {e}")),
+    }
+}
