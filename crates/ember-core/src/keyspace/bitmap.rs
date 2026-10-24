@@ -4,6 +4,8 @@
 //! with big-endian bit ordering (Redis compatible): bit 0 is the most
 //! significant bit of byte 0.
 
+use std::ops::RangeInclusive;
+
 use ember_protocol::command::{BitOpKind, BitRange, BitRangeUnit};
 
 use super::*;
@@ -178,13 +180,11 @@ impl Keyspace {
                 return Ok(-1);
             }
             Some(r) => {
-                // byte-granularity range
-                let (s, e) = resolve_byte_range(r.start, r.end, data.len());
-                if s >= data.len() {
+                let Some(bytes) = byte_range(r.start, r.end, data.len()) else {
                     return Ok(-1);
-                }
-                let end = e.min(data.len() - 1);
-                (&data[s..=end], (s as i64) * 8)
+                };
+                let bit_offset = *bytes.start() as i64 * 8;
+                (&data[bytes], bit_offset)
             }
         };
 
@@ -284,20 +284,13 @@ impl Keyspace {
     }
 }
 
-/// Resolves a byte-granularity range `[start, end]` (Redis semantics) into
-/// a concrete `(start_byte, end_byte)` pair against a string of `len` bytes.
-///
-/// Negative indices count from the end (-1 = last byte). The returned range
-/// is NOT yet clamped to `[0, len)` — callers must do that.
-fn resolve_byte_range(start: i64, end: i64, len: usize) -> (usize, usize) {
-    let len = len as i64;
-    let s = if start < 0 {
-        (len + start).max(0)
-    } else {
-        start
-    } as usize;
-    let e = if end < 0 { (len + end).max(0) } else { end } as usize;
-    (s, e)
+/// Resolves a byte range with signed, inclusive ends (negative counts from
+/// the end) against a string of `len` bytes. Returns `None` when the range
+/// is empty.
+fn byte_range(start: i64, end: i64, len: usize) -> Option<RangeInclusive<usize>> {
+    let resolve = |i: i64| if i < 0 { (len as i64 + i).max(0) } else { i } as usize;
+    let (start, end) = (resolve(start), resolve(end).min(len.checked_sub(1)?));
+    (start <= end).then_some(start..=end)
 }
 
 /// Resolves a signed bit index against `len_bits` (negative = from end).
@@ -315,18 +308,10 @@ fn normalize_bit_index(idx: i64, len_bits: i64) -> i64 {
 /// rounded to the containing bytes (bit searches happen inside the caller).
 fn bit_range_slice(data: &[u8], range: BitRange) -> &[u8] {
     match range.unit {
-        BitRangeUnit::Byte => {
-            let (s, e) = resolve_byte_range(range.start, range.end, data.len());
-            if s >= data.len() {
-                return &[];
-            }
-            let end = e.min(data.len() - 1);
-            if s > end {
-                &[]
-            } else {
-                &data[s..=end]
-            }
-        }
+        BitRangeUnit::Byte => match byte_range(range.start, range.end, data.len()) {
+            Some(bytes) => &data[bytes],
+            None => &[],
+        },
         BitRangeUnit::Bit => {
             // for BITCOUNT with BIT range, convert to byte boundaries (inclusive)
             let len_bits = data.len() as i64 * 8;
@@ -595,6 +580,24 @@ mod tests {
             false,
         );
         assert_eq!(ks.bitpos("k", 0, None).unwrap(), 16);
+    }
+
+    #[test]
+    fn reversed_byte_range_is_empty() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("abcdefgh"), None, false, false);
+        let range = |start, end| {
+            Some(BitRange {
+                start,
+                end,
+                unit: BitRangeUnit::Byte,
+            })
+        };
+        assert_eq!(ks.bitpos("k", 1, range(5, 2)).unwrap(), -1);
+        assert_eq!(ks.bitpos("k", 0, range(5, 2)).unwrap(), -1);
+        assert_eq!(ks.bitpos("k", 1, range(-1, -3)).unwrap(), -1);
+        assert_eq!(ks.bitcount("k", range(5, 2)).unwrap(), 0);
+        assert_eq!(ks.bitpos("k", 1, range(1, 1)).unwrap(), 9);
     }
 
     #[test]
