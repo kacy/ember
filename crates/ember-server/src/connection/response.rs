@@ -4,6 +4,7 @@ use bytes::Bytes;
 use ember_core::{ShardResponse, TtlResult, Value};
 use ember_protocol::Frame;
 
+use crate::connection_common::clamp_ttl;
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -99,13 +100,13 @@ pub(super) fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> F
         },
 
         ResponseTag::Ttl => match resp {
-            ShardResponse::Ttl(TtlResult::Seconds(s)) => Frame::Integer(s as i64),
+            ShardResponse::Ttl(TtlResult::Seconds(s)) => Frame::Integer(clamp_ttl(s)),
             ShardResponse::Ttl(TtlResult::NoExpiry) => Frame::Integer(-1),
             ShardResponse::Ttl(TtlResult::NotFound) => Frame::Integer(-2),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
         ResponseTag::Pttl => match resp {
-            ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => Frame::Integer(ms as i64),
+            ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => Frame::Integer(clamp_ttl(ms)),
             ShardResponse::Ttl(TtlResult::NoExpiry) => Frame::Integer(-1),
             ShardResponse::Ttl(TtlResult::NotFound) => Frame::Integer(-2),
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),

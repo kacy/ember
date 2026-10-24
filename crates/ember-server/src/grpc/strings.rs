@@ -319,20 +319,7 @@ pub(super) async fn get_ex(
     let req = request.into_inner();
     validate_key(&req.key, &svc.ctx.limits)?;
 
-    // map proto expiry fields to the engine's Option<Option<u64>> convention:
-    //   None        = leave TTL unchanged
-    //   Some(None)  = persist (remove TTL)
-    //   Some(Some(ms)) = set TTL to this many milliseconds
-    let expire = if req.persist {
-        Some(None)
-    } else if req.expire_millis > 0 {
-        Some(Some(req.expire_millis))
-    } else if req.expire_seconds > 0 {
-        Some(Some(req.expire_seconds * 1_000))
-    } else {
-        None
-    };
-
+    let expire = getex_expiry(&req);
     let resp = svc
         .route(
             &req.key,
@@ -350,6 +337,21 @@ pub(super) async fn get_ex(
         })),
         ShardResponse::Value(None) => Ok(Response::new(GetResponse { value: None })),
         other => Err(unexpected_response(&other)),
+    }
+}
+
+/// Maps the GETEX expiry fields to the shard's convention: `None` leaves the
+/// TTL alone, `Some(None)` removes it, and `Some(Some(ms))` sets it to `ms`
+/// from now. A TTL too large to count in milliseconds saturates.
+fn getex_expiry(req: &GetExRequest) -> Option<Option<u64>> {
+    if req.persist {
+        Some(None)
+    } else if req.expire_millis > 0 {
+        Some(Some(req.expire_millis))
+    } else if req.expire_seconds > 0 {
+        Some(Some(req.expire_seconds.saturating_mul(1_000)))
+    } else {
+        None
     }
 }
 
@@ -657,5 +659,19 @@ pub(super) async fn bitop(
             "WRONGTYPE Operation against a key holding the wrong kind of value",
         )),
         other => Err(unexpected_response(&other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn getex_expiry_saturates_huge_seconds() {
+        let req = GetExRequest {
+            expire_seconds: u64::MAX,
+            ..Default::default()
+        };
+        assert_eq!(getex_expiry(&req), Some(Some(u64::MAX)));
     }
 }

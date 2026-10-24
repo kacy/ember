@@ -1,7 +1,5 @@
 //! String and bitmap command handlers.
 
-use std::time::Duration;
-
 use bytes::Bytes;
 use ember_core::{ShardRequest, ShardResponse, Value};
 use ember_protocol::{command::BitOpKind, Frame, SetExpire};
@@ -146,7 +144,7 @@ pub(in crate::connection) async fn getex(
     // convert SetExpire into an Option<Option<u64>> (milliseconds from now)
     let expire_ms: Option<Option<u64>> = expire.map(|opt| {
         opt.map(|se| match se {
-            SetExpire::Ex(s) => Duration::from_secs(s).as_millis() as u64,
+            SetExpire::Ex(s) => s.saturating_mul(1_000),
             SetExpire::Px(ms) => ms,
             SetExpire::ExAt(ts) => {
                 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,7 +152,7 @@ pub(in crate::connection) async fn getex(
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                Duration::from_secs(ts.saturating_sub(now_s)).as_millis() as u64
+                ts.saturating_sub(now_s).saturating_mul(1_000)
             }
             SetExpire::PxAt(ts_ms) => {
                 use std::time::{SystemTime, UNIX_EPOCH};

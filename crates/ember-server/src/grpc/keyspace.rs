@@ -7,6 +7,7 @@ use tonic::{Request, Response, Status};
 
 use super::proto::*;
 use super::{unexpected_response, validate_key, EmberService};
+use crate::connection_common::clamp_ttl;
 
 pub(super) async fn del(
     svc: &EmberService,
@@ -133,11 +134,11 @@ pub(super) async fn ttl(
     svc.record_command(start, "TTL");
 
     match resp {
-        ShardResponse::Ttl(TtlResult::Seconds(s)) => {
-            Ok(Response::new(TtlResponse { value: s as i64 }))
-        }
+        ShardResponse::Ttl(TtlResult::Seconds(s)) => Ok(Response::new(TtlResponse {
+            value: clamp_ttl(s),
+        })),
         ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => Ok(Response::new(TtlResponse {
-            value: (ms / 1000) as i64,
+            value: clamp_ttl(ms / 1000),
         })),
         ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
         ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
@@ -157,11 +158,11 @@ pub(super) async fn p_ttl(
     svc.record_command(start, "PTTL");
 
     match resp {
-        ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => {
-            Ok(Response::new(TtlResponse { value: ms as i64 }))
-        }
+        ShardResponse::Ttl(TtlResult::Milliseconds(ms)) => Ok(Response::new(TtlResponse {
+            value: clamp_ttl(ms),
+        })),
         ShardResponse::Ttl(TtlResult::Seconds(s)) => Ok(Response::new(TtlResponse {
-            value: s.saturating_mul(1000) as i64,
+            value: clamp_ttl(s.saturating_mul(1000)),
         })),
         ShardResponse::Ttl(TtlResult::NoExpiry) => Ok(Response::new(TtlResponse { value: -1 })),
         ShardResponse::Ttl(TtlResult::NotFound) => Ok(Response::new(TtlResponse { value: -2 })),
