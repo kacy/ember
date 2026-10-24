@@ -644,3 +644,16 @@ async fn commands_after_blocking_pop_wait_for_it() {
         ":1\r\n*2\r\n$1\r\nq\r\n$1\r\nx\r\n:0\r\n+OK\r\n"
     );
 }
+
+#[tokio::test]
+async fn getex_with_a_huge_ttl_keeps_the_key() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    // in milliseconds this TTL is just past u64::MAX and used to wrap to 384
+    c.ok(&["SET", "k", "v"]).await;
+    let val = c.get_bulk(&["GETEX", "k", "EX", "18446744073709552"]).await;
+    assert_eq!(val, Some("v".into()));
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_eq!(c.get_int(&["EXISTS", "k"]).await, 1);
+}
