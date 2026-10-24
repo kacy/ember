@@ -658,3 +658,14 @@ async fn getex_with_a_huge_ttl_keeps_the_key() {
     assert_eq!(c.get_int(&["EXISTS", "k"]).await, 1);
     assert!(c.get_int(&["PTTL", "k"]).await > 0);
 }
+
+#[tokio::test]
+async fn expireat_in_the_past_deletes_the_key_on_a_fresh_server() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    // the first expiry the server sees starts its clock
+    c.ok(&["SET", "k", "v"]).await;
+    assert_eq!(c.get_int(&["EXPIREAT", "k", "1"]).await, 1);
+    assert_eq!(c.get_int(&["EXISTS", "k"]).await, 0);
+}
