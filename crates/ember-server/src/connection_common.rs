@@ -16,6 +16,13 @@ use crate::metrics::on_auth_failure;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 
+/// Converts a remaining TTL to a reply integer. A TTL past `i64::MAX`
+/// becomes `i64::MAX` instead of wrapping to a negative value, which a
+/// client would read as "no expiry" or "missing key".
+pub fn clamp_ttl(ttl: u64) -> i64 {
+    i64::try_from(ttl).unwrap_or(i64::MAX)
+}
+
 // Default values for connection limits. These serve as documentation
 // fallbacks — the actual values used at runtime come from `ctx.limits`
 // (derived from EmberConfig at startup). Used primarily in tests.

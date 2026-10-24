@@ -656,4 +656,5 @@ async fn getex_with_a_huge_ttl_keeps_the_key() {
     assert_eq!(val, Some("v".into()));
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     assert_eq!(c.get_int(&["EXISTS", "k"]).await, 1);
+    assert!(c.get_int(&["PTTL", "k"]).await > 0);
 }
