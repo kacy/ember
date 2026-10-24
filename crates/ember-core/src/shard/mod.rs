@@ -432,14 +432,7 @@ async fn run_shard(prepared: PreparedShard) {
                             schema_registry: &schema_registry,
                         };
                         process_message(msg, &mut ctx);
-
-                        // drain any pending messages without re-entering select!.
-                        // this amortizes the select! overhead across bursts of
-                        // pipelined commands that arrived while we processed the
-                        // first message.
-                        while let Ok(msg) = rx.try_recv() {
-                            process_message(msg, &mut ctx);
-                        }
+                        drain_queued(&mut rx, |msg| process_message(msg, &mut ctx));
                     }
                     None => break, // channel closed, shard shutting down
                 }
@@ -518,6 +511,22 @@ struct ProcessCtx<'a> {
 
 /// Dispatches a single or batched message to the shard's keyspace.
 ///
+/// Most queued messages the shard handles before it goes back to `select!`.
+const MAX_DRAIN: usize = 256;
+
+/// Handles messages that are already queued, without going back through
+/// `select!` for each one. That spreads the `select!` cost over a burst of
+/// pipelined commands. It stops after [`MAX_DRAIN`] messages so that, under
+/// constant load, the expiry and fsync ticks still get to run.
+fn drain_queued(rx: &mut mpsc::Receiver<ShardMessage>, mut handle: impl FnMut(ShardMessage)) {
+    for _ in 0..MAX_DRAIN {
+        match rx.try_recv() {
+            Ok(msg) => handle(msg),
+            Err(_) => break,
+        }
+    }
+}
+
 /// Called both in the main `recv()` path and in the `try_recv()` drain loop
 /// to amortize tokio select overhead across pipelined commands.
 fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
@@ -1473,6 +1482,18 @@ mod tests {
         // verify fields
         assert_eq!(ks.hget("myhash2", "f1").unwrap(), Some(Bytes::from("v1")));
         assert_eq!(ks.hget("myhash2", "f2").unwrap(), Some(Bytes::from("v2")));
+    }
+
+    #[test]
+    fn drain_stops_at_the_cap() {
+        let (tx, mut rx) = mpsc::channel(MAX_DRAIN * 2);
+        for _ in 0..MAX_DRAIN + 10 {
+            tx.try_send(ShardMessage::Batch(Vec::new())).unwrap();
+        }
+        let mut handled = 0;
+        drain_queued(&mut rx, |_| handled += 1);
+        assert_eq!(handled, MAX_DRAIN);
+        assert_eq!(rx.len(), 10);
     }
 
     #[test]
