@@ -7,6 +7,7 @@ mod cli;
 mod client_typed_api;
 mod cluster;
 mod data_types;
+mod grpc;
 mod persistence;
 #[cfg(feature = "protobuf")]
 mod proto;
