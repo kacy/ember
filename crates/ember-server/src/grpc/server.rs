@@ -1,24 +1,40 @@
 //! Server administration, slowlog, and pipeline handlers for the gRPC service.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
 
-use ember_core::{ShardRequest, ShardResponse};
+use bytes::Bytes;
+use ember_protocol::Command;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, Streaming};
 
+use super::lists::status_response;
 use super::proto::ember_cache_server::EmberCache;
 use super::proto::*;
-use super::EmberService;
+use super::strings::int_response;
+use super::{reply, session_of, EmberService};
+use crate::connection_common::Session;
 
 pub(super) async fn ping(
-    _svc: &EmberService,
+    svc: &EmberService,
     request: Request<PingRequest>,
 ) -> Result<Response<PingResponse>, Status> {
-    let msg = request.into_inner().message;
+    let frame = svc
+        .call(request, |r| Command::Ping(r.message.map(Bytes::from)))
+        .await?;
     Ok(Response::new(PingResponse {
-        message: msg.unwrap_or_else(|| "PONG".to_string()),
+        message: reply::string(frame)?,
+    }))
+}
+
+pub(super) async fn echo(
+    svc: &EmberService,
+    request: Request<EchoRequest>,
+) -> Result<Response<EchoResponse>, Status> {
+    let frame = svc
+        .call(request, |r| Command::Echo(Bytes::from(r.message)))
+        .await?;
+    Ok(Response::new(EchoResponse {
+        message: reply::string(frame)?,
     }))
 }
 
@@ -26,126 +42,58 @@ pub(super) async fn flush_db(
     svc: &EmberService,
     request: Request<FlushDbRequest>,
 ) -> Result<Response<StatusResponse>, Status> {
-    let start = Instant::now();
-    let async_mode = request.into_inner().r#async;
-
-    if async_mode {
-        svc.broadcast(|| ShardRequest::FlushDbAsync).await?;
-    } else {
-        svc.broadcast(|| ShardRequest::FlushDb).await?;
-    }
-
-    svc.record_command(start, "FLUSHDB");
-    Ok(Response::new(StatusResponse {
-        status: "OK".to_string(),
-    }))
+    let frame = svc
+        .call(request, |r| Command::FlushDb {
+            async_mode: r.r#async,
+        })
+        .await?;
+    status_response(frame)
 }
 
 pub(super) async fn db_size(
     svc: &EmberService,
-    _request: Request<DbSizeRequest>,
+    request: Request<DbSizeRequest>,
 ) -> Result<Response<IntResponse>, Status> {
-    let start = Instant::now();
-
-    let responses = svc.broadcast(|| ShardRequest::DbSize).await?;
-    let mut total = 0i64;
-    for resp in responses {
-        if let ShardResponse::KeyCount(n) = resp {
-            total += n as i64;
-        }
-    }
-    svc.record_command(start, "DBSIZE");
-    Ok(Response::new(IntResponse { value: total }))
+    let frame = svc.call(request, |_| Command::DbSize).await?;
+    int_response(frame)
 }
 
 pub(super) async fn info(
     svc: &EmberService,
     request: Request<InfoRequest>,
 ) -> Result<Response<InfoResponse>, Status> {
-    let start = Instant::now();
-    let _section = request.into_inner().section;
-
-    let responses = svc.broadcast(|| ShardRequest::Stats).await?;
-    let mut total_keys = 0usize;
-    let mut total_memory = 0usize;
-    for resp in &responses {
-        if let ShardResponse::Stats(stats) = resp {
-            total_keys += stats.key_count;
-            total_memory += stats.used_bytes;
-        }
-    }
-
-    let uptime = svc.ctx.start_time.elapsed().as_secs();
-    let info = format!(
-        "# server\r\n\
-         version:{}\r\n\
-         uptime_in_seconds:{}\r\n\
-         shard_count:{}\r\n\
-         \r\n\
-         # clients\r\n\
-         connected_clients:{}\r\n\
-         \r\n\
-         # memory\r\n\
-         used_memory:{}\r\n\
-         \r\n\
-         # keyspace\r\n\
-         total_keys:{}\r\n\
-         \r\n\
-         # stats\r\n\
-         total_commands_processed:{}\r\n\
-         total_connections_received:{}\r\n",
-        svc.ctx.version,
-        uptime,
-        svc.ctx.shard_count,
-        svc.ctx.connections_active.load(Ordering::Relaxed),
-        total_memory,
-        total_keys,
-        svc.ctx.commands_processed.load(Ordering::Relaxed),
-        svc.ctx.connections_accepted.load(Ordering::Relaxed),
-    );
-
-    svc.record_command(start, "INFO");
-    Ok(Response::new(InfoResponse { info }))
-}
-
-pub(super) async fn echo(
-    _svc: &EmberService,
-    request: Request<EchoRequest>,
-) -> Result<Response<EchoResponse>, Status> {
-    Ok(Response::new(EchoResponse {
-        message: request.into_inner().message,
+    let frame = svc
+        .call(request, |r| Command::Info { section: r.section })
+        .await?;
+    Ok(Response::new(InfoResponse {
+        info: reply::string(frame)?,
     }))
 }
 
 pub(super) async fn bg_save(
     svc: &EmberService,
-    _request: Request<BgSaveRequest>,
+    request: Request<BgSaveRequest>,
 ) -> Result<Response<StatusResponse>, Status> {
-    let start = Instant::now();
-    svc.broadcast(|| ShardRequest::Snapshot).await?;
-    svc.record_command(start, "BGSAVE");
-    Ok(Response::new(StatusResponse {
-        status: "Background saving started".to_string(),
-    }))
+    let frame = svc.call(request, |_| Command::BgSave).await?;
+    status_response(frame)
 }
 
 pub(super) async fn bg_rewrite_aof(
     svc: &EmberService,
-    _request: Request<BgRewriteAofRequest>,
+    request: Request<BgRewriteAofRequest>,
 ) -> Result<Response<StatusResponse>, Status> {
-    let start = Instant::now();
-    svc.broadcast(|| ShardRequest::RewriteAof).await?;
-    svc.record_command(start, "BGREWRITEAOF");
-    Ok(Response::new(StatusResponse {
-        status: "Background append only file rewriting started".to_string(),
-    }))
+    let frame = svc.call(request, |_| Command::BgRewriteAof).await?;
+    status_response(frame)
 }
 
+/// Checks the caller may run SLOWLOG GET, then builds the entries from the
+/// slowlog directly, since the RESP reply drops their types.
 pub(super) async fn slow_log_get(
     svc: &EmberService,
     request: Request<SlowLogGetRequest>,
 ) -> Result<Response<SlowLogGetResponse>, Status> {
-    let count = request.into_inner().count.map(|c| c as usize);
+    let count = request.get_ref().count.map(|c| c as usize);
+    svc.authorize(&request, &Command::SlowLogGet { count })?;
     let entries = svc.slow_log.get(count);
     Ok(Response::new(SlowLogGetResponse {
         entries: entries
@@ -169,50 +117,50 @@ pub(super) async fn slow_log_get(
 
 pub(super) async fn slow_log_len(
     svc: &EmberService,
-    _request: Request<SlowLogLenRequest>,
+    request: Request<SlowLogLenRequest>,
 ) -> Result<Response<IntResponse>, Status> {
-    Ok(Response::new(IntResponse {
-        value: svc.slow_log.len() as i64,
-    }))
+    let frame = svc.call(request, |_| Command::SlowLogLen).await?;
+    int_response(frame)
 }
 
 pub(super) async fn slow_log_reset(
     svc: &EmberService,
-    _request: Request<SlowLogResetRequest>,
+    request: Request<SlowLogResetRequest>,
 ) -> Result<Response<StatusResponse>, Status> {
-    svc.slow_log.reset();
-    Ok(Response::new(StatusResponse {
-        status: "OK".to_string(),
-    }))
+    let frame = svc.call(request, |_| Command::SlowLogReset).await?;
+    status_response(frame)
 }
 
 pub(super) async fn time(
-    _svc: &EmberService,
-    _request: Request<TimeRequest>,
+    svc: &EmberService,
+    request: Request<TimeRequest>,
 ) -> Result<Response<TimeResponse>, Status> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let frame = svc.call(request, |_| Command::Time).await?;
+    let mut parts = reply::items(frame)?.into_iter().map(reply::string);
+    let mut next = || -> Result<i64, Status> {
+        let text = parts.next().transpose()?.unwrap_or_default();
+        text.parse()
+            .map_err(|_| Status::internal(format!("bad TIME reply: {text}")))
+    };
     Ok(Response::new(TimeResponse {
-        seconds: now.as_secs() as i64,
-        microseconds: now.subsec_micros() as i64,
+        seconds: next()?,
+        microseconds: next()?,
     }))
 }
 
 pub(super) async fn last_save(
     svc: &EmberService,
-    _request: Request<LastSaveRequest>,
+    request: Request<LastSaveRequest>,
 ) -> Result<Response<IntResponse>, Status> {
-    use std::sync::atomic::Ordering;
-    Ok(Response::new(IntResponse {
-        value: svc.ctx.last_save_timestamp.load(Ordering::Relaxed) as i64,
-    }))
+    let frame = svc.call(request, |_| Command::LastSave).await?;
+    int_response(frame)
 }
 
 pub(super) async fn pipeline(
     svc: &EmberService,
     request: Request<Streaming<PipelineRequest>>,
 ) -> Result<Response<ReceiverStream<Result<PipelineResponse, Status>>>, Status> {
+    let session = session_of(&request);
     let mut stream = request.into_inner();
     let engine = svc.engine.clone();
     let ctx = Arc::clone(&svc.ctx);
@@ -225,7 +173,7 @@ pub(super) async fn pipeline(
         let svc = EmberService::new(engine, ctx, slow_log, pubsub);
         while let Ok(Some(req)) = stream.message().await {
             let id = req.id;
-            let result = handle_pipeline_command(&svc, req).await;
+            let result = handle_pipeline_command(&svc, &session, req).await;
             let resp = match result {
                 Ok(pr) => pr,
                 Err(status) => PipelineResponse {
@@ -251,13 +199,16 @@ pub(super) async fn pipeline(
 /// the service method, extract the inner response, wrap it in the correct
 /// result variant. The macro eliminates the boilerplate of ~57 identical arms.
 macro_rules! pipeline_dispatch {
-    ($svc:expr, $id:expr, $cmd:expr, {
+    ($svc:expr, $session:expr, $id:expr, $cmd:expr, {
         $( $Variant:ident => $method:ident => $Result:ident ),* $(,)?
     }) => {
         match $cmd {
             $(
                 pipeline_request::Command::$Variant(r) => {
-                    let resp = $svc.$method(Request::new(r)).await?;
+                    // each command runs as the stream's caller
+                    let mut req = Request::new(r);
+                    req.extensions_mut().insert($session.clone());
+                    let resp = $svc.$method(req).await?;
                     Ok(PipelineResponse {
                         id: $id,
                         result: Some(pipeline_response::Result::$Result(resp.into_inner())),
@@ -270,6 +221,7 @@ macro_rules! pipeline_dispatch {
 
 async fn handle_pipeline_command(
     svc: &EmberService,
+    session: &Session,
     req: PipelineRequest,
 ) -> Result<PipelineResponse, Status> {
     let id = req.id;
@@ -277,7 +229,7 @@ async fn handle_pipeline_command(
         .command
         .ok_or_else(|| Status::invalid_argument("missing command"))?;
 
-    pipeline_dispatch!(svc, id, cmd, {
+    pipeline_dispatch!(svc, session, id, cmd, {
         // string commands
         Get       => get           => Get,
         Set       => set           => Set,

@@ -7,24 +7,46 @@ use bytes::Bytes;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
+use ember_protocol::Command;
+
 use super::proto::*;
-use super::EmberService;
+use super::strings::int_response;
+use super::{reply, EmberService};
 
 pub(super) async fn publish(
     svc: &EmberService,
     request: Request<PublishRequest>,
 ) -> Result<Response<IntResponse>, Status> {
-    let req = request.into_inner();
-    let count = svc.pubsub.publish(&req.channel, Bytes::from(req.message));
-    Ok(Response::new(IntResponse {
-        value: count as i64,
-    }))
+    let frame = svc
+        .call(request, |r| Command::Publish {
+            channel: r.channel,
+            message: Bytes::from(r.message),
+        })
+        .await?;
+    int_response(frame)
 }
 
 pub(super) async fn subscribe(
     svc: &EmberService,
     request: Request<SubscribeRequest>,
 ) -> Result<Response<ReceiverStream<Result<SubscribeEvent, Status>>>, Status> {
+    let r = request.get_ref();
+    if !r.channels.is_empty() {
+        svc.authorize(
+            &request,
+            &Command::Subscribe {
+                channels: r.channels.clone(),
+            },
+        )?;
+    }
+    if !r.patterns.is_empty() {
+        svc.authorize(
+            &request,
+            &Command::PSubscribe {
+                patterns: r.patterns.clone(),
+            },
+        )?;
+    }
     let req = request.into_inner();
     if req.channels.is_empty() && req.patterns.is_empty() {
         return Err(Status::invalid_argument(
@@ -110,35 +132,41 @@ pub(super) async fn pub_sub_channels(
     svc: &EmberService,
     request: Request<PubSubChannelsRequest>,
 ) -> Result<Response<KeysResponse>, Status> {
-    let pattern = request.into_inner().pattern;
-    let names = svc.pubsub.channel_names(pattern.as_deref());
-    Ok(Response::new(KeysResponse { keys: names }))
+    let frame = svc
+        .call(request, |r| Command::PubSubChannels { pattern: r.pattern })
+        .await?;
+    Ok(Response::new(KeysResponse {
+        keys: reply::string_list(frame)?,
+    }))
 }
 
 pub(super) async fn pub_sub_num_sub(
     svc: &EmberService,
     request: Request<PubSubNumSubRequest>,
 ) -> Result<Response<PubSubNumSubResponse>, Status> {
-    let channels = request.into_inner().channels;
-    let pairs = svc.pubsub.numsub(&channels);
-    Ok(Response::new(PubSubNumSubResponse {
-        counts: pairs
-            .into_iter()
-            .map(|(channel, count)| ChannelCount {
-                channel,
-                count: count as i64,
+    let frame = svc
+        .call(request, |r| Command::PubSubNumSub {
+            channels: r.channels,
+        })
+        .await?;
+    let counts = reply::pairs(frame)?
+        .into_iter()
+        .map(|(channel, count)| {
+            Ok(ChannelCount {
+                channel: reply::string(channel)?,
+                count: reply::int(count)?,
             })
-            .collect(),
-    }))
+        })
+        .collect::<Result<_, Status>>()?;
+    Ok(Response::new(PubSubNumSubResponse { counts }))
 }
 
 pub(super) async fn pub_sub_num_pat(
     svc: &EmberService,
-    _request: Request<PubSubNumPatRequest>,
+    request: Request<PubSubNumPatRequest>,
 ) -> Result<Response<IntResponse>, Status> {
-    Ok(Response::new(IntResponse {
-        value: svc.pubsub.active_patterns() as i64,
-    }))
+    let frame = svc.call(request, |_| Command::PubSubNumPat).await?;
+    int_response(frame)
 }
 
 /// Waits for the next message on any channel subscription receiver.

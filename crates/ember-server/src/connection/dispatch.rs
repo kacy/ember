@@ -52,61 +52,81 @@ pub(super) async fn process(
 
     match Command::from_frame(frame) {
         Ok(cmd) => {
-            // reject oversized keys/values, as the pipelined path does
-            if let Some(err) = validate_command_sizes(
-                &cmd,
-                ctx.limits.max_key_len,
-                ctx.limits.max_value_len,
-                ctx.limits.max_command_memory,
-            ) {
-                return err;
-            }
-
-            // ACL WHOAMI needs per-connection state
-            if matches!(cmd, Command::AclWhoAmI) {
-                return Frame::Bulk(Bytes::from(session.username().to_owned()));
-            }
-
-            // permission check — fast path: skip when unrestricted
-            if let Some(err) = session.check(&cmd) {
-                return err;
-            }
-
-            // handle ASKING: set the flag and return OK immediately
-            if matches!(cmd, Command::Asking) {
-                *asking = true;
-                return Frame::Simple("OK".into());
-            }
-
-            // consume the asking flag for this command
-            let was_asking = std::mem::take(asking);
-
-            let cmd_name = cmd.command_name();
-            let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
-            let start = if needs_timing {
-                Some(Instant::now())
-            } else {
-                None
-            };
-
-            let response =
-                super::execute::execute(cmd, engine, ctx, slow_log, pubsub, was_asking, client_id)
-                    .await;
-            ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
-
-            if let Some(start) = start {
-                let elapsed = start.elapsed();
-                slow_log.maybe_record(elapsed, cmd_name);
-                if ctx.metrics_enabled {
-                    let is_error = matches!(&response, Frame::Error(_));
-                    crate::metrics::record_command(cmd_name, elapsed, is_error);
-                }
-            }
-
-            response
+            run_command(
+                cmd, engine, ctx, slow_log, pubsub, asking, client_id, session,
+            )
+            .await
         }
         Err(e) => Frame::Error(format!("ERR {e}")),
     }
+}
+
+/// Runs one parsed command for `session`: size limits, ACL WHOAMI, the
+/// permission check and ASKING, then `execute` with timing for metrics and
+/// the slowlog. RESP connections reach it through [`process`]; gRPC calls
+/// it directly.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_command(
+    cmd: Command,
+    engine: &Engine,
+    ctx: &Arc<ServerContext>,
+    slow_log: &Arc<SlowLog>,
+    pubsub: &Arc<PubSubManager>,
+    asking: &mut bool,
+    client_id: u64,
+    session: &Session,
+) -> Frame {
+    // reject oversized keys/values, as the pipelined path does
+    if let Some(err) = validate_command_sizes(
+        &cmd,
+        ctx.limits.max_key_len,
+        ctx.limits.max_value_len,
+        ctx.limits.max_command_memory,
+    ) {
+        return err;
+    }
+
+    // ACL WHOAMI needs per-connection state
+    if matches!(cmd, Command::AclWhoAmI) {
+        return Frame::Bulk(Bytes::from(session.username().to_owned()));
+    }
+
+    // permission check — fast path: skip when unrestricted
+    if let Some(err) = session.check(&cmd) {
+        return err;
+    }
+
+    // handle ASKING: set the flag and return OK immediately
+    if matches!(cmd, Command::Asking) {
+        *asking = true;
+        return Frame::Simple("OK".into());
+    }
+
+    // consume the asking flag for this command
+    let was_asking = std::mem::take(asking);
+
+    let cmd_name = cmd.command_name();
+    let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
+    let start = if needs_timing {
+        Some(Instant::now())
+    } else {
+        None
+    };
+
+    let response =
+        super::execute::execute(cmd, engine, ctx, slow_log, pubsub, was_asking, client_id).await;
+    ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+
+    if let Some(start) = start {
+        let elapsed = start.elapsed();
+        slow_log.maybe_record(elapsed, cmd_name);
+        if ctx.metrics_enabled {
+            let is_error = matches!(&response, Frame::Error(_));
+            crate::metrics::record_command(cmd_name, elapsed, is_error);
+        }
+    }
+
+    response
 }
 
 /// Prepares a single frame for batch dispatch without sending to a shard.

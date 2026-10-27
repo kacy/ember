@@ -1,21 +1,24 @@
 //! gRPC service implementation for ember.
 //!
-//! Implements the `EmberCache` tonic service by translating proto requests
-//! into `ShardRequest`s, routing through the engine, and mapping responses
-//! back to proto types. Shares the same engine, semaphore, and slowlog as
-//! the RESP3 listener.
+//! Implements the `EmberCache` tonic service. Each handler turns its proto
+//! request into a [`Command`] and runs it through the same path as a RESP
+//! command, so ACLs, cluster checks, persistence, replication and keyspace
+//! notifications behave the same for both protocols. [`reply`] maps the
+//! RESP reply back to the proto response.
 
-use std::sync::atomic::Ordering;
+// tonic's Status is large, and it is the error type every handler returns
+#![allow(clippy::result_large_err)]
+
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use ember_core::{Engine, ShardRequest, ShardResponse, Value};
+use ember_core::Engine;
 use ember_protocol::command::ScoreBound;
-use subtle::ConstantTimeEq;
+use ember_protocol::{Command, Frame};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::service::interceptor::InterceptedService;
 use tonic::{Request, Response, Status, Streaming};
 
+use crate::connection_common::Session;
 use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
@@ -28,6 +31,7 @@ mod hashes;
 mod keyspace;
 mod lists;
 mod pubsub;
+mod reply;
 mod server;
 mod sets;
 mod sorted_sets;
@@ -60,12 +64,7 @@ impl EmberService {
         }
     }
 
-    /// Build this service into a tonic router with optional authentication.
-    ///
-    /// When `requirepass` is configured on the server, every gRPC request
-    /// must carry a matching `authorization` metadata header. Comparison
-    /// uses constant-time equality to prevent timing side-channels. Without
-    /// a password, protected mode applies as it does for RESP clients.
+    /// Builds this service into a tonic router behind [`AuthInterceptor`].
     pub fn into_service(
         self,
     ) -> InterceptedService<proto::ember_cache_server::EmberCacheServer<Self>, AuthInterceptor>
@@ -79,46 +78,75 @@ impl EmberService {
         InterceptedService::new(svc, interceptor)
     }
 
-    /// Routes a single-key request through the engine.
-    async fn route(&self, key: &str, req: ShardRequest) -> Result<ShardResponse, Status> {
-        self.engine
-            .route(key, req)
-            .await
-            .map_err(|_| Status::unavailable("shard unavailable"))
+    /// Runs `cmd` as the caller in `session`, through the same checks and
+    /// execution path as a RESP command: size limits, ACL, cluster slot and
+    /// replica checks, keyspace notifications, metrics and the slowlog. An
+    /// error reply becomes a gRPC status.
+    pub(super) async fn run(&self, session: &Session, cmd: Command) -> Result<Frame, Status> {
+        let frame = crate::connection::dispatch::run_command(
+            cmd,
+            &self.engine,
+            &self.ctx,
+            &self.slow_log,
+            &self.pubsub,
+            &mut false,
+            0,
+            session,
+        )
+        .await;
+        match frame {
+            Frame::Error(msg) => Err(error_status(msg)),
+            frame => Ok(frame),
+        }
     }
 
-    /// Broadcasts a request to all shards.
-    async fn broadcast<F>(&self, make_req: F) -> Result<Vec<ShardResponse>, Status>
-    where
-        F: Fn() -> ShardRequest,
-    {
-        self.engine
-            .broadcast(make_req)
-            .await
-            .map_err(|_| Status::unavailable("shard unavailable"))
+    /// Runs the command `to_cmd` builds from the request, as the caller
+    /// the interceptor logged in.
+    pub(super) async fn call<T>(
+        &self,
+        request: Request<T>,
+        to_cmd: impl FnOnce(T) -> Command,
+    ) -> Result<Frame, Status> {
+        self.try_call(request, |req| Ok(to_cmd(req))).await
     }
 
-    /// Records command metrics and slowlog.
-    fn record_command(&self, start: Instant, cmd: &str) {
-        self.ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
-        let elapsed = start.elapsed();
-        self.slow_log.maybe_record(elapsed, cmd);
+    /// Like [`call`](Self::call), for requests that can fail validation.
+    pub(super) async fn try_call<T>(
+        &self,
+        request: Request<T>,
+        to_cmd: impl FnOnce(T) -> Result<Command, Status>,
+    ) -> Result<Frame, Status> {
+        let session = session_of(&request);
+        let cmd = to_cmd(request.into_inner())?;
+        self.run(&session, cmd).await
+    }
+
+    /// Checks that the caller may run `cmd`, for handlers that answer from
+    /// server state instead of running the command.
+    pub(super) fn authorize<T>(&self, request: &Request<T>, cmd: &Command) -> Result<(), Status> {
+        match session_of(request).check(cmd) {
+            Some(Frame::Error(msg)) => Err(error_status(msg)),
+            Some(other) => Err(Status::internal(format!("unexpected reply: {other:?}"))),
+            None => Ok(()),
+        }
     }
 }
 
 /// gRPC authentication interceptor.
 ///
-/// When `requirepass` is `Some`, every request must include an
-/// `authorization` metadata header whose value matches the password.
-/// Uses constant-time comparison to prevent timing side-channels.
-/// When `requirepass` is `None`, all requests pass through.
+/// Logs each request in as an ACL user, the way AUTH does on a RESP
+/// connection, and stores the [`Session`] in the request's extensions for
+/// [`EmberService::run`]. The `authorization` metadata header carries the
+/// password, and the optional `username` header names the user (`default`
+/// when absent). When `default` needs no password, a request without a
+/// `username` header runs as `default`.
 #[derive(Clone)]
 pub struct AuthInterceptor {
     ctx: Arc<ServerContext>,
 }
 
 impl tonic::service::Interceptor for AuthInterceptor {
-    fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
+    fn call(&mut self, mut req: Request<()>) -> Result<Request<()>, Status> {
         // the same protected mode the RESP listeners apply
         let peer = req.remote_addr().map(|addr| addr.ip());
         if crate::server::is_protected_mode_violation(&self.ctx, peer) {
@@ -126,92 +154,64 @@ impl tonic::service::Interceptor for AuthInterceptor {
                 "protected mode: no password is set, so only loopback clients may connect",
             ));
         }
-        let password = match &self.ctx.requirepass {
-            Some(pw) => pw,
-            None => return Ok(req),
+        let header = |name| req.metadata().get(name).and_then(|v| v.to_str().ok());
+        let open = Session::new(&self.ctx);
+        let session = match (header("username"), header("authorization")) {
+            // no password needed: a password sent anyway is ignored, as
+            // before ACL users applied to gRPC
+            (None, _) if open.is_authenticated() => open,
+            (username, Some(password)) => {
+                Session::login(&self.ctx, username.unwrap_or("default"), password)
+                    .map_err(Status::unauthenticated)?
+            }
+            _ => return Err(Status::unauthenticated("authentication required")),
         };
-        let token = req
-            .metadata()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok());
-        match token {
-            Some(t) if bool::from(t.as_bytes().ct_eq(password.as_bytes())) => Ok(req),
-            _ => Err(Status::unauthenticated("authentication required")),
+        req.extensions_mut().insert(session);
+        Ok(req)
+    }
+}
+
+/// Returns the session the interceptor stored on `req`. A request that
+/// did not pass through the interceptor gets an unauthenticated session,
+/// whose commands fail with NOAUTH.
+pub(super) fn session_of<T>(req: &Request<T>) -> Session {
+    req.extensions()
+        .get::<Session>()
+        .cloned()
+        .unwrap_or_else(Session::anonymous)
+}
+
+/// Maps an error reply from command execution to a gRPC status. The
+/// message keeps the full Redis error text.
+pub(super) fn error_status(msg: String) -> Status {
+    let code = msg.split_whitespace().next().unwrap_or_default();
+    match code {
+        "NOAUTH" | "WRONGPASS" => Status::unauthenticated(msg),
+        "NOPERM" => Status::permission_denied(msg),
+        "OOM" => Status::resource_exhausted(msg),
+        "CLUSTERDOWN" | "TRYAGAIN" | "LOADING" => Status::unavailable(msg),
+        "WRONGTYPE" | "MOVED" | "ASK" | "READONLY" | "CROSSSLOT" => {
+            Status::failed_precondition(msg)
         }
+        _ if msg.starts_with("ERR no such key") => Status::not_found(msg),
+        _ if msg.starts_with("ERR unknown command") => Status::unimplemented(msg),
+        _ => Status::invalid_argument(msg),
     }
 }
 
-/// Extracts the bytes from a Value::String, or returns an empty vec for
-/// non-string types. This is intentionally lenient — callers that need
-/// strict type checking should match on Value::String directly.
-pub(super) fn value_to_bytes(v: Value) -> Vec<u8> {
-    match v {
-        Value::String(b) => b.to_vec(),
-        _ => Vec::new(),
+/// Rejects an empty key list, which the RESP parser would refuse for
+/// having too few arguments.
+pub(super) fn non_empty(keys: Vec<String>) -> Result<Vec<String>, Status> {
+    if keys.is_empty() {
+        return Err(Status::invalid_argument("at least one key required"));
     }
-}
-
-/// Maps a ShardResponse to a gRPC error status. Handles the common error
-/// variants (WrongType, OutOfMemory, Err) and falls back to "unexpected
-/// response" for anything else. Used as the catch-all in response matching.
-pub(super) fn unexpected_response(resp: &ShardResponse) -> Status {
-    match resp {
-        ShardResponse::WrongType => Status::failed_precondition(
-            "WRONGTYPE operation against a key holding the wrong kind of value",
-        ),
-        ShardResponse::OutOfMemory => {
-            Status::resource_exhausted("OOM command not allowed when used memory > maxmemory")
-        }
-        ShardResponse::Err(msg) => Status::internal(msg.clone()),
-        _ => Status::internal("unexpected response"),
-    }
-}
-
-// input validation limits — defaults used as fallback documentation
-use crate::config::ConnectionLimits;
-
-#[allow(clippy::result_large_err)] // Status is tonic's idiomatic error type
-pub(super) fn validate_key(key: &str, limits: &ConnectionLimits) -> Result<(), Status> {
-    if key.is_empty() {
-        return Err(Status::invalid_argument("key must not be empty"));
-    }
-    if key.len() > limits.max_key_len {
-        return Err(Status::invalid_argument(format!(
-            "key length {} exceeds max {}",
-            key.len(),
-            limits.max_key_len
-        )));
-    }
-    Ok(())
-}
-
-#[allow(clippy::result_large_err)] // Status is tonic's idiomatic error type
-pub(super) fn validate_value(value: &[u8], limits: &ConnectionLimits) -> Result<(), Status> {
-    if value.len() > limits.max_value_len {
-        return Err(Status::invalid_argument(format!(
-            "value length {} exceeds max {}",
-            value.len(),
-            limits.max_value_len
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn parse_expire(seconds: u64, millis: u64) -> Option<Duration> {
-    if millis > 0 {
-        Some(Duration::from_millis(millis))
-    } else if seconds > 0 {
-        Some(Duration::from_secs(seconds))
-    } else {
-        None
-    }
+    Ok(keys)
 }
 
 /// Parses a Redis-style score bound string into a `ScoreBound`.
 ///
 /// Supports "-inf", "+inf", exclusive bounds like "(5.0", and inclusive
 /// bounds like "5.0". Returns an error status for invalid strings.
-#[allow(clippy::result_large_err)]
 pub(super) fn parse_score_bound(s: &str) -> Result<ScoreBound, Status> {
     match s {
         "-inf" | "-INF" => Ok(ScoreBound::NegInf),
@@ -224,22 +224,6 @@ pub(super) fn parse_score_bound(s: &str) -> Result<ScoreBound, Status> {
             .parse::<f64>()
             .map(ScoreBound::Inclusive)
             .map_err(|_| Status::invalid_argument(format!("invalid score bound: {s}"))),
-    }
-}
-
-/// Converts a ScoredArray response into a ZRangeResponse.
-///
-/// When `with_scores` is false, scores are set to 0.0 — clients should
-/// ignore them. This avoids a second round-trip to the engine.
-pub(super) fn scored_array_to_zrange(arr: Vec<(String, f64)>, with_scores: bool) -> ZRangeResponse {
-    ZRangeResponse {
-        members: arr
-            .into_iter()
-            .map(|(member, score)| ScoreMember {
-                member,
-                score: if with_scores { score } else { 0.0 },
-            })
-            .collect(),
     }
 }
 
