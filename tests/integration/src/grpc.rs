@@ -242,10 +242,11 @@ async fn grpc_set_nx_xx_and_expiry() {
 }
 
 #[tokio::test]
-async fn grpc_empty_key_is_invalid_argument() {
+async fn grpc_empty_key_is_allowed() {
+    // as over RESP and in Redis
     let (_s, mut c) = start().await;
-    let result = c.get(GetRequest { key: String::new() }).await;
-    assert_eq!(code(result), Code::InvalidArgument);
+    set(&mut c, "", "v").await;
+    assert_eq!(get(&mut c, "").await, Some(b("v")));
 }
 
 #[tokio::test]
@@ -991,11 +992,8 @@ async fn grpc_lset_errors() {
         index,
         value: b("v"),
     };
-    assert_eq!(code(c.l_set(lset("l", 5)).await), Code::FailedPrecondition);
-    assert_eq!(
-        code(c.l_set(lset("missing", 0)).await),
-        Code::FailedPrecondition
-    );
+    assert_eq!(code(c.l_set(lset("l", 5)).await), Code::InvalidArgument);
+    assert_eq!(code(c.l_set(lset("missing", 0)).await), Code::NotFound);
 }
 
 #[tokio::test]
@@ -2040,6 +2038,11 @@ async fn grpc_vectors() {
         .unwrap();
     assert_eq!(n.into_inner().value, 2);
 
+    let card = c.v_card(VCardRequest { key: "v".into() }).await.unwrap();
+    assert_eq!(card.into_inner().value, 3);
+    let dim = c.v_dim(VDimRequest { key: "v".into() }).await.unwrap();
+    assert_eq!(dim.into_inner().value, 3);
+
     let sim = c
         .v_sim(VSimRequest {
             key: "v".into(),
@@ -2206,14 +2209,15 @@ async fn grpc_slowlog() {
 
     let s = c.slow_log_reset(SlowLogResetRequest {}).await.unwrap();
     assert_eq!(s.into_inner().status, "OK");
+    // gRPC commands are logged like RESP ones, SLOWLOG RESET included
     let n = c.slow_log_len(SlowLogLenRequest {}).await.unwrap();
-    assert_eq!(n.into_inner().value, 0);
+    assert_eq!(n.into_inner().value, 1);
 
     set(&mut c, "k", "v").await;
     get(&mut c, "k").await;
 
     let n = c.slow_log_len(SlowLogLenRequest {}).await.unwrap();
-    assert_eq!(n.into_inner().value, 2);
+    assert_eq!(n.into_inner().value, 4);
 
     let entries = c
         .slow_log_get(SlowLogGetRequest { count: Some(1) })
@@ -2222,18 +2226,17 @@ async fn grpc_slowlog() {
         .into_inner()
         .entries;
     assert_eq!(entries.len(), 1);
-    // newest first
-    assert!(entries[0].command.to_uppercase().starts_with("GET"));
     assert!(entries[0].timestamp_unix > 0);
 
+    // newest first: LEN, GET, SET, LEN, RESET
     let entries = c
         .slow_log_get(SlowLogGetRequest { count: None })
         .await
         .unwrap()
         .into_inner()
         .entries;
-    assert_eq!(entries.len(), 2);
-    assert!(entries[1].command.to_uppercase().starts_with("SET"));
+    let commands: Vec<String> = entries.iter().map(|e| e.command.to_uppercase()).collect();
+    assert_eq!(commands, ["SLOWLOG", "GET", "SET", "SLOWLOG", "SLOWLOG"]);
     assert!(entries[0].id > entries[1].id);
 }
 
@@ -2270,6 +2273,137 @@ async fn grpc_requirepass() {
     req.metadata_mut()
         .insert("authorization", "secret".parse().unwrap());
     assert_eq!(c.get(req).await.unwrap().into_inner().value, None);
+}
+
+/// Adds login metadata to a request: the password in `authorization`
+/// and, when given, the user in `username`.
+fn login<T>(msg: T, user: Option<&str>, password: &str) -> Request<T> {
+    let mut req = Request::new(msg);
+    req.metadata_mut()
+        .insert("authorization", password.parse().unwrap());
+    if let Some(user) = user {
+        req.metadata_mut().insert("username", user.parse().unwrap());
+    }
+    req
+}
+
+#[tokio::test]
+async fn grpc_acl_user_permissions_apply() {
+    let (server, mut c) = start().await;
+    let mut resp = server.connect().await;
+    resp.ok(&["ACL", "SETUSER", "reader", "on", ">pw", "~app:*", "+@read"])
+        .await;
+    resp.ok(&["SET", "app:k", "v"]).await;
+    resp.ok(&["SET", "other", "v"]).await;
+
+    let get = |key: &str| login(GetRequest { key: key.into() }, Some("reader"), "pw");
+    let value = c.get(get("app:k")).await.unwrap().into_inner().value;
+    assert_eq!(value, Some(b("v")));
+
+    // a key outside the user's patterns
+    assert_eq!(code(c.get(get("other")).await), Code::PermissionDenied);
+
+    // a command outside the user's categories
+    let set = login(
+        SetRequest {
+            key: "app:k".into(),
+            value: b("x"),
+            ..Default::default()
+        },
+        Some("reader"),
+        "pw",
+    );
+    assert_eq!(code(c.set(set).await), Code::PermissionDenied);
+    let flush = login(FlushDbRequest { r#async: false }, Some("reader"), "pw");
+    assert_eq!(code(c.flush_db(flush).await), Code::PermissionDenied);
+
+    // the same holds inside a pipeline
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(PipelineRequest {
+        id: 1,
+        command: Some(PipeCmd::Set(SetRequest {
+            key: "app:k".into(),
+            value: b("x"),
+            ..Default::default()
+        })),
+    })
+    .await
+    .unwrap();
+    drop(tx);
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let mut out = c
+        .pipeline(login(stream, Some("reader"), "pw"))
+        .await
+        .unwrap()
+        .into_inner();
+    let first = out.message().await.unwrap().unwrap();
+    match first.result {
+        Some(PipeResult::Error(e)) => assert!(e.message.starts_with("NOPERM"), "{e:?}"),
+        other => panic!("expected NOPERM, got {other:?}"),
+    }
+    assert_eq!(resp.get_bulk(&["GET", "app:k"]).await.as_deref(), Some("v"));
+}
+
+#[tokio::test]
+async fn grpc_login_follows_acl_changes() {
+    let (server, mut c) = start().await;
+    let mut resp = server.connect().await;
+    resp.ok(&["ACL", "SETUSER", "app", "on", ">old", "~*", "+@all"])
+        .await;
+    let ping =
+        |user: Option<&str>, password: &str| login(PingRequest { message: None }, user, password);
+    c.ping(ping(Some("app"), "old")).await.unwrap();
+    assert_eq!(
+        code(c.ping(ping(Some("app"), "wrong")).await),
+        Code::Unauthenticated
+    );
+
+    // a new password takes effect on the next request
+    resp.ok(&["ACL", "SETUSER", "app", "resetpass", ">new"])
+        .await;
+    assert_eq!(
+        code(c.ping(ping(Some("app"), "old")).await),
+        Code::Unauthenticated
+    );
+    c.ping(ping(Some("app"), "new")).await.unwrap();
+
+    // a disabled user can't log in
+    resp.ok(&["ACL", "SETUSER", "app", "off"]).await;
+    assert_eq!(
+        code(c.ping(ping(Some("app"), "new")).await),
+        Code::Unauthenticated
+    );
+
+    // giving `default` a password closes password-less access
+    c.ping(Request::new(PingRequest { message: None }))
+        .await
+        .unwrap();
+    resp.ok(&["ACL", "SETUSER", "default", ">rotated"]).await;
+    assert_eq!(
+        code(c.ping(Request::new(PingRequest { message: None })).await),
+        Code::Unauthenticated
+    );
+    c.ping(ping(None, "rotated")).await.unwrap();
+}
+
+#[tokio::test]
+async fn grpc_applies_cluster_slot_checks() {
+    // a cluster node that owns no slots must not serve keys
+    let (_s, mut c) = start_with(ServerOptions {
+        cluster_enabled: true,
+        ..Default::default()
+    })
+    .await;
+    let set = c
+        .set(SetRequest {
+            key: "k".into(),
+            value: b("v"),
+            ..Default::default()
+        })
+        .await;
+    let status = set.unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable);
+    assert!(status.message().starts_with("CLUSTERDOWN"), "{status:?}");
 }
 
 // ---------------------------------------------------------------------------
