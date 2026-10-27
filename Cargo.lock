@@ -880,6 +880,7 @@ dependencies = [
  "ember-client",
  "ember-protocol",
  "ember-server",
+ "prost 0.13.5",
  "prost-reflect",
  "rcgen",
  "rustls",
@@ -887,6 +888,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]

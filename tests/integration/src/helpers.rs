@@ -4,6 +4,7 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -17,6 +18,8 @@ pub struct TestServer {
     pub port: u16,
     /// TLS port, populated when the server was started with TLS options.
     pub tls_port: Option<u16>,
+    /// gRPC port, populated when the server was started with `grpc: true`.
+    pub grpc_port: Option<u16>,
     _data_dir: Option<tempfile::TempDir>,
     /// Temp file holding server stderr for diagnostics on failure.
     stderr_path: Option<PathBuf>,
@@ -53,6 +56,9 @@ pub struct ServerOptions {
     pub cluster_node_timeout_ms: Option<u64>,
     /// Seconds before an idle connection is closed (--idle-timeout-secs).
     pub idle_timeout_secs: Option<u64>,
+    /// Start the gRPC listener on a free port. When false, gRPC is disabled
+    /// so test servers don't compete for the default port.
+    pub grpc: bool,
 }
 
 impl TestServer {
@@ -149,15 +155,29 @@ impl TestServer {
         };
 
         // TLS: allocate a separate port and pass cert/key files
-        let tls_port = if opts.tls_cert_file.is_some() && opts.tls_key_file.is_some() {
+        let tls_port = if let (Some(cert), Some(key)) = (&opts.tls_cert_file, &opts.tls_key_file) {
             let tp = find_free_port();
             cmd.arg("--tls-port").arg(tp.to_string());
-            cmd.arg("--tls-cert-file")
-                .arg(opts.tls_cert_file.as_ref().unwrap());
-            cmd.arg("--tls-key-file")
-                .arg(opts.tls_key_file.as_ref().unwrap());
+            cmd.arg("--tls-cert-file").arg(cert);
+            cmd.arg("--tls-key-file").arg(key);
             Some(tp)
         } else {
+            None
+        };
+
+        let grpc_port = if opts.grpc {
+            assert!(
+                server_has_grpc(),
+                "ember-server was built without gRPC. run `cargo build --features grpc` first."
+            );
+            let gp = find_free_port();
+            cmd.arg("--grpc-port").arg(gp.to_string());
+            Some(gp)
+        } else {
+            // the flag only exists when the server was built with gRPC
+            if server_has_grpc() {
+                cmd.arg("--no-grpc");
+            }
             None
         };
 
@@ -184,10 +204,24 @@ impl TestServer {
             std::thread::sleep(Duration::from_millis(50));
         }
 
+        // the gRPC listener starts separately, so wait for it too
+        if let Some(gp) = grpc_port {
+            loop {
+                if std::time::Instant::now() > deadline {
+                    panic!("ember-server gRPC listener failed to start on port {gp}");
+                }
+                if std::net::TcpStream::connect(("127.0.0.1", gp)).is_ok() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
         let server = Self {
             child,
             port,
             tls_port,
+            grpc_port,
             _data_dir: data_dir,
             stderr_path,
         };
@@ -498,6 +532,19 @@ fn find_binary(name: &str) -> PathBuf {
 /// Locates the ember-server binary in the cargo target directory.
 pub fn server_binary() -> PathBuf {
     find_binary("ember-server")
+}
+
+/// Reports whether the ember-server binary was built with the grpc feature,
+/// by checking its `--help` output once per test run.
+fn server_has_grpc() -> bool {
+    static HAS_GRPC: OnceLock<bool> = OnceLock::new();
+    *HAS_GRPC.get_or_init(|| {
+        let out = Command::new(server_binary())
+            .arg("--help")
+            .output()
+            .expect("failed to run ember-server --help");
+        String::from_utf8_lossy(&out.stdout).contains("--grpc-port")
+    })
 }
 
 /// Locates the ember-cli binary in the cargo target directory.
