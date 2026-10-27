@@ -237,6 +237,8 @@ requirepass = "a-long-random-string"
 
 for multi-tenant or multi-team environments, use ACLs to restrict which commands and keys each user can access. `ACL SETUSER`, `ACL LIST`, and `ACL WHOAMI` manage this at runtime. define users in the config file for persistence across restarts.
 
+the same users and permissions apply to gRPC. a gRPC client sends the password in the `authorization` metadata header and the user name in the `username` header. without a `username` header, the request logs in as `default`.
+
 **protected mode**
 
 when `requirepass` is not set and ember is bound to a public interface, protected mode will reject external connections. this is a safety net, not a substitute for proper authentication. do not rely on it in production.
