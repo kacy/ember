@@ -7,7 +7,7 @@ use tonic::{Request, Response, Status};
 use super::keyspace::scan_count;
 use super::proto::*;
 use super::strings::int_response;
-use super::{parse_score_bound, reply, EmberService};
+use super::{non_empty, parse_score_bound, reply, EmberService};
 
 pub(super) async fn z_add(
     svc: &EmberService,
@@ -327,13 +327,6 @@ pub(super) async fn zrandmember(
     Ok(Response::new(ArrayResponse {
         values: reply::one_or_many(frame)?,
     }))
-}
-
-fn non_empty(keys: Vec<String>) -> Result<Vec<String>, Status> {
-    if keys.is_empty() {
-        return Err(Status::invalid_argument("at least one key required"));
-    }
-    Ok(keys)
 }
 
 fn zrange_response(frame: Frame, with_scores: bool) -> Result<Response<ZRangeResponse>, Status> {

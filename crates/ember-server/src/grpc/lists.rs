@@ -6,7 +6,7 @@ use tonic::{Request, Response, Status};
 
 use super::proto::*;
 use super::strings::{get_response, int_response};
-use super::{reply, EmberService};
+use super::{non_empty, reply, EmberService};
 
 pub(super) async fn l_push(
     svc: &EmberService,
@@ -193,11 +193,8 @@ pub(super) async fn lmpop(
 ) -> Result<Response<LmpopResponse>, Status> {
     let frame = svc
         .try_call(request, |r| {
-            if r.keys.is_empty() {
-                return Err(Status::invalid_argument("at least one key required"));
-            }
             Ok(Command::Lmpop {
-                keys: r.keys,
+                keys: non_empty(r.keys)?,
                 left: r.left,
                 count: r.count.max(1) as usize,
             })

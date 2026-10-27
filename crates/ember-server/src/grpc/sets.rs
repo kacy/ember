@@ -6,7 +6,7 @@ use tonic::{Request, Response, Status};
 use super::keyspace::{bool_response, scan_count};
 use super::proto::*;
 use super::strings::int_response;
-use super::{reply, EmberService};
+use super::{non_empty, reply, EmberService};
 
 pub(super) async fn s_add(
     svc: &EmberService,
@@ -70,7 +70,11 @@ pub(super) async fn s_union(
     request: Request<SUnionRequest>,
 ) -> Result<Response<KeysResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::SUnion { keys: r.keys })
+        .try_call(request, |r| {
+            Ok(Command::SUnion {
+                keys: non_empty(r.keys)?,
+            })
+        })
         .await?;
     keys_response(frame)
 }
@@ -80,7 +84,11 @@ pub(super) async fn s_inter(
     request: Request<SInterRequest>,
 ) -> Result<Response<KeysResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::SInter { keys: r.keys })
+        .try_call(request, |r| {
+            Ok(Command::SInter {
+                keys: non_empty(r.keys)?,
+            })
+        })
         .await?;
     keys_response(frame)
 }
@@ -90,7 +98,11 @@ pub(super) async fn s_diff(
     request: Request<SDiffRequest>,
 ) -> Result<Response<KeysResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::SDiff { keys: r.keys })
+        .try_call(request, |r| {
+            Ok(Command::SDiff {
+                keys: non_empty(r.keys)?,
+            })
+        })
         .await?;
     keys_response(frame)
 }
@@ -100,9 +112,11 @@ pub(super) async fn s_union_store(
     request: Request<SUnionStoreRequest>,
 ) -> Result<Response<IntResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::SUnionStore {
-            dest: r.destination,
-            keys: r.keys,
+        .try_call(request, |r| {
+            Ok(Command::SUnionStore {
+                dest: r.destination,
+                keys: non_empty(r.keys)?,
+            })
         })
         .await?;
     int_response(frame)
@@ -113,9 +127,11 @@ pub(super) async fn s_inter_store(
     request: Request<SInterStoreRequest>,
 ) -> Result<Response<IntResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::SInterStore {
-            dest: r.destination,
-            keys: r.keys,
+        .try_call(request, |r| {
+            Ok(Command::SInterStore {
+                dest: r.destination,
+                keys: non_empty(r.keys)?,
+            })
         })
         .await?;
     int_response(frame)
@@ -126,9 +142,11 @@ pub(super) async fn s_diff_store(
     request: Request<SDiffStoreRequest>,
 ) -> Result<Response<IntResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::SDiffStore {
-            dest: r.destination,
-            keys: r.keys,
+        .try_call(request, |r| {
+            Ok(Command::SDiffStore {
+                dest: r.destination,
+                keys: non_empty(r.keys)?,
+            })
         })
         .await?;
     int_response(frame)
@@ -220,11 +238,8 @@ pub(super) async fn sintercard(
 ) -> Result<Response<IntResponse>, Status> {
     let frame = svc
         .try_call(request, |r| {
-            if r.keys.is_empty() {
-                return Err(Status::invalid_argument("at least one key required"));
-            }
             Ok(Command::SInterCard {
-                keys: r.keys,
+                keys: non_empty(r.keys)?,
                 limit: r.limit as usize,
             })
         })

@@ -193,8 +193,19 @@ pub(super) fn error_status(msg: String) -> Status {
         "WRONGTYPE" | "MOVED" | "ASK" | "READONLY" | "CROSSSLOT" => {
             Status::failed_precondition(msg)
         }
+        _ if msg.starts_with("ERR no such key") => Status::not_found(msg),
+        _ if msg.starts_with("ERR unknown command") => Status::unimplemented(msg),
         _ => Status::invalid_argument(msg),
     }
+}
+
+/// Rejects an empty key list, which the RESP parser would refuse for
+/// having too few arguments.
+pub(super) fn non_empty(keys: Vec<String>) -> Result<Vec<String>, Status> {
+    if keys.is_empty() {
+        return Err(Status::invalid_argument("at least one key required"));
+    }
+    Ok(keys)
 }
 
 /// Parses a Redis-style score bound string into a `ScoreBound`.
