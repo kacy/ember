@@ -109,18 +109,13 @@ fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
         _ => return AuthResult::fail("ERR expected AUTH command"),
     };
 
-    match crate::acl::authenticate(&ctx.acl, &username, &password) {
-        Ok(user) => AuthResult {
+    match Session::login(ctx, &username, &password) {
+        Ok(session) => AuthResult {
             response: Frame::Simple("OK".into()),
-            user: Some(Arc::new(user)),
+            user: session.user,
             username,
         },
-        Err(msg) => {
-            if msg.starts_with("WRONGPASS") {
-                on_auth_failure("wrongpass");
-            }
-            AuthResult::fail(&msg)
-        }
+        Err(msg) => AuthResult::fail(&msg),
     }
 }
 
@@ -129,6 +124,7 @@ fn try_auth(frame: Frame, ctx: &ServerContext) -> AuthResult {
 /// Holds a copy of the connection's ACL user so permission checks need no
 /// lock. [`refresh`](Self::refresh) reloads that copy when ACL SETUSER or
 /// DELUSER has changed the users since it was taken.
+#[derive(Clone)]
 pub struct Session {
     user: Option<Arc<AclUser>>,
     username: String,
@@ -152,6 +148,34 @@ impl Session {
             user: user.map(Arc::new),
             username: username.into(),
             generation,
+        }
+    }
+
+    /// A session that is not logged in as anyone.
+    pub fn anonymous() -> Self {
+        Self {
+            user: None,
+            username: String::new(),
+            generation: 0,
+        }
+    }
+
+    /// Starts a session as `username`, checking the password the way AUTH
+    /// does. gRPC calls this for each request.
+    pub fn login(ctx: &ServerContext, username: &str, password: &str) -> Result<Self, String> {
+        let generation = ctx.acl.generation();
+        match crate::acl::authenticate(&ctx.acl, username, password) {
+            Ok(user) => Ok(Self {
+                user: Some(Arc::new(user)),
+                username: username.into(),
+                generation,
+            }),
+            Err(msg) => {
+                if msg.starts_with("WRONGPASS") {
+                    on_auth_failure("wrongpass");
+                }
+                Err(msg)
+            }
         }
     }
 

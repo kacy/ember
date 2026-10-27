@@ -37,7 +37,7 @@ use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 use crate::write_timeout::WriteTimeout;
 
-mod dispatch;
+pub(crate) mod dispatch;
 mod exec;
 mod execute;
 mod handler;
