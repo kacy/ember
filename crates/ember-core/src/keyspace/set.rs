@@ -521,8 +521,13 @@ impl Keyspace {
         self.cleanup_after_remove(source, old_src_size, src_empty, member_bytes);
         self.bump_version(source);
 
-        // add to destination (creates the set if needed)
-        self.sadd(destination, &[member.to_string()])?;
+        // add to destination (creates the set if needed). on failure, put
+        // the member back so a failed move changes nothing; the removal just
+        // freed the memory this needs.
+        if let Err(e) = self.sadd(destination, &[member.to_string()]) {
+            let _ = self.sadd(source, &[member.to_string()]);
+            return Err(e);
+        }
 
         Ok(true)
     }
@@ -1030,6 +1035,21 @@ mod tests {
         assert!(ks.sismember("dst", "a").unwrap());
         assert_eq!(ks.scard("src").unwrap(), 1);
         assert_eq!(ks.scard("dst").unwrap(), 1);
+    }
+
+    #[test]
+    fn smove_that_runs_out_of_memory_keeps_the_member() {
+        let mut ks = Keyspace::new();
+        ks.sadd("src", &["a".into(), "b".into()]).unwrap();
+        // room for the existing set, but not for a new destination key
+        let used = ks.stats().used_bytes;
+        ks.update_memory_config(Some(used * 100 / 90 + 1), EvictionPolicy::NoEviction);
+
+        let result = ks.smove("src", "dst", "a");
+        assert!(matches!(result, Err(WriteError::OutOfMemory)));
+        assert!(ks.sismember("src", "a").unwrap());
+        assert_eq!(ks.scard("src").unwrap(), 2);
+        assert!(!ks.exists("dst"));
     }
 
     #[test]
