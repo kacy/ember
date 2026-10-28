@@ -7,7 +7,7 @@ pub(super) fn recover(
     pcfg: &ShardPersistenceConfig,
     shard_id: u16,
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
-) -> Result<bool, recovery::RecoveryError> {
+) -> Result<recovery::RecoveryResult, recovery::RecoveryError> {
     // everything recovered was stored once already, so it must neither be
     // refused for memory nor evict other recovered keys
     let (max_memory, eviction_policy) = keyspace.memory_config();
@@ -39,7 +39,7 @@ pub(super) fn recover(
             "recovered shard state"
         );
     }
-    Ok(result.stale_aof)
+    Ok(result)
 }
 
 /// Recovers into the keyspace. An AOF record becomes the request that
@@ -338,7 +338,8 @@ mod tests {
             #[cfg(feature = "protobuf")]
             &None,
         )
-        .unwrap();
+        .unwrap()
+        .stale_aof;
         (ks, stale)
     }
 
@@ -788,6 +789,33 @@ mod tests {
             .collect();
         files.sort();
         files
+    }
+
+    #[tokio::test]
+    async fn an_aof_left_untruncated_after_a_snapshot_is_not_replayed_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = spawn_persistent_shard(dir.path());
+        let incr = || ShardRequest::Incr { key: "n".into() };
+        assert!(matches!(
+            handle.send(incr()).await.unwrap(),
+            ShardResponse::Integer(1)
+        ));
+
+        // save a snapshot, then put back the AOF from before it, as if the
+        // server stopped after the snapshot was written and before the AOF
+        // was truncated
+        let aof = ember_persistence::aof::aof_path(dir.path(), 0);
+        let before = std::fs::read(&aof).unwrap();
+        assert!(matches!(
+            handle.send(ShardRequest::Snapshot).await.unwrap(),
+            ShardResponse::Ok
+        ));
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::write(&aof, before).unwrap();
+
+        let handle = spawn_persistent_shard(dir.path());
+        assert_eq!(get(&handle, "n").await, Some(Bytes::from("1")));
     }
 
     #[tokio::test]

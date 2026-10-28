@@ -322,7 +322,7 @@ async fn run_shard(prepared: PreparedShard) {
     }
 
     // -- recovery --
-    let mut stale_aof = false;
+    let (mut stale_aof, mut unanchored_aof) = (false, false);
     if let Some(ref pcfg) = persistence {
         match persistence::recover(
             &mut keyspace,
@@ -331,7 +331,10 @@ async fn run_shard(prepared: PreparedShard) {
             #[cfg(feature = "protobuf")]
             &schema_registry,
         ) {
-            Ok(stale) => stale_aof = stale,
+            Ok(result) => {
+                stale_aof = result.stale_aof;
+                unanchored_aof = result.unanchored_aof;
+            }
             // stop before the AOF writer opens or a save runs, so the
             // files stay as they are. dropping `rx` makes every request
             // to this shard fail, and `Engine::wait_ready` reports it.
@@ -369,10 +372,17 @@ async fn run_shard(prepared: PreparedShard) {
     };
 
     // the AOF is in another format, since encryption was turned on or off,
-    // or recovery skipped it as older than the snapshot. either way its
-    // contents are loaded, so save them as a snapshot and start the AOF
-    // over before anything is appended.
-    if stale_aof || aof_writer.as_ref().is_some_and(AofWriter::needs_rewrite) {
+    // recovery skipped it as older than the snapshot, or it doesn't start
+    // with a checkpoint (a new file, or one from an older version). in each
+    // case its contents are loaded, so save them as a snapshot and start
+    // the AOF over before anything is appended. a rewritten AOF starts with
+    // a checkpoint naming the snapshot, so a later save that stops before
+    // truncating it can't have it replayed on top of the newer snapshot.
+    if stale_aof
+        || aof_writer
+            .as_ref()
+            .is_some_and(|w| w.needs_rewrite() || unanchored_aof)
+    {
         info!(shard_id, "rewriting the aof from a snapshot");
         if let ShardResponse::Err(e) = persistence::handle_snapshot(
             &keyspace,

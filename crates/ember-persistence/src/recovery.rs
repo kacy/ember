@@ -23,6 +23,10 @@
 //! before it: the server stopped after the snapshot was saved and before
 //! the AOF was truncated. Its records are all in the snapshot, so none are
 //! replayed, and the caller must rewrite the file.
+//!
+//! That check needs the leading checkpoint, which a new AOF lacks, so
+//! recovery also reports an AOF that doesn't start with one for the caller
+//! to rewrite.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -61,6 +65,12 @@ pub struct RecoveryResult {
     /// The caller must rewrite it before appending: otherwise the next
     /// recovery would skip the new writes too.
     pub stale_aof: bool,
+    /// There is no AOF, or it doesn't start with a checkpoint, as a new
+    /// file doesn't. If a snapshot were saved and the server stopped before
+    /// the AOF was truncated, the next recovery couldn't tell the AOF came
+    /// before that snapshot and would replay it on top. The caller should
+    /// rewrite the AOF before appending to it, which starts it with one.
+    pub unanchored_aof: bool,
 }
 
 /// A file recovery couldn't read. Nothing was changed on disk.
@@ -118,6 +128,7 @@ fn recover_shard_impl(
 
     let aof_path = aof::aof_path(data_dir, shard_id);
     if !aof_path.exists() {
+        result.unanchored_aof = true;
         return Ok(result);
     }
     let aof_error = |source| RecoveryError::Aof {
@@ -132,6 +143,7 @@ fn recover_shard_impl(
         );
         result.stale_aof = true;
     }
+    result.unanchored_aof = !scan.anchored;
     let count = replay_aof(&aof_path, scan.start, key, target).map_err(aof_error)?;
     result.replayed_aof = count > 0;
     Ok(result)
@@ -193,6 +205,8 @@ struct AofScan {
     start: usize,
     /// The AOF came before the loaded snapshot.
     stale: bool,
+    /// The AOF starts with a checkpoint.
+    anchored: bool,
 }
 
 /// The first pass over the AOF: decodes every record without applying any,
@@ -203,9 +217,10 @@ fn scan_aof(
     key: Option<EncryptionKeyRef<'_>>,
 ) -> Result<AofScan, FormatError> {
     let mut reader = open_aof(path, key)?;
-    let (mut index, mut start, mut stale) = (0, 0, false);
+    let (mut index, mut start, mut stale, mut anchored) = (0, 0, false, false);
     while let Some(record) = reader.read_record()? {
         if let AofRecord::Checkpoint { snapshot_crc: crc } = record {
+            anchored |= index == 0;
             match snapshot_crc {
                 Some(loaded) if loaded == crc => {
                     start = index + 1;
@@ -221,7 +236,11 @@ fn scan_aof(
     if stale {
         start = usize::MAX;
     }
-    Ok(AofScan { start, stale })
+    Ok(AofScan {
+        start,
+        stale,
+        anchored,
+    })
 }
 
 /// The second pass: hands the records from index `start` on to `target`.
@@ -364,8 +383,23 @@ mod tests {
     fn empty_dir_recovers_nothing() {
         let dir = temp_dir();
         let (target, result) = recover(dir.path());
-        assert_eq!(result, RecoveryResult::default());
+        let expected = RecoveryResult {
+            unanchored_aof: true,
+            ..RecoveryResult::default()
+        };
+        assert_eq!(result, expected);
         assert!(target.restored.is_empty() && target.applied.is_empty());
+    }
+
+    #[test]
+    fn an_aof_is_anchored_only_when_it_starts_with_a_checkpoint() {
+        let dir = temp_dir();
+        write_aof(dir.path(), &[del("a"), checkpoint(1)]);
+        assert!(recover(dir.path()).1.unanchored_aof);
+
+        let dir = temp_dir();
+        write_aof(dir.path(), &[checkpoint(1), del("a")]);
+        assert!(!recover(dir.path()).1.unanchored_aof);
     }
 
     #[test]
