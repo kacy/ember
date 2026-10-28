@@ -191,18 +191,20 @@ impl SortedSet {
             .collect()
     }
 
-    /// Returns members in the given rank range, in reverse order (highest first).
-    /// Supports negative indices: -1 = last, -2 = second to last, etc.
+    /// Returns members in the given reverse rank range, highest first. Rank 0
+    /// is the highest score, and negative indices count from the lowest:
+    /// -1 = lowest, -2 = second lowest, etc.
     pub fn rev_range_by_rank(&self, start: i64, stop: i64) -> Vec<(&str, f64)> {
         let len = self.sorted.len() as i64;
         let (s, e) = super::normalize_range(start, stop, len);
         if s > e {
             return Vec::new();
         }
-        let s = s as usize;
-        let e = e as usize;
+        // reverse rank r is ascending position len - 1 - r
+        let lo = (len - 1 - e) as usize;
+        let hi = (len - 1 - s) as usize;
 
-        self.sorted[s..=e]
+        self.sorted[lo..=hi]
             .iter()
             .rev()
             .map(|(score, member)| (&**member, score.0))
@@ -796,7 +798,16 @@ mod tests {
         assert_eq!(result, vec![("c", 30.0), ("b", 20.0), ("a", 10.0)]);
 
         let result = ss.rev_range_by_rank(0, 1);
+        assert_eq!(result, vec![("c", 30.0), ("b", 20.0)]);
+
+        let result = ss.rev_range_by_rank(1, 1);
+        assert_eq!(result, vec![("b", 20.0)]);
+
+        let result = ss.rev_range_by_rank(-2, -1);
         assert_eq!(result, vec![("b", 20.0), ("a", 10.0)]);
+
+        assert!(ss.rev_range_by_rank(3, 5).is_empty());
+        assert!(ss.rev_range_by_rank(2, 1).is_empty());
     }
 
     #[test]
