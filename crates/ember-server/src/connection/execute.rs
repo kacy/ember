@@ -12,6 +12,7 @@ use crate::server::{format_client_list, ServerContext};
 use crate::slowlog::SlowLog;
 
 use super::exec;
+use super::exec::SetOp;
 use super::route::Routing;
 
 /// Executes a parsed command and returns the response frame.
@@ -178,20 +179,22 @@ pub(super) async fn execute(
             exec::sorted_sets::zmpop(keys, min, count, &cx).await
         }
         Command::ZDiff { keys, with_scores } => {
-            exec::sorted_sets::zdiff(keys, with_scores, &cx).await
+            exec::sorted_sets::zset_op(SetOp::Diff, keys, with_scores, &cx).await
         }
         Command::ZInter { keys, with_scores } => {
-            exec::sorted_sets::zinter(keys, with_scores, &cx).await
+            exec::sorted_sets::zset_op(SetOp::Inter, keys, with_scores, &cx).await
         }
         Command::ZUnion { keys, with_scores } => {
-            exec::sorted_sets::zunion(keys, with_scores, &cx).await
+            exec::sorted_sets::zset_op(SetOp::Union, keys, with_scores, &cx).await
         }
-        Command::ZDiffStore { dest, keys } => exec::sorted_sets::zdiffstore(dest, keys, &cx).await,
+        Command::ZDiffStore { dest, keys } => {
+            exec::sorted_sets::zset_op_store(SetOp::Diff, dest, keys, &cx).await
+        }
         Command::ZInterStore { dest, keys } => {
-            exec::sorted_sets::zinterstore(dest, keys, &cx).await
+            exec::sorted_sets::zset_op_store(SetOp::Inter, dest, keys, &cx).await
         }
         Command::ZUnionStore { dest, keys } => {
-            exec::sorted_sets::zunionstore(dest, keys, &cx).await
+            exec::sorted_sets::zset_op_store(SetOp::Union, dest, keys, &cx).await
         }
         Command::ZRandMember {
             key,
@@ -216,6 +219,18 @@ pub(super) async fn execute(
             member,
         } => exec::sets::smove(source, destination, member, &cx).await,
         Command::SInterCard { keys, limit } => exec::sets::sintercard(keys, limit, &cx).await,
+        Command::SUnion { keys } => exec::sets::set_op(SetOp::Union, keys, &cx).await,
+        Command::SInter { keys } => exec::sets::set_op(SetOp::Inter, keys, &cx).await,
+        Command::SDiff { keys } => exec::sets::set_op(SetOp::Diff, keys, &cx).await,
+        Command::SUnionStore { dest, keys } => {
+            exec::sets::set_op_store(SetOp::Union, dest, keys, &cx).await
+        }
+        Command::SInterStore { dest, keys } => {
+            exec::sets::set_op_store(SetOp::Inter, dest, keys, &cx).await
+        }
+        Command::SDiffStore { dest, keys } => {
+            exec::sets::set_op_store(SetOp::Diff, dest, keys, &cx).await
+        }
 
         // -- cluster commands --
         Command::ClusterKeySlot { key } => exec::cluster::cluster_keyslot(key),
@@ -397,10 +412,6 @@ pub(super) async fn execute(
         | Command::Rename { .. }
         | Command::SAdd { .. }
         | Command::SCard { .. }
-        | Command::SDiff { .. }
-        | Command::SDiffStore { .. }
-        | Command::SInter { .. }
-        | Command::SInterStore { .. }
         | Command::SIsMember { .. }
         | Command::SMembers { .. }
         | Command::SMisMember { .. }
@@ -408,8 +419,6 @@ pub(super) async fn execute(
         | Command::SRandMember { .. }
         | Command::SRem { .. }
         | Command::SScan { .. }
-        | Command::SUnion { .. }
-        | Command::SUnionStore { .. }
         | Command::Set { .. }
         | Command::SetRange { .. }
         | Command::Sort { store: None, .. }

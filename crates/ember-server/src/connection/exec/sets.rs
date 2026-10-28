@@ -1,9 +1,106 @@
 //! Set command handlers.
 
+use std::collections::HashSet;
+
+use bytes::Bytes;
 use ember_core::{ShardRequest, ShardResponse};
 use ember_protocol::Frame;
 
-use super::ExecCtx;
+use super::{ExecCtx, SetOp};
+use crate::keyspace_notifications::FLAG_S;
+
+/// SUNION, SINTER and SDIFF. The keys may live on different shards.
+pub(in crate::connection) async fn set_op(op: SetOp, keys: Vec<String>, cx: &ExecCtx<'_>) -> Frame {
+    match combine(op, keys, cx).await {
+        Ok(members) => Frame::Array(
+            members
+                .into_iter()
+                .map(|m| Frame::Bulk(Bytes::from(m)))
+                .collect(),
+        ),
+        Err(frame) => frame,
+    }
+}
+
+/// SUNIONSTORE, SINTERSTORE and SDIFFSTORE. When `dest` and every key
+/// share a shard, the shard computes and stores the result in one step.
+pub(in crate::connection) async fn set_op_store(
+    op: SetOp,
+    dest: String,
+    keys: Vec<String>,
+    cx: &ExecCtx<'_>,
+) -> Frame {
+    let dest_idx = cx.engine.shard_for_key(&dest);
+    let frame = if keys.iter().all(|k| cx.engine.shard_for_key(k) == dest_idx) {
+        let dest = dest.clone();
+        let req = match op {
+            SetOp::Union => ShardRequest::SUnionStore { dest, keys },
+            SetOp::Inter => ShardRequest::SInterStore { dest, keys },
+            SetOp::Diff => ShardRequest::SDiffStore { dest, keys },
+        };
+        super::route_to_shard(cx, dest_idx, req, |resp| match resp {
+            ShardResponse::SetStoreResult { count, .. } => Frame::Integer(count as i64),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        })
+        .await
+    } else {
+        match combine(op, keys, cx).await {
+            Ok(members) => {
+                let count = members.len();
+                let add = (!members.is_empty()).then(|| ShardRequest::SAdd {
+                    key: dest.clone(),
+                    members,
+                });
+                super::store_result(cx, &dest, add, count).await
+            }
+            Err(frame) => frame,
+        }
+    };
+    if matches!(frame, Frame::Integer(_)) {
+        let event = match op {
+            SetOp::Union => "sunionstore",
+            SetOp::Inter => "sinterstore",
+            SetOp::Diff => "sdiffstore",
+        };
+        cx.notify_write(FLAG_S, event, &dest);
+    }
+    frame
+}
+
+/// Computes `op` over sets that may live on different shards. Each shard
+/// combines its own keys, then the per-shard results are merged here.
+async fn combine(op: SetOp, keys: Vec<String>, cx: &ExecCtx<'_>) -> Result<Vec<String>, Frame> {
+    let replies = super::per_shard(cx, op, keys, |op, keys| match op {
+        SetOp::Union => ShardRequest::SUnion { keys },
+        SetOp::Inter => ShardRequest::SInter { keys },
+        SetOp::Diff => ShardRequest::SDiff { keys },
+    })
+    .await?;
+    let mut parts = replies.into_iter().map(|resp| match resp {
+        ShardResponse::StringArray(members) => Ok(members),
+        other => Err(Frame::Error(format!(
+            "ERR unexpected shard response: {other:?}"
+        ))),
+    });
+    let first = parts.next().transpose()?.unwrap_or_default();
+    let mut acc: HashSet<String> = first.into_iter().collect();
+    for part in parts {
+        let part = part?;
+        match op {
+            SetOp::Union => acc.extend(part),
+            SetOp::Inter => {
+                let part: HashSet<String> = part.into_iter().collect();
+                acc.retain(|m| part.contains(m));
+            }
+            SetOp::Diff => {
+                for m in &part {
+                    acc.remove(m);
+                }
+            }
+        }
+    }
+    Ok(acc.into_iter().collect())
+}
 
 pub(in crate::connection) async fn smove(
     source: String,

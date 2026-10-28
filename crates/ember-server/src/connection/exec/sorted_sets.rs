@@ -1,10 +1,12 @@
 //! Sorted set command handlers.
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
 use ember_core::{ShardRequest, ShardResponse};
 use ember_protocol::Frame;
 
-use super::ExecCtx;
+use super::{ExecCtx, SetOp};
 
 pub(in crate::connection) async fn zmpop(
     keys: Vec<String>,
@@ -44,112 +46,124 @@ pub(in crate::connection) async fn zmpop(
     Frame::Null
 }
 
-pub(in crate::connection) async fn zdiff(
+/// ZUNION, ZINTER and ZDIFF. The keys may live on different shards.
+pub(in crate::connection) async fn zset_op(
+    op: SetOp,
     keys: Vec<String>,
     with_scores: bool,
     cx: &ExecCtx<'_>,
 ) -> Frame {
-    let key = keys.first().cloned().unwrap_or_default();
-    let idx = cx.engine.shard_for_key(&key);
-    let req = ShardRequest::ZDiff { keys };
-    super::route_to_shard(cx, idx, req, |resp| match resp {
-        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    })
-    .await
+    match combine(op, keys, cx).await {
+        Ok(items) => super::scored_to_frame(items, with_scores),
+        Err(frame) => frame,
+    }
 }
 
-pub(in crate::connection) async fn zinter(
-    keys: Vec<String>,
-    with_scores: bool,
-    cx: &ExecCtx<'_>,
-) -> Frame {
-    let key = keys.first().cloned().unwrap_or_default();
-    let idx = cx.engine.shard_for_key(&key);
-    let req = ShardRequest::ZInter { keys };
-    super::route_to_shard(cx, idx, req, |resp| match resp {
-        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    })
-    .await
-}
-
-pub(in crate::connection) async fn zunion(
-    keys: Vec<String>,
-    with_scores: bool,
-    cx: &ExecCtx<'_>,
-) -> Frame {
-    let key = keys.first().cloned().unwrap_or_default();
-    let idx = cx.engine.shard_for_key(&key);
-    let req = ShardRequest::ZUnion { keys };
-    super::route_to_shard(cx, idx, req, |resp| match resp {
-        ShardResponse::ScoredArray(items) => super::scored_to_frame(items, with_scores),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    })
-    .await
-}
-
-pub(in crate::connection) async fn zdiffstore(
+/// ZUNIONSTORE, ZINTERSTORE and ZDIFFSTORE. When `dest` and every key
+/// share a shard, the shard computes and stores the result in one step.
+pub(in crate::connection) async fn zset_op_store(
+    op: SetOp,
     dest: String,
     keys: Vec<String>,
     cx: &ExecCtx<'_>,
 ) -> Frame {
-    let idx = cx.engine.shard_for_key(&dest);
-    let req = ShardRequest::ZDiffStore {
-        dest: dest.clone(),
-        keys,
+    let dest_idx = cx.engine.shard_for_key(&dest);
+    let frame = if keys.iter().all(|k| cx.engine.shard_for_key(k) == dest_idx) {
+        let dest = dest.clone();
+        let req = match op {
+            SetOp::Union => ShardRequest::ZUnionStore { dest, keys },
+            SetOp::Inter => ShardRequest::ZInterStore { dest, keys },
+            SetOp::Diff => ShardRequest::ZDiffStore { dest, keys },
+        };
+        super::route_to_shard(cx, dest_idx, req, |resp| match resp {
+            ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
+            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+        })
+        .await
+    } else {
+        match combine(op, keys, cx).await {
+            Ok(items) => {
+                let count = items.len();
+                let add = (!items.is_empty()).then(|| ShardRequest::ZAdd {
+                    key: dest.clone(),
+                    members: items.into_iter().map(|(m, s)| (s, m)).collect(),
+                    nx: false,
+                    xx: false,
+                    gt: false,
+                    lt: false,
+                    ch: false,
+                });
+                super::store_result(cx, &dest, add, count).await
+            }
+            Err(frame) => frame,
+        }
     };
-    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
-        ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    })
-    .await;
     if matches!(frame, Frame::Integer(_)) {
-        cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zdiffstore", &dest);
+        let event = match op {
+            SetOp::Union => "zunionstore",
+            SetOp::Inter => "zinterstore",
+            SetOp::Diff => "zdiffstore",
+        };
+        cx.notify_write(crate::keyspace_notifications::FLAG_Z, event, &dest);
     }
     frame
 }
 
-pub(in crate::connection) async fn zinterstore(
-    dest: String,
+/// Computes `op` over sorted sets that may live on different shards. Each
+/// shard combines its own keys (summing scores for union and intersection),
+/// then the per-shard results are merged here the same way. Results are
+/// ordered by score, then member.
+async fn combine(
+    op: SetOp,
     keys: Vec<String>,
     cx: &ExecCtx<'_>,
-) -> Frame {
-    let idx = cx.engine.shard_for_key(&dest);
-    let req = ShardRequest::ZInterStore {
-        dest: dest.clone(),
-        keys,
-    };
-    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
-        ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
+) -> Result<Vec<(String, f64)>, Frame> {
+    let replies = super::per_shard(cx, op, keys, |op, keys| match op {
+        SetOp::Union => ShardRequest::ZUnion { keys },
+        SetOp::Inter => ShardRequest::ZInter { keys },
+        SetOp::Diff => ShardRequest::ZDiff { keys },
     })
-    .await;
-    if matches!(frame, Frame::Integer(_)) {
-        cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zinterstore", &dest);
+    .await?;
+    let single = replies.len() == 1;
+    let mut parts = replies.into_iter().map(|resp| match resp {
+        ShardResponse::ScoredArray(items) => Ok(items),
+        other => Err(Frame::Error(format!(
+            "ERR unexpected shard response: {other:?}"
+        ))),
+    });
+    let first = parts.next().transpose()?.unwrap_or_default();
+    if single {
+        return Ok(first);
     }
-    frame
-}
-
-pub(in crate::connection) async fn zunionstore(
-    dest: String,
-    keys: Vec<String>,
-    cx: &ExecCtx<'_>,
-) -> Frame {
-    let idx = cx.engine.shard_for_key(&dest);
-    let req = ShardRequest::ZUnionStore {
-        dest: dest.clone(),
-        keys,
-    };
-    let frame = super::route_to_shard(cx, idx, req, |resp| match resp {
-        ShardResponse::ZStoreResult { count, .. } => Frame::Integer(count as i64),
-        other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-    })
-    .await;
-    if matches!(frame, Frame::Integer(_)) {
-        cx.notify_write(crate::keyspace_notifications::FLAG_Z, "zunionstore", &dest);
+    let mut acc: HashMap<String, f64> = first.into_iter().collect();
+    for part in parts {
+        let part = part?;
+        match op {
+            SetOp::Union => {
+                for (member, score) in part {
+                    *acc.entry(member).or_insert(0.0) += score;
+                }
+            }
+            SetOp::Inter => {
+                let part: HashMap<String, f64> = part.into_iter().collect();
+                acc.retain(|member, score| match part.get(member) {
+                    Some(s) => {
+                        *score += s;
+                        true
+                    }
+                    None => false,
+                });
+            }
+            SetOp::Diff => {
+                for (member, _) in &part {
+                    acc.remove(member);
+                }
+            }
+        }
     }
-    frame
+    let mut items: Vec<(String, f64)> = acc.into_iter().collect();
+    items.sort_by(|(am, a), (bm, b)| a.total_cmp(b).then_with(|| am.cmp(bm)));
+    Ok(items)
 }
 
 pub(in crate::connection) async fn zrandmember(
