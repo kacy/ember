@@ -522,3 +522,48 @@ async fn wrongtype_error_surfaces_as_server_error() {
         "expected Server error, got {err:?}"
     );
 }
+
+// --- connection handling ---
+
+#[tokio::test]
+async fn replies_larger_than_64_kib_are_read() {
+    let (_server, mut client) = connect().await;
+    let value = vec![b'x'; 1024 * 1024];
+    client.set("big", &value[..]).await.unwrap();
+    let got = client.get("big").await.unwrap();
+    assert_eq!(got.as_deref(), Some(&value[..]));
+    // the connection is still usable afterwards
+    client.set("small", "v").await.unwrap();
+    assert_eq!(
+        client.get("small").await.unwrap().as_deref(),
+        Some(b"v" as &[u8])
+    );
+}
+
+#[tokio::test]
+async fn a_malformed_reply_breaks_the_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // a server that answers every command with bytes that aren't RESP
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        while sock.read(&mut buf).await.unwrap_or(0) > 0 {
+            let _ = sock.write_all(b"?not resp\r\n").await;
+        }
+    });
+
+    let mut client = Client::connect("127.0.0.1", port).await.unwrap();
+    assert!(matches!(
+        client.send(&["PING"]).await,
+        Err(ClientError::Protocol(_))
+    ));
+    assert!(client.is_broken());
+    // later commands fail instead of reading what's left of the bad reply
+    assert!(matches!(
+        client.send(&["PING"]).await,
+        Err(ClientError::Disconnected)
+    ));
+}

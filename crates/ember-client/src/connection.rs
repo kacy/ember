@@ -17,9 +17,10 @@ use tokio::net::TcpStream;
 #[cfg(feature = "tls")]
 use crate::tls::TlsClientConfig;
 
-/// Maximum read buffer size (64 KiB). Prevents unbounded memory growth if the
-/// server sends a response that never completes.
-const MAX_READ_BUF: usize = 64 * 1024;
+/// Largest reply the client buffers (1 GiB), above the server's 512 MB
+/// limit on a value. Stops unbounded memory growth if the server sends a
+/// reply that never completes.
+const MAX_READ_BUF: usize = 1024 * 1024 * 1024;
 
 /// Default timeout for establishing the TCP connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -114,6 +115,10 @@ pub struct Client {
     transport: Transport,
     read_buf: BytesMut,
     write_buf: BytesMut,
+    /// A read or write failed partway, so the stream may hold the rest of
+    /// a reply. Every later call fails with `Disconnected` instead of
+    /// returning that reply for the wrong command.
+    broken: bool,
 }
 
 impl Client {
@@ -152,6 +157,7 @@ impl Client {
             transport,
             read_buf: BytesMut::with_capacity(4096),
             write_buf: BytesMut::with_capacity(4096),
+            broken: false,
         }
     }
 
@@ -184,10 +190,7 @@ impl Client {
     /// Used internally by typed command methods to avoid re-encoding
     /// arguments through `&[&str]`.
     pub(crate) async fn send_frame(&mut self, frame: Frame) -> Result<Frame, ClientError> {
-        self.write_buf.clear();
-        frame.serialize(&mut self.write_buf);
-        self.transport.write_all(&self.write_buf).await?;
-        self.transport.flush().await?;
+        self.write_frame(frame).await?;
         self.read_response().await
     }
 
@@ -200,8 +203,7 @@ impl Client {
         for frame in frames {
             frame.serialize(&mut self.write_buf);
         }
-        self.transport.write_all(&self.write_buf).await?;
-        self.transport.flush().await?;
+        self.write_out().await?;
 
         let mut results = Vec::with_capacity(frames.len());
         for _ in 0..frames.len() {
@@ -249,13 +251,56 @@ impl Client {
     pub(crate) async fn write_frame(&mut self, frame: Frame) -> Result<(), ClientError> {
         self.write_buf.clear();
         frame.serialize(&mut self.write_buf);
-        self.transport.write_all(&self.write_buf).await?;
-        self.transport.flush().await?;
-        Ok(())
+        self.write_out().await
+    }
+
+    /// Writes and flushes `write_buf`. A failure marks the connection broken.
+    async fn write_out(&mut self) -> Result<(), ClientError> {
+        if self.broken {
+            return Err(ClientError::Disconnected);
+        }
+        let result = async {
+            self.transport.write_all(&self.write_buf).await?;
+            self.transport.flush().await
+        }
+        .await;
+        if result.is_err() {
+            self.broken = true;
+        }
+        Ok(result?)
+    }
+
+    /// Whether an earlier failure left this connection unusable. Reconnect
+    /// to keep going.
+    pub fn is_broken(&self) -> bool {
+        self.broken
     }
 
     /// Reads a complete RESP3 frame from the server.
     pub(crate) async fn read_response(&mut self) -> Result<Frame, ClientError> {
+        self.read_frame(Some(READ_TIMEOUT)).await
+    }
+
+    /// Reads the next frame with no time limit, for a subscriber waiting for
+    /// messages on a quiet channel.
+    pub(crate) async fn read_message(&mut self) -> Result<Frame, ClientError> {
+        self.read_frame(None).await
+    }
+
+    /// Reads one complete frame. Any failure marks the connection broken,
+    /// since part of the reply may still be on its way.
+    async fn read_frame(&mut self, timeout: Option<Duration>) -> Result<Frame, ClientError> {
+        if self.broken {
+            return Err(ClientError::Disconnected);
+        }
+        let result = self.try_read_frame(timeout).await;
+        if result.is_err() {
+            self.broken = true;
+        }
+        result
+    }
+
+    async fn try_read_frame(&mut self, timeout: Option<Duration>) -> Result<Frame, ClientError> {
         loop {
             if !self.read_buf.is_empty() {
                 match parse_frame(&self.read_buf) {
@@ -276,15 +321,18 @@ impl Client {
                 return Err(ClientError::ResponseTooLarge);
             }
 
-            let read_result =
-                tokio::time::timeout(READ_TIMEOUT, self.transport.read_buf(&mut self.read_buf))
-                    .await;
+            let read = self.transport.read_buf(&mut self.read_buf);
+            let read_result = match timeout {
+                Some(limit) => tokio::time::timeout(limit, read)
+                    .await
+                    .map_err(|_| ClientError::Timeout)?,
+                None => read.await,
+            };
 
             match read_result {
-                Ok(Ok(0)) => return Err(ClientError::Disconnected),
-                Ok(Ok(_)) => {} // got data, loop back to try parsing
-                Ok(Err(e)) => return Err(ClientError::Io(e)),
-                Err(_) => return Err(ClientError::Timeout),
+                Ok(0) => return Err(ClientError::Disconnected),
+                Ok(_) => {} // got data, loop back to try parsing
+                Err(e) => return Err(ClientError::Io(e)),
             }
         }
     }
