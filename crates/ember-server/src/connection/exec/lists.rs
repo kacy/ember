@@ -13,15 +13,56 @@ pub(in crate::connection) async fn lmove(
     dst_left: bool,
     cx: &ExecCtx<'_>,
 ) -> Frame {
-    // route to the source key's shard
-    let idx = cx.engine.shard_for_key(&source);
-    let req = ShardRequest::LMove {
-        source,
-        destination,
-        src_left,
-        dst_left,
+    let src_idx = cx.engine.shard_for_key(&source);
+    let dst_idx = cx.engine.shard_for_key(&destination);
+    if src_idx == dst_idx {
+        // one shard moves the element atomically
+        let req = ShardRequest::LMove {
+            source,
+            destination,
+            src_left,
+            dst_left,
+        };
+        return super::route_to_shard(cx, src_idx, req, super::resp_string_value).await;
+    }
+
+    // across shards: check the destination, pop, then push, and put the
+    // element back if the push fails so a failed move changes nothing
+    if let Err(frame) = super::check_type(cx, dst_idx, &destination, "list").await {
+        return frame;
+    }
+    let pop = if src_left {
+        ShardRequest::LPop {
+            key: source.clone(),
+        }
+    } else {
+        ShardRequest::RPop {
+            key: source.clone(),
+        }
     };
-    super::route_to_shard(cx, idx, req, super::resp_string_value).await
+    let value = match super::route_to_shard(cx, src_idx, pop, super::resp_string_value).await {
+        Frame::Bulk(value) => value,
+        other => return other,
+    };
+    let push = |key: String, left: bool| {
+        let values = vec![value.clone()];
+        if left {
+            ShardRequest::LPush { key, values }
+        } else {
+            ShardRequest::RPush { key, values }
+        }
+    };
+    let pushed = super::route_to_shard(cx, dst_idx, push(destination, dst_left), |_| {
+        Frame::Bulk(value.clone())
+    })
+    .await;
+    if matches!(pushed, Frame::Error(_)) {
+        let _ = cx
+            .engine
+            .send_to_shard(src_idx, push(source, src_left))
+            .await;
+    }
+    pushed
 }
 
 pub(in crate::connection) async fn lmpop(

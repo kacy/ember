@@ -126,9 +126,13 @@ pub(in crate::connection) async fn smove(
             Err(e) => Frame::Error(format!("ERR {e}")),
         }
     } else {
-        // cross-shard: remove from source, then add to destination
+        // across shards: check the destination, remove, then add, and put
+        // the member back if the add fails so a failed move changes nothing
+        if let Err(frame) = super::check_type(cx, dst_idx, &destination, "set").await {
+            return frame;
+        }
         let rem_req = ShardRequest::SRem {
-            key: source,
+            key: source.clone(),
             members: vec![member.clone()],
         };
         let removed = match cx.engine.send_to_shard(src_idx, rem_req).await {
@@ -142,17 +146,16 @@ pub(in crate::connection) async fn smove(
             return Frame::Integer(0);
         }
 
-        let add_req = ShardRequest::SAdd {
-            key: destination,
-            members: vec![member],
+        let add = |key: String| ShardRequest::SAdd {
+            key,
+            members: vec![member.clone()],
         };
-        match cx.engine.send_to_shard(dst_idx, add_req).await {
-            Ok(ShardResponse::Len(_)) => Frame::Integer(1),
-            Ok(ShardResponse::WrongType) => super::wrongtype_error(),
-            Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-            Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-            Err(e) => Frame::Error(format!("ERR {e}")),
+        let added =
+            super::route_to_shard(cx, dst_idx, add(destination), |_| Frame::Integer(1)).await;
+        if matches!(added, Frame::Error(_)) {
+            let _ = cx.engine.send_to_shard(src_idx, add(source)).await;
         }
+        added
     }
 }
 
