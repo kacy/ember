@@ -938,3 +938,53 @@ async fn sorted_set_algebra_spans_shards() {
     let stored = c.cmd(&["ZRANGE", "zd", "0", "-1", "WITHSCORES"]).await;
     assert_eq!(stored, bulks(&["b", "8", "c", "10"]));
 }
+
+#[tokio::test]
+async fn moves_between_shards_land_on_the_destination() {
+    let server = TestServer::start_with(ServerOptions {
+        shards: Some(4),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+    let dests: Vec<String> = (0..8).map(|i| format!("dest{i}")).collect();
+
+    // LMOVE: every destination gets its element and the source empties
+    let values: Vec<String> = (0..8).map(|i| format!("v{i}")).collect();
+    let mut push = vec!["RPUSH", "list"];
+    push.extend(values.iter().map(String::as_str));
+    c.cmd(&push).await;
+    for (dest, value) in dests.iter().zip(&values) {
+        let moved = c.get_bulk(&["LMOVE", "list", dest, "LEFT", "RIGHT"]).await;
+        assert_eq!(moved.as_deref(), Some(value.as_str()));
+        assert_eq!(
+            c.get_bulk(&["LINDEX", dest, "0"]).await.as_deref(),
+            Some(value.as_str())
+        );
+    }
+    assert_eq!(c.get_int(&["EXISTS", "list"]).await, 0);
+
+    // SMOVE the same way
+    let mut add = vec!["SADD", "set"];
+    add.extend(values.iter().map(String::as_str));
+    c.cmd(&add).await;
+    for (i, value) in values.iter().enumerate() {
+        let dest = format!("sdest{i}");
+        assert_eq!(c.get_int(&["SMOVE", "set", &dest, value]).await, 1);
+        assert_eq!(c.get_int(&["SISMEMBER", &dest, value]).await, 1);
+    }
+    assert_eq!(c.get_int(&["EXISTS", "set"]).await, 0);
+
+    // a destination of the wrong type fails the move and keeps the source
+    c.cmd(&["RPUSH", "list", "x"]).await;
+    c.cmd(&["SADD", "set", "x"]).await;
+    for i in 0..8 {
+        let dest = format!("str{i}");
+        c.ok(&["SET", &dest, "v"]).await;
+        let err = c.err(&["LMOVE", "list", &dest, "LEFT", "LEFT"]).await;
+        assert!(err.starts_with("WRONGTYPE"), "{err}");
+        let err = c.err(&["SMOVE", "set", &dest, "x"]).await;
+        assert!(err.starts_with("WRONGTYPE"), "{err}");
+    }
+    assert_eq!(c.get_int(&["LLEN", "list"]).await, 1);
+    assert_eq!(c.get_int(&["SISMEMBER", "set", "x"]).await, 1);
+}

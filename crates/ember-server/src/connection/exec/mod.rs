@@ -247,6 +247,28 @@ pub(in crate::connection) async fn store_result(
     }
 }
 
+/// Checks that `key` on shard `idx` is missing or holds `kind` (a TYPE
+/// name such as "list"), so a cross-shard move can tell before it takes
+/// anything from the source whether the destination write can succeed.
+pub(in crate::connection) async fn check_type(
+    cx: &ExecCtx<'_>,
+    idx: usize,
+    key: &str,
+    kind: &str,
+) -> Result<(), Frame> {
+    let req = ShardRequest::Type {
+        key: key.to_owned(),
+    };
+    match cx.engine.send_to_shard(idx, req).await {
+        Ok(ShardResponse::TypeName(name)) if name == "none" || name == kind => Ok(()),
+        Ok(ShardResponse::TypeName(_)) => Err(wrongtype_error()),
+        Ok(other) => Err(Frame::Error(format!(
+            "ERR unexpected shard response: {other:?}"
+        ))),
+        Err(e) => Err(Frame::Error(format!("ERR {e}"))),
+    }
+}
+
 /// Converts a scored array into RESP frames, optionally interleaving scores.
 pub(in crate::connection) fn scored_to_frame(
     items: Vec<(String, f64)>,
