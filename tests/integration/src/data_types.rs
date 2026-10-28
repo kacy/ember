@@ -809,3 +809,32 @@ async fn sort_store_replaces_dest_with_the_sorted_list() {
     assert_eq!(c.get_int(&["SORT", "missing", "STORE", "dst"]).await, 0);
     assert_eq!(c.get_int(&["EXISTS", "dst"]).await, 0);
 }
+
+#[tokio::test]
+async fn zrevrange_counts_ranks_from_the_highest_score() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+
+    c.cmd(&["ZADD", "z", "1", "a", "2", "b", "3", "c", "4", "d"])
+        .await;
+    let bulks = |items: &[&str]| {
+        Frame::Array(
+            items
+                .iter()
+                .map(|s| Frame::Bulk(bytes::Bytes::from(s.to_string())))
+                .collect(),
+        )
+    };
+    assert_eq!(
+        c.cmd(&["ZREVRANGE", "z", "0", "1"]).await,
+        bulks(&["d", "c"])
+    );
+    assert_eq!(
+        c.cmd(&["ZREVRANGE", "z", "1", "2"]).await,
+        bulks(&["c", "b"])
+    );
+    assert_eq!(
+        c.cmd(&["ZREVRANGE", "z", "-2", "-1"]).await,
+        bulks(&["b", "a"])
+    );
+}

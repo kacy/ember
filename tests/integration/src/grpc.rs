@@ -1644,7 +1644,17 @@ async fn grpc_zrange_variants() {
         .unwrap();
     assert_eq!(names(r.into_inner()), strs(&["b", "c"]));
 
-    // only the full range: a partial ZREVRANGE takes ranks from the low end
+    let r = c
+        .z_rev_range(ZRevRangeRequest {
+            key: "z".into(),
+            start: 0,
+            stop: 1,
+            with_scores: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(names(r.into_inner()), strs(&["d", "c"]));
+
     let r = c
         .z_rev_range(ZRevRangeRequest {
             key: "z".into(),
