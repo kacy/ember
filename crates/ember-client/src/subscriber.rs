@@ -64,7 +64,7 @@ impl Subscriber {
     /// skipped silently — only actual message frames are returned.
     pub async fn recv(&mut self) -> Result<Message, ClientError> {
         loop {
-            let frame = self.inner.read_response().await?;
+            let frame = self.inner.read_message().await?;
             if let Some(msg) = try_parse_message(frame)? {
                 return Ok(msg);
             }
