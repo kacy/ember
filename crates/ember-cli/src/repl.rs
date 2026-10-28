@@ -144,8 +144,13 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
                     Ok(frame) => {
                         println!("{}", format_response(&frame));
                     }
-                    Err(ClientError::Disconnected) => {
-                        eprintln!("{}", "server disconnected, reconnecting...".yellow());
+                    // a failure partway through a reply leaves the
+                    // connection unusable, so start a new one
+                    Err(e) if conn.is_broken() => {
+                        if !matches!(e, ClientError::Disconnected) {
+                            eprintln!("{}", format!("error: {e}").red());
+                        }
+                        eprintln!("{}", "connection lost, reconnecting...".yellow());
                         match rt.block_on(reconnect(host, port, password, tls)) {
                             Ok(new_conn) => {
                                 conn = new_conn;
