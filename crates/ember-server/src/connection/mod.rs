@@ -129,8 +129,6 @@ pub(super) enum ResponseTag {
     SIsMemberResult,
     /// SMISMEMBER: BoolArray → Array of Integer(0/1)
     SMisMemberResult,
-    /// SUNIONSTORE/SINTERSTORE/SDIFFSTORE: SetStoreResult → Integer (count)
-    SetStoreResult,
     /// SSCAN/HSCAN/ZSCAN: CollectionScan → cursor + array
     CollectionScanResult,
     /// RENAME: Ok → Simple("OK"), Err → Error

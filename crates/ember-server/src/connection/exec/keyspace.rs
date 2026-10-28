@@ -239,23 +239,10 @@ pub(in crate::connection) async fn sort_store(
         Err(e) => return Frame::Error(format!("ERR {e}")),
     };
 
-    let count = items.len() as i64;
-    let dst_idx = cx.engine.shard_for_key(&dest);
-    let del = ShardRequest::Del { key: dest.clone() };
-    if let Err(e) = cx.engine.send_to_shard(dst_idx, del).await {
-        return Frame::Error(format!("ERR {e}"));
-    }
-    if items.is_empty() {
-        return Frame::Integer(count);
-    }
-    let push = ShardRequest::RPush {
-        key: dest,
+    let count = items.len();
+    let push = (!items.is_empty()).then(|| ShardRequest::RPush {
+        key: dest.clone(),
         values: items,
-    };
-    match cx.engine.send_to_shard(dst_idx, push).await {
-        Ok(ShardResponse::Len(_)) => Frame::Integer(count),
-        Ok(ShardResponse::OutOfMemory) => super::oom_error(),
-        Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        Err(e) => Frame::Error(format!("ERR {e}")),
-    }
+    });
+    super::store_result(cx, &dest, push, count).await
 }

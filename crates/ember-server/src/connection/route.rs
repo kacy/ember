@@ -626,51 +626,6 @@ pub(crate) fn route(cmd: Command, engine: &Engine, notify: bool) -> Routing {
         Command::SCard { key } => {
             shard!(key, ShardRequest::SCard { key }, ResponseTag::LenResult)
         }
-        Command::SUnion { keys } => {
-            let key = keys.first().cloned().unwrap_or_default();
-            shard!(
-                key,
-                ShardRequest::SUnion { keys },
-                ResponseTag::StringArrayResult
-            )
-        }
-        Command::SInter { keys } => {
-            let key = keys.first().cloned().unwrap_or_default();
-            shard!(
-                key,
-                ShardRequest::SInter { keys },
-                ResponseTag::StringArrayResult
-            )
-        }
-        Command::SDiff { keys } => {
-            let key = keys.first().cloned().unwrap_or_default();
-            shard!(
-                key,
-                ShardRequest::SDiff { keys },
-                ResponseTag::StringArrayResult
-            )
-        }
-        Command::SUnionStore { dest, keys } => {
-            shard!(
-                dest,
-                ShardRequest::SUnionStore { dest, keys },
-                ResponseTag::SetStoreResult
-            )
-        }
-        Command::SInterStore { dest, keys } => {
-            shard!(
-                dest,
-                ShardRequest::SInterStore { dest, keys },
-                ResponseTag::SetStoreResult
-            )
-        }
-        Command::SDiffStore { dest, keys } => {
-            shard!(
-                dest,
-                ShardRequest::SDiffStore { dest, keys },
-                ResponseTag::SetStoreResult
-            )
-        }
         Command::SRandMember { key, count } => {
             let count = count.unwrap_or(1);
             shard!(

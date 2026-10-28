@@ -2,7 +2,7 @@
 
 use ember_protocol::Frame;
 
-use crate::helpers::TestServer;
+use crate::helpers::{ServerOptions, TestServer};
 
 // --- lists ---
 
@@ -837,4 +837,104 @@ async fn zrevrange_counts_ranks_from_the_highest_score() {
         c.cmd(&["ZREVRANGE", "z", "-2", "-1"]).await,
         bulks(&["b", "a"])
     );
+}
+
+/// Bulk strings sorted, for comparing set replies whose order is arbitrary.
+fn sorted_members(frame: Frame) -> Vec<String> {
+    let Frame::Array(items) = frame else {
+        panic!("expected an array, got {frame:?}");
+    };
+    let mut members: Vec<String> = items
+        .into_iter()
+        .map(|f| match f {
+            Frame::Bulk(b) => String::from_utf8(b.to_vec()).unwrap(),
+            other => panic!("expected a bulk string, got {other:?}"),
+        })
+        .collect();
+    members.sort();
+    members
+}
+
+#[tokio::test]
+async fn set_algebra_spans_shards() {
+    let server = TestServer::start_with(ServerOptions {
+        shards: Some(4),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+
+    c.cmd(&["SADD", "s1", "a", "b", "c"]).await;
+    c.cmd(&["SADD", "s2", "b", "c", "d"]).await;
+    c.cmd(&["SADD", "s3", "c", "d", "e"]).await;
+
+    let union = c.cmd(&["SUNION", "s1", "s2", "s3"]).await;
+    assert_eq!(sorted_members(union), ["a", "b", "c", "d", "e"]);
+    let inter = c.cmd(&["SINTER", "s1", "s2", "s3"]).await;
+    assert_eq!(sorted_members(inter), ["c"]);
+    let diff = c.cmd(&["SDIFF", "s1", "s2", "s3"]).await;
+    assert_eq!(sorted_members(diff), ["a"]);
+    let inter = c.cmd(&["SINTER", "s1", "missing"]).await;
+    assert!(sorted_members(inter).is_empty());
+
+    assert_eq!(
+        c.get_int(&["SUNIONSTORE", "dst", "s1", "s2", "s3"]).await,
+        5
+    );
+    let stored = c.cmd(&["SMEMBERS", "dst"]).await;
+    assert_eq!(sorted_members(stored), ["a", "b", "c", "d", "e"]);
+    assert_eq!(
+        c.get_int(&["SINTERSTORE", "dst", "s1", "s2", "s3"]).await,
+        1
+    );
+    let stored = c.cmd(&["SMEMBERS", "dst"]).await;
+    assert_eq!(sorted_members(stored), ["c"]);
+    assert_eq!(c.get_int(&["SDIFFSTORE", "dst", "missing", "s1"]).await, 0);
+    assert_eq!(c.get_int(&["EXISTS", "dst"]).await, 0);
+
+    c.ok(&["SET", "str", "x"]).await;
+    let err = c.err(&["SUNION", "s1", "s2", "s3", "str"]).await;
+    assert!(err.starts_with("WRONGTYPE"), "{err}");
+}
+
+#[tokio::test]
+async fn sorted_set_algebra_spans_shards() {
+    let server = TestServer::start_with(ServerOptions {
+        shards: Some(4),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+
+    c.cmd(&["ZADD", "z1", "1", "a", "2", "b"]).await;
+    c.cmd(&["ZADD", "z2", "3", "b", "4", "c"]).await;
+    c.cmd(&["ZADD", "z3", "5", "b", "6", "c"]).await;
+
+    let bulks = |items: &[&str]| {
+        Frame::Array(
+            items
+                .iter()
+                .map(|s| Frame::Bulk(bytes::Bytes::from(s.to_string())))
+                .collect(),
+        )
+    };
+    let union = c
+        .cmd(&["ZUNION", "3", "z1", "z2", "z3", "WITHSCORES"])
+        .await;
+    assert_eq!(union, bulks(&["a", "1", "b", "10", "c", "10"]));
+    let inter = c
+        .cmd(&["ZINTER", "3", "z1", "z2", "z3", "WITHSCORES"])
+        .await;
+    assert_eq!(inter, bulks(&["b", "10"]));
+    let diff = c.cmd(&["ZDIFF", "2", "z1", "z2", "WITHSCORES"]).await;
+    assert_eq!(diff, bulks(&["a", "1"]));
+
+    assert_eq!(
+        c.get_int(&["ZUNIONSTORE", "zd", "3", "z1", "z2", "z3"])
+            .await,
+        3
+    );
+    let stored = c.cmd(&["ZRANGE", "zd", "0", "-1", "WITHSCORES"]).await;
+    assert_eq!(stored, bulks(&["a", "1", "b", "10", "c", "10"]));
+    assert_eq!(c.get_int(&["ZINTERSTORE", "zd", "2", "z2", "z3"]).await, 2);
+    let stored = c.cmd(&["ZRANGE", "zd", "0", "-1", "WITHSCORES"]).await;
+    assert_eq!(stored, bulks(&["b", "8", "c", "10"]));
 }

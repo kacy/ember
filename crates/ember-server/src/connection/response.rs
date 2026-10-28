@@ -91,14 +91,6 @@ pub(super) fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> F
             other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         },
 
-        // SetStoreResult → Integer (count), with WrongType/OOM
-        ResponseTag::SetStoreResult => match resp {
-            ShardResponse::SetStoreResult { count, .. } => Frame::Integer(count as i64),
-            ShardResponse::WrongType => wrongtype_error(),
-            ShardResponse::OutOfMemory => oom_error(),
-            other => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
-        },
-
         ResponseTag::Ttl => match resp {
             ShardResponse::Ttl(TtlResult::Seconds(s)) => Frame::Integer(clamp_ttl(s)),
             ShardResponse::Ttl(TtlResult::NoExpiry) => Frame::Integer(-1),

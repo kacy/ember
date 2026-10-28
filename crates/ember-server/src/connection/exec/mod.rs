@@ -160,6 +160,93 @@ pub(in crate::connection) fn resp_bulk_string(resp: ShardResponse) -> Frame {
     }
 }
 
+/// A set operation over several keys, for SUNION/SINTER/SDIFF and the
+/// sorted-set equivalents.
+#[derive(Clone, Copy)]
+pub(in crate::connection) enum SetOp {
+    Union,
+    Inter,
+    Diff,
+}
+
+impl SetOp {
+    /// What the shard holding the group of keys at position `group` runs.
+    /// A difference subtracts everything outside the first key's group, so
+    /// the other groups only need the union of their keys.
+    fn for_group(self, group: usize) -> SetOp {
+        match self {
+            SetOp::Diff if group > 0 => SetOp::Union,
+            op => op,
+        }
+    }
+}
+
+/// Splits `keys` by shard. Groups follow the order in which their shards
+/// first appear, so the first group holds `keys[0]`.
+fn group_by_shard(engine: &Engine, keys: Vec<String>) -> Vec<(usize, Vec<String>)> {
+    let mut groups: Vec<(usize, Vec<String>)> = Vec::new();
+    for key in keys {
+        let idx = engine.shard_for_key(&key);
+        match groups.iter_mut().find(|(i, _)| *i == idx) {
+            Some((_, group)) => group.push(key),
+            None => groups.push((idx, vec![key])),
+        }
+    }
+    groups
+}
+
+/// Runs `op` over `keys` split by shard: each shard applies the operation
+/// to its own keys through `make_req`, and the replies come back in group
+/// order. With every key on one shard this is a single request.
+pub(in crate::connection) async fn per_shard(
+    cx: &ExecCtx<'_>,
+    op: SetOp,
+    keys: Vec<String>,
+    make_req: impl Fn(SetOp, Vec<String>) -> ShardRequest,
+) -> Result<Vec<ShardResponse>, Frame> {
+    let mut pending = Vec::new();
+    for (group, (idx, keys)) in group_by_shard(cx.engine, keys).into_iter().enumerate() {
+        let req = make_req(op.for_group(group), keys);
+        let rx = cx
+            .engine
+            .dispatch_to_shard(idx, req)
+            .await
+            .map_err(|e| Frame::Error(format!("ERR {e}")))?;
+        pending.push(rx);
+    }
+    let mut replies = Vec::with_capacity(pending.len());
+    for rx in pending {
+        match rx.await {
+            Ok(ShardResponse::WrongType) => return Err(wrongtype_error()),
+            Ok(resp) => replies.push(resp),
+            Err(_) => return Err(Frame::Error("ERR shard unavailable".into())),
+        }
+    }
+    Ok(replies)
+}
+
+/// Replaces `dest` with the result of a multi-key command: deletes it, then
+/// sends `write` to create the new value. `write` is `None` for an empty
+/// result, which leaves `dest` deleted. Replies with `count`.
+pub(in crate::connection) async fn store_result(
+    cx: &ExecCtx<'_>,
+    dest: &str,
+    write: Option<ShardRequest>,
+    count: usize,
+) -> Frame {
+    let idx = cx.engine.shard_for_key(dest);
+    let del = ShardRequest::Del {
+        key: dest.to_owned(),
+    };
+    if let Err(e) = cx.engine.send_to_shard(idx, del).await {
+        return Frame::Error(format!("ERR {e}"));
+    }
+    match write {
+        Some(req) => route_to_shard(cx, idx, req, |_| Frame::Integer(count as i64)).await,
+        None => Frame::Integer(count as i64),
+    }
+}
+
 /// Converts a scored array into RESP frames, optionally interleaving scores.
 pub(in crate::connection) fn scored_to_frame(
     items: Vec<(String, f64)>,
