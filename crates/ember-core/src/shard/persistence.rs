@@ -126,7 +126,7 @@ pub(super) fn handle_serialize_snapshot(
 pub(super) fn handle_snapshot(
     keyspace: &Keyspace,
     persistence: &Option<ShardPersistenceConfig>,
-    aof_writer: &mut Option<AofWriter>,
+    aof_writer: Option<&mut AofWriter>,
     shard_id: u16,
     #[cfg(feature = "protobuf")] schema_registry: &Option<crate::schema::SharedSchemaRegistry>,
 ) -> ShardResponse {
@@ -145,7 +145,7 @@ pub(super) fn handle_snapshot(
     );
     match result {
         Ok((count, snapshot_crc)) => {
-            if let Some(ref mut writer) = aof_writer {
+            if let Some(writer) = aof_writer {
                 if let Err(e) = writer.truncate(snapshot_crc) {
                     // the old AOF stays in use. mark where the snapshot
                     // takes over, so recovery skips the records before it
