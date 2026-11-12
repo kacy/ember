@@ -152,6 +152,7 @@ impl Session {
     }
 
     /// A session that is not logged in as anyone.
+    #[cfg(feature = "grpc")]
     pub fn anonymous() -> Self {
         Self {
             user: None,
