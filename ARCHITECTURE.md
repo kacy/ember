@@ -48,8 +48,6 @@ the common RESP path looks like this:
 5. the shard updates its local keyspace, writes AOF records if needed, emits replication events, and returns a typed response.
 6. the connection handler turns that response back into a RESP frame and writes it out.
 
-that flow is the default "sharded engine" mode. there is also a special concurrent mode for string-heavy workloads, covered below.
-
 ## sharded engine
 
 **main code:** `crates/ember-core/src/engine.rs`, `crates/ember-core/src/shard/mod.rs`
@@ -162,16 +160,6 @@ pub/sub is handled in a dedicated subscriber mode. once a connection subscribes,
 monitor mode is similar: the connection subscribes to a broadcast stream of observed commands and stays there until disconnect.
 
 TLS is not a separate server architecture. it uses the same connection machinery after the TLS handshake.
-
-### concurrent mode
-
-**main code:** `crates/ember-server/src/concurrent_handler.rs`
-
-ember also has an optional concurrent path that bypasses shard channels for basic string operations. it uses `ConcurrentKeyspace` and direct concurrent access for `GET`/`SET` style workloads.
-
-this mode is faster for that narrow case, but it is not the general execution model. the sharded engine is still the main design and the one the rest of the system is built around.
-
-**deprecated:** concurrent mode is deprecated and will be removed in a future release. it only covers string commands, is mutually exclusive with cluster mode, and maintains a parallel connection handler. the server logs a warning on startup when `--concurrent` is set.
 
 ## persistence and recovery
 
