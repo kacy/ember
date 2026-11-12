@@ -3,6 +3,7 @@
 ## unreleased
 
 ### removed
+- concurrent mode: `--concurrent`, `EMBER_CONCURRENT`, the `concurrent` config key and the helm `ember.concurrent` value. the default mode is faster, serving about 35% more requests without pipelining and 2.6× more with a pipeline of 16 on a 32-core machine. concurrent mode also left strings out of the AOF and replication, rejected collection commands, and ran SET NX/XX and INCR as separate read and write steps (#446)
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### fixes

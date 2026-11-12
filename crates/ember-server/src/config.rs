@@ -143,7 +143,6 @@ pub struct EmberConfig {
     pub port: u16,
     /// Number of shards. 0 means auto-detect CPU cores.
     pub shards: usize,
-    pub concurrent: bool,
     pub requirepass: String,
     /// Path to an ACL file with `user <name> <rules...>` lines, loaded at
     /// startup. Empty means only the `default` user exists.
@@ -239,7 +238,6 @@ impl Default for EmberConfig {
             bind: "127.0.0.1".into(),
             port: 6379,
             shards: 0,
-            concurrent: false,
             requirepass: String::new(),
             aclfile: String::new(),
             data_dir: String::new(),

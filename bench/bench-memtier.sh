@@ -12,8 +12,7 @@
 #   bash bench/bench-memtier.sh --quick      # reduced test matrix
 #
 # environment variables:
-#   EMBER_CONCURRENT_PORT   ember concurrent port         (default: 6379)
-#   EMBER_SHARDED_PORT      ember sharded port            (default: 6380)
+#   EMBER_SHARDED_PORT      ember port                    (default: 6380)
 #   REDIS_PORT              redis server port             (default: 6399)
 #   DRAGONFLY_PORT          dragonfly server port         (default: 6389)
 #   MEMTIER_THREADS         memtier threads               (default: 4)
@@ -27,7 +26,6 @@ set -euo pipefail
 
 # --- configuration ---
 
-EMBER_CONCURRENT_PORT="${EMBER_CONCURRENT_PORT:-6379}"
 EMBER_SHARDED_PORT="${EMBER_SHARDED_PORT:-6380}"
 REDIS_PORT="${REDIS_PORT:-6399}"
 DRAGONFLY_PORT="${DRAGONFLY_PORT:-6389}"
@@ -313,23 +311,17 @@ run_server_tests() {
     done
 }
 
-declare -a EC_OPS=()
 declare -a ES_OPS=()
 declare -a R_OPS=()
 declare -a D_OPS=()
-declare -a EC_P99=()
 declare -a ES_P99=()
 declare -a R_P99=()
 declare -a D_P99=()
 
-# ember concurrent
-start_server "ember concurrent" "$EMBER_CONCURRENT_PORT" \
-    "$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrentrun_server_tests "$EMBER_CONCURRENT_PORT" "ember concurrent" EC_OPS EC_P99
-stop_server
-
-# ember sharded
-start_server "ember sharded" "$EMBER_SHARDED_PORT" \
-    "$EMBER_BIN" --port "$EMBER_SHARDED_PORT"run_server_tests "$EMBER_SHARDED_PORT" "ember sharded" ES_OPS ES_P99
+# ember
+start_server "ember" "$EMBER_SHARDED_PORT" \
+    "$EMBER_BIN" --port "$EMBER_SHARDED_PORT"
+run_server_tests "$EMBER_SHARDED_PORT" "ember" ES_OPS ES_P99
 stop_server
 
 # redis
@@ -361,9 +353,9 @@ echo "system: $CPU_CORES cores, $TOTAL_CONNECTIONS connections, $TOTAL_REQUESTS 
 echo ""
 
 # build format string dynamically based on available servers
-fmt="%-30s %16s %16s"
-header_args=("test" "ember concurrent" "ember sharded")
-divider_args=("----" "----------------" "-------------")
+fmt="%-30s %16s"
+header_args=("test" "ember")
+divider_args=("----" "-----")
 
 if [[ "$HAS_REDIS" == "true" ]]; then
     fmt="$fmt %12s"
@@ -384,7 +376,7 @@ printf "$fmt\n" "${header_args[@]}"
 printf "$fmt\n" "${divider_args[@]}"
 
 for i in "${!LABELS[@]}"; do
-    row_args=("${LABELS[$i]}" "$(format_number "${EC_OPS[$i]}")" "$(format_number "${ES_OPS[$i]}")")
+    row_args=("${LABELS[$i]}" "$(format_number "${ES_OPS[$i]}")")
     if [[ "$HAS_REDIS" == "true" ]]; then
         row_args+=("$(format_number "${R_OPS[$i]}")")
     fi
@@ -405,7 +397,7 @@ printf "$fmt\n" "${header_args[@]}"
 printf "$fmt\n" "${divider_args[@]}"
 
 for i in "${!LABELS[@]}"; do
-    row_args=("${LABELS[$i]}" "${EC_P99[$i]}" "${ES_P99[$i]}")
+    row_args=("${LABELS[$i]}" "${ES_P99[$i]}")
     if [[ "$HAS_REDIS" == "true" ]]; then
         row_args+=("${R_P99[$i]}")
     fi
@@ -422,12 +414,11 @@ echo ""
 if [[ "$HAS_REDIS" == "true" ]]; then
     echo "=== ember vs redis ==="
     echo ""
-    printf "%-30s %16s %16s\n" "test" "concurrent" "sharded"
-    printf "%-30s %16s %16s\n" "----" "----------" "-------"
+    printf "%-30s %10s\n" "test" "ratio"
+    printf "%-30s %10s\n" "----" "-----"
     for i in "${!LABELS[@]}"; do
-        ratio_c=$(calc_ratio "${EC_OPS[$i]}" "${R_OPS[$i]}")
-        ratio_s=$(calc_ratio "${ES_OPS[$i]}" "${R_OPS[$i]}")
-        printf "%-30s %16s %16s\n" "${LABELS[$i]}" "$ratio_c" "$ratio_s"
+        ratio=$(calc_ratio "${ES_OPS[$i]}" "${R_OPS[$i]}")
+        printf "%-30s %10s\n" "${LABELS[$i]}" "$ratio"
     done
     echo ""
     echo ""
@@ -436,35 +427,23 @@ fi
 if [[ "$HAS_DRAGONFLY" == "true" ]]; then
     echo "=== ember vs dragonfly ==="
     echo ""
-    printf "%-30s %16s %16s\n" "test" "concurrent" "sharded"
-    printf "%-30s %16s %16s\n" "----" "----------" "-------"
+    printf "%-30s %10s\n" "test" "ratio"
+    printf "%-30s %10s\n" "----" "-----"
     for i in "${!LABELS[@]}"; do
-        ratio_c=$(calc_ratio "${EC_OPS[$i]}" "${D_OPS[$i]}")
-        ratio_s=$(calc_ratio "${ES_OPS[$i]}" "${D_OPS[$i]}")
-        printf "%-30s %16s %16s\n" "${LABELS[$i]}" "$ratio_c" "$ratio_s"
+        ratio=$(calc_ratio "${ES_OPS[$i]}" "${D_OPS[$i]}")
+        printf "%-30s %10s\n" "${LABELS[$i]}" "$ratio"
     done
     echo ""
     echo ""
 fi
 
-# ember modes comparison
-echo "=== ember concurrent vs sharded ==="
-echo ""
-printf "%-30s %10s\n" "test" "ratio"
-printf "%-30s %10s\n" "----" "-----"
-for i in "${!LABELS[@]}"; do
-    ratio=$(calc_ratio "${EC_OPS[$i]}" "${ES_OPS[$i]}")
-    printf "%-30s %10s\n" "${LABELS[$i]}" "$ratio"
-done
-echo ""
-
 # --- save raw results ---
 
 RESULT_FILE="$RESULTS_DIR/${TIMESTAMP}-memtier.csv"
 {
-    echo "test,ember_concurrent_ops,ember_sharded_ops,redis_ops,dragonfly_ops,ec_p99,es_p99,redis_p99,dragonfly_p99"
+    echo "test,ember_sharded_ops,redis_ops,dragonfly_ops,es_p99,redis_p99,dragonfly_p99"
     for i in "${!LABELS[@]}"; do
-        echo "${LABELS[$i]},${EC_OPS[$i]},${ES_OPS[$i]},${R_OPS[$i]:-},${D_OPS[$i]:-},${EC_P99[$i]},${ES_P99[$i]},${R_P99[$i]:-},${D_P99[$i]:-}"
+        echo "${LABELS[$i]},${ES_OPS[$i]},${R_OPS[$i]:-},${D_OPS[$i]:-},${ES_P99[$i]},${R_P99[$i]:-},${D_P99[$i]:-}"
     done
 } > "$RESULT_FILE"
 

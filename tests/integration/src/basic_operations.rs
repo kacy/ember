@@ -78,6 +78,46 @@ async fn set_with_xx() {
     assert_eq!(c.get_bulk(&["GET", "key"]).await, Some("updated".into()));
 }
 
+/// Many clients racing on the same keys: exactly one SET NX wins each
+/// key, and no INCR is lost. Each command must read and write its key as
+/// one step.
+#[tokio::test]
+async fn set_nx_and_incr_are_atomic_across_clients() {
+    const CLIENTS: usize = 20;
+    const KEYS: usize = 100;
+    let server = TestServer::start();
+
+    let mut tasks = Vec::new();
+    for _ in 0..CLIENTS {
+        let mut c = server.connect().await;
+        tasks.push(tokio::spawn(async move {
+            let mut won = 0;
+            for k in 0..KEYS {
+                let key = format!("lock:{k}");
+                if matches!(c.cmd(&["SET", &key, "x", "NX"]).await, Frame::Simple(_)) {
+                    won += 1;
+                }
+                c.get_int(&["INCR", "counter"]).await;
+            }
+            won
+        }));
+    }
+    let mut winners = 0;
+    for task in tasks {
+        winners += task.await.unwrap();
+    }
+
+    let mut c = server.connect().await;
+    assert_eq!(
+        winners, KEYS,
+        "each key should have exactly one SET NX winner"
+    );
+    assert_eq!(
+        c.get_bulk(&["GET", "counter"]).await,
+        Some((CLIENTS * KEYS).to_string())
+    );
+}
+
 #[tokio::test]
 async fn set_with_ex() {
     let server = TestServer::start();
@@ -462,38 +502,18 @@ async fn hostile_arguments_are_rejected_without_crashing() {
             &["SETRANGE", "s", "100000000000", "x"],
             &["SETBIT", "b", "100000000000", "1"],
             &["SRANDMEMBER", "set", "-9223372036854775808"],
+            &["DECRBY", "n", "-9223372036854775808"],
         ],
     )
     .await;
 }
 
-#[tokio::test]
-async fn concurrent_decrby_min_is_rejected_without_crashing() {
-    let server = TestServer::start_with(ServerOptions {
-        concurrent: true,
-        ..Default::default()
-    });
-    assert_rejected_without_crash(&server, &[&["DECRBY", "n", "-9223372036854775808"]]).await;
-}
-
-#[tokio::test]
-async fn pipeline_longer_than_the_depth_limit_gets_every_reply() {
-    expect_every_pipelined_reply(&TestServer::start()).await;
-}
-
-#[tokio::test]
-async fn pipeline_longer_than_the_depth_limit_gets_every_reply_concurrent() {
-    let server = TestServer::start_with(ServerOptions {
-        concurrent: true,
-        ..Default::default()
-    });
-    expect_every_pipelined_reply(&server).await;
-}
-
 /// The server parses at most 10,000 frames per batch. The rest must be
 /// processed without waiting for the client to send more bytes.
-async fn expect_every_pipelined_reply(server: &TestServer) {
+#[tokio::test]
+async fn pipeline_longer_than_the_depth_limit_gets_every_reply() {
     const COUNT: usize = 10_050;
+    let server = TestServer::start();
     let mut c = server.connect().await;
     c.write_raw(&b"*1\r\n$4\r\nPING\r\n".repeat(COUNT)).await;
 
@@ -527,22 +547,10 @@ async fn send_and_read_to_close(server: &TestServer, request: &[u8]) -> Vec<u8> 
 
 #[tokio::test]
 async fn quit_replies_and_closes_without_running_later_commands() {
-    expect_quit_to_close(&TestServer::start()).await;
-}
-
-#[tokio::test]
-async fn quit_replies_and_closes_without_running_later_commands_concurrent() {
-    let server = TestServer::start_with(ServerOptions {
-        concurrent: true,
-        ..Default::default()
-    });
-    expect_quit_to_close(&server).await;
-}
-
-async fn expect_quit_to_close(server: &TestServer) {
+    let server = TestServer::start();
     let request =
         b"*1\r\n$4\r\nPING\r\n*1\r\n$4\r\nQUIT\r\n*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$1\r\nv\r\n";
-    let reply = send_and_read_to_close(server, request).await;
+    let reply = send_and_read_to_close(&server, request).await;
     assert_eq!(reply, b"+PONG\r\n+OK\r\n");
 
     let mut c = server.connect().await;

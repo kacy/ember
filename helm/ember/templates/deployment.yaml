@@ -42,10 +42,6 @@ spec:
             - name: EMBER_APPENDFSYNC
               value: {{ .Values.ember.appendfsync | quote }}
             {{- end }}
-            {{- if .Values.ember.concurrent }}
-            - name: EMBER_CONCURRENT
-              value: "true"
-            {{- end }}
             {{- if or .Values.ember.requirepass .Values.ember.existingSecret }}
             - name: EMBER_REQUIREPASS_FILE
               value: /etc/ember/auth/requirepass

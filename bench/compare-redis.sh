@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Comprehensive benchmark comparing Ember (concurrent + sharded), Redis, and Dragonfly.
+# Comprehensive benchmark comparing Ember, Redis, and Dragonfly.
 #
 # Usage:
 #   bash bench/compare-redis.sh              # full comparison
@@ -9,8 +9,7 @@
 #   bash bench/compare-redis.sh --json       # JSON output for CI
 #
 # Environment variables:
-#   EMBER_CONCURRENT_PORT   ember concurrent port         (default: 6379)
-#   EMBER_SHARDED_PORT      ember sharded port            (default: 6380)
+#   EMBER_SHARDED_PORT      ember port                    (default: 6380)
 #   REDIS_PORT              redis server port             (default: 6399)
 #   DRAGONFLY_PORT          dragonfly server port         (default: 6389)
 #   BENCH_REQUESTS          requests per test             (default: 100000)
@@ -24,7 +23,6 @@ set -euo pipefail
 
 # --- configuration ---
 
-EMBER_CONCURRENT_PORT="${EMBER_CONCURRENT_PORT:-6379}"
 EMBER_SHARDED_PORT="${EMBER_SHARDED_PORT:-6380}"
 REDIS_PORT="${REDIS_PORT:-6399}"
 DRAGONFLY_PORT="${DRAGONFLY_PORT:-6389}"
@@ -55,13 +53,11 @@ done
 
 # --- helpers ---
 
-EMBER_CONCURRENT_PID=""
 EMBER_SHARDED_PID=""
 REDIS_PID=""
 DRAGONFLY_PID=""
 
 cleanup() {
-    [[ -n "$EMBER_CONCURRENT_PID" ]] && kill "$EMBER_CONCURRENT_PID" 2>/dev/null && wait "$EMBER_CONCURRENT_PID" 2>/dev/null || true
     [[ -n "$EMBER_SHARDED_PID" ]] && kill "$EMBER_SHARDED_PID" 2>/dev/null && wait "$EMBER_SHARDED_PID" 2>/dev/null || true
     [[ -n "$REDIS_PID" ]] && kill "$REDIS_PID" 2>/dev/null && wait "$REDIS_PID" 2>/dev/null || true
     [[ -n "$DRAGONFLY_PID" ]] && kill "$DRAGONFLY_PID" 2>/dev/null && wait "$DRAGONFLY_PID" 2>/dev/null || true
@@ -164,14 +160,7 @@ echo "pipeline:     $PIPELINE"
 echo "threads:      $THREADS"
 echo ""
 
-# ember concurrent mode (DashMap-backed, fastest for GET/SET)
-echo "starting ember concurrent on port $EMBER_CONCURRENT_PORT..."
-"$EMBER_BIN" --port "$EMBER_CONCURRENT_PORT" --concurrent > /dev/null 2>&1 &
-EMBER_CONCURRENT_PID=$!
-wait_for_server "$EMBER_CONCURRENT_PORT" "ember-concurrent"
-
-# ember sharded mode (channel-based, supports all data types)
-echo "starting ember sharded ($CPU_CORES shards) on port $EMBER_SHARDED_PORT..."
+echo "starting ember ($CPU_CORES shards) on port $EMBER_SHARDED_PORT..."
 "$EMBER_BIN" --port "$EMBER_SHARDED_PORT" > /dev/null 2>&1 &
 EMBER_SHARDED_PID=$!
 wait_for_server "$EMBER_SHARDED_PORT" "ember-sharded"
@@ -219,13 +208,11 @@ echo "running benchmarks..."
 echo ""
 
 # pre-populate all servers
-populate_keys "$EMBER_CONCURRENT_PORT"
 populate_keys "$EMBER_SHARDED_PORT"
 [[ "$HAS_REDIS" == "true" ]] && populate_keys "$REDIS_PORT"
 [[ "$HAS_DRAGONFLY" == "true" ]] && populate_keys "$DRAGONFLY_PORT"
 
 declare -a LABELS=()
-declare -a EMBER_CONCURRENT_RESULTS=()
 declare -a EMBER_SHARDED_RESULTS=()
 declare -a REDIS_RESULTS=()
 declare -a DRAGONFLY_RESULTS=()
@@ -240,12 +227,7 @@ for test_spec in "${TESTS[@]}"; do
         test_type="GET"
     fi
 
-    # ember concurrent
-    csv=$(run_benchmark "$EMBER_CONCURRENT_PORT" "$data_size" "$pipeline")
-    rps=$(extract_rps "$csv" "$test_type")
-    EMBER_CONCURRENT_RESULTS+=("${rps:-0}")
-
-    # ember sharded
+    # ember
     csv=$(run_benchmark "$EMBER_SHARDED_PORT" "$data_size" "$pipeline")
     rps=$(extract_rps "$csv" "$test_type")
     EMBER_SHARDED_RESULTS+=("${rps:-0}")
@@ -275,12 +257,6 @@ if [[ "$JSON_OUTPUT" == "true" ]]; then
     echo "    \"requests\": $REQUESTS,"
     echo "    \"clients\": $CLIENTS,"
     echo "    \"pipeline\": $PIPELINE"
-    echo "  },"
-    echo "  \"ember_concurrent\": {"
-    for i in "${!LABELS[@]}"; do
-        comma=$([[ $i -lt $((${#LABELS[@]} - 1)) ]] && echo "," || echo "")
-        echo "    \"${LABELS[$i]}\": ${EMBER_CONCURRENT_RESULTS[$i]}$comma"
-    done
     echo "  },"
     echo "  \"ember_sharded\": {"
     for i in "${!LABELS[@]}"; do
@@ -320,10 +296,10 @@ else
     echo ""
 
     # build header
-    header="%-22s %16s %16s"
-    header_args=("test" "ember concurrent" "ember sharded")
-    divider="%-22s %16s %16s"
-    divider_args=("----" "----------------" "-------------")
+    header="%-22s %16s"
+    header_args=("test" "ember")
+    divider="%-22s %16s"
+    divider_args=("----" "-----")
 
     if [[ "$HAS_REDIS" == "true" ]]; then
         header="$header %12s"
@@ -342,11 +318,10 @@ else
     printf "$divider\n" "${divider_args[@]}"
 
     for i in "${!LABELS[@]}"; do
-        ec=${EMBER_CONCURRENT_RESULTS[$i]}
         es=${EMBER_SHARDED_RESULTS[$i]}
 
-        row="%-22s %16s %16s"
-        row_args=("${LABELS[$i]}" "$(format_number "$ec")" "$(format_number "$es")")
+        row="%-22s %16s"
+        row_args=("${LABELS[$i]}" "$(format_number "$es")")
 
         if [[ "$HAS_REDIS" == "true" ]]; then
             row="$row %12s"
@@ -367,15 +342,11 @@ else
     if [[ "$HAS_REDIS" == "true" ]]; then
         echo "=== ember vs redis ==="
         echo ""
-        printf "%-22s %16s %16s\n" "test" "concurrent" "sharded"
-        printf "%-22s %16s %16s\n" "----" "----------" "-------"
+        printf "%-22s %10s\n" "test" "ratio"
+        printf "%-22s %10s\n" "----" "-----"
         for i in "${!LABELS[@]}"; do
-            ec=${EMBER_CONCURRENT_RESULTS[$i]}
-            es=${EMBER_SHARDED_RESULTS[$i]}
-            r=${REDIS_RESULTS[$i]}
-            ratio_c=$(calc_ratio "$ec" "$r")
-            ratio_s=$(calc_ratio "$es" "$r")
-            printf "%-22s %16s %16s\n" "${LABELS[$i]}" "$ratio_c" "$ratio_s"
+            ratio=$(calc_ratio "${EMBER_SHARDED_RESULTS[$i]}" "${REDIS_RESULTS[$i]}")
+            printf "%-22s %10s\n" "${LABELS[$i]}" "$ratio"
         done
         echo ""
         echo ""
@@ -385,44 +356,26 @@ else
     if [[ "$HAS_DRAGONFLY" == "true" ]]; then
         echo "=== ember vs dragonfly ==="
         echo ""
-        printf "%-22s %16s %16s\n" "test" "concurrent" "sharded"
-        printf "%-22s %16s %16s\n" "----" "----------" "-------"
+        printf "%-22s %10s\n" "test" "ratio"
+        printf "%-22s %10s\n" "----" "-----"
         for i in "${!LABELS[@]}"; do
-            ec=${EMBER_CONCURRENT_RESULTS[$i]}
-            es=${EMBER_SHARDED_RESULTS[$i]}
-            d=${DRAGONFLY_RESULTS[$i]}
-            ratio_c=$(calc_ratio "$ec" "$d")
-            ratio_s=$(calc_ratio "$es" "$d")
-            printf "%-22s %16s %16s\n" "${LABELS[$i]}" "$ratio_c" "$ratio_s"
+            ratio=$(calc_ratio "${EMBER_SHARDED_RESULTS[$i]}" "${DRAGONFLY_RESULTS[$i]}")
+            printf "%-22s %10s\n" "${LABELS[$i]}" "$ratio"
         done
         echo ""
         echo ""
     fi
-
-    # --- ember modes comparison ---
-    echo "=== ember concurrent vs sharded ==="
-    echo ""
-    printf "%-22s %10s\n" "test" "ratio"
-    printf "%-22s %10s\n" "----" "-----"
-    for i in "${!LABELS[@]}"; do
-        ec=${EMBER_CONCURRENT_RESULTS[$i]}
-        es=${EMBER_SHARDED_RESULTS[$i]}
-        ratio=$(calc_ratio "$ec" "$es")
-        printf "%-22s %10s\n" "${LABELS[$i]}" "$ratio"
-    done
-    echo ""
-    echo "(concurrent mode uses DashMap, sharded uses channel routing)"
 fi
 
 # --- save raw results ---
 
 RESULT_FILE="$RESULTS_DIR/$TIMESTAMP.csv"
 {
-    echo "test,ember_concurrent_rps,ember_sharded_rps,redis_rps,dragonfly_rps"
+    echo "test,ember_sharded_rps,redis_rps,dragonfly_rps"
     for i in "${!LABELS[@]}"; do
         redis_val="${REDIS_RESULTS[$i]:-}"
         dragonfly_val="${DRAGONFLY_RESULTS[$i]:-}"
-        echo "${LABELS[$i]},${EMBER_CONCURRENT_RESULTS[$i]},${EMBER_SHARDED_RESULTS[$i]},${redis_val},${dragonfly_val}"
+        echo "${LABELS[$i]},${EMBER_SHARDED_RESULTS[$i]},${redis_val},${dragonfly_val}"
     done
 } > "$RESULT_FILE"
 

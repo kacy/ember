@@ -1,8 +1,8 @@
 //! Shared constants and utilities for connection handlers.
 //!
-//! Both the sharded connection handler (`connection.rs`) and concurrent
-//! handler (`concurrent_handler.rs`) use these defaults and helpers.
-//! Actual runtime values come from `ctx.limits` (derived from EmberConfig).
+//! The connection handler and the gRPC service use these defaults and
+//! helpers. Runtime values come from `ctx.limits` (derived from
+//! EmberConfig).
 
 use std::sync::Arc;
 

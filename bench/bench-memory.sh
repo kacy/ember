@@ -2,8 +2,7 @@
 #
 # memory usage comparison between ember and redis across data types.
 #
-# tests both ember modes (concurrent for strings, sharded for all types)
-# and measures per-key/per-member memory overhead.
+# measures per-key/per-member memory overhead.
 #
 # usage:
 #   ./bench/bench-memory.sh              # string, hash, sorted set (ember + redis)
@@ -24,7 +23,6 @@ VECTOR_KEYS=${VECTOR_KEYS:-100000}
 VALUE_SIZE=${VALUE_SIZE:-64}
 VECTOR_DIM=${VECTOR_DIM:-128}
 
-EMBER_CONCURRENT_PORT=6379
 EMBER_SHARDED_PORT=6380
 REDIS_PORT=6399
 
@@ -39,7 +37,6 @@ done
 # --- helpers ---
 
 cleanup() {
-    pkill -f "ember-server.*${EMBER_CONCURRENT_PORT}" 2>/dev/null || true
     pkill -f "ember-server.*${EMBER_SHARDED_PORT}" 2>/dev/null || true
     redis-cli -p $REDIS_PORT shutdown nosave 2>/dev/null || true
 }
@@ -131,7 +128,6 @@ echo ""
 # --- results arrays ---
 
 declare -a TYPE_LABELS=()
-declare -a EMBER_CONCURRENT_BYTES=()
 declare -a EMBER_SHARDED_BYTES=()
 declare -a REDIS_BYTES=()
 
@@ -177,26 +173,13 @@ measure_type() {
     echo "$bytes_per_key"
 }
 
-# --- string benchmark (concurrent + sharded + redis) ---
+# --- string benchmark (ember + redis) ---
 
 echo "--- string (${VALUE_SIZE}B) ($STRING_KEYS keys) ---"
 echo ""
 TYPE_LABELS+=("string (${VALUE_SIZE}B)")
 
-# ember concurrent
-echo "  starting ember concurrent..."
-$EMBER_BIN --port $EMBER_CONCURRENT_PORT --concurrent > /dev/null 2>&1 &
-EC_PID=$!
-wait_for_server $EMBER_CONCURRENT_PORT
-
-ec_bytes=$(measure_type "$EMBER_CONCURRENT_PORT" "string" "$STRING_KEYS")
-EMBER_CONCURRENT_BYTES+=("$ec_bytes")
-echo "  ember concurrent: ${ec_bytes} B/key"
-
-kill "$EC_PID" 2>/dev/null && wait "$EC_PID" 2>/dev/null || true
-sleep 0.5
-
-# ember sharded
+# ember
 echo "  starting ember sharded..."
 $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
 ES_PID=$!
@@ -227,13 +210,11 @@ else
 fi
 echo ""
 
-# --- hash benchmark (sharded only + redis) ---
-# hash/zset commands are only supported in sharded mode
+# --- hash benchmark (ember + redis) ---
 
 echo "--- hash (5 fields) ($COMPLEX_KEYS keys) ---"
 echo ""
 TYPE_LABELS+=("hash (5 fields)")
-EMBER_CONCURRENT_BYTES+=("—")
 
 echo "  starting ember sharded..."
 $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
@@ -264,12 +245,11 @@ else
 fi
 echo ""
 
-# --- sorted set benchmark (sharded only + redis) ---
+# --- sorted set benchmark (ember + redis) ---
 
 echo "--- sorted set ($COMPLEX_KEYS members) ---"
 echo ""
 TYPE_LABELS+=("sorted set")
-EMBER_CONCURRENT_BYTES+=("—")
 
 echo "  starting ember sharded..."
 $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
@@ -310,7 +290,6 @@ if [[ "$VECTOR_MODE" == "true" ]]; then
 
     if ! command -v python3 &> /dev/null; then
         echo "  error: python3 required for vector benchmark"
-        EMBER_CONCURRENT_BYTES+=("—")
         EMBER_SHARDED_BYTES+=("—")
         REDIS_BYTES+=("—")
     else
@@ -344,7 +323,6 @@ for start in range(0, count, batch_size):
         print(f"    inserted {end}/{count} vectors", file=sys.stderr)
 PYEOF
 
-        # vector requires sharded mode
         echo "  starting ember sharded..."
         $EMBER_BIN --port $EMBER_SHARDED_PORT > /dev/null 2>&1 &
         VEC_PID=$!
@@ -358,7 +336,6 @@ PYEOF
         VEC_USED=$((VEC_MEM_AFTER - VEC_MEM_BEFORE))
         VEC_BYTES=$((VEC_USED / VECTOR_KEYS))
 
-        EMBER_CONCURRENT_BYTES+=("—")
         EMBER_SHARDED_BYTES+=("$VEC_BYTES")
         REDIS_BYTES+=("—")
         echo "  ember sharded:    ${VEC_BYTES} B/vector"
@@ -380,20 +357,18 @@ echo "                     memory benchmark summary"
 echo "========================================================================"
 echo ""
 
-fmt="%-22s %18s %18s %12s"
-printf "$fmt\n" "data type" "ember concurrent" "ember sharded" "redis"
-printf "$fmt\n" "---------" "----------------" "-------------" "-----"
+fmt="%-22s %18s %12s"
+printf "$fmt\n" "data type" "ember" "redis"
+printf "$fmt\n" "---------" "-----" "-----"
 
 for i in "${!TYPE_LABELS[@]}"; do
-    ec="${EMBER_CONCURRENT_BYTES[$i]}"
     es="${EMBER_SHARDED_BYTES[$i]}"
     r="${REDIS_BYTES[$i]}"
 
-    [[ "$ec" != "—" ]] && ec="${ec}B/key"
     [[ "$es" != "—" ]] && es="${es}B/key"
     [[ "$r" != "—" ]] && r="${r}B/key"
 
-    printf "$fmt\n" "${TYPE_LABELS[$i]}" "$ec" "$es" "$r"
+    printf "$fmt\n" "${TYPE_LABELS[$i]}" "$es" "$r"
 done
 
 echo ""
@@ -406,9 +381,9 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 RESULT_FILE="$RESULTS_DIR/${TIMESTAMP}-memory.csv"
 
 {
-    echo "data_type,ember_concurrent_bytes_per_key,ember_sharded_bytes_per_key,redis_bytes_per_key"
+    echo "data_type,ember_sharded_bytes_per_key,redis_bytes_per_key"
     for i in "${!TYPE_LABELS[@]}"; do
-        echo "${TYPE_LABELS[$i]},${EMBER_CONCURRENT_BYTES[$i]},${EMBER_SHARDED_BYTES[$i]},${REDIS_BYTES[$i]}"
+        echo "${TYPE_LABELS[$i]},${EMBER_SHARDED_BYTES[$i]},${REDIS_BYTES[$i]}"
     done
 } > "$RESULT_FILE"
 

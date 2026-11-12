@@ -40,7 +40,6 @@ helm uninstall my-ember
 | `ember.evictionPolicy` | eviction policy when memory is full | `noeviction` |
 | `ember.appendonly` | enable AOF persistence | `false` |
 | `ember.appendfsync` | AOF fsync policy (`always`, `everysec`, `no`) | `everysec` |
-| `ember.concurrent` | use the DashMap keyspace instead of sharded channels (**deprecated**, will be removed) | `false` |
 | `ember.requirepass` | client auth password; stored in a Secret and mounted as `EMBER_REQUIREPASS_FILE` (never a plaintext env var) | `""` (disabled) |
 | `ember.existingSecret` | use an existing Secret (with a `requirepass` key) instead of `ember.requirepass` | `""` |
 | `resources` | CPU/memory resource requests and limits | `{}` |
