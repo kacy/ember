@@ -319,7 +319,9 @@ CLUSTER FAILOVER
 
 run this on a replica to promote it to primary. the outgoing primary will demote itself cleanly if it is reachable.
 
-automatic failover triggers when a primary is unreachable. replicas hold an epoch-based election; the replica with the most up-to-date replication offset wins. the cluster should recover within a few seconds of failure detection.
+automatic failover triggers when a primary is unreachable. its replicas hold an epoch-based election, and the first to collect votes from a majority of all primaries, the failed one included, takes over. a primary votes for one replica per failed primary, so two replicas can't both take over. the cluster should recover within a few seconds of failure detection.
+
+automatic failover needs at least three primaries: with two, the one left can't form a majority of two on its own. a primary that can't reach a majority of the primaries stops taking writes, so the same rule keeps a cut-off primary from accepting writes the majority is about to replace.
 
 **resharding**
 

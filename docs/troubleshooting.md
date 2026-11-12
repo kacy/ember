@@ -211,7 +211,7 @@ when bringing up a new cluster:
 
 **split-brain**
 
-if a network partition separates nodes, each side keeps its own view of the cluster. a replica is promoted only when a majority of primaries vote for it, so the minority side cannot elect new primaries. a primary cut off on the minority side still accepts writes for its slots until the partition heals. when it rejoins and a higher-epoch claim takes its slots, the writes it accepted during the partition can be lost.
+if a network partition separates nodes, each side keeps its own view of the cluster. a replica is promoted only when a majority of all primaries, its failed primary included, vote for it, so the minority side cannot elect new primaries. a primary cut off on the minority side rejects writes with `CLUSTERDOWN this primary can't reach a majority of the primaries` once it has marked the other primaries as unreachable, and serves reads only. writes it accepted before then, during the failure detection timeout, can still be lost when the majority promotes one of its replicas.
 
 to recover:
 1. restore network connectivity between partitions
