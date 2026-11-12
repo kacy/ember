@@ -12,7 +12,7 @@
 //! 4. After suspicion timeout, mark as DEAD
 //! 5. Piggyback state updates on all messages
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,15 @@ const MAX_INCARNATION: u64 = u64::MAX / 2;
 /// threshold indicate either a bug or a DoS attempt trying to exhaust the
 /// incarnation space.
 const MAX_INCARNATION_JUMP: u64 = 1000;
+
+/// Each queued update is piggybacked on this many messages per doubling of
+/// the cluster size, as in SWIM, so it survives lost packets and reaches
+/// every member with high probability.
+const RETRANSMIT_MULT: u32 = 3;
+
+/// The most updates kept waiting to be piggybacked. When more are queued,
+/// the ones sent most often are dropped first.
+const MAX_PENDING_UPDATES: usize = 256;
 
 /// Configuration for the gossip protocol.
 #[derive(Debug, Clone)]
@@ -136,10 +145,9 @@ pub struct GossipEngine {
     config: GossipConfig,
     /// Known cluster members.
     members: HashMap<NodeId, MemberState>,
-    /// Pending updates to piggyback on outgoing messages.
-    /// VecDeque gives O(1) front drain instead of the O(n) shift that
-    /// Vec::drain(0..n) requires.
-    pending_updates: VecDeque<NodeUpdate>,
+    /// Updates to piggyback on outgoing messages, each with the number of
+    /// messages it still rides on.
+    pending_updates: Vec<PendingUpdate>,
     /// Sequence number for protocol messages.
     next_seq: u64,
     /// Pending probes awaiting acknowledgment.
@@ -154,6 +162,33 @@ pub struct GossipEngine {
     local_config_epoch: u64,
     /// Active PingReq relays waiting for an Ack from the target.
     relay_pending: HashMap<u64, RelayEntry>,
+}
+
+struct PendingUpdate {
+    update: NodeUpdate,
+    sends_left: u32,
+}
+
+/// What an update is about. A newer update replaces a queued one with the
+/// same subject: a node's liveness, its slots, or its role.
+#[derive(PartialEq, Eq)]
+enum Subject {
+    Membership(NodeId),
+    Slots(NodeId),
+    Role(NodeId),
+    Other,
+}
+
+fn subject(update: &NodeUpdate) -> Subject {
+    match update {
+        NodeUpdate::Alive { node, .. }
+        | NodeUpdate::Suspect { node, .. }
+        | NodeUpdate::Dead { node, .. }
+        | NodeUpdate::Left { node } => Subject::Membership(*node),
+        NodeUpdate::SlotsChanged { node, .. } => Subject::Slots(*node),
+        NodeUpdate::RoleChanged { node, .. } => Subject::Role(*node),
+        NodeUpdate::VoteRequest { .. } | NodeUpdate::VoteGranted { .. } => Subject::Other,
+    }
 }
 
 struct PendingProbe {
@@ -186,7 +221,7 @@ impl GossipEngine {
             incarnation: 1,
             config,
             members: HashMap::new(),
-            pending_updates: VecDeque::new(),
+            pending_updates: Vec::new(),
             next_seq: 1,
             pending_probes: HashMap::new(),
             event_tx,
@@ -385,7 +420,7 @@ impl GossipEngine {
                 self.ensure_member(sender, from);
 
                 // Reply with ACK
-                let response_updates = self.collect_updates();
+                let response_updates = self.updates_for(sender);
                 vec![(
                     from,
                     GossipMessage::Ack {
@@ -628,12 +663,14 @@ impl GossipEngine {
         // Clean up stale relay entries
         self.cleanup_stale_relays();
 
-        // Select a random alive member to probe
+        // Select a random member to probe. Dead members stay in the
+        // rotation: after a partition heals, a probe is how a node learns
+        // it was declared dead and refutes it.
         let target_info = {
             let alive_members: Vec<_> = self
                 .members
                 .values()
-                .filter(|m| m.state == MemberStatus::Alive || m.state == MemberStatus::Suspect)
+                .filter(|m| m.state != MemberStatus::Left)
                 .map(|m| (m.id, m.addr))
                 .collect();
 
@@ -651,18 +688,7 @@ impl GossipEngine {
         let seq = self.next_seq;
         self.next_seq += 1;
 
-        let mut updates = self.collect_updates();
-
-        // Always piggyback local slot state so peers converge even if they
-        // missed the one-shot SlotsChanged queued by broadcast_local_slots.
-        if !self.local_slots.is_empty() {
-            updates.push(NodeUpdate::SlotsChanged {
-                node: self.local_id,
-                incarnation: self.incarnation,
-                config_epoch: self.local_config_epoch,
-                slots: self.local_slots.clone(),
-            });
-        }
+        let updates = self.updates_for(target_id);
 
         let msg = GossipMessage::Ping {
             seq,
@@ -1116,20 +1142,73 @@ impl GossipEngine {
     }
 
     fn queue_update(&mut self, update: NodeUpdate) {
-        self.pending_updates.push_back(update);
-        // When the queue overflows, drop the oldest pending updates.
-        // This is safe: gossip convergence doesn't require every update to be
-        // delivered. Members re-gossip their state on each protocol period, so
-        // a dropped update will be re-sent in the next round.
-        if self.pending_updates.len() > self.config.max_piggyback * 2 {
-            let to_drop = self.pending_updates.len() - self.config.max_piggyback * 2;
-            self.pending_updates.drain(..to_drop);
+        let about = subject(&update);
+        if about != Subject::Other {
+            self.pending_updates.retain(|p| subject(&p.update) != about);
+        }
+        let sends_left = self.retransmit_limit();
+        self.pending_updates
+            .push(PendingUpdate { update, sends_left });
+        if self.pending_updates.len() > MAX_PENDING_UPDATES {
+            // drop the update that has already gone out the most times
+            if let Some(i) =
+                (0..self.pending_updates.len()).min_by_key(|&i| self.pending_updates[i].sends_left)
+            {
+                self.pending_updates.swap_remove(i);
+            }
         }
     }
 
+    /// How many messages a new update rides on: `RETRANSMIT_MULT` times
+    /// the number of bits in the cluster size.
+    fn retransmit_limit(&self) -> u32 {
+        let size = self.members.len() as u32 + 1;
+        RETRANSMIT_MULT * (u32::BITS - size.leading_zeros())
+    }
+
+    /// Picks the updates for one outgoing message, those sent least so far
+    /// first, and counts the send against each.
     fn collect_updates(&mut self) -> Vec<NodeUpdate> {
+        self.pending_updates
+            .sort_by_key(|p| std::cmp::Reverse(p.sends_left));
         let count = self.pending_updates.len().min(self.config.max_piggyback);
-        self.pending_updates.drain(..count).collect()
+        let picked: Vec<NodeUpdate> = self.pending_updates[..count]
+            .iter_mut()
+            .map(|p| {
+                p.sends_left -= 1;
+                p.update.clone()
+            })
+            .collect();
+        self.pending_updates.retain(|p| p.sends_left > 0);
+        picked
+    }
+
+    /// The local node's slot claim, sent on every Ping and Ack so peers
+    /// converge even when they missed the update queued at the change.
+    fn local_slots_update(&self) -> Option<NodeUpdate> {
+        (!self.local_slots.is_empty()).then(|| NodeUpdate::SlotsChanged {
+            node: self.local_id,
+            incarnation: self.incarnation,
+            config_epoch: self.local_config_epoch,
+            slots: self.local_slots.clone(),
+        })
+    }
+
+    /// Updates for a message to `node`: the queued ones, the local slot
+    /// claim, and, when we believe `node` is dead, that verdict, so it can
+    /// refute it with a higher incarnation once it is reachable again.
+    fn updates_for(&mut self, node: NodeId) -> Vec<NodeUpdate> {
+        let mut updates = self.collect_updates();
+        updates.extend(self.local_slots_update());
+        if let Some(member) = self.members.get(&node) {
+            if member.state == MemberStatus::Dead {
+                updates.push(NodeUpdate::Dead {
+                    node,
+                    incarnation: member.incarnation,
+                });
+            }
+        }
+        updates
     }
 }
 
@@ -1198,6 +1277,112 @@ mod tests {
         assert!(matches!(responses[0].1, GossipMessage::Ack { .. }));
         assert_eq!(responses[0].0.port(), 6380);
         assert_eq!(engine.alive_count(), 1);
+    }
+
+    fn engine(port: u16) -> GossipEngine {
+        let (tx, _rx) = mpsc::channel(64);
+        GossipEngine::new(NodeId::new(), test_addr(port), GossipConfig::default(), tx)
+    }
+
+    #[tokio::test]
+    async fn queued_update_rides_on_several_messages() {
+        let mut a = engine(7000);
+        let (b, c) = (NodeId::new(), NodeId::new());
+        a.add_seed(b, test_addr(7001));
+        a.add_seed(c, test_addr(7002));
+        a.queue_update(NodeUpdate::Suspect {
+            node: c,
+            incarnation: 0,
+        });
+
+        // three members: 2 bits of cluster size, so 6 messages carry it
+        let carried = (0..10)
+            .filter(|_| {
+                a.collect_updates()
+                    .iter()
+                    .any(|u| matches!(u, NodeUpdate::Suspect { node, .. } if *node == c))
+            })
+            .count();
+        assert_eq!(carried, 6);
+    }
+
+    #[tokio::test]
+    async fn newer_update_replaces_a_queued_one_about_the_same_node() {
+        let mut a = engine(7000);
+        let b = NodeId::new();
+        a.add_seed(b, test_addr(7001));
+        a.queue_update(NodeUpdate::Suspect {
+            node: b,
+            incarnation: 0,
+        });
+        a.queue_update(NodeUpdate::Dead {
+            node: b,
+            incarnation: 0,
+        });
+        let updates = a.collect_updates();
+        assert_eq!(updates.len(), 1);
+        assert!(matches!(updates[0], NodeUpdate::Dead { .. }));
+    }
+
+    #[tokio::test]
+    async fn ack_carries_the_responders_slot_claim() {
+        let mut a = engine(7000);
+        a.set_local_slots(vec![SlotRange::new(0, 99)], 3);
+        let ping = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let replies = a.handle_message(ping, test_addr(7001));
+        let GossipMessage::Ack { updates, .. } = &replies[0].1 else {
+            panic!("expected an ack");
+        };
+        assert!(updates.iter().any(|u| matches!(
+            u,
+            NodeUpdate::SlotsChanged {
+                config_epoch: 3,
+                ..
+            }
+        )));
+    }
+
+    /// After a partition heals, a node the others declared dead must learn
+    /// of it and come back alive, so slot claims flow to it again.
+    #[tokio::test]
+    async fn a_node_declared_dead_refutes_it_once_reachable() {
+        let mut a = engine(7000);
+        let mut b = engine(7001);
+        let (a_id, b_id) = (a.local_id(), b.local_id());
+        a.add_seed(b_id, test_addr(7001));
+        b.add_seed(a_id, test_addr(7000));
+        a.members.get_mut(&b_id).unwrap().state = MemberStatus::Dead;
+
+        // a still probes b, and tells it that it is dead
+        let probes = a.tick();
+        let (to, ping) = probes
+            .into_iter()
+            .find(|(to, _)| *to == test_addr(7001))
+            .expect("dead members are still probed");
+        assert_eq!(to, test_addr(7001));
+        let GossipMessage::Ping { updates, .. } = &ping else {
+            panic!("expected a ping");
+        };
+        assert!(updates
+            .iter()
+            .any(|u| matches!(u, NodeUpdate::Dead { node, .. } if *node == b_id)));
+
+        // b refutes with a higher incarnation in its ack
+        let replies = b.handle_message(ping, test_addr(7000));
+        assert_eq!(b.local_incarnation(), 1);
+        for (_, reply) in replies {
+            a.handle_message(reply, test_addr(7001));
+        }
+        assert_eq!(a.members[&b_id].state, MemberStatus::Alive);
+        assert!(a
+            .take_events()
+            .events
+            .iter()
+            .any(|e| matches!(e, GossipEvent::MemberAlive(id) if *id == b_id)));
     }
 
     #[tokio::test]

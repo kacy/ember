@@ -1,16 +1,16 @@
 # ember-cluster
 
-distributed coordination for [ember](https://github.com/kacy/ember). provides cluster topology management, gossip-based failure detection, raft consensus, and live slot migration.
+distributed coordination for [ember](https://github.com/kacy/ember). provides cluster topology management, gossip-based failure detection, epoch-based slot ownership, and live slot migration.
 
 ## features
 
 - **slot management** — 16384 hash slots with CRC16 hashing (Redis Cluster compatible)
 - **topology tracking** — node identity, roles (primary/replica), health status
 - **SWIM gossip** — failure detection with configurable probe intervals and suspicion timeouts
-- **raft consensus** — cluster configuration changes via [openraft](https://github.com/datafuselabs/openraft)
+- **config epochs** — slot claims spread over gossip, and the higher epoch wins a conflict
 - **live migration** — slot resharding without downtime, MOVED/ASK redirects
 - **authentication** — HMAC-SHA256 signing and constant-time verification for cluster transport messages
-- **automatic failover** — replica election state machine; first replica to reach quorum is promoted via raft
+- **automatic failover** — replica election state machine; a replica needs votes from a majority of primaries, then claims the slots at a new epoch
 
 ## modules
 
@@ -19,13 +19,11 @@ distributed coordination for [ember](https://github.com/kacy/ember). provides cl
 | `slots` | CRC16 hash function, slot-to-node mapping, slot ranges |
 | `topology` | `NodeId`, `ClusterNode`, `ClusterState`, health tracking |
 | `gossip` | SWIM protocol engine, membership events, probe management |
-| `raft` | openraft integration, cluster commands, state machine |
 | `migration` | migration state machine, batch streaming, key tracking |
 | `message` | binary wire format for gossip messages |
 | `error` | cluster-specific error types with MOVED/ASK support |
 | `auth` | HMAC-SHA256 cluster transport authentication |
 | `election` | replica failover election state machine |
-| `raft_transport` | raft network transport over TCP |
 
 ## usage
 
@@ -67,9 +65,8 @@ the following CLUSTER commands are supported at the protocol layer:
 
 ## design notes
 
-- **persistent raft log** — vote, log entries, and snapshots are persisted to disk when a data directory is configured; nodes recover cluster state on restart
-- **single raft group** — all cluster config changes go through one raft group (simpler than multi-raft)
-- **fully integrated** — cluster mode is wired into ember-server with gossip, raft, slot routing, MOVED/ASK redirects, live migration, replication, and automatic failover
+- **epoch-based configuration** — slot ownership follows the Redis Cluster model, and each node saves its view to `nodes.conf` to recover it on restart
+- **fully integrated** — cluster mode is wired into ember-server with gossip, slot routing, MOVED/ASK redirects, live migration, replication, and automatic failover
 
 ## related crates
 

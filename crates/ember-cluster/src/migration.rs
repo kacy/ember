@@ -11,7 +11,7 @@
 //!    key, commands for it get TRYAGAIN; once it has moved, they get an ASK
 //!    redirect to the target
 //! 5. `CLUSTER SETSLOT <slot> NODE` hands the slot to the target, through
-//!    Raft when Raft is running and through gossip otherwise
+//!    gossip at a new config epoch
 //!
 //! # Example
 //!
@@ -33,12 +33,10 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
 use crate::NodeId;
 
 /// Unique identifier for a migration operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MigrationId(pub u64);
 
 impl MigrationId {
@@ -61,7 +59,7 @@ impl MigrationId {
 }
 
 /// Current state of a slot migration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationState {
     /// Target has marked slot as importing, waiting for source.
     Importing,
@@ -88,7 +86,7 @@ impl std::fmt::Display for MigrationState {
 }
 
 /// A single slot migration operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Migration {
     /// Unique migration identifier.
     pub id: MigrationId,
@@ -101,7 +99,6 @@ pub struct Migration {
     /// Current migration state.
     pub state: MigrationState,
     /// When migration started.
-    #[serde(skip)]
     pub started_at: Option<Instant>,
     /// Number of keys migrated so far.
     pub keys_migrated: u64,
@@ -334,7 +331,7 @@ impl MigrationManager {
 }
 
 /// Represents a batch of keys to migrate.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct MigrationBatch {
     /// The slot being migrated.
     pub slot: u16,
@@ -347,7 +344,7 @@ pub struct MigrationBatch {
 }
 
 /// A single key-value entry being migrated.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct MigrationEntry {
     /// The key being migrated.
     pub key: Vec<u8>,

@@ -429,11 +429,9 @@ the tradeoff: you can't just copy a single file. a backup needs the full `data-d
 
 RENAME only works when the source and destination keys hash to the same shard. if they don't, Ember returns an error. this is the same constraint Redis Cluster imposes. use hashtags (`{user:1}`) to ensure related keys land on the same shard if you need to rename them.
 
-### cluster consensus
+### cluster configuration
 
-Redis Cluster uses a gossip protocol and epoch-based voting for leader election, which can result in split-brain under certain network partition scenarios. Ember uses Raft (via openraft) for cluster configuration changes, which provides stronger consistency guarantees at the cost of requiring a quorum for slot assignments and node membership changes.
-
-the failure detector is SWIM-based gossip, same conceptual model as Redis, but the cluster configuration itself goes through Raft.
+like Redis Cluster, Ember spreads membership over gossip with SWIM-based failure detection and settles slot ownership with config epochs. the higher epoch wins a disputed slot, and a failover election needs votes from a majority of primaries. under network partitions it has the same tradeoffs as Redis Cluster.
 
 ### memory eviction
 

@@ -4,32 +4,31 @@
 //! coordinator that handles gossip networking, cluster commands,
 //! and slot ownership validation.
 //!
-//! When a `RaftNode` is attached, topology mutations (ADDSLOTS, DELSLOTS,
-//! SETSLOT, FORGET) are proposed through Raft consensus before returning OK.
-//! Read-only commands and node-local migration state skip Raft entirely.
+//! Cluster configuration follows the Redis Cluster model. Each node owns
+//! its slots at a config epoch and announces them over gossip; when two
+//! nodes claim a slot, the higher epoch wins. Failover elections run over
+//! gossip as well, and a promoted replica claims its slots at a new epoch.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use ember_cluster::{
-    key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterSecret,
-    ClusterState, ClusterStateData, ConfigParseError, Election, GossipConfig, GossipEngine,
-    GossipEvent, GossipMessage, MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError,
-    SlotRange, SLOT_COUNT,
+    key_slot, ClusterNode, ClusterSecret, ClusterState, ConfigParseError, Election, GossipConfig,
+    GossipEngine, GossipEvent, GossipMessage, MigrationManager, NodeId, NodeRole, SlotRange,
+    SLOT_COUNT,
 };
 use ember_core::Engine;
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 mod commands;
 mod failover;
 mod gossip;
-mod raft;
 mod replication;
 
 /// Snapshot of cluster health for the /health HTTP endpoint.
@@ -43,8 +42,6 @@ pub struct ClusterHealthSummary {
 ///
 /// Thread-safe via interior mutability: `RwLock` for state (many readers,
 /// rare writers) and `Mutex` for gossip (single writer during ticks).
-///
-/// Call `attach_raft` after wrapping in `Arc` to enable Raft-backed mutations.
 pub struct ClusterCoordinator {
     state: RwLock<ClusterState>,
     gossip: Mutex<GossipEngine>,
@@ -57,8 +54,9 @@ pub struct ClusterCoordinator {
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
     /// directory for nodes.conf persistence (None disables saving)
     data_dir: Option<PathBuf>,
-    /// raft node for linearizable topology mutations; set once after startup
-    raft_node: std::sync::OnceLock<Arc<RaftNode>>,
+    /// held for the whole of each nodes.conf save, so saves don't share
+    /// the tmp file and the last one written holds the newest state
+    save_lock: Mutex<()>,
     /// engine handle for replication; set once during startup
     engine: std::sync::OnceLock<Arc<Engine>>,
     /// temporarily pauses writes on this node during failover coordination.
@@ -145,10 +143,10 @@ impl ClusterCoordinator {
             bind_addr,
             udp_socket: Mutex::new(None),
             data_dir,
-            raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
             secret,
         };
@@ -207,28 +205,16 @@ impl ClusterCoordinator {
             bind_addr,
             udp_socket: Mutex::new(None),
             data_dir: Some(data_dir),
-            raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
             secret,
         };
 
         Ok((coordinator, event_rx))
     }
-
-    /// Returns the local node ID.
-    pub fn local_id(&self) -> NodeId {
-        self.local_id
-    }
-
-    /// Returns the cluster transport secret, if configured.
-    pub fn cluster_secret(&self) -> Option<Arc<ClusterSecret>> {
-        self.secret.clone()
-    }
-
-    // -- raft integration --
 
     /// Returns a snapshot of cluster health for the /health HTTP endpoint.
     ///
@@ -291,12 +277,16 @@ impl ClusterCoordinator {
 
     /// Persists the current cluster state to `nodes.conf` in the data directory.
     ///
-    /// Uses atomic write (write to tmp, then rename) to avoid corruption
-    /// from crashes mid-write. This is called after every topology mutation.
+    /// Writes a tmp file and renames it over the old one, so a crash
+    /// mid-write leaves the previous config. The file write and fsyncs run
+    /// on a blocking thread. This is called after every topology mutation.
     pub async fn save_config(&self) {
         let Some(ref dir) = self.data_dir else {
             return;
         };
+        // render the state while holding the lock, so a later save always
+        // writes a state at least as new as an earlier one
+        let _saving = self.save_lock.lock().await;
 
         let incarnation = {
             let gossip = self.gossip.lock().await;
@@ -307,10 +297,13 @@ impl ClusterCoordinator {
             state.to_nodes_conf(incarnation)
         };
 
-        let conf_path = dir.join("nodes.conf");
-        let tmp_path = dir.join("nodes.conf.tmp");
-
-        if let Err(e) = write_atomic(&tmp_path, &conf_path, content.as_bytes()) {
+        let dir = dir.clone();
+        let written = tokio::task::spawn_blocking(move || {
+            write_atomic(&dir, "nodes.conf", content.as_bytes())
+        })
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+        if let Err(e) = written {
             error!("failed to save nodes.conf: {e}");
         }
     }
@@ -318,43 +311,21 @@ impl ClusterCoordinator {
     // -- gossip networking --
 }
 
-/// Compacts a flat list of slot numbers into contiguous `SlotRange` values.
-fn compact_slots(slots: &[u16]) -> Vec<SlotRange> {
-    let mut sorted: Vec<u16> = slots.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-
-    let mut ranges = Vec::new();
-    let mut i = 0;
-    while i < sorted.len() {
-        let start = sorted[i];
-        let mut end = start;
-        while i + 1 < sorted.len() && sorted[i + 1] == end + 1 {
-            i += 1;
-            end = sorted[i];
-        }
-        ranges.push(SlotRange::new(start, end));
-        i += 1;
-    }
-    ranges
-}
-
 /// Writes data to a temporary file and atomically renames it to the target path.
 ///
 /// Ensures the file is fully flushed before rename so a crash mid-write
 /// never leaves a partial `nodes.conf`.
-fn write_atomic(
-    tmp_path: &std::path::Path,
-    target_path: &std::path::Path,
-    data: &[u8],
-) -> std::io::Result<()> {
+fn write_atomic(dir: &std::path::Path, name: &str, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
-    let mut f = std::fs::File::create(tmp_path)?;
+    let target = dir.join(name);
+    let tmp = dir.join(format!("{name}.tmp"));
+    let mut f = std::fs::File::create(&tmp)?;
     f.write_all(data)?;
     f.sync_all()?;
-    std::fs::rename(tmp_path, target_path)?;
-    Ok(())
+    std::fs::rename(&tmp, &target)?;
+    // fsync the directory so the rename itself survives a crash
+    std::fs::File::open(dir)?.sync_all()
 }
 
 #[cfg(test)]

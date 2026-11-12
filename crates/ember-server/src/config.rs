@@ -295,6 +295,8 @@ pub struct ClusterConfig {
     pub bootstrap: bool,
     #[serde(rename = "port-offset")]
     pub port_offset: u16,
+    /// Ignored. Raft was removed; the key is still accepted so older
+    /// config files load.
     #[serde(rename = "raft-port-offset")]
     pub raft_port_offset: u16,
     #[serde(rename = "node-timeout-ms")]

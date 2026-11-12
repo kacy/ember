@@ -243,11 +243,11 @@ impl ClusterCoordinator {
     ///
     /// Three modes:
     /// - **Default**: waits 500ms for replication to catch up, then promotes
-    ///   via Raft so all nodes agree on the new topology.
-    /// - **FORCE**: skips the grace period; promotes via Raft immediately.
-    ///   Use when the primary is unreachable and you accept possible data loss.
-    /// - **TAKEOVER**: bypasses Raft entirely. Updates local state and
-    ///   announces the new role via gossip. Use when Raft quorum is lost.
+    ///   and claims the primary's slots at a new config epoch over gossip.
+    /// - **FORCE**: skips the grace period. Use when the primary is
+    ///   unreachable and you accept possible data loss.
+    /// - **TAKEOVER**: skips coordination with the primary. Updates local
+    ///   state and announces the new role via gossip.
     pub async fn cluster_failover(&self, force: bool, takeover: bool) -> Frame {
         // verify we are a replica with a configured primary
         let primary_id = {
@@ -266,7 +266,7 @@ impl ClusterCoordinator {
         };
 
         if takeover {
-            // TAKEOVER: immediate local promotion, no Raft or primary coordination.
+            // TAKEOVER: immediate local promotion, no primary coordination.
             // The replica asserts itself as primary and gossips the change;
             // the rest of the cluster learns via gossip convergence.
             {
@@ -280,7 +280,8 @@ impl ClusterCoordinator {
             return Frame::Simple("OK".into());
         }
 
-        // Default / FORCE: use Raft for cluster-wide agreement.
+        // default and FORCE: promote, then announce the new role and slots
+        // over gossip at a newer epoch.
         if !force {
             // give the replication stream a brief window to deliver
             // any in-flight records before we cut over. a future improvement
@@ -288,44 +289,10 @@ impl ClusterCoordinator {
             tokio::time::sleep(std::time::Duration::from_millis(FAILOVER_GRACE_MS)).await;
         }
 
-        // get the primary's current slot ranges so we can hand them over
-        let primary_slots = {
-            let state = self.state.read().await;
-            state
-                .nodes
-                .get(&primary_id)
-                .map(|n| n.slots.clone())
-                .unwrap_or_default()
-        };
-
-        if let Some(raft) = self.raft_node.get() {
-            // promote this replica in the Raft state machine
-            let promote_cmd = ClusterCommand::PromoteReplica {
-                replica_id: self.local_id,
-            };
-            if let Err(e) = raft.propose(promote_cmd).await {
-                return Self::raft_error_frame(e);
-            }
-
-            // move the primary's slots to this node in one step
-            if !primary_slots.is_empty() {
-                let transfer_cmd = ClusterCommand::TransferSlots {
-                    from: primary_id,
-                    to: self.local_id,
-                    slots: primary_slots,
-                };
-                if let Err(e) = raft.propose(transfer_cmd).await {
-                    return Self::raft_error_frame(e);
-                }
-            }
-        }
-
-        // apply locally right away so this node can start accepting writes
-        // without waiting for the async Raft reconciliation to complete
         {
             let mut state = self.state.write().await;
             if let Err(e) = state.promote_replica(self.local_id) {
-                warn!(%e, "local promote_replica after Raft proposal failed");
+                warn!(%e, "promote_replica failed");
             }
         }
 

@@ -30,7 +30,7 @@ ember is split into a few crates with fairly clear boundaries:
 | `crates/ember-protocol` | RESP3 parsing, frame types, and command decoding |
 | `crates/ember-core` | sharded engine, keyspace, data types, memory tracking, expiration |
 | `crates/ember-persistence` | AOF, snapshots, recovery, and optional encryption-at-rest support |
-| `crates/ember-cluster` | slot routing, gossip, Raft state, migration machinery |
+| `crates/ember-cluster` | slot routing, gossip, config epochs, migration machinery |
 | `crates/ember-server` | TCP/TLS listeners, auth, ACL, connection handlers, metrics, replication, cluster integration |
 | `crates/ember-cli` | interactive client and benchmark tool |
 | `crates/ember-client` | reusable client-side helpers used by other binaries and tools |
@@ -233,16 +233,9 @@ slot ownership is tracked separately from local shard ownership. first a request
 
 ### membership and topology changes
 
-membership and failure detection use SWIM-style gossip. topology changes such as adding nodes, removing nodes, assigning slots, or promoting replicas go through Raft.
+membership and failure detection use SWIM-style gossip. cluster configuration follows the Redis Cluster model: each primary owns its slots at a config epoch and announces them over gossip. when two nodes claim the same slot, the higher epoch wins, and ties go to the higher node id. a replica that wins a failover election claims its primary's slots at a new epoch. there is no separate consensus group. normal reads and writes stay local to the node that owns the slot.
 
-that split is deliberate:
-
-- gossip is fast and cheap for "who is alive?"
-- Raft is slower but gives a single agreed view for "who owns what?"
-
-the data path does not go through Raft. normal reads and writes stay local to the node that owns the slot.
-
-`crates/ember-server/src/cluster.rs` is the bridge between the generic cluster crate and the running server. it owns the local `ClusterState`, the gossip engine, migration manager, and optional attached `RaftNode`.
+`crates/ember-server/src/cluster/` is the bridge between the generic cluster crate and the running server. it owns the local `ClusterState`, the gossip engine and the migration manager.
 
 ### replication
 

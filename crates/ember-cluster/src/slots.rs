@@ -17,7 +17,7 @@ use crate::NodeId;
 ///
 /// A valid `SlotRange` always satisfies `start <= end`, meaning it contains
 /// at least one slot. This is enforced by debug assertions in the constructor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlotRange {
     pub start: u16,
     pub end: u16, // inclusive

@@ -131,19 +131,6 @@ impl ClusterCoordinator {
             }
         }
 
-        if let Some(raft) = self.raft_node.get() {
-            let slot_ranges = compact_slots(slots);
-            let cmd = ClusterCommand::AssignSlots {
-                node_id: self.local_id,
-                slots: slot_ranges,
-            };
-            if let Err(e) = raft.propose(cmd).await {
-                return Self::raft_error_frame(e);
-            }
-        }
-
-        // apply to local state immediately so subsequent reads see
-        // the change without waiting for async raft reconciliation
         let (new_slots, epoch) = {
             let mut state = self.state.write().await;
             for &slot in slots {
@@ -182,18 +169,6 @@ impl ClusterCoordinator {
             }
         }
 
-        if let Some(raft) = self.raft_node.get() {
-            let slot_ranges = compact_slots(slots);
-            let cmd = ClusterCommand::RemoveSlots {
-                node_id: self.local_id,
-                slots: slot_ranges,
-            };
-            if let Err(e) = raft.propose(cmd).await {
-                return Self::raft_error_frame(e);
-            }
-        }
-
-        // apply to local state immediately
         let (new_slots, epoch) = {
             let mut state = self.state.write().await;
             for &slot in slots {
@@ -230,14 +205,6 @@ impl ClusterCoordinator {
             }
         }
 
-        if let Some(raft) = self.raft_node.get() {
-            let cmd = ClusterCommand::RemoveNode { node_id };
-            if let Err(e) = raft.propose(cmd).await {
-                return Self::raft_error_frame(e);
-            }
-        }
-
-        // apply to local state immediately
         let mut state = self.state.write().await;
         match state.remove_node(node_id) {
             Some(_) => {
@@ -305,21 +272,6 @@ impl ClusterCoordinator {
             }
         }
 
-        // persist intent through raft so all nodes agree on the pending migration
-        if let Some(raft) = self.raft_node.get() {
-            let cmd = ClusterCommand::BeginMigration {
-                slot,
-                from: self.local_id,
-                to: target_id,
-            };
-            if let Err(e) = raft.propose(cmd).await {
-                // raft failure: roll back local migration state
-                let mut migration = self.migration.lock().await;
-                migration.abort_migration(slot);
-                return Self::raft_error_frame(e);
-            }
-        }
-
         Frame::Simple("OK".into())
     }
 
@@ -336,56 +288,39 @@ impl ClusterCoordinator {
             Err(_) => return Frame::Error("ERR Invalid node ID".into()),
         };
 
-        if let Some(raft) = self.raft_node.get() {
-            let cmd = ClusterCommand::CompleteMigration {
-                slot,
-                new_owner: node_id,
-            };
-            match raft.propose(cmd).await {
-                Ok(_) => {
-                    // clean up local migration tracking (node-local, not replicated)
-                    let mut migration = self.migration.lock().await;
-                    migration.complete_migration(slot);
-                    Frame::Simple("OK".into())
-                }
-                Err(e) => Self::raft_error_frame(e),
-            }
-        } else {
-            // direct write path
-            {
-                let mut migration = self.migration.lock().await;
-                migration.complete_migration(slot);
-            }
-
-            let (local_slots, epoch) = {
-                let mut state = self.state.write().await;
-                state.slot_map.assign(slot, node_id);
-                // the previous owner still claims the slot at its epoch
-                // until it hears of this, so claim it at a newer one
-                if node_id == self.local_id {
-                    state.bump_local_epoch();
-                }
-
-                let new_slots = state.slot_map.slots_for_node(node_id);
-                if let Some(node) = state.nodes.get_mut(&node_id) {
-                    node.slots = new_slots;
-                }
-
-                let local_slots = state.slot_map.slots_for_node(self.local_id);
-                if node_id != self.local_id {
-                    if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                        node.slots = local_slots.clone();
-                    }
-                }
-
-                state.update_health();
-                (local_slots, state.local_epoch())
-            };
-
-            self.broadcast_local_slots(local_slots, epoch).await;
-            self.save_config().await;
-            Frame::Simple("OK".into())
+        {
+            let mut migration = self.migration.lock().await;
+            migration.complete_migration(slot);
         }
+
+        let (local_slots, epoch) = {
+            let mut state = self.state.write().await;
+            state.slot_map.assign(slot, node_id);
+            // the previous owner still claims the slot at its epoch
+            // until it hears of this, so claim it at a newer one
+            if node_id == self.local_id {
+                state.bump_local_epoch();
+            }
+
+            let new_slots = state.slot_map.slots_for_node(node_id);
+            if let Some(node) = state.nodes.get_mut(&node_id) {
+                node.slots = new_slots;
+            }
+
+            let local_slots = state.slot_map.slots_for_node(self.local_id);
+            if node_id != self.local_id {
+                if let Some(node) = state.nodes.get_mut(&self.local_id) {
+                    node.slots = local_slots.clone();
+                }
+            }
+
+            state.update_health();
+            (local_slots, state.local_epoch())
+        };
+
+        self.broadcast_local_slots(local_slots, epoch).await;
+        self.save_config().await;
+        Frame::Simple("OK".into())
     }
 
     /// CLUSTER SETSLOT <slot> STABLE
