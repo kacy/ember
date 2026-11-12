@@ -4,6 +4,13 @@
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+// keep jemalloc off transparent huge pages. on hosts where THP is
+// "always", each arena otherwise holds a 2 MB huge page, which adds about
+// 4 MB per thread at idle. `_RJEM_MALLOC_CONF` still overrides this.
+#[cfg(feature = "jemalloc")]
+#[export_name = "_rjem_malloc_conf"]
+static MALLOC_CONF: &[u8; 10] = b"thp:never\0";
+
 mod acl;
 mod cluster;
 mod config;
@@ -660,6 +667,15 @@ async fn main() {
 
     info!(shards = shard_count, "ember server starting...");
 
+    #[cfg(not(feature = "jemalloc"))]
+    if thp_always() {
+        tracing::warn!(
+            "transparent huge pages are set to \"always\", which raises memory use \
+             and latency. set /sys/kernel/mm/transparent_hugepage/enabled to \
+             \"madvise\" or \"never\""
+        );
+    }
+
     if !cfg.requirepass.is_empty() {
         info!("authentication enabled (requirepass set)");
     }
@@ -865,4 +881,12 @@ async fn main() {
         eprintln!("server error: {e}");
         std::process::exit(1);
     }
+}
+
+/// Whether the kernel backs all anonymous memory with transparent huge
+/// pages. Always false off Linux.
+#[cfg(not(feature = "jemalloc"))]
+fn thp_always() -> bool {
+    std::fs::read_to_string("/sys/kernel/mm/transparent_hugepage/enabled")
+        .is_ok_and(|mode| mode.contains("[always]"))
 }
