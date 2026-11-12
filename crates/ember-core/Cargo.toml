@@ -32,8 +32,6 @@ prost-reflect = { workspace = true, optional = true }
 usearch = { workspace = true, optional = true }
 ahash = "0.8"
 compact_str = { workspace = true }
-dashmap = "6"
-parking_lot = "0.12"
 smallvec = "1"
 
 [dev-dependencies]
@@ -47,8 +45,4 @@ harness = false
 
 [[bench]]
 name = "engine"
-harness = false
-
-[[bench]]
-name = "concurrent"
 harness = false

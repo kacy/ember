@@ -6,7 +6,6 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod acl;
 mod cluster;
-mod concurrent_handler;
 mod config;
 mod connection;
 mod connection_common;
@@ -25,15 +24,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "protobuf")]
+use crate::cluster::ClusterCoordinator;
+use crate::config::{build_engine_config, parse_eviction_policy, parse_fsync_policy, EmberConfig};
 use clap::Parser;
 use ember_cluster::{GossipConfig, NodeId};
 use ember_core::{ReplicationEvent, ShardPersistenceConfig};
 use tracing::info;
-#[cfg(feature = "protobuf")]
-use tracing::warn;
-
-use crate::cluster::ClusterCoordinator;
-use crate::config::{build_engine_config, parse_eviction_policy, parse_fsync_policy, EmberConfig};
 
 #[derive(Parser)]
 #[command(name = "ember-server", about = "ember cache server")]
@@ -94,12 +91,6 @@ struct Args {
     /// number of shards (worker threads). defaults to available CPU cores
     #[arg(long, env = "EMBER_SHARDS")]
     shards: Option<usize>,
-
-    /// use concurrent keyspace (DashMap) instead of sharded channels.
-    /// deprecated: will be removed in a future release.
-    /// experimental: bypasses channel overhead for GET/SET commands.
-    #[arg(long, env = "EMBER_CONCURRENT")]
-    concurrent: bool,
 
     /// require clients to AUTH with this password before running commands.
     /// when set, connections must authenticate before executing any data commands.
@@ -260,9 +251,6 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     }
     if let Some(n) = args.shards {
         cfg.shards = n;
-    }
-    if args.concurrent {
-        cfg.concurrent = true;
     }
     if let Some(ref pass) = args.requirepass {
         cfg.requirepass = pass.clone();
@@ -624,13 +612,6 @@ async fn main() {
     if cfg.protobuf {
         engine_config.schema_registry = Some(ember_core::schema::SchemaRegistry::shared());
         info!("protobuf value storage enabled");
-
-        if cfg.concurrent {
-            warn!(
-                "concurrent mode with protobuf: DEL, TTL, EXPIRE, and other generic \
-                 commands do not affect proto keys. use sharded mode for full proto support."
-            );
-        }
     }
 
     if let Some(limit) = max_memory {
@@ -678,11 +659,7 @@ async fn main() {
         enabled: cfg.slowlog_log_slower_than >= 0,
     };
 
-    info!(
-        shards = shard_count,
-        concurrent = cfg.concurrent,
-        "ember server starting..."
-    );
+    info!(shards = shard_count, "ember server starting...");
 
     if !cfg.requirepass.is_empty() {
         info!("authentication enabled (requirepass set)");
@@ -739,11 +716,6 @@ async fn main() {
     } else {
         None
     };
-
-    // validate cluster mode
-    if cfg.cluster.enabled && cfg.concurrent {
-        exit_err("error: cluster-enabled and concurrent are mutually exclusive");
-    }
 
     if cfg.cluster.bootstrap && !cfg.cluster.enabled {
         exit_err("error: cluster bootstrap requires cluster enabled");
@@ -870,61 +842,28 @@ async fn main() {
 
     let config_path = args.config.clone();
 
-    if cfg.concurrent {
-        tracing::warn!(
-            "concurrent mode is deprecated and will be removed in a future release; \
-             it only accelerates string commands and lacks cluster support — use the \
-             default sharded mode instead"
-        );
-        let result = server::run_concurrent(
-            addr,
-            shard_count,
-            engine_config,
-            max_memory,
-            eviction_policy,
-            Some(cfg.maxclients),
-            metrics_handle,
-            slowlog_config,
-            requirepass,
-            acl,
-            tls_config,
-            config_registry,
-            limits,
-            config_path,
-            cfg.save_interval_secs,
-            #[cfg(feature = "grpc")]
-            grpc_addr,
-        )
-        .await;
+    let result = server::run_threaded(
+        addr,
+        shard_count,
+        engine_config,
+        Some(cfg.maxclients),
+        metrics_handle,
+        slowlog_config,
+        requirepass,
+        acl,
+        tls_config,
+        cluster,
+        config_registry,
+        limits,
+        config_path,
+        cfg.save_interval_secs,
+        #[cfg(feature = "grpc")]
+        grpc_addr,
+    )
+    .await;
 
-        if let Err(e) = result {
-            eprintln!("server error: {e}");
-            std::process::exit(1);
-        }
-    } else {
-        let result = server::run_threaded(
-            addr,
-            shard_count,
-            engine_config,
-            Some(cfg.maxclients),
-            metrics_handle,
-            slowlog_config,
-            requirepass,
-            acl,
-            tls_config,
-            cluster,
-            config_registry,
-            limits,
-            config_path,
-            cfg.save_interval_secs,
-            #[cfg(feature = "grpc")]
-            grpc_addr,
-        )
-        .await;
-
-        if let Err(e) = result {
-            eprintln!("server error: {e}");
-            std::process::exit(1);
-        }
+    if let Err(e) = result {
+        eprintln!("server error: {e}");
+        std::process::exit(1);
     }
 }

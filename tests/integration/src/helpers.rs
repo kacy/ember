@@ -43,8 +43,6 @@ pub struct ServerOptions {
     pub protobuf: bool,
     /// Number of shards (defaults to 2 for test coverage).
     pub shards: Option<usize>,
-    /// Use concurrent (DashMap) mode instead of sharded channels.
-    pub concurrent: bool,
     /// PEM certificate file for the TLS listener (requires tls_cert_file).
     pub tls_cert_file: Option<PathBuf>,
     /// PEM private key file for the TLS listener (requires tls_cert_file).
@@ -94,10 +92,6 @@ impl TestServer {
 
         if opts.protobuf {
             cmd.arg("--protobuf");
-        }
-
-        if opts.concurrent {
-            cmd.arg("--concurrent");
         }
 
         let stderr_path = if opts.cluster_enabled {
