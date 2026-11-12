@@ -775,236 +775,17 @@ pub fn handle_acl_cat(category: Option<&str>) -> Frame {
 }
 
 /// Returns the names of all commands belonging to a given category flag.
+///
+/// Built from the example calls in the command table, which cover every
+/// command and subcommand the server parses.
 fn commands_in_category(flag: u64) -> Vec<&'static str> {
-    use ember_protocol::Command;
-
-    // representative command instances to iterate over
-    let samples: Vec<Command> = vec![
-        Command::Ping(None),
-        Command::Echo(bytes::Bytes::new()),
-        Command::Get { key: String::new() },
-        Command::Set {
-            key: String::new(),
-            value: bytes::Bytes::new(),
-            expire: None,
-            nx: false,
-            xx: false,
-        },
-        Command::Incr { key: String::new() },
-        Command::Decr { key: String::new() },
-        Command::IncrBy {
-            key: String::new(),
-            delta: 0,
-        },
-        Command::DecrBy {
-            key: String::new(),
-            delta: 0,
-        },
-        Command::IncrByFloat {
-            key: String::new(),
-            delta: 0.0,
-        },
-        Command::Append {
-            key: String::new(),
-            value: bytes::Bytes::new(),
-        },
-        Command::Strlen { key: String::new() },
-        Command::Del { keys: vec![] },
-        Command::Unlink { keys: vec![] },
-        Command::Exists { keys: vec![] },
-        Command::MGet { keys: vec![] },
-        Command::MSet { pairs: vec![] },
-        Command::Keys {
-            pattern: String::new(),
-        },
-        Command::Rename {
-            key: String::new(),
-            newkey: String::new(),
-        },
-        Command::Copy {
-            source: String::new(),
-            destination: String::new(),
-            replace: false,
-        },
-        Command::Expire {
-            key: String::new(),
-            seconds: 0,
-        },
-        Command::Pexpire {
-            key: String::new(),
-            milliseconds: 0,
-        },
-        Command::Ttl { key: String::new() },
-        Command::Pttl { key: String::new() },
-        Command::Persist { key: String::new() },
-        Command::Type { key: String::new() },
-        Command::ObjectEncoding { key: String::new() },
-        Command::ObjectRefcount { key: String::new() },
-        Command::Scan {
-            cursor: 0,
-            pattern: None,
-            count: None,
-        },
-        Command::DbSize,
-        Command::Info { section: None },
-        Command::Time,
-        Command::LastSave,
-        Command::Role,
-        Command::BgSave,
-        Command::BgRewriteAof,
-        Command::FlushDb { async_mode: false },
-        Command::FlushAll { async_mode: false },
-        Command::ConfigGet {
-            pattern: String::new(),
-        },
-        Command::ConfigSet {
-            param: String::new(),
-            value: String::new(),
-        },
-        Command::ConfigRewrite,
-        Command::Multi,
-        Command::Exec,
-        Command::Discard,
-        Command::Watch { keys: vec![] },
-        Command::Unwatch,
-        Command::LPush {
-            key: String::new(),
-            values: vec![],
-        },
-        Command::RPush {
-            key: String::new(),
-            values: vec![],
-        },
-        Command::LPop {
-            key: String::new(),
-            count: None,
-        },
-        Command::RPop {
-            key: String::new(),
-            count: None,
-        },
-        Command::LRange {
-            key: String::new(),
-            start: 0,
-            stop: 0,
-        },
-        Command::LLen { key: String::new() },
-        Command::BLPop {
-            keys: vec![],
-            timeout_secs: 0.0,
-        },
-        Command::BRPop {
-            keys: vec![],
-            timeout_secs: 0.0,
-        },
-        Command::ZAdd {
-            key: String::new(),
-            flags: ember_protocol::ZAddFlags::default(),
-            members: vec![],
-        },
-        Command::ZRem {
-            key: String::new(),
-            members: vec![],
-        },
-        Command::ZScore {
-            key: String::new(),
-            member: String::new(),
-        },
-        Command::ZRank {
-            key: String::new(),
-            member: String::new(),
-        },
-        Command::ZCard { key: String::new() },
-        Command::ZRange {
-            key: String::new(),
-            start: 0,
-            stop: 0,
-            with_scores: false,
-        },
-        Command::HSet {
-            key: String::new(),
-            fields: vec![],
-        },
-        Command::HGet {
-            key: String::new(),
-            field: String::new(),
-        },
-        Command::HGetAll { key: String::new() },
-        Command::HDel {
-            key: String::new(),
-            fields: vec![],
-        },
-        Command::HExists {
-            key: String::new(),
-            field: String::new(),
-        },
-        Command::HLen { key: String::new() },
-        Command::HIncrBy {
-            key: String::new(),
-            field: String::new(),
-            delta: 0,
-        },
-        Command::HKeys { key: String::new() },
-        Command::HVals { key: String::new() },
-        Command::HMGet {
-            key: String::new(),
-            fields: vec![],
-        },
-        Command::SAdd {
-            key: String::new(),
-            members: vec![],
-        },
-        Command::SRem {
-            key: String::new(),
-            members: vec![],
-        },
-        Command::SMembers { key: String::new() },
-        Command::SIsMember {
-            key: String::new(),
-            member: String::new(),
-        },
-        Command::SCard { key: String::new() },
-        Command::Subscribe { channels: vec![] },
-        Command::Unsubscribe { channels: vec![] },
-        Command::PSubscribe { patterns: vec![] },
-        Command::PUnsubscribe { patterns: vec![] },
-        Command::Publish {
-            channel: String::new(),
-            message: bytes::Bytes::new(),
-        },
-        Command::SlowLogGet { count: None },
-        Command::SlowLogLen,
-        Command::SlowLogReset,
-        Command::Auth {
-            username: None,
-            password: String::new(),
-        },
-        Command::Quit,
-        Command::Monitor,
-        Command::ClientId,
-        Command::ClientGetName,
-        Command::ClientSetName {
-            name: String::new(),
-        },
-        Command::ClientList,
-        Command::ClusterInfo,
-        Command::AclWhoAmI,
-        Command::AclList,
-        Command::AclCat { category: None },
-    ];
-
-    let mut names: Vec<&'static str> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for sample in &samples {
-        let cats = sample.acl_categories();
-        if cats & flag != 0 {
-            let name = sample.command_name();
-            if seen.insert(name) {
-                names.push(name);
-            }
-        }
-    }
-    names.sort();
+    let mut names: Vec<&'static str> = ember_protocol::command::table::examples()
+        .filter_map(|example| ember_protocol::command::table::parse_example(example).ok())
+        .filter(|cmd| cmd.acl_categories() & flag != 0)
+        .map(|cmd| cmd.command_name())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
     names
 }
 
@@ -1424,6 +1205,25 @@ mod tests {
         let hash3 = sha256_hash("different");
         assert!(bool::from(hash1.ct_eq(&hash2)));
         assert!(!bool::from(hash1.ct_eq(&hash3)));
+    }
+
+    #[test]
+    fn acl_cat_lists_every_command_in_the_category() {
+        let writes = commands_in_category(category_from_name("write").unwrap());
+        for name in [
+            "set",
+            "setrange",
+            "msetnx",
+            "migrate",
+            "restore",
+            "vadd",
+            "proto.set",
+        ] {
+            assert!(writes.contains(&name), "write is missing {name}");
+        }
+        assert!(!writes.contains(&"get"));
+        let dangerous = commands_in_category(category_from_name("dangerous").unwrap());
+        assert!(dangerous.contains(&"cluster_setslot"));
     }
 
     #[test]

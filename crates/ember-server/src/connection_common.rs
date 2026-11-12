@@ -152,6 +152,7 @@ impl Session {
     }
 
     /// A session that is not logged in as anyone.
+    #[cfg(feature = "grpc")]
     pub fn anonymous() -> Self {
         Self {
             user: None,
@@ -299,41 +300,20 @@ pub async fn config_set(
 /// Returns an error frame if any key exceeds `max_key_len`, any value exceeds
 /// `max_value_len`, or the combined payload of a bulk command exceeds
 /// `max_command_memory`. Returns `None` when the command passes validation.
-/// Called on the RESP path to match the limits already enforced by gRPC.
+/// Every key from [`Command::keys`] is checked.
 pub fn validate_command_sizes(
     cmd: &Command,
     max_key_len: usize,
     max_value_len: usize,
     max_command_memory: usize,
 ) -> Option<Frame> {
-    // check primary key length
-    if let Some(key) = cmd.primary_key() {
+    for key in cmd.keys().iter() {
         if key.len() > max_key_len {
             return Some(Frame::Error(format!(
                 "ERR key length {} exceeds limit of {max_key_len} bytes",
                 key.len()
             )));
         }
-    }
-
-    // check multi-key commands (DEL, UNLINK, EXISTS, MGET all have `keys`)
-    match cmd {
-        Command::Del { keys }
-        | Command::Unlink { keys }
-        | Command::Exists { keys }
-        | Command::MGet { keys }
-        | Command::BLPop { keys, .. }
-        | Command::BRPop { keys, .. } => {
-            for k in keys {
-                if k.len() > max_key_len {
-                    return Some(Frame::Error(format!(
-                        "ERR key length {} exceeds limit of {max_key_len} bytes",
-                        k.len()
-                    )));
-                }
-            }
-        }
-        _ => {}
     }
 
     // check value sizes for commands that carry payloads
@@ -346,15 +326,9 @@ pub fn validate_command_sizes(
                 )));
             }
         }
-        Command::MSet { pairs } => {
+        Command::MSet { pairs } | Command::MSetNx { pairs } => {
             let mut total = 0usize;
             for (k, v) in pairs {
-                if k.len() > max_key_len {
-                    return Some(Frame::Error(format!(
-                        "ERR key length {} exceeds limit of {max_key_len} bytes",
-                        k.len()
-                    )));
-                }
                 if v.len() > max_value_len {
                     return Some(Frame::Error(format!(
                         "ERR value length {} exceeds limit of {max_value_len} bytes",
@@ -702,6 +676,37 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(err, Frame::Error(ref msg) if msg.contains("key length")));
+    }
+
+    #[test]
+    fn oversized_key_in_any_position_rejected() {
+        let big_key = "x".repeat(DEFAULT_MAX_KEY_LEN + 1);
+        let cmds = [
+            Command::SUnionStore {
+                dest: "d".into(),
+                keys: vec!["a".into(), big_key.clone()],
+            },
+            Command::MSetNx {
+                pairs: vec![("a".into(), Bytes::new()), (big_key.clone(), Bytes::new())],
+            },
+            Command::Rename {
+                key: "a".into(),
+                newkey: big_key,
+            },
+        ];
+        for cmd in &cmds {
+            let err = validate_command_sizes(
+                cmd,
+                DEFAULT_MAX_KEY_LEN,
+                DEFAULT_MAX_VALUE_LEN,
+                DEFAULT_MAX_COMMAND_MEMORY,
+            );
+            assert!(
+                matches!(err, Some(Frame::Error(ref msg)) if msg.contains("key length")),
+                "{}",
+                cmd.command_name()
+            );
+        }
     }
 
     #[test]

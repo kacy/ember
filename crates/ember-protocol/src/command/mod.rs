@@ -1002,6 +1002,6 @@ impl Eq for ZAddFlags {}
 mod attributes;
 pub use attributes::{category, CommandKeys};
 mod parse;
-pub mod table;
+pub use parse::table;
 #[cfg(test)]
 mod tests;
