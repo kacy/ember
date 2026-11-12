@@ -216,7 +216,7 @@ to recover:
 2. check `CLUSTER NODES` on each node until every node shows the same owner for each slot
 3. `CLUSTER INFO` will show `cluster_state:ok` when every slot has a live owner
 
-if nodes are permanently lost and quorum cannot be reached organically, you will need to manually reconfigure the cluster. do not do this lightly — it can result in data inconsistency.
+if a primary is permanently lost and none of its replicas can win an election, its slots stay assigned to it until you move them by hand. on the node that should take over each slot, run `CLUSTER SETSLOT <slot> NODE <that node's id>`, which claims the slot at a new config epoch, then `CLUSTER FORGET <lost node id>` on every node. do this only when the lost node will not come back, since any writes it held are gone.
 
 ---
 

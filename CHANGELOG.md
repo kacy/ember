@@ -1,5 +1,13 @@
 # changelog
 
+## unreleased
+
+### removed
+- raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
+
+### fixes
+- gossip now converges after a partition heals: updates are resent several times, nodes declared dead keep being probed so they can refute it, and acks carry the sender's slot claims (#444)
+
 ## 0.4.10 (2026-07-04)
 
 ### features
