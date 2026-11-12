@@ -11,7 +11,7 @@
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### fixes
-- slot migration:
+- slot migration (#451):
   - MIGRATE sends ASKING before RESTORE, so the target accepts the key for a slot it is importing. every MIGRATE during a reshard failed with MOVED before
   - MIGRATE takes `AUTH password` and `AUTH2 username password` for a target with a password, honors `COPY`, and replies `NOKEY` for a missing key, as in Redis
   - while a slot migrates, the source sends ASK for any key it no longer has, not only for keys MIGRATE moved, so keys written during the move land on the target instead of being left behind. a command with keys on both sides gets TRYAGAIN
