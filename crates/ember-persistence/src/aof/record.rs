@@ -713,19 +713,21 @@ impl AofRecord {
         Ok(buf)
     }
 
-    /// Deserializes a record from its binary payload (tag byte + fields, no CRC).
-    ///
-    /// The format is the same as `to_bytes()`. CRC validation is the caller's
-    /// responsibility.
+    /// Deserializes a record from the bytes `to_bytes()` produced. Bytes
+    /// left over after the record are an error.
     pub fn from_bytes(data: &[u8]) -> Result<Self, FormatError> {
-        Self::decode(&mut io::Cursor::new(data))
+        let mut cursor = io::Cursor::new(data);
+        let record = Self::decode(&mut cursor)?;
+        if cursor.position() != data.len() as u64 {
+            return Err(FormatError::InvalidData(
+                "aof record has trailing bytes".into(),
+            ));
+        }
+        Ok(record)
     }
 
-    /// Decodes one record (tag byte + fields, no CRC) from a stream.
-    ///
-    /// This is the only record decoder. The AOF reader runs it over a
-    /// [`format::CrcReader`] so the checksum covers exactly the bytes decoded.
-    pub(super) fn decode(cursor: &mut impl io::Read) -> Result<Self, FormatError> {
+    /// Decodes one record (tag byte + fields) from a stream.
+    fn decode(cursor: &mut impl io::Read) -> Result<Self, FormatError> {
         let tag = format::read_u8(cursor)?;
         match tag {
             TAG_SET => {
