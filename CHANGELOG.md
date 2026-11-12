@@ -11,7 +11,7 @@
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### fixes
-- failover safety:
+- failover safety (#452):
   - an election needs a majority of all primaries, the failed one included, as in Redis Cluster. it counted only the other primaries, so with two primaries a replica cut off with one of them won with a single vote while its primary kept serving
   - a primary votes for one replica per failed primary for two failure timeouts, so two replicas of the same primary can't both win. a replica stops its election once another node owns the failed primary's slots
   - a primary that can't reach a majority of the primaries rejects writes with CLUSTERDOWN, so a cut-off primary stops accepting writes the majority is about to replace
