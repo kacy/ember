@@ -330,7 +330,7 @@ ember-cli cluster reshard
 ember-cli cluster rebalance
 ```
 
-resharding migrates keys live without downtime. clients receive `MOVED` or `ASK` redirects during migration and should follow them automatically.
+resharding migrates keys live without downtime. clients receive `MOVED` or `ASK` redirects during migration and should follow them automatically. while a slot moves, the old owner serves the keys it still has and sends clients to the new owner for the rest, so keys written during the move land on the new owner. a command whose keys are split between the two gets `TRYAGAIN`. if the nodes have a password, `ember-cli cluster reshard -a <password>` passes it to `MIGRATE`.
 
 ---
 

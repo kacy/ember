@@ -1083,8 +1083,12 @@ async fn run_cluster_reshard(
             break;
         }
 
-        // 3. migrate keys
-        loop {
+        // 3. migrate keys. a key that fails to move stays in the slot, so
+        // the next batch would list it again: stop instead of looping, and
+        // leave the slot with the source so the key isn't orphaned
+        let target_port_s = target_port.to_string();
+        let mut stuck = false;
+        while !stuck {
             let keys_frame = match source_conn
                 .send(&["CLUSTER", "GETKEYSINSLOT", &slot.to_string(), "100"])
                 .await
@@ -1095,6 +1099,7 @@ async fn run_cluster_reshard(
                         "{}",
                         format!("GETKEYSINSLOT failed for slot {slot}: {e}").red()
                     );
+                    stuck = true;
                     break;
                 }
             };
@@ -1105,18 +1110,25 @@ async fn run_cluster_reshard(
             }
 
             for key in &keys {
-                let r = source_conn
-                    .send(&[
-                        "MIGRATE",
-                        &target_host,
-                        &target_port.to_string(),
-                        key,
-                        "0",
-                        "5000",
-                        "REPLACE",
-                    ])
-                    .await;
-                if !matches!(&r, Ok(f) if is_ok(f)) {
+                let mut args = vec![
+                    "MIGRATE",
+                    &target_host,
+                    &target_port_s,
+                    key,
+                    "0",
+                    "5000",
+                    "REPLACE",
+                ];
+                if let Some(pw) = password {
+                    args.extend(["AUTH", pw]);
+                }
+                let r = source_conn.send(&args).await;
+                // NOKEY: the key expired or was deleted since it was listed
+                let moved = matches!(
+                    &r,
+                    Ok(ember_protocol::types::Frame::Simple(s)) if s == "OK" || s == "NOKEY"
+                );
+                if !moved {
                     eprintln!(
                         "{}",
                         format!(
@@ -1125,9 +1137,18 @@ async fn run_cluster_reshard(
                         )
                         .red()
                     );
-                    // continue with other keys
+                    stuck = true;
+                    break;
                 }
             }
+        }
+        if stuck {
+            eprintln!(
+                "{}",
+                format!("slot {slot} is still migrating; fix the error and run reshard again")
+                    .red()
+            );
+            break;
         }
 
         // 4. SETSLOT NODE on both source and target (and the node we're connected to)

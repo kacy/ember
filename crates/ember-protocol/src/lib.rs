@@ -27,7 +27,7 @@ mod serialize;
 pub mod slots;
 pub mod types;
 
-pub use command::{Command, SetExpire, ZAddFlags};
+pub use command::{Command, MigrateAuth, SetExpire, ZAddFlags};
 pub use error::ProtocolError;
 pub use parse::{parse_frame, parse_frame_bytes, parse_request};
 pub use types::wire;

@@ -293,7 +293,7 @@ make cluster-clean  # stop + delete ./data/cluster/
 | `CLUSTER SETSLOT slot IMPORTING\|MIGRATING\|NODE\|STABLE ...` | manage slot migration state |
 | `CLUSTER COUNTKEYSINSLOT slot` | count keys owned by a slot on this node |
 | `CLUSTER GETKEYSINSLOT slot count` | list keys in a slot (used during migration) |
-| `MIGRATE host port key db timeout [COPY] [REPLACE]` | move a key to another node |
+| `MIGRATE host port key db timeout [COPY] [REPLACE] [AUTH pw \| AUTH2 user pw]` | move a key to another node |
 | `RESTORE key ttl payload` | receive a migrated key |
 | `ASKING` | tell the server to honor an ASK redirect for the next command |
 

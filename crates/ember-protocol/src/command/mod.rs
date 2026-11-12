@@ -19,6 +19,14 @@ pub enum SetExpire {
     PxAt(u64),
 }
 
+/// Credentials MIGRATE sends to the target with AUTH.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MigrateAuth {
+    /// Set by AUTH2. AUTH uses the default user.
+    pub username: Option<String>,
+    pub password: String,
+}
+
 /// A parsed client command, ready for execution.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -629,7 +637,8 @@ pub enum Command {
     /// CLUSTER GETKEYSINSLOT `slot` `count`. Return keys in a slot.
     ClusterGetKeysInSlot { slot: u16, count: u32 },
 
-    /// MIGRATE `host` `port` `key` `db` `timeout` \[COPY\] \[REPLACE\] \[KEYS key...\].
+    /// MIGRATE `host` `port` `key` `db` `timeout` \[COPY\] \[REPLACE\]
+    /// \[AUTH password | AUTH2 username password\].
     /// Migrate a key to another node.
     Migrate {
         host: String,
@@ -639,6 +648,8 @@ pub enum Command {
         timeout_ms: u64,
         copy: bool,
         replace: bool,
+        /// Credentials for the target, sent with AUTH before the key.
+        auth: Option<MigrateAuth>,
     },
 
     /// RESTORE `key` `ttl` `serialized-value` \[REPLACE\].

@@ -221,7 +221,8 @@ pub(super) async fn handle_blocking_pop_cmd(
     }
 
     let was_asking = std::mem::take(asking);
-    if let Some(redirect) = super::dispatch::cluster_slot_check(ctx, &cmd, was_asking).await {
+    if let Some(redirect) = super::dispatch::cluster_slot_check(ctx, engine, &cmd, was_asking).await
+    {
         return redirect;
     }
 

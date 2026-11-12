@@ -61,7 +61,7 @@ the following CLUSTER commands are supported at the protocol layer:
 | `CLUSTER COUNTKEYSINSLOT <slot>` | key count in slot |
 | `CLUSTER GETKEYSINSLOT <slot> <count>` | get keys in slot |
 | `ASKING` | follow ASK redirect |
-| `MIGRATE <host> <port> <key> <db> <timeout>` | migrate a key |
+| `MIGRATE <host> <port> <key> <db> <timeout> [COPY] [REPLACE] [AUTH pw \| AUTH2 user pw]` | migrate a key |
 
 ## design notes
 

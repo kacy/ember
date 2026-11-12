@@ -298,13 +298,11 @@ async fn cluster_migrate_missing_key() {
     let server = cluster_server();
     let mut c = server.connect().await;
 
-    let err = c
-        .err(&["MIGRATE", "127.0.0.1", "6380", "key", "0", "1000"])
+    // as in Redis, a missing key isn't an error
+    let reply = c
+        .cmd(&["MIGRATE", "127.0.0.1", "6380", "key", "0", "1000"])
         .await;
-    assert!(
-        err.contains("no such key"),
-        "expected missing key error, got: {err}"
-    );
+    assert_eq!(reply, Frame::Simple("NOKEY".into()));
 }
 
 #[tokio::test]
@@ -512,6 +510,241 @@ async fn cluster_redirect_followthrough() {
     c_owner.ok(&["SET", "testkey", "value"]).await;
     let val = c_owner.get_bulk(&["GET", "testkey"]).await;
     assert_eq!(val, Some("value".into()));
+}
+
+// -- slot migration --
+
+/// Finds a hash tag whose slot node 0 owns (slots 0–5460).
+async fn tag_on_node_0(cluster: &TestCluster) -> (String, i64) {
+    let mut c = cluster.connect(0).await;
+    for i in 0.. {
+        let tag = format!("{{t{i}}}");
+        let slot = c.get_int(&["CLUSTER", "KEYSLOT", &tag]).await;
+        if slot <= 5460 {
+            return (tag, slot);
+        }
+    }
+    unreachable!()
+}
+
+/// Moves one slot from node 0 to node 1 the way a reshard does, with keys
+/// in it, a key written during the move, and clients following ASK.
+#[tokio::test]
+async fn migrating_a_slot_moves_its_keys_and_routes_new_ones_to_the_target() {
+    let cluster = TestCluster::start();
+    cluster.init().await;
+    let (tag, slot) = tag_on_node_0(&cluster).await;
+    let (old, moved_later, created) = (
+        format!("{tag}old"),
+        format!("{tag}later"),
+        format!("{tag}new"),
+    );
+    let slot = slot.to_string();
+
+    let mut source = cluster.connect(0).await;
+    let mut target = cluster.connect(1).await;
+    let source_id = source.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    let target_id = target.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    source.ok(&["SET", &old, "1"]).await;
+    source.ok(&["SET", &moved_later, "2"]).await;
+
+    target
+        .ok(&["CLUSTER", "SETSLOT", &slot, "IMPORTING", &source_id])
+        .await;
+    source
+        .ok(&["CLUSTER", "SETSLOT", &slot, "MIGRATING", &target_id])
+        .await;
+
+    // MIGRATE must get past the target, which doesn't own the slot yet
+    let target_port = cluster.port(1).to_string();
+    source
+        .ok(&["MIGRATE", "127.0.0.1", &target_port, &old, "0", "5000"])
+        .await;
+
+    // the moved key is asked for at the target; the one still here is
+    // served here
+    let ask = source.cmd(&["GET", &old]).await;
+    assert!(
+        matches!(&ask, Frame::Error(e) if e.starts_with(&format!("ASK {slot} "))),
+        "{ask:?}"
+    );
+    assert_eq!(
+        source.get_bulk(&["GET", &moved_later]).await,
+        Some("2".into())
+    );
+
+    // a key created during the move must land on the target, or it would
+    // be left behind on the source
+    let ask = source.cmd(&["SET", &created, "3"]).await;
+    assert!(
+        matches!(&ask, Frame::Error(e) if e.starts_with("ASK")),
+        "{ask:?}"
+    );
+    target.ok(&["ASKING"]).await;
+    target.ok(&["SET", &created, "3"]).await;
+
+    // keys on both sides: a multi-key command waits for the move
+    let busy = source.cmd(&["MGET", &old, &moved_later]).await;
+    assert!(
+        matches!(&busy, Frame::Error(e) if e.starts_with("TRYAGAIN")),
+        "{busy:?}"
+    );
+
+    source
+        .ok(&[
+            "MIGRATE",
+            "127.0.0.1",
+            &target_port,
+            &moved_later,
+            "0",
+            "5000",
+        ])
+        .await;
+    for c in [&mut source, &mut target] {
+        c.ok(&["CLUSTER", "SETSLOT", &slot, "NODE", &target_id])
+            .await;
+    }
+
+    for (key, value) in [(&old, "1"), (&moved_later, "2"), (&created, "3")] {
+        assert_eq!(target.get_bulk(&["GET", key]).await, Some(value.into()));
+    }
+    assert_eq!(
+        source.get_int(&["CLUSTER", "COUNTKEYSINSLOT", &slot]).await,
+        0
+    );
+}
+
+/// `ember-cli cluster reshard` moves slots with their keys.
+#[tokio::test]
+async fn cli_reshard_moves_slots_with_their_keys() {
+    let cluster = TestCluster::start();
+    cluster.init().await;
+    let mut source = cluster.connect(0).await;
+    let mut target = cluster.connect(1).await;
+    let source_id = source.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    let target_id = target.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+
+    // a few keys in each of node 0's first five slots, which reshard
+    // moves first
+    let mut keys = Vec::new();
+    for i in 0.. {
+        let key = format!("k{i}");
+        if source.get_int(&["CLUSTER", "KEYSLOT", &key]).await < 5 {
+            source.ok(&["SET", &key, &i.to_string()]).await;
+            keys.push((key, i.to_string()));
+            if keys.len() == 10 {
+                break;
+            }
+        }
+    }
+
+    let node = format!("127.0.0.1:{}", cluster.port(0));
+    let out = crate::helpers::run_cli(
+        cluster.port(0),
+        &[
+            "cluster", "reshard", &node, "--slots", "5", "--from", &source_id, "--to", &target_id,
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "reshard failed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for (key, value) in &keys {
+        assert_eq!(target.get_bulk(&["GET", key]).await, Some(value.clone()));
+    }
+    for slot in 0..5 {
+        let count = source
+            .get_int(&["CLUSTER", "COUNTKEYSINSLOT", &slot.to_string()])
+            .await;
+        assert_eq!(count, 0, "slot {slot} left keys behind");
+    }
+}
+
+/// MIGRATE AUTH logs in to a target that has a password.
+#[tokio::test]
+async fn migrate_authenticates_with_the_target() {
+    let start = || {
+        TestServer::start_with(ServerOptions {
+            cluster_enabled: true,
+            requirepass: Some("pw".into()),
+            ..Default::default()
+        })
+    };
+    let (source_node, target_node) = (start(), start());
+    let mut source = source_node.connect().await;
+    let mut target = target_node.connect().await;
+    for c in [&mut source, &mut target] {
+        c.ok(&["AUTH", "pw"]).await;
+    }
+    let target_port = target_node.port.to_string();
+    source
+        .ok(&["CLUSTER", "MEET", "127.0.0.1", &target_port])
+        .await;
+    source.ok(&["CLUSTER", "ADDSLOTSRANGE", "0", "16383"]).await;
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    let source_id = source.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    let slot = source
+        .get_int(&["CLUSTER", "KEYSLOT", "k"])
+        .await
+        .to_string();
+    target
+        .ok(&["CLUSTER", "SETSLOT", &slot, "IMPORTING", &source_id])
+        .await;
+    source.ok(&["SET", "k", "v"]).await;
+
+    let without = source
+        .cmd(&["MIGRATE", "127.0.0.1", &target_port, "k", "0", "5000"])
+        .await;
+    assert!(
+        matches!(&without, Frame::Error(e) if e.contains("NOAUTH")),
+        "{without:?}"
+    );
+    assert_eq!(source.get_bulk(&["GET", "k"]).await, Some("v".into()));
+
+    source
+        .ok(&[
+            "MIGRATE",
+            "127.0.0.1",
+            &target_port,
+            "k",
+            "0",
+            "5000",
+            "AUTH",
+            "pw",
+        ])
+        .await;
+    target.ok(&["ASKING"]).await;
+    assert_eq!(target.get_bulk(&["GET", "k"]).await, Some("v".into()));
+}
+
+/// MIGRATE COPY leaves the key on the source.
+#[tokio::test]
+async fn migrate_copy_keeps_the_local_key() {
+    let cluster = TestCluster::start();
+    cluster.init().await;
+    let (tag, slot) = tag_on_node_0(&cluster).await;
+    let key = format!("{tag}k");
+    let slot = slot.to_string();
+
+    let mut source = cluster.connect(0).await;
+    let mut target = cluster.connect(1).await;
+    let source_id = source.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    target
+        .ok(&["CLUSTER", "SETSLOT", &slot, "IMPORTING", &source_id])
+        .await;
+    source.ok(&["SET", &key, "v"]).await;
+
+    let port = cluster.port(1).to_string();
+    source
+        .ok(&["MIGRATE", "127.0.0.1", &port, &key, "0", "5000", "COPY"])
+        .await;
+    assert_eq!(source.get_bulk(&["GET", &key]).await, Some("v".into()));
+    target.ok(&["ASKING"]).await;
+    assert_eq!(target.get_bulk(&["GET", &key]).await, Some("v".into()));
 }
 
 // -- automatic failover --

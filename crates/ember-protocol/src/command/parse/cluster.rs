@@ -230,6 +230,7 @@ pub(super) fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolE
 
 pub(super) fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
     // MIGRATE host port key db timeout [COPY] [REPLACE]
+    //         [AUTH password | AUTH2 username password]
     if args.len() < 5 {
         return Err(wrong_arity("MIGRATE"));
     }
@@ -246,13 +247,32 @@ pub(super) fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
 
     let mut copy = false;
     let mut replace = false;
+    let mut auth = None;
 
-    for arg in &args[5..] {
+    let mut rest = args[5..].iter();
+    while let Some(arg) = rest.next() {
         let mut kw = [0u8; MAX_KEYWORD_LEN];
         let opt = uppercase_arg(arg, &mut kw)?;
+        let mut next = || {
+            rest.next()
+                .ok_or_else(|| wrong_arity("MIGRATE"))
+                .and_then(extract_string)
+        };
         match opt {
             "COPY" => copy = true,
             "REPLACE" => replace = true,
+            "AUTH" => {
+                auth = Some(MigrateAuth {
+                    username: None,
+                    password: next()?,
+                })
+            }
+            "AUTH2" => {
+                auth = Some(MigrateAuth {
+                    username: Some(next()?),
+                    password: next()?,
+                })
+            }
             _ => {
                 return Err(ProtocolError::InvalidCommandFrame(format!(
                     "unknown MIGRATE option '{opt}'"
@@ -269,5 +289,6 @@ pub(super) fn parse_migrate(args: &[Frame]) -> Result<Command, ProtocolError> {
         timeout_ms,
         copy,
         replace,
+        auth,
     })
 }

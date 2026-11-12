@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use ember_core::{ShardRequest, ShardResponse};
-use ember_protocol::{parse_frame, Frame};
+use ember_protocol::{parse_frame, Frame, MigrateAuth};
 
 use super::ExecCtx;
 
@@ -194,124 +194,128 @@ pub(in crate::connection) async fn cluster_failover(
     }
 }
 
-pub(in crate::connection) async fn migrate(
-    host: String,
-    port: u16,
-    key: String,
-    timeout_ms: u64,
-    replace: bool,
-    cx: &ExecCtx<'_>,
-) -> Frame {
+/// What MIGRATE was asked to do with one key.
+pub(in crate::connection) struct MigrateRequest {
+    pub host: String,
+    pub port: u16,
+    pub key: String,
+    pub timeout_ms: u64,
+    /// Keep the local key.
+    pub copy: bool,
+    /// Overwrite the key on the target.
+    pub replace: bool,
+    pub auth: Option<MigrateAuth>,
+}
+
+pub(in crate::connection) async fn migrate(req: MigrateRequest, cx: &ExecCtx<'_>) -> Frame {
     // other clients must not change the key between the dump and the local
     // delete, or their write is lost. hold it until the move is complete.
     let cluster = cx.ctx.cluster.as_ref();
     if let Some(c) = cluster {
-        if !c.begin_key_transfer(key.as_bytes()).await {
+        if !c.begin_key_transfer(req.key.as_bytes()).await {
             return Frame::Error("ERR the key is already being migrated".into());
         }
     }
-    let reply = transfer_key(host, port, &key, timeout_ms, replace, cx).await;
+    let reply = transfer_key(&req, cx).await;
     if let Some(c) = cluster {
-        c.end_key_transfer(key.as_bytes()).await;
+        c.end_key_transfer(req.key.as_bytes()).await;
     }
     reply
 }
 
-/// Copies `key` to the target with RESTORE, then deletes it locally and
-/// marks it migrated so later commands for it are sent there with ASK.
-async fn transfer_key(
-    host: String,
-    port: u16,
-    key: &str,
-    timeout_ms: u64,
-    replace: bool,
-    cx: &ExecCtx<'_>,
-) -> Frame {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    // dump the key from the local shard
+/// Copies the key to the target with RESTORE, then, unless COPY was given,
+/// deletes it locally, so later commands for it are sent there with ASK.
+async fn transfer_key(req: &MigrateRequest, cx: &ExecCtx<'_>) -> Frame {
+    let key = &req.key;
     let idx = cx.engine.shard_for_key(key);
-    let dump_req = ShardRequest::DumpKey {
-        key: key.to_owned(),
-    };
-    let dump_resp = match cx.engine.send_to_shard(idx, dump_req).await {
-        Ok(r) => r,
+    let dump_req = ShardRequest::DumpKey { key: key.clone() };
+    let (data, ttl_ms) = match cx.engine.send_to_shard(idx, dump_req).await {
+        Ok(ShardResponse::KeyDump { data, ttl_ms }) => (data, ttl_ms),
+        Ok(ShardResponse::Value(None)) => return Frame::Simple("NOKEY".into()),
+        Ok(_) => return Frame::Error("ERR internal error".into()),
         Err(e) => return Frame::Error(format!("ERR {e}")),
     };
 
-    let (data, ttl_ms) = match dump_resp {
-        ShardResponse::KeyDump { data, ttl_ms } => (data, ttl_ms),
-        ShardResponse::Value(None) => {
-            return Frame::Error("ERR no such key".into());
-        }
-        _ => return Frame::Error("ERR internal error".into()),
+    // the target is importing the slot, so it serves the key only after
+    // ASKING. a target with a password needs AUTH first, which MIGRATE
+    // takes as an option, as in Redis.
+    let bulk = |s: &str| Frame::Bulk(Bytes::copy_from_slice(s.as_bytes()));
+    let mut commands = Vec::new();
+    if let Some(auth) = &req.auth {
+        let mut parts = vec![bulk("AUTH")];
+        parts.extend(auth.username.as_deref().map(bulk));
+        parts.push(bulk(&auth.password));
+        commands.push(Frame::Array(parts));
+    }
+    commands.push(Frame::Array(vec![bulk("ASKING")]));
+    let mut restore = vec![
+        bulk("RESTORE"),
+        bulk(key),
+        bulk(&ttl_ms.max(0).to_string()),
+        Frame::Bulk(Bytes::from(data)),
+    ];
+    if req.replace {
+        restore.push(bulk("REPLACE"));
+    }
+    commands.push(Frame::Array(restore));
+
+    let addr = format!("{}:{}", req.host, req.port);
+    let timeout = Duration::from_millis(req.timeout_ms.max(1000));
+    let replies = match tokio::time::timeout(timeout, send_commands(&addr, &commands)).await {
+        Ok(Ok(replies)) => replies,
+        Ok(Err(e)) => return Frame::Error(format!("IOERR error talking to the target: {e}")),
+        Err(_) => return Frame::Error("IOERR timeout talking to the target".into()),
     };
+    if let Some(Frame::Error(e)) = replies.iter().find(|r| matches!(r, Frame::Error(_))) {
+        return Frame::Error(format!("ERR target error: {e}"));
+    }
 
-    // send RESTORE to the target node
-    let ttl_arg = if ttl_ms < 0 { 0u64 } else { ttl_ms as u64 };
-    let timeout = Duration::from_millis(timeout_ms.max(1000));
-    let addr = format!("{host}:{port}");
-
-    let result = tokio::time::timeout(timeout, async {
-        let mut stream = tokio::net::TcpStream::connect(&addr).await?;
-
-        // build RESTORE command as RESP3 array
-        let mut parts = vec![
-            Frame::Bulk(Bytes::from("RESTORE")),
-            Frame::Bulk(Bytes::from(key.to_owned())),
-            Frame::Bulk(Bytes::from(ttl_arg.to_string())),
-            Frame::Bulk(Bytes::from(data)),
-        ];
-        if replace {
-            parts.push(Frame::Bulk(Bytes::from("REPLACE")));
+    if !req.copy {
+        // the key is still marked in flight, so no write lands between the
+        // RESTORE and this delete
+        let _ = cx
+            .engine
+            .send_to_shard(idx, ShardRequest::Del { key: key.clone() })
+            .await;
+        if let Some(c) = &cx.ctx.cluster {
+            c.mark_key_migrated(ember_cluster::key_slot(key.as_bytes()))
+                .await;
         }
-        let cmd_frame = Frame::Array(parts);
+    }
+    Frame::Simple("OK".into())
+}
 
-        let mut buf = BytesMut::new();
-        cmd_frame.serialize(&mut buf);
-        stream.write_all(&buf).await?;
+/// Sends `commands` to `addr` in one write and reads one reply for each.
+async fn send_commands(addr: &str, commands: &[Frame]) -> io::Result<Vec<Frame>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        // read response
-        let mut read_buf = BytesMut::with_capacity(256);
-        loop {
-            let n = stream.read_buf(&mut read_buf).await?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "connection closed by target",
-                ));
+    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    let mut buf = BytesMut::new();
+    for command in commands {
+        command.serialize(&mut buf);
+    }
+    stream.write_all(&buf).await?;
+
+    let mut replies = Vec::with_capacity(commands.len());
+    let mut read_buf = BytesMut::with_capacity(256);
+    while replies.len() < commands.len() {
+        match parse_frame(&read_buf) {
+            Ok(Some((frame, used))) => {
+                let _ = read_buf.split_to(used);
+                replies.push(frame);
             }
-            match parse_frame(&read_buf) {
-                Ok(Some((frame, _))) => return Ok(frame),
-                Ok(None) => {} // need more data
-                Err(e) => {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string()));
+            Ok(None) => {
+                if stream.read_buf(&mut read_buf).await? == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "connection closed by target",
+                    ));
                 }
             }
+            Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
         }
-    })
-    .await;
-
-    match result {
-        Ok(Ok(Frame::Simple(_))) => {
-            // the target has it: send later commands there, then drop the
-            // local copy. the key is still marked in flight, so no write can
-            // land in between.
-            if let Some(c) = &cx.ctx.cluster {
-                let slot = ember_cluster::key_slot(key.as_bytes());
-                c.mark_key_migrated(slot, key.as_bytes()).await;
-            }
-            let del_req = ShardRequest::Del {
-                key: key.to_owned(),
-            };
-            let _ = cx.engine.send_to_shard(idx, del_req).await;
-            Frame::Simple("OK".into())
-        }
-        Ok(Ok(Frame::Error(e))) => Frame::Error(format!("ERR target error: {e}")),
-        Ok(Ok(_)) => Frame::Error("ERR unexpected response from target".into()),
-        Ok(Err(e)) => Frame::Error(format!("ERR {e}")),
-        Err(_) => Frame::Error("ERR timeout connecting to target".into()),
     }
+    Ok(replies)
 }
 
 pub(in crate::connection) async fn restore(
