@@ -30,6 +30,8 @@ pub struct TestServer {
 pub struct ServerOptions {
     pub requirepass: Option<String>,
     pub appendonly: bool,
+    /// The AOF fsync policy when `appendonly` is set. Defaults to "always".
+    pub appendfsync: Option<&'static str>,
     /// Owned temp directory (cleaned up when the server drops).
     pub data_dir: Option<tempfile::TempDir>,
     /// Use an existing path without taking ownership.
@@ -130,7 +132,8 @@ impl TestServer {
         let data_dir = if opts.appendonly || opts.cluster_enabled {
             if opts.appendonly {
                 cmd.arg("--appendonly");
-                cmd.arg("--appendfsync").arg("always");
+                cmd.arg("--appendfsync")
+                    .arg(opts.appendfsync.unwrap_or("always"));
             }
 
             if let Some(ref path) = opts.data_dir_path {

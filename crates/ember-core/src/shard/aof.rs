@@ -784,88 +784,106 @@ pub(super) fn to_aof_records(
     }
 }
 
-/// Writes a single AOF record, used by blocking pop operations that
-/// bypass the normal dispatch → to_aof_records path.
-pub(super) fn write_aof_record(
-    record: &AofRecord,
-    aof_writer: &mut Option<AofWriter>,
-    fsync_policy: FsyncPolicy,
+/// The shard's AOF writer and whether it is failing.
+///
+/// Records reach the file in three steps. [`append`](Self::append) queues a
+/// write's records, [`flush`](Self::flush) writes them to the OS after each
+/// burst of commands, and [`tick`](Self::tick) fsyncs once a second under
+/// `appendfsync everysec`. Under `appendfsync always`, `append` writes and
+/// fsyncs right away. A process crash so loses at most the burst it was
+/// handling, and only a machine crash can lose up to a second.
+///
+/// While a write or sync keeps failing, as when the disk is full, the shard
+/// rejects writes, and the tick retries until one succeeds.
+pub(super) struct AofLog {
+    writer: AofWriter,
+    policy: FsyncPolicy,
     shard_id: u16,
-    aof_errors: &mut u32,
-    disk_full: &mut bool,
-) {
-    if let Some(ref mut writer) = *aof_writer {
-        let mut ok = true;
-        if let Err(e) = writer.write_record(record) {
-            if log_aof_error(shard_id, aof_errors, "write", &e) {
-                *disk_full = true;
-            }
-            ok = false;
+    /// Consecutive failed writes or syncs. Zero when the last one worked.
+    errors: u32,
+}
+
+impl AofLog {
+    pub(super) fn new(writer: AofWriter, policy: FsyncPolicy, shard_id: u16) -> Self {
+        Self {
+            writer,
+            policy,
+            shard_id,
+            errors: 0,
         }
-        if fsync_policy == FsyncPolicy::Always {
-            if let Err(e) = writer.sync() {
-                if log_aof_error(shard_id, aof_errors, "sync", &e) {
-                    *disk_full = true;
+    }
+
+    /// Whether the last write or sync failed. Writes are rejected then.
+    pub(super) fn failing(&self) -> bool {
+        self.errors > 0
+    }
+
+    pub(super) fn writer_mut(&mut self) -> &mut AofWriter {
+        &mut self.writer
+    }
+
+    /// Queues `records`, and under `appendfsync always` writes and fsyncs
+    /// them. Returns whether they are as durable as the policy promises.
+    pub(super) fn append(&mut self, records: &[AofRecord]) -> bool {
+        if records.is_empty() {
+            return true;
+        }
+        let mut result = records
+            .iter()
+            .try_for_each(|record| self.writer.write_record(record));
+        if result.is_ok() && self.policy == FsyncPolicy::Always {
+            result = self.writer.sync();
+        }
+        self.check("write", result)
+    }
+
+    /// Writes the queued records to the OS.
+    pub(super) fn flush(&mut self) {
+        let result = self.writer.flush();
+        self.check("write", result);
+    }
+
+    /// Runs on the fsync tick: fsyncs under `appendfsync everysec`, and
+    /// retries a failed write under any policy.
+    pub(super) fn tick(&mut self) {
+        if self.policy == FsyncPolicy::EverySec || self.failing() {
+            let result = self.writer.sync();
+            self.check("sync", result);
+        }
+    }
+
+    /// Logs a failure, at most once per 1000 in a row, and notes recovery.
+    fn check(
+        &mut self,
+        op: &str,
+        result: Result<(), ember_persistence::format::FormatError>,
+    ) -> bool {
+        let shard_id = self.shard_id;
+        match result {
+            Ok(()) => {
+                if self.errors > 0 {
+                    info!(
+                        shard_id,
+                        missed_errors = self.errors,
+                        "aof writes recovered, accepting writes again"
+                    );
+                    self.errors = 0;
                 }
-                ok = false;
+                true
+            }
+            Err(e) => {
+                self.errors = self.errors.saturating_add(1);
+                if self.errors == 1 || self.errors.is_multiple_of(1000) {
+                    error!(
+                        shard_id,
+                        consecutive_errors = self.errors,
+                        "aof {op} failed, rejecting writes until it works again: {e}"
+                    );
+                }
+                false
             }
         }
-        if ok && *aof_errors > 0 {
-            let missed = *aof_errors;
-            *aof_errors = 0;
-            *disk_full = false;
-            info!(shard_id, missed_errors = missed, "aof writes recovered");
-        }
     }
-}
-
-/// Returns `true` if the error indicates the disk is full (ENOSPC or EDQUOT).
-fn is_disk_full_error(err: &ember_persistence::format::FormatError) -> bool {
-    // ENOSPC = 28 (Linux + macOS), EDQUOT = 122 (Linux) / 69 (macOS)
-    matches!(err, ember_persistence::format::FormatError::Io(ref io_err)
-        if matches!(io_err.raw_os_error(), Some(28) | Some(69) | Some(122)))
-}
-
-/// Logs an AOF error with rate-limiting and severity awareness.
-///
-/// Disk-full (ENOSPC) errors are logged at `error!` level since they indicate
-/// a condition that needs operator attention. Other I/O errors use `warn!`.
-/// After the first failure, subsequent consecutive errors are suppressed —
-/// only every 1000th error is logged to avoid flooding under sustained
-/// disk-full conditions.
-///
-/// Returns `true` if this was a disk-full error, so the caller can set
-/// the `disk_full` flag to reject subsequent writes.
-pub(super) fn log_aof_error(
-    shard_id: u16,
-    consecutive: &mut u32,
-    op: &str,
-    err: &ember_persistence::format::FormatError,
-) -> bool {
-    *consecutive = consecutive.saturating_add(1);
-
-    let disk_full = is_disk_full_error(err);
-
-    // rate-limit: log first failure, then every 1000th
-    if *consecutive != 1 && !(*consecutive).is_multiple_of(1000) {
-        return disk_full;
-    }
-
-    if disk_full {
-        error!(
-            shard_id,
-            consecutive_errors = *consecutive,
-            "aof {op} failed: disk full — new writes will be rejected"
-        );
-    } else {
-        warn!(
-            shard_id,
-            consecutive_errors = *consecutive,
-            "aof {op} failed: {err}"
-        );
-    }
-
-    disk_full
 }
 
 /// Broadcasts a single replication event, used by blocking pop operations

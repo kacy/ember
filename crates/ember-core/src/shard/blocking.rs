@@ -12,7 +12,7 @@ pub(super) fn handle_blocking_pop(
     ctx: &mut ProcessCtx<'_>,
 ) {
     match ctx.keyspace.llen(key) {
-        Err(_) => reply.send(ShardResponse::WrongType),
+        Err(_) => ctx.respond(reply, ShardResponse::WrongType),
         Ok(0) => {
             let map = if is_left {
                 &mut *ctx.lpop_waiters
@@ -31,7 +31,7 @@ pub(super) fn handle_blocking_pop(
             if let Ok(permit) = waiter.try_reserve() {
                 pop_for(key, is_left, permit, ctx);
             }
-            reply.send(ShardResponse::Ok);
+            ctx.respond(reply, ShardResponse::Ok);
         }
     }
 }
@@ -112,14 +112,9 @@ fn pop_for(
     } else {
         AofRecord::RPop { key }
     };
-    aof::write_aof_record(
-        &record,
-        ctx.aof_writer,
-        ctx.fsync_policy,
-        ctx.shard_id,
-        ctx.aof_errors,
-        ctx.disk_full,
-    );
+    if let Some(ref mut aof) = *ctx.aof {
+        aof.append(std::slice::from_ref(&record));
+    }
     aof::broadcast_replication(
         record,
         ctx.replication_tx,

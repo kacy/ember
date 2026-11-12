@@ -387,7 +387,7 @@ async fn run_shard(prepared: PreparedShard) {
         if let ShardResponse::Err(e) = persistence::handle_snapshot(
             &keyspace,
             &persistence,
-            &mut aof_writer,
+            aof_writer.as_mut(),
             shard_id,
             #[cfg(feature = "protobuf")]
             &schema_registry,
@@ -401,17 +401,17 @@ async fn run_shard(prepared: PreparedShard) {
         .as_ref()
         .map(|p| p.fsync_policy)
         .unwrap_or(FsyncPolicy::No);
+    let mut aof = aof_writer.map(|w| aof::AofLog::new(w, fsync_policy, shard_id));
+
+    // replies held until the burst's AOF records reach the OS, so a client
+    // never sees OK for a write a process crash could lose. with
+    // appendfsync always each write is already on disk before its reply.
+    let hold_replies = aof.is_some() && fsync_policy != FsyncPolicy::Always;
+    let mut held_replies: Vec<(ReplySender, ShardResponse)> = Vec::new();
 
     // waiter registries for blocking list operations (BLPOP/BRPOP)
     let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
     let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
-
-    // consecutive AOF write/sync failure counter for rate-limited logging
-    let mut aof_errors: u32 = 0;
-
-    // when true, write commands are rejected with an error until disk
-    // space is available again (detected on the periodic fsync tick).
-    let mut disk_full: bool = false;
 
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(expiry_interval);
@@ -427,8 +427,8 @@ async fn run_shard(prepared: PreparedShard) {
                     Some(msg) => {
                         let mut ctx = ProcessCtx {
                             keyspace: &mut keyspace,
-                            aof_writer: &mut aof_writer,
-                            fsync_policy,
+                            aof: &mut aof,
+                            held_replies: hold_replies.then_some(&mut held_replies),
                             persistence: &persistence,
                             drop_handle: &drop_handle,
                             shard_id,
@@ -436,13 +436,17 @@ async fn run_shard(prepared: PreparedShard) {
                             replication_offset: &replication_offset,
                             lpop_waiters: &mut lpop_waiters,
                             rpop_waiters: &mut rpop_waiters,
-                            aof_errors: &mut aof_errors,
-                            disk_full: &mut disk_full,
                             #[cfg(feature = "protobuf")]
                             schema_registry: &schema_registry,
                         };
                         process_message(msg, &mut ctx);
                         drain_queued(&mut rx, |msg| process_message(msg, &mut ctx));
+                        if let Some(ref mut aof) = aof {
+                            aof.flush();
+                        }
+                        for (reply, response) in held_replies.drain(..) {
+                            reply.send(response);
+                        }
                     }
                     None => break, // channel closed, shard shutting down
                 }
@@ -459,36 +463,16 @@ async fn run_shard(prepared: PreparedShard) {
                 blocking::prune_waiters(&mut lpop_waiters);
                 blocking::prune_waiters(&mut rpop_waiters);
             }
-            // also tick while the disk is full, whatever the fsync policy:
-            // writes are rejected then, so a successful sync here is the
-            // only way the shard learns there is space again
-            _ = fsync_tick.tick(), if fsync_policy == FsyncPolicy::EverySec || disk_full => {
-                if let Some(ref mut writer) = aof_writer {
-                    if let Err(e) = writer.sync() {
-                        if aof::log_aof_error(shard_id, &mut aof_errors, "sync", &e) {
-                            disk_full = true;
-                        }
-                    } else if aof_errors > 0 {
-                        let missed = aof_errors;
-                        aof_errors = 0;
-                        if disk_full {
-                            disk_full = false;
-                            info!(shard_id, missed_errors = missed, "aof sync recovered, accepting writes again");
-                        } else {
-                            info!(shard_id, missed_errors = missed, "aof sync recovered");
-                        }
-                    }
+            _ = fsync_tick.tick(), if aof.is_some() => {
+                if let Some(ref mut aof) = aof {
+                    aof.tick();
                 }
             }
         }
     }
 
-    // flush AOF on clean shutdown
-    if let Some(ref mut writer) = aof_writer {
-        if let Err(e) = writer.sync() {
-            error!(shard_id, "final aof sync failed on shutdown, writes since the last successful sync may be lost: {e}");
-        }
-    }
+    // dropping the AOF writer flushes and fsyncs it. that also happens when
+    // the runtime drops this task on shutdown without letting it finish.
 }
 
 /// Per-shard processing context passed into `process_message`.
@@ -497,8 +481,9 @@ async fn run_shard(prepared: PreparedShard) {
 /// readable and the parameter count stays reasonable.
 struct ProcessCtx<'a> {
     keyspace: &'a mut Keyspace,
-    aof_writer: &'a mut Option<AofWriter>,
-    fsync_policy: FsyncPolicy,
+    aof: &'a mut Option<aof::AofLog>,
+    /// Where replies wait for the end of the burst, when they must.
+    held_replies: Option<&'a mut Vec<(ReplySender, ShardResponse)>>,
     persistence: &'a Option<ShardPersistenceConfig>,
     drop_handle: &'a Option<DropHandle>,
     shard_id: u16,
@@ -510,11 +495,6 @@ struct ProcessCtx<'a> {
     lpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
     /// Waiters for BRPOP — keyed by list name, FIFO order.
     rpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
-    /// Consecutive AOF write/sync failures. Used to rate-limit error logging
-    /// so a sustained disk-full condition doesn't flood logs.
-    aof_errors: &'a mut u32,
-    /// When true, write commands are rejected until disk space recovers.
-    disk_full: &'a mut bool,
     #[cfg(feature = "protobuf")]
     schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -564,6 +544,16 @@ enum ReplySender {
     Reusable(mpsc::Sender<ShardResponse>),
 }
 
+impl ProcessCtx<'_> {
+    /// Sends `response`, or holds it until the burst is flushed.
+    fn respond(&mut self, reply: ReplySender, response: ShardResponse) {
+        match self.held_replies {
+            Some(ref mut held) => held.push((reply, response)),
+            None => reply.send(response),
+        }
+    }
+}
+
 impl ReplySender {
     fn send(self, response: ShardResponse) {
         match self {
@@ -585,16 +575,19 @@ impl ReplySender {
 /// Processes a single request: dispatch, write AOF, broadcast replication,
 /// and send the response on the reply channel.
 fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut ProcessCtx<'_>) {
-    // copy cheap fields upfront to avoid field-borrow conflicts below
-    let fsync_policy = ctx.fsync_policy;
     let shard_id = ctx.shard_id;
 
-    // reject writes when AOF is enabled and disk is full. reads and admin
-    // commands still go through so operators can inspect and recover.
-    if *ctx.disk_full && ctx.aof_writer.is_some() && request.is_write() {
-        reply.send(ShardResponse::Err(
-            "ERR disk full, write rejected — free disk space to resume writes".into(),
-        ));
+    // reject writes while the AOF can't be written, as when the disk is
+    // full. reads and admin commands still go through so operators can
+    // inspect and recover.
+    if ctx.aof.as_ref().is_some_and(|aof| aof.failing()) && request.is_write() {
+        ctx.respond(
+            reply,
+            ShardResponse::Err(
+                "ERR the aof can't be written (disk full?), so writes are rejected until it can"
+                    .into(),
+            ),
+        );
         return;
     }
 
@@ -662,33 +655,10 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     records.extend(aof::to_aof_records(request, &mut response));
     records.extend(kept_ttl);
 
-    // write AOF records for successful mutations
-    if let Some(ref mut writer) = *ctx.aof_writer {
-        let mut batch_ok = true;
-        for record in &records {
-            if let Err(e) = writer.write_record(record) {
-                if aof::log_aof_error(shard_id, ctx.aof_errors, "write", &e) {
-                    *ctx.disk_full = true;
-                }
-                batch_ok = false;
-            }
-        }
-        if !records.is_empty() && fsync_policy == FsyncPolicy::Always {
-            if let Err(e) = writer.sync() {
-                if aof::log_aof_error(shard_id, ctx.aof_errors, "sync", &e) {
-                    *ctx.disk_full = true;
-                }
-                batch_ok = false;
-            }
-        }
-        if batch_ok && *ctx.aof_errors > 0 {
-            let missed = *ctx.aof_errors;
-            *ctx.aof_errors = 0;
-            *ctx.disk_full = false;
-            info!(shard_id, missed_errors = missed, "aof writes recovered");
-        }
-        // with appendfsync always, OK promises the write is on disk
-        if !batch_ok && fsync_policy == FsyncPolicy::Always {
+    // log successful mutations. with appendfsync always, OK promises the
+    // write is on disk
+    if let Some(ref mut aof) = *ctx.aof {
+        if !aof.append(&records) {
             response = ShardResponse::Err(
                 "ERR write applied in memory but could not be persisted to the AOF".into(),
             );
@@ -719,19 +689,19 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             // since this task sends all of them and is busy doing this now
             let offset = ctx.replication_offset.load(Ordering::Acquire);
             let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id, offset);
-            reply.send(resp);
+            ctx.respond(reply, resp);
             return;
         }
         RequestKind::Snapshot => {
             let resp = persistence::handle_snapshot(
                 ctx.keyspace,
                 ctx.persistence,
-                ctx.aof_writer,
+                ctx.aof.as_mut().map(aof::AofLog::writer_mut),
                 shard_id,
                 #[cfg(feature = "protobuf")]
                 ctx.schema_registry,
             );
-            reply.send(resp);
+            ctx.respond(reply, resp);
             return;
         }
         RequestKind::FlushDbAsync => {
@@ -739,7 +709,7 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             if let Some(ref handle) = *ctx.drop_handle {
                 handle.defer_entries(old_entries);
             }
-            reply.send(ShardResponse::Ok);
+            ctx.respond(reply, ShardResponse::Ok);
             return;
         }
         RequestKind::UpdateMemoryConfig {
@@ -748,13 +718,13 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         } => {
             ctx.keyspace
                 .update_memory_config(max_memory, eviction_policy);
-            reply.send(ShardResponse::Ok);
+            ctx.respond(reply, ShardResponse::Ok);
             return;
         }
         RequestKind::Other => {}
     }
 
-    reply.send(response);
+    ctx.respond(reply, response);
 }
 
 /// Lightweight tag so we can identify requests that need special

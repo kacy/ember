@@ -1017,3 +1017,115 @@ mod encrypted {
         Ok(())
     }
 }
+
+/// A file that accepts `room` more bytes, then fails a write part way, as a
+/// full disk does.
+struct FillingFile {
+    data: Vec<u8>,
+    room: usize,
+}
+
+impl Write for FillingFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if self.room == 0 {
+            return Err(std::io::Error::other("no space left"));
+        }
+        let n = buf.len().min(self.room);
+        self.data.extend_from_slice(&buf[..n]);
+        self.room -= n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl AppendFile for FillingFile {
+    fn set_len(&self, _len: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl FillingFile {
+    fn cut(&mut self, len: u64) {
+        self.data.truncate(len as usize);
+    }
+}
+
+#[test]
+fn a_failed_write_keeps_the_records_and_leaves_whole_records_only() {
+    let mut file = FillingFile {
+        data: b"header".to_vec(),
+        room: 3,
+    };
+    let mut pending = b"record".to_vec();
+    let (mut written_len, mut torn) = (6, false);
+
+    // the write stops part way through the record
+    assert!(append_whole(&mut file, &mut pending, &mut written_len, &mut torn).is_err());
+    assert_eq!(file.data, b"headerrec");
+    file.cut(written_len); // what set_len did
+    assert_eq!(file.data, b"header");
+    assert_eq!(pending, b"record", "the record stays queued");
+    assert!(!torn);
+
+    // once there is room again, the retry writes the whole record
+    file.room = 100;
+    append_whole(&mut file, &mut pending, &mut written_len, &mut torn).unwrap();
+    assert_eq!(file.data, b"headerrecord");
+    assert_eq!(written_len, 12);
+    assert!(pending.is_empty());
+}
+
+#[test]
+fn records_reach_the_file_only_when_flushed() -> Result {
+    let dir = temp_dir();
+    let path = dir.path().join("q.aof");
+    let mut writer = AofWriter::open(&path)?;
+    let header_len = fs::metadata(&path)?.len();
+    writer.write_record(&AofRecord::Del { key: "k".into() })?;
+    assert_eq!(fs::metadata(&path)?.len(), header_len);
+    writer.flush()?;
+    assert!(fs::metadata(&path)?.len() > header_len);
+    Ok(())
+}
+
+#[test]
+fn dropping_the_writer_flushes_queued_records() -> Result {
+    let dir = temp_dir();
+    let path = dir.path().join("d.aof");
+    let mut writer = AofWriter::open(&path)?;
+    writer.write_record(&AofRecord::Del { key: "k".into() })?;
+    drop(writer);
+    let mut reader = AofReader::open(&path)?;
+    assert_eq!(
+        reader.read_record()?,
+        Some(AofRecord::Del { key: "k".into() })
+    );
+    Ok(())
+}
+
+#[test]
+fn appends_after_a_truncate_land_in_the_new_file() -> Result {
+    let dir = temp_dir();
+    let path = dir.path().join("t.aof");
+    let mut writer = AofWriter::open(&path)?;
+    writer.write_record(&AofRecord::Del { key: "old".into() })?;
+    writer.truncate(7)?;
+    writer.write_record(&AofRecord::Del { key: "new".into() })?;
+    writer.sync()?;
+
+    let mut reader = AofReader::open(&path)?;
+    assert_eq!(
+        reader.read_record()?,
+        Some(AofRecord::Checkpoint { snapshot_crc: 7 })
+    );
+    assert_eq!(
+        reader.read_record()?,
+        Some(AofRecord::Del { key: "new".into() })
+    );
+    assert_eq!(reader.read_record()?, None);
+    assert!(!path.with_extension("aof.tmp").exists());
+    Ok(())
+}

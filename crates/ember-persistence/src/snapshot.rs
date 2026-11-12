@@ -520,11 +520,7 @@ impl SnapshotWriter {
         fs::rename(&self.tmp_path, &self.final_path)?;
 
         // fsync the parent directory so the rename is durable across crashes
-        if let Some(parent) = self.final_path.parent() {
-            if let Ok(dir) = File::open(parent) {
-                let _ = dir.sync_all();
-            }
-        }
+        crate::aof::sync_parent_dir(&self.final_path);
 
         self.finished = true;
         Ok(checksum)

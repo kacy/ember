@@ -103,9 +103,9 @@ fragmentation builds up over time, especially with workloads that frequently del
 
 ## persistence issues
 
-**"ERR disk full"**
+**"ERR the aof can't be written"**
 
-the data directory is out of space. immediate steps:
+a shard failed to write or fsync its AOF, usually because the data directory is out of space. it rejects writes until a retry succeeds, and it retries once a second. reads still work. immediate steps:
 
 1. free space on the current volume (clear logs, old snapshots, etc.)
 2. or move `data-dir` to a larger volume and restart
@@ -140,8 +140,10 @@ check your `appendfsync` setting:
 | setting | behavior | risk |
 |---|---|---|
 | `always` | fsync after every write | zero data loss, lower throughput |
-| `everysec` | fsync once per second | up to ~1 second of data loss |
-| `no` | OS decides when to flush | data loss possible on crash |
+| `everysec` | fsync once per second | a machine crash can lose up to ~1 second |
+| `no` | OS decides when to fsync | a machine crash can lose more than a second |
+
+a crash of the ember process alone loses no acknowledged write under any policy: each write reaches the OS before its reply.
 
 if you need zero data loss guarantees, use `appendfsync always`. for most workloads, `everysec` is a reasonable tradeoff.
 

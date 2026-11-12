@@ -18,7 +18,7 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Seek, Write};
+use std::io::{BufReader, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use crate::format::{self, FormatError};
@@ -39,10 +39,23 @@ pub enum FsyncPolicy {
     No,
 }
 
-/// Buffered writer for appending AOF records to a file.
+/// Appends AOF records to a file.
+///
+/// [`write_record`](Self::write_record) only encodes a record into memory.
+/// [`flush`](Self::flush) writes everything queued with one `write` call, so
+/// the file holds whole records only: if the write fails part way, the file
+/// is cut back to the last whole record and the queued records stay queued
+/// for the next flush. Dropping the writer flushes and fsyncs.
 pub struct AofWriter {
-    writer: BufWriter<File>,
+    file: File,
     path: PathBuf,
+    /// Encoded records not yet written to the file.
+    pending: Vec<u8>,
+    /// Length of the file up to the end of the last whole record.
+    written_len: u64,
+    /// A failed write left bytes past `written_len` that could not be cut
+    /// off. The next flush cuts them off before writing.
+    torn: bool,
     /// The existing file is in a different format than this writer writes.
     /// See [`AofWriter::needs_rewrite`].
     needs_rewrite: bool,
@@ -85,7 +98,8 @@ impl AofWriter {
         #[cfg(feature = "encryption")] key: Option<crate::encryption::EncryptionKey>,
     ) -> Result<Self, FormatError> {
         let existing = fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
-        let mut writer = BufWriter::new(open_persistence_file(&path)?);
+        let mut file = open_persistence_file(&path)?;
+        let mut writer = Vec::new();
 
         // the file's current version, and for an encrypted file the
         // cipher to keep appending with. a header that cannot be read
@@ -102,7 +116,6 @@ impl AofWriter {
                 .as_ref()
                 .map(|k| k.write_new_file_salt(&mut writer))
                 .transpose()?;
-            writer.flush()?;
             (Some(version), cipher)
         };
         #[cfg(not(feature = "encryption"))]
@@ -113,9 +126,11 @@ impl AofWriter {
                 .ok()
         } else {
             format::write_header_versioned(&mut writer, format::AOF_MAGIC, version)?;
-            writer.flush()?;
             Some(version)
         };
+        // a new file's header goes straight to disk
+        file.write_all(&writer)?;
+        let written_len = file.metadata()?.len();
 
         // a file that needs a rewrite is truncated before anything is
         // written, which picks a new salt; until then any cipher will do
@@ -126,8 +141,11 @@ impl AofWriter {
         });
 
         Ok(Self {
-            writer,
+            file,
             path,
+            pending: Vec::new(),
+            written_len,
+            torn: false,
             needs_rewrite: current_version != Some(version),
             #[cfg(feature = "encryption")]
             encryption,
@@ -142,26 +160,33 @@ impl AofWriter {
         self.needs_rewrite
     }
 
-    /// Appends a record to the AOF.
+    /// Queues a record. It reaches the file on the next
+    /// [`flush`](Self::flush) or [`sync`](Self::sync).
     pub fn write_record(&mut self, record: &AofRecord) -> Result<(), FormatError> {
         write_encoded(
-            &mut self.writer,
+            &mut self.pending,
             record,
             #[cfg(feature = "encryption")]
             self.encryption.as_ref().map(|enc| &enc.cipher),
         )
     }
 
-    /// Flushes the internal buffer to the OS.
+    /// Writes the queued records to the OS. On failure the file is cut
+    /// back to its last whole record and the records stay queued.
     pub fn flush(&mut self) -> Result<(), FormatError> {
-        self.writer.flush()?;
+        append_whole(
+            &mut self.file,
+            &mut self.pending,
+            &mut self.written_len,
+            &mut self.torn,
+        )?;
         Ok(())
     }
 
-    /// Flushes and fsyncs the file to disk.
+    /// Writes the queued records and fsyncs the file.
     pub fn sync(&mut self) -> Result<(), FormatError> {
-        self.writer.flush()?;
-        self.writer.get_ref().sync_all()?;
+        self.flush()?;
+        self.file.sync_data()?;
         Ok(())
     }
 
@@ -177,20 +202,20 @@ impl AofWriter {
     /// remains intact until the new file is fully synced and atomically
     /// renamed into place. If this fails, the old file stays in use.
     pub fn truncate(&mut self, snapshot_crc: u32) -> Result<(), FormatError> {
-        // flush the old writer so no data is in the BufWriter
-        self.writer.flush()?;
+        // the snapshot holds the queued records' writes too, but they must
+        // still reach the old file in case the rename below fails
+        self.flush()?;
 
-        // write a fresh header to a temp file next to the real AOF
+        // write a fresh header to a temp file next to the real AOF. the
+        // file is opened for appending like the real one, which needs it
+        // to start empty
         let tmp_path = self.path.with_extension("aof.tmp");
-        let mut opts = OpenOptions::new();
-        opts.create(true).write(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
+        match fs::remove_file(&tmp_path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
         }
-        let tmp_file = opts.open(&tmp_path)?;
-        let mut tmp_writer = BufWriter::new(tmp_file);
+        let mut tmp_file = open_persistence_file(&tmp_path)?;
+        let mut tmp_writer = Vec::new();
 
         // the new file's cipher. the old one stays in use until the rename
         #[cfg(feature = "encryption")]
@@ -217,21 +242,80 @@ impl AofWriter {
             #[cfg(feature = "encryption")]
             cipher.as_ref(),
         )?;
-        tmp_writer.flush()?;
-        tmp_writer.get_ref().sync_all()?;
+        tmp_file.write_all(&tmp_writer)?;
+        tmp_file.sync_all()?;
 
-        // atomic rename: old AOF is replaced only after new file is durable
-        std::fs::rename(&tmp_path, &self.path)?;
-
-        // reopen for appending
-        let file = OpenOptions::new().append(true).open(&self.path)?;
-        self.writer = BufWriter::new(file);
+        // atomic rename: old AOF is replaced only after new file is durable.
+        // the open handle follows the file to its new name, so there is
+        // nothing to reopen
+        fs::rename(&tmp_path, &self.path)?;
+        sync_parent_dir(&self.path);
+        self.file = tmp_file;
+        self.written_len = tmp_writer.len() as u64;
+        self.torn = false;
         #[cfg(feature = "encryption")]
         if let (Some(enc), Some(cipher)) = (self.encryption.as_mut(), cipher) {
             enc.cipher = cipher;
         }
         self.needs_rewrite = false;
         Ok(())
+    }
+}
+
+/// A file that records are appended to. A trait so tests can make writes
+/// fail part way.
+trait AppendFile: Write {
+    fn set_len(&self, len: u64) -> std::io::Result<()>;
+}
+
+impl AppendFile for File {
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        File::set_len(self, len)
+    }
+}
+
+/// Appends `pending` to `file`, which is opened for appending and holds
+/// `written_len` bytes of whole records, and empties `pending`.
+///
+/// A failed write may leave part of a record behind, which would make the
+/// records appended after it unreadable. The file is cut back to
+/// `written_len` then, and `pending` is kept for the next call. If even
+/// that fails, `torn` is set and the next call cuts it back first.
+fn append_whole(
+    file: &mut impl AppendFile,
+    pending: &mut Vec<u8>,
+    written_len: &mut u64,
+    torn: &mut bool,
+) -> std::io::Result<()> {
+    if *torn {
+        file.set_len(*written_len)?;
+        *torn = false;
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+    if let Err(e) = file.write_all(pending) {
+        *torn = file.set_len(*written_len).is_err();
+        return Err(e);
+    }
+    *written_len += pending.len() as u64;
+    pending.clear();
+    Ok(())
+}
+
+impl Drop for AofWriter {
+    fn drop(&mut self) {
+        if let Err(e) = self.sync() {
+            tracing::error!(path = %self.path.display(), "final aof sync failed: {e}");
+        }
+    }
+}
+
+/// Fsyncs the directory holding `path`, so a rename into it survives a
+/// crash. Best effort: some platforms can't open a directory for this.
+pub(crate) fn sync_parent_dir(path: &Path) {
+    if let Some(dir) = path.parent().and_then(|p| File::open(p).ok()) {
+        let _ = dir.sync_all();
     }
 }
 

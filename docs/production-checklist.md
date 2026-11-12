@@ -122,9 +122,11 @@ each write command is logged to the AOF before the response is sent. on restart,
 
 | value | behavior | risk |
 |---|---|---|
-| `always` | fsync after every write | safest, lowest throughput |
-| `everysec` | fsync once per second (background) | good default, up to 1 second of data loss |
-| `no` | let the OS decide | fastest, data loss window is unbounded |
+| `always` | fsync after every write, before its reply | safest, lowest throughput |
+| `everysec` | fsync once per second | a machine crash or power loss can lose up to 1 second of writes |
+| `no` | let the OS decide when to fsync | a machine crash can lose more than a second of writes |
+
+under every policy, a write reaches the OS before its reply is sent, so a crash of the ember process alone loses no acknowledged write.
 
 `everysec` is the right default for most deployments.
 
