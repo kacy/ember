@@ -669,3 +669,31 @@ async fn expireat_in_the_past_deletes_the_key_on_a_fresh_server() {
     assert_eq!(c.get_int(&["EXPIREAT", "k", "1"]).await, 1);
     assert_eq!(c.get_int(&["EXISTS", "k"]).await, 0);
 }
+
+/// Runs every example call in the command table, each on a new connection,
+/// and checks that none falls through the dispatch: a command the parser
+/// accepts must reach a handler.
+#[tokio::test]
+async fn every_command_in_the_table_reaches_a_handler() {
+    let server = TestServer::start();
+    for example in ember_protocol::command::table::examples() {
+        let mut c = server.connect().await;
+        let args: Vec<&str> = example.split(' ').collect();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), c.cmd(&args))
+            .await
+            .unwrap_or_else(|_| panic!("{example}: no reply"));
+        if let Frame::Error(msg) = &reply {
+            if msg.contains("not compiled") {
+                continue;
+            }
+            for bad in [
+                "not routed",
+                "unknown command",
+                "internal error",
+                "unexpected",
+            ] {
+                assert!(!msg.contains(bad), "{example}: {msg}");
+            }
+        }
+    }
+}
