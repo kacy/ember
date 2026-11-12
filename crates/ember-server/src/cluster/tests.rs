@@ -17,31 +17,6 @@ fn test_coordinator_bootstrapped() -> (ClusterCoordinator, mpsc::Receiver<Gossip
     ClusterCoordinator::new(local_id, addr, config, true, None, None).unwrap()
 }
 
-#[tokio::test]
-async fn raft_update_only_applies_slots_it_changed() {
-    let (coord, _rx) = test_coordinator_bootstrapped();
-    let local = coord.local_id;
-    let other = NodeId::new();
-    // raft still names the local node for slots 0 and 1, but gossip has
-    // since moved slot 0 to `other`
-    let stale: BTreeMap<u16, String> = [(0, local.0.to_string()), (1, local.0.to_string())]
-        .into_iter()
-        .collect();
-    coord.state.write().await.slot_map.assign(0, other);
-
-    // the new raft update moves slot 1 and leaves slot 0 alone
-    let mut data = ClusterStateData {
-        slots: stale.clone(),
-        ..Default::default()
-    };
-    data.slots.insert(1, other.0.to_string());
-    coord.apply_raft_state(&data, &stale).await;
-
-    let state = coord.state.read().await;
-    assert_eq!(state.slot_map.owner(0), Some(other));
-    assert_eq!(state.slot_map.owner(1), Some(other));
-}
-
 #[test]
 fn new_rejects_port_overflow() {
     // port 65000 + offset 2000 = 67000, which overflows u16 (max 65535)
@@ -615,7 +590,6 @@ async fn failover_takeover_promotes_replica() {
         }
     }
 
-    // TAKEOVER: should succeed since no Raft is needed
     let result = replica_coord.cluster_failover(false, true).await;
     assert!(
         matches!(result, Frame::Simple(_)),
@@ -809,7 +783,6 @@ async fn vote_granted_reaches_quorum_and_promotes() {
     coord.handle_vote_granted(voter2, replica_id, 1).await;
 
     // after quorum the election entry should be promoted and the node primary
-    // (cluster_failover runs synchronously in tests since there's no Raft)
     assert!(
         !coord.is_replica().await,
         "node should be primary after winning election"

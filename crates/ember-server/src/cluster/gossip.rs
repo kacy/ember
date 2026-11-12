@@ -231,53 +231,6 @@ impl ClusterCoordinator {
                                 }
                                 state.update_health();
 
-                                // replicate the new node into raft state and update
-                                // raft membership if we are the current leader
-                                if let Some(raft) = coordinator.raft_node.get() {
-                                    let raft = Arc::clone(raft);
-                                    let raft_id = raft_id_from_node_id(id);
-                                    let data_addr_str = data_addr.to_string();
-                                    let raft_port_offset = coordinator.gossip_port_offset + 1;
-                                    let raft_addr = SocketAddr::new(
-                                        data_addr.ip(),
-                                        data_addr.port().saturating_add(raft_port_offset),
-                                    );
-                                    tokio::spawn(async move {
-                                        // add to application state machine
-                                        let _ = raft
-                                            .propose(ClusterCommand::AddNode {
-                                                node_id: id,
-                                                raft_id,
-                                                addr: data_addr_str,
-                                                is_primary: true,
-                                            })
-                                            .await;
-
-                                        // add to raft membership if we're the leader
-                                        if raft.is_leader() {
-                                            let node = BasicNode {
-                                                addr: raft_addr.to_string(),
-                                            };
-                                            let handle = raft.raft_handle();
-                                            if handle.add_learner(raft_id, node, true).await.is_ok()
-                                            {
-                                                let m = handle.metrics().borrow().clone();
-                                                let mut new_members: std::collections::BTreeSet<
-                                                    u64,
-                                                > = m
-                                                    .membership_config
-                                                    .membership()
-                                                    .voter_ids()
-                                                    .collect();
-                                                new_members.insert(raft_id);
-                                                let _ = handle
-                                                    .change_membership(new_members, false)
-                                                    .await;
-                                            }
-                                        }
-                                    });
-                                }
-
                                 true
                             }
                         }

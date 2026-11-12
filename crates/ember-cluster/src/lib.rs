@@ -11,7 +11,7 @@
 //! - **Slot management**: 16384 hash slots distributed across nodes
 //! - **Topology tracking**: Node membership and health monitoring
 //! - **Failure detection**: SWIM gossip protocol for quick detection
-//! - **Consensus**: Raft for cluster configuration changes
+//! - **Configuration**: slot ownership by config epoch, spread over gossip
 //! - **Migration**: Live slot resharding without downtime
 //!
 //! # Quick Start
@@ -35,9 +35,6 @@ mod error;
 mod gossip;
 mod message;
 mod migration;
-mod raft;
-mod raft_log;
-mod raft_transport;
 mod slots;
 mod topology;
 
@@ -52,12 +49,6 @@ pub use migration::{
     Migration, MigrationBatch, MigrationConfig, MigrationEntry, MigrationError, MigrationId,
     MigrationManager, MigrationRedirect, MigrationState,
 };
-pub use openraft::BasicNode;
-pub use raft::{
-    raft_id_from_node_id, ClusterCommand, ClusterResponse, ClusterSnapshot, ClusterStateData,
-    NodeInfo, RaftNetworkFactory, RaftNode, RaftProposalError, Storage as RaftStorage, TypeConfig,
-};
-pub use raft_log::RaftDiskError;
 pub use slots::{key_slot, SlotMap, SlotRange, SLOT_COUNT};
 pub use topology::{
     ClusterHealth, ClusterNode, ClusterState, ConfigParseError, NodeFlags, NodeId, NodeRole,

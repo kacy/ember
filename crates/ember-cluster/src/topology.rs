@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::slots::{SlotMap, SlotRange, SLOT_COUNT};
@@ -35,7 +34,7 @@ pub enum ConfigParseError {
 /// Unique identifier for a cluster node.
 ///
 /// Wraps a UUID v4 for guaranteed uniqueness across the cluster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub Uuid);
 
 impl NodeId {
@@ -47,15 +46,6 @@ impl NodeId {
     /// Creates a node ID from a UUID string.
     pub fn parse(s: &str) -> Result<Self, uuid::Error> {
         Ok(Self(Uuid::parse_str(s)?))
-    }
-
-    /// Returns the full UUID string for use as a map key.
-    ///
-    /// Note: `Display` for `NodeId` shows only the first 8 characters (for
-    /// readability in logs). This method returns the full UUID needed when
-    /// `NodeId` is used as a key in `BTreeMap<String, ...>` storage.
-    pub(crate) fn as_key(&self) -> String {
-        self.0.to_string()
     }
 }
 
@@ -73,7 +63,7 @@ impl std::fmt::Display for NodeId {
 }
 
 /// The role of a node in the cluster.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRole {
     /// Primary node that owns slots and accepts writes.
     Primary,
@@ -91,7 +81,7 @@ impl std::fmt::Display for NodeRole {
 }
 
 /// Status flags for a node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NodeFlags {
     /// Node is the local node (myself).
     pub myself: bool,
