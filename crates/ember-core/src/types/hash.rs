@@ -47,7 +47,51 @@ pub enum HashValue {
     Packed(Vec<u8>),
     /// Hash-indexed storage for large hashes. Promoted automatically
     /// when field count exceeds the threshold.
-    Full(HashMap<CompactString, Bytes>),
+    Full(FullHash),
+}
+
+/// The map form of a hash. It keeps a running count of field and value
+/// bytes, so its memory estimate is O(1).
+#[derive(Debug, Clone, Default)]
+pub struct FullHash {
+    map: HashMap<CompactString, Bytes>,
+    /// Total length of all field names and values.
+    data_bytes: usize,
+}
+
+impl FullHash {
+    fn insert(&mut self, field: CompactString, value: Bytes) -> Option<Bytes> {
+        let field_len = field.len();
+        let value_len = value.len();
+        let old = self.map.insert(field, value);
+        match &old {
+            Some(old) => self.data_bytes = self.data_bytes - old.len() + value_len,
+            None => self.data_bytes += field_len + value_len,
+        }
+        old
+    }
+
+    fn remove(&mut self, field: &str) -> Option<Bytes> {
+        let old = self.map.remove(field)?;
+        self.data_bytes -= field.len() + old.len();
+        Some(old)
+    }
+
+    fn memory_usage(&self) -> usize {
+        crate::memory::HASHMAP_BASE_OVERHEAD
+            + self.map.len() * crate::memory::HASHMAP_ENTRY_OVERHEAD
+            + self.data_bytes
+    }
+}
+
+impl FromIterator<(CompactString, Bytes)> for FullHash {
+    fn from_iter<I: IntoIterator<Item = (CompactString, Bytes)>>(iter: I) -> Self {
+        let mut full = FullHash::default();
+        for (field, value) in iter {
+            full.insert(field, value);
+        }
+        full
+    }
 }
 
 impl Default for HashValue {
@@ -147,7 +191,7 @@ impl HashValue {
                 }
                 None
             }
-            HashValue::Full(map) => map.get(field).map(|b| b.as_ref()),
+            HashValue::Full(full) => full.map.get(field).map(|b| b.as_ref()),
         }
     }
 
@@ -178,7 +222,7 @@ impl HashValue {
     pub fn contains_key(&self, field: &str) -> bool {
         match self {
             HashValue::Packed(buf) => PackedIter::new(buf).any(|(name, _)| name == field),
-            HashValue::Full(map) => map.contains_key(field),
+            HashValue::Full(full) => full.map.contains_key(field),
         }
     }
 
@@ -186,7 +230,16 @@ impl HashValue {
     pub fn len(&self) -> usize {
         match self {
             HashValue::Packed(buf) => read_u16(buf, 0).unwrap_or(0) as usize,
-            HashValue::Full(map) => map.len(),
+            HashValue::Full(full) => full.map.len(),
+        }
+    }
+
+    /// Estimated memory used by the hash, excluding the keyspace entry.
+    pub fn memory_usage(&self) -> usize {
+        match self {
+            // Vec struct (24 bytes) plus the buffer
+            HashValue::Packed(buf) => 24 + buf.len(),
+            HashValue::Full(full) => full.memory_usage(),
         }
     }
 
@@ -199,7 +252,7 @@ impl HashValue {
     pub fn iter(&self) -> HashIter<'_> {
         match self {
             HashValue::Packed(buf) => HashIter::Packed(PackedIter::new(buf)),
-            HashValue::Full(map) => HashIter::Full(map.iter()),
+            HashValue::Full(full) => HashIter::Full(full.map.iter()),
         }
     }
 }
@@ -378,12 +431,10 @@ fn rebuild_without(buf: &mut Vec<u8>, field_start: usize, field_end: usize) {
 }
 
 /// Drains a packed buffer into a HashMap for promotion.
-fn drain_packed_to_map(buf: &[u8]) -> HashMap<CompactString, Bytes> {
-    let mut map = HashMap::new();
-    for (name, val) in PackedIter::new(buf) {
-        map.insert(CompactString::from(name), Bytes::copy_from_slice(val));
-    }
-    map
+fn drain_packed_to_map(buf: &[u8]) -> FullHash {
+    PackedIter::new(buf)
+        .map(|(name, val)| (CompactString::from(name), Bytes::copy_from_slice(val)))
+        .collect()
 }
 
 #[cfg(test)]

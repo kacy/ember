@@ -16,6 +16,10 @@ fn resolve_index(index: i64, len: usize) -> Option<usize> {
     }
 }
 
+fn empty_list() -> Value {
+    Value::List(ListValue::default())
+}
+
 impl Keyspace {
     /// Pushes one or more values to the head (left) of a list.
     ///
@@ -153,46 +157,17 @@ impl Keyspace {
     /// doesn't exist, the index is out of range, or the key holds the
     /// wrong type.
     pub fn lset(&mut self, key: &str, index: i64, value: Bytes) -> Result<(), LsetError> {
-        self.remove_if_expired(key);
-
-        match self.entries.get(key) {
-            None => return Err(LsetError::NoSuchKey),
-            Some(e) if !matches!(e.value, Value::List(_)) => return Err(LsetError::WrongType),
-            _ => {}
+        let set = self
+            .edit(key, Value::as_list_mut, |list| {
+                let done = resolve_index(index, list.len()).is_some_and(|i| list.set(i, value));
+                (done, done)
+            })
+            .map_err(|_| LsetError::WrongType)?;
+        match set {
+            None => Err(LsetError::NoSuchKey),
+            Some(false) => Err(LsetError::IndexOutOfRange),
+            Some(true) => Ok(()),
         }
-
-        // mutate in a scoped block so entry borrow is released for memory updates
-        let (old_len, new_len) = {
-            let entry = self.entries.get_mut(key).expect("verified above");
-            let Value::List(ref mut deque) = entry.value else {
-                unreachable!("type checked");
-            };
-            let pos = resolve_index(index, deque.len()).ok_or(LsetError::IndexOutOfRange)?;
-            let elem = deque.get_mut(pos).ok_or(LsetError::IndexOutOfRange)?;
-            let old_len = elem.len();
-            let new_len = value.len();
-            *elem = value;
-            (old_len, new_len)
-        };
-
-        let delta = new_len as isize - old_len as isize;
-        {
-            let entry = self.entries.get_mut(key).expect("key confirmed to exist");
-            entry.touch(self.track_access);
-            if delta > 0 {
-                entry.grow_value_size(delta as usize);
-            } else if delta < 0 {
-                entry.shrink_value_size(delta.unsigned_abs());
-            }
-        }
-        self.bump_version(key);
-        if delta > 0 {
-            self.memory.grow_by(delta as usize);
-        } else if delta < 0 {
-            self.memory.shrink_by((-delta) as usize);
-        }
-
-        Ok(())
     }
 
     /// Trims a list to keep only elements in the range [start, stop].
@@ -200,61 +175,17 @@ impl Keyspace {
     /// Supports negative indices. If the range is empty or inverted, the
     /// key is deleted. Missing keys are a no-op.
     pub fn ltrim(&mut self, key: &str, start: i64, stop: i64) -> Result<(), WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(());
-        }
-
-        let (len, old_entry_size) = match self.entries.get(key) {
-            None => return Ok(()),
-            Some(e) => match &e.value {
-                Value::List(d) => (d.len(), e.entry_size(key)),
-                _ => return Err(WrongType),
-            },
-        };
-
-        let (s, e) = normalize_range(start, stop, len as i64);
-
-        let (is_empty, new_value_size) = {
-            let entry = self.entries.get_mut(key).expect("verified above");
-            {
-                let Value::List(ref mut deque) = entry.value else {
-                    unreachable!("type checked");
-                };
-                if s > e || s >= len as i64 {
-                    deque.clear();
-                } else {
-                    let s_usize = s as usize;
-                    let e_usize = (e as usize).min(len - 1);
-                    deque.truncate(e_usize + 1);
-                    deque.drain(..s_usize);
-                }
-            }
-
-            let empty = matches!(&entry.value, Value::List(d) if d.is_empty());
-            entry.touch(self.track_access);
-            let nvs = if !empty {
-                let size = memory::value_size(&entry.value);
-                entry.set_value_size(size);
-                size
+        self.edit(key, Value::as_list_mut, |list| {
+            let len = list.len();
+            let (s, e) = normalize_range(start, stop, len as i64);
+            let (s, e) = if s > e {
+                (1, 0)
             } else {
-                0
+                (s as usize, e as usize)
             };
-
-            (empty, nvs)
-        };
-
-        self.bump_version(key);
-
-        if is_empty {
-            if let Some(removed) = self.entries.swap_remove(key) {
-                self.untrack_expiry(key, &removed);
-            }
-            self.memory.remove_with_size(old_entry_size);
-        } else {
-            let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
-            self.memory.adjust(old_entry_size, new_entry_size);
-        }
-
+            list.keep_range(s, e);
+            ((), list.len() != len)
+        })?;
         Ok(())
     }
 
@@ -269,59 +200,30 @@ impl Keyspace {
         pivot: &[u8],
         value: Bytes,
     ) -> Result<i64, WriteError> {
-        self.remove_if_expired(key);
-
-        match self.entries.get(key) {
+        // check for the pivot first, so a list that lacks it costs no
+        // memory reservation
+        let found = self.edit(key, Value::as_list_mut, |list| {
+            (list.iter().any(|e| e.as_ref() == pivot), false)
+        })?;
+        match found {
             None => return Ok(0),
-            Some(e) if !matches!(e.value, Value::List(_)) => {
-                return Err(WriteError::WrongType);
-            }
-            _ => {}
+            Some(false) => return Ok(-1),
+            Some(true) => {}
         }
-
-        // find pivot position
-        let pivot_pos = {
-            let entry = self.entries.get(key).expect("exists");
-            match &entry.value {
-                Value::List(deque) => deque.iter().position(|e| e.as_ref() == pivot),
-                _ => unreachable!("type checked"),
-            }
-        };
-
-        let pivot_pos = match pivot_pos {
-            Some(p) => p,
-            None => return Ok(-1),
-        };
-
-        let element_cost = memory::VECDEQUE_ELEMENT_OVERHEAD + value.len();
-        if !self.enforce_memory_limit(key, element_cost) {
-            return Err(WriteError::OutOfMemory);
-        }
-
-        let new_len = {
-            let entry = match self.entries.get_mut(key) {
-                Some(e) => e,
-                None => return Ok(0), // evicted during memory enforcement
-            };
-            let Value::List(ref mut deque) = entry.value else {
-                unreachable!("type checked");
-            };
-
-            let insert_pos = if before { pivot_pos } else { pivot_pos + 1 };
-            if insert_pos > deque.len() {
-                return Ok(-1); // safety: pivot position no longer valid
-            }
-
-            deque.insert(insert_pos, value);
-            let len = deque.len() as i64;
-            entry.touch(self.track_access);
-            entry.grow_value_size(element_cost);
-            len
-        };
-
-        self.bump_version(key);
-        self.memory.grow_by(element_cost);
-        Ok(new_len)
+        let increase = memory::VECDEQUE_ELEMENT_OVERHEAD + value.len();
+        self.edit_or_create(
+            key,
+            Value::as_list_mut,
+            empty_list,
+            increase,
+            |list| match list.iter().position(|e| e.as_ref() == pivot) {
+                Some(pos) => {
+                    list.insert(if before { pos } else { pos + 1 }, value);
+                    (list.len() as i64, true)
+                }
+                None => (-1, false),
+            },
+        )
     }
 
     /// Removes elements equal to `value` from the list.
@@ -332,88 +234,32 @@ impl Keyspace {
     ///
     /// Returns the number of elements removed.
     pub fn lrem(&mut self, key: &str, count: i64, value: &[u8]) -> Result<usize, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(0);
-        }
-
-        match self.entries.get(key) {
-            None => return Ok(0),
-            Some(e) if !matches!(e.value, Value::List(_)) => return Err(WrongType),
-            _ => {}
-        }
-
-        let old_entry_size = self.entries.get(key).expect("exists").entry_size(key);
-
-        let (removed_count, removed_bytes, is_empty) = {
-            let entry = self.entries.get_mut(key).expect("exists");
-            let Value::List(ref mut deque) = entry.value else {
-                unreachable!("type checked");
-            };
-
+        let removed = self.edit(key, Value::as_list_mut, |list| {
             let limit = if count == 0 {
                 usize::MAX
             } else {
                 count.unsigned_abs() as usize
             };
-            let mut indices: Vec<usize> = Vec::new();
-
-            if count >= 0 {
-                for (i, elem) in deque.iter().enumerate() {
-                    if elem.as_ref() == value {
-                        indices.push(i);
-                        if indices.len() >= limit {
-                            break;
-                        }
-                    }
-                }
+            let matches = |(_, e): &(usize, &Bytes)| e.as_ref() == value;
+            let mut indices: Vec<usize> = if count >= 0 {
+                list.iter()
+                    .enumerate()
+                    .filter(matches)
+                    .map(|(i, _)| i)
+                    .take(limit)
+                    .collect()
             } else {
-                for (i, elem) in deque.iter().enumerate().rev() {
-                    if elem.as_ref() == value {
-                        indices.push(i);
-                        if indices.len() >= limit {
-                            break;
-                        }
-                    }
-                }
-            }
-
-            let n = indices.len();
-            if n == 0 {
-                return Ok(0);
-            }
-
-            // remove from highest index first to preserve lower indices
+                let found = list.iter().enumerate().rev().filter(matches);
+                found.map(|(i, _)| i).take(limit).collect()
+            };
+            // remove from the highest index down so lower indices stay valid
             indices.sort_unstable_by(|a, b| b.cmp(a));
-
-            let mut bytes = 0usize;
-            for idx in &indices {
-                if let Some(elem) = deque.remove(*idx) {
-                    bytes += elem.len() + memory::VECDEQUE_ELEMENT_OVERHEAD;
-                }
+            for &i in &indices {
+                list.remove(i);
             }
-
-            let empty = deque.is_empty();
-            entry.touch(self.track_access);
-
-            if !empty {
-                entry.shrink_value_size(bytes);
-            }
-
-            (n, bytes, empty)
-        };
-
-        self.bump_version(key);
-
-        if is_empty {
-            if let Some(removed) = self.entries.swap_remove(key) {
-                self.untrack_expiry(key, &removed);
-            }
-            self.memory.remove_with_size(old_entry_size);
-        } else {
-            self.memory.shrink_by(removed_bytes);
-        }
-
-        Ok(removed_count)
+            (indices.len(), !indices.is_empty())
+        })?;
+        Ok(removed.unwrap_or(0))
     }
 
     /// Finds the positions of elements matching `element` in the list.
@@ -490,49 +336,20 @@ impl Keyspace {
         values: &[Bytes],
         left: bool,
     ) -> Result<usize, WriteError> {
-        self.remove_if_expired(key);
-
-        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::List(_)))?;
-
-        let element_increase: usize = values
+        let increase = values
             .iter()
             .map(|v| memory::VECDEQUE_ELEMENT_OVERHEAD + v.len())
             .sum();
-        self.reserve_memory(
-            is_new,
-            key,
-            memory::VECDEQUE_BASE_OVERHEAD,
-            element_increase,
-        )?;
-
-        if is_new {
-            self.insert_empty(key, Value::List(VecDeque::new()));
-        }
-
-        // safe: key was just inserted or confirmed to exist
-        let len = {
-            let entry = self.entries.get_mut(key).unwrap();
-            let Value::List(ref mut deque) = entry.value else {
-                unreachable!("type verified by ensure_collection_type");
-            };
-            for val in values {
+        self.edit_or_create(key, Value::as_list_mut, empty_list, increase, |list| {
+            for value in values {
                 if left {
-                    deque.push_front(val.clone());
+                    list.push_front(value.clone());
                 } else {
-                    deque.push_back(val.clone());
+                    list.push_back(value.clone());
                 }
             }
-            let len = deque.len();
-            entry.touch(self.track_access);
-            entry.grow_value_size(element_increase);
-            len
-        };
-
-        self.bump_version(key);
-        // apply the known delta — no need to rescan the entire list
-        self.memory.grow_by(element_increase);
-
-        Ok(len)
+            (list.len(), !values.is_empty())
+        })
     }
 
     /// Atomically pops a value from `source` and pushes it to `destination`.
@@ -581,47 +398,16 @@ impl Keyspace {
 
     /// Internal pop implementation shared by lpop/rpop.
     pub(super) fn list_pop(&mut self, key: &str, left: bool) -> Result<Option<Bytes>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(None);
-        }
-
-        let (popped, is_empty) = {
-            let Some(entry) = self.entries.get_mut(key) else {
-                return Ok(None);
-            };
-            if !matches!(entry.value, Value::List(_)) {
-                return Err(WrongType);
-            }
-
-            let Value::List(ref mut deque) = entry.value else {
-                // checked above
-                return Err(WrongType);
-            };
+        let popped = self.edit(key, Value::as_list_mut, |list| {
             let popped = if left {
-                deque.pop_front()
+                list.pop_front()
             } else {
-                deque.pop_back()
+                list.pop_back()
             };
-            entry.touch(self.track_access);
-
-            let is_empty = matches!(&entry.value, Value::List(d) if d.is_empty());
-            (popped, is_empty)
-        };
-
-        self.bump_version(key);
-        if let Some(ref elem) = popped {
-            let element_size = elem.len() + memory::VECDEQUE_ELEMENT_OVERHEAD;
-            let old_size = if is_empty {
-                // the list held exactly this one element — compute exact old size
-                // from constants rather than scanning
-                key.len() + memory::ENTRY_OVERHEAD + memory::VECDEQUE_BASE_OVERHEAD + element_size
-            } else {
-                0 // unused in the non-empty branch of cleanup_after_remove
-            };
-            self.cleanup_after_remove(key, old_size, is_empty, element_size);
-        }
-
-        Ok(popped)
+            let changed = popped.is_some();
+            (popped, changed)
+        })?;
+        Ok(popped.flatten())
     }
 }
 

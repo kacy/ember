@@ -72,9 +72,7 @@ impl Keyspace {
         };
         entry.touch(self.track_access);
 
-        let new_value_size = memory::value_size(&entry.value);
-        entry.set_value_size(new_value_size);
-        let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
+        let new_entry_size = entry.entry_size(key);
         self.memory.adjust(old_entry_size, new_entry_size);
         self.bump_version(key);
 
@@ -175,30 +173,18 @@ impl Keyspace {
                 None => return Err(VectorWriteError::IndexError("entry missing".into())),
             };
 
+            let old_entry_size = entry.entry_size(key);
             match entry.value {
                 Value::Vector(ref mut vs) => {
-                    let per_elem = vs.per_element_bytes();
-
                     // use parallel HNSW construction for large batches
                     let result = vs
                         .add_batch_parallel(&entries)
                         .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
 
-                    // compute memory delta from what was actually added
-                    let bytes_added = if result.added_count > 0 {
-                        // sum up name lengths of new elements. since we don't know
-                        // exactly which were new vs updates, estimate using the
-                        // per-element cost * added_count + average name length
-                        let total_name_bytes: usize = entries.iter().map(|(e, _)| e.len()).sum();
-                        let avg_name = total_name_bytes / entries.len();
-                        result.added_count.saturating_mul(per_elem + avg_name)
-                    } else {
-                        0
-                    };
-
                     entry.touch(self.track_access);
-                    entry.grow_value_size(bytes_added);
-                    self.memory.grow_by(bytes_added);
+                    let new_entry_size = entry.entry_size(key);
+                    let bytes_added = new_entry_size.saturating_sub(old_entry_size);
+                    self.memory.adjust(old_entry_size, new_entry_size);
 
                     if let Some(err) = result.error {
                         // partial success — track what was applied before returning error
@@ -283,9 +269,7 @@ impl Keyspace {
         if removed {
             entry.touch(self.track_access);
             let is_empty = matches!(entry.value, Value::Vector(ref vs) if vs.is_empty());
-            let new_vs = memory::value_size(&entry.value);
-            entry.set_value_size(new_vs);
-            let new_size = key.len() + new_vs + memory::ENTRY_OVERHEAD;
+            let new_size = entry.entry_size(key);
             self.memory.adjust(old_size, new_size);
             self.bump_version(key);
 
