@@ -78,6 +78,46 @@ async fn set_with_xx() {
     assert_eq!(c.get_bulk(&["GET", "key"]).await, Some("updated".into()));
 }
 
+/// Many clients racing on the same keys: exactly one SET NX wins each
+/// key, and no INCR is lost. Each command must read and write its key as
+/// one step.
+#[tokio::test]
+async fn set_nx_and_incr_are_atomic_across_clients() {
+    const CLIENTS: usize = 20;
+    const KEYS: usize = 100;
+    let server = TestServer::start();
+
+    let mut tasks = Vec::new();
+    for _ in 0..CLIENTS {
+        let mut c = server.connect().await;
+        tasks.push(tokio::spawn(async move {
+            let mut won = 0;
+            for k in 0..KEYS {
+                let key = format!("lock:{k}");
+                if matches!(c.cmd(&["SET", &key, "x", "NX"]).await, Frame::Simple(_)) {
+                    won += 1;
+                }
+                c.get_int(&["INCR", "counter"]).await;
+            }
+            won
+        }));
+    }
+    let mut winners = 0;
+    for task in tasks {
+        winners += task.await.unwrap();
+    }
+
+    let mut c = server.connect().await;
+    assert_eq!(
+        winners, KEYS,
+        "each key should have exactly one SET NX winner"
+    );
+    assert_eq!(
+        c.get_bulk(&["GET", "counter"]).await,
+        Some((CLIENTS * KEYS).to_string())
+    );
+}
+
 #[tokio::test]
 async fn set_with_ex() {
     let server = TestServer::start();
