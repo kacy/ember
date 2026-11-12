@@ -209,12 +209,12 @@ when bringing up a new cluster:
 
 **split-brain**
 
-if a network partition separates nodes, the minority partition will stop accepting writes (raft requires a majority quorum for configuration changes). this is correct behavior — it prevents conflicting writes.
+if a network partition separates nodes, each side keeps its own view of the cluster. a replica is promoted only when a majority of primaries vote for it, so the minority side cannot elect new primaries. a primary cut off on the minority side still accepts writes for its slots until the partition heals. when it rejoins and a higher-epoch claim takes its slots, the writes it accepted during the partition can be lost.
 
 to recover:
 1. restore network connectivity between partitions
-2. the raft leader will re-establish authority once it can communicate with a majority
-3. `CLUSTER INFO` will show `cluster_state:ok` when quorum is restored
+2. check `CLUSTER NODES` on each node until every node shows the same owner for each slot
+3. `CLUSTER INFO` will show `cluster_state:ok` when every slot has a live owner
 
 if nodes are permanently lost and quorum cannot be reached organically, you will need to manually reconfigure the cluster. do not do this lightly — it can result in data inconsistency.
 

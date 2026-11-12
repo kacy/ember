@@ -75,9 +75,8 @@
 # enabled = false                 # enable cluster mode
 # bootstrap = false               # bootstrap as single-node cluster owning all slots
 # port-offset = 10000             # gossip bus port = data port + offset
-# raft-port-offset = 10001        # raft port = data port + offset
 # node-timeout-ms = 5000          # failure detection timeout
-# auth-pass = ""                  # HMAC-SHA256 shared secret for gossip, raft and replication (required off loopback)
+# auth-pass = ""                  # HMAC-SHA256 shared secret for gossip and replication (required off loopback)
 
 # [cluster.gossip]
 # protocol-period-ms = 1000       # SWIM protocol period

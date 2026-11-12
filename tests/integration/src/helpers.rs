@@ -73,7 +73,7 @@ impl TestServer {
     pub fn start_with(opts: ServerOptions) -> Self {
         let binary = server_binary();
 
-        // cluster servers need 3 consecutive ports (data, gossip, raft).
+        // cluster servers need consecutive ports for data and gossip.
         // use deterministic allocation to avoid races and overlap.
         let port = if opts.cluster_enabled {
             allocate_ports(3)
@@ -102,11 +102,10 @@ impl TestServer {
 
         let stderr_path = if opts.cluster_enabled {
             cmd.arg("--cluster-enabled");
-            // use small offsets so gossip and raft ports stay in valid u16 range.
-            // random test ports are often >55000, and the defaults (+10000/+10001)
+            // use a small offset so the gossip port stays in valid u16 range.
+            // random test ports are often >55000, and the default offset (+10000)
             // would overflow past 65535.
             cmd.arg("--cluster-port-offset").arg("1");
-            cmd.arg("--cluster-raft-port-offset").arg("2");
             // capture stderr so we can diagnose crashes on CI
             cmd.env("RUST_LOG", "info");
             let path = std::env::temp_dir().join(format!("ember-test-{port}.log"));
@@ -226,8 +225,8 @@ impl TestServer {
             stderr_path,
         };
 
-        // for bootstrapped cluster nodes, wait until raft reconciliation
-        // has applied and the cluster reports all 16384 slots assigned
+        // for bootstrapped cluster nodes, wait until the cluster reports all
+        // 16384 slots assigned
         if opts.cluster_bootstrap {
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
