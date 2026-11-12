@@ -747,12 +747,44 @@ async fn migrate_copy_keeps_the_local_key() {
     assert_eq!(target.get_bulk(&["GET", &key]).await, Some("v".into()));
 }
 
+/// A primary cut off from most of the primaries stops taking writes, so
+/// the majority can replace it without writes landing on both sides.
+#[tokio::test]
+async fn a_primary_cut_off_from_the_majority_rejects_writes() {
+    use std::time::{Duration, Instant};
+
+    let mut cluster = TestCluster::start();
+    cluster.init().await;
+    let (tag, _) = tag_on_node_0(&cluster).await;
+    let key = format!("{tag}k");
+    let mut c = cluster.connect(0).await;
+    c.ok(&["SET", &key, "before"]).await;
+
+    cluster.nodes[1].kill();
+    cluster.nodes[2].kill();
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match c.cmd(&["SET", &key, "after"]).await {
+            Frame::Error(e) if e.starts_with("CLUSTERDOWN") => break,
+            reply => assert!(
+                Instant::now() <= deadline,
+                "writes still accepted after 30s: {reply:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    // reads still work
+    assert!(c.get_bulk(&["GET", &key]).await.is_some());
+}
+
 // -- automatic failover --
 
-/// End-to-end automatic failover: a 3-node cluster where node 0 owns all
-/// slots, node 2 replicates it, and node 1 is a slotless primary whose vote
-/// forms the election quorum. Killing node 0 must promote node 2 and restore
-/// write availability.
+/// End-to-end automatic failover: a 4-node cluster where one primary owns
+/// all slots, a replica follows it, and two slotless primaries vote. With
+/// the failed primary there are 3 primaries, so the quorum is 2 votes.
+/// Killing the primary must promote the replica and restore write
+/// availability.
 ///
 /// Generously timed: failure confirmation + election + promotion involve
 /// gossip rounds, so every step polls under a deadline instead of sleeping
@@ -772,6 +804,7 @@ async fn cluster_automatic_failover_promotes_replica() {
         ..opts()
     });
     let voter = TestServer::start_with(opts());
+    let voter2 = TestServer::start_with(opts());
     let replica = TestServer::start_with(opts());
 
     let mut c0 = primary.connect().await;
@@ -788,11 +821,16 @@ async fn cluster_automatic_failover_promotes_replica() {
     // replica needs the voter in its primary count for the election quorum,
     // and the voter must know the candidate to grant it a vote.
     let mut cv = voter.connect().await;
-    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &voter.port.to_string()])
-        .await;
-    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
-        .await;
-    cv.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+    let mut cv2 = voter2.connect().await;
+    for port in [voter.port, voter2.port, replica.port] {
+        c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &port.to_string()])
+            .await;
+    }
+    for port in [voter2.port, replica.port] {
+        cv.ok(&["CLUSTER", "MEET", "127.0.0.1", &port.to_string()])
+            .await;
+    }
+    cv2.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
         .await;
 
     // wait until gossip has delivered the primary's identity to the
@@ -810,7 +848,7 @@ async fn cluster_automatic_failover_promotes_replica() {
     }
 
     // wait until gossip has fully converged from the replica's point of
-    // view: it must know all 3 nodes and the primary's ownership of all
+    // view: it must know all 4 nodes and the primary's ownership of all
     // 16384 slots. killing the primary earlier leaves the replica without
     // a slot table to inherit and without the voter as a failure-detection
     // relay, so no election would ever start.
@@ -819,7 +857,7 @@ async fn cluster_automatic_failover_promotes_replica() {
         let resp = c2.cmd(&["CLUSTER", "INFO"]).await;
         if let Frame::Bulk(ref data) = resp {
             let text = String::from_utf8_lossy(data);
-            if text.contains("cluster_known_nodes:3")
+            if text.contains("cluster_known_nodes:4")
                 && text.contains("cluster_slots_assigned:16384")
             {
                 break;

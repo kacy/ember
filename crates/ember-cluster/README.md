@@ -10,7 +10,7 @@ distributed coordination for [ember](https://github.com/kacy/ember). provides cl
 - **config epochs** — slot claims spread over gossip, and the higher epoch wins a conflict
 - **live migration** — slot resharding without downtime, MOVED/ASK redirects
 - **authentication** — HMAC-SHA256 signing and constant-time verification for cluster transport messages
-- **automatic failover** — replica election state machine; a replica needs votes from a majority of primaries, then claims the slots at a new epoch
+- **automatic failover** — replica election state machine; a replica needs votes from a majority of all primaries, the failed one included, then claims the slots at a new epoch
 
 ## modules
 

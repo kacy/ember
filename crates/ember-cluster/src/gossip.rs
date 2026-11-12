@@ -160,6 +160,9 @@ pub struct GossipEngine {
     local_slots: Vec<SlotRange>,
     /// The local node's config epoch, sent with its slot claims.
     local_config_epoch: u64,
+    /// The primary the local node replicates, if it is a replica. Sent in
+    /// Welcome replies so a joining node learns this node's role.
+    local_replicates: Option<NodeId>,
     /// Active PingReq relays waiting for an Ack from the target.
     relay_pending: HashMap<u64, RelayEntry>,
 }
@@ -228,6 +231,7 @@ impl GossipEngine {
             pending_events: Vec::new(),
             local_slots: Vec::new(),
             local_config_epoch: 0,
+            local_replicates: None,
             relay_pending: HashMap::new(),
         }
     }
@@ -235,6 +239,11 @@ impl GossipEngine {
     /// Returns the local node ID.
     pub fn local_id(&self) -> NodeId {
         self.local_id
+    }
+
+    /// How long a node stays unanswered before it is declared dead.
+    pub fn failure_timeout(&self) -> Duration {
+        self.config.protocol_period * self.config.suspicion_mult
     }
 
     /// Returns the local node's incarnation number.
@@ -258,6 +267,12 @@ impl GossipEngine {
     /// to a lower incarnation, which would make it lose suspicion refutations.
     pub fn set_incarnation(&mut self, n: u64) {
         self.incarnation = n;
+    }
+
+    /// Sets the local node's role for Welcome replies: the primary it
+    /// replicates, or `None` for a primary.
+    pub fn set_local_role(&mut self, replicates: Option<NodeId>) {
+        self.local_replicates = replicates;
     }
 
     /// Returns all known members.
@@ -322,6 +337,9 @@ impl GossipEngine {
         is_primary: bool,
         replicates: Option<NodeId>,
     ) {
+        if node == self.local_id {
+            self.local_replicates = replicates;
+        }
         self.queue_update(NodeUpdate::RoleChanged {
             node,
             incarnation,
@@ -537,17 +555,20 @@ impl GossipEngine {
                         addr: m.addr,
                         incarnation: m.incarnation,
                         is_primary: m.is_primary,
+                        replicates: m.replicates,
                         config_epoch: m.config_epoch,
                         slots: m.slots.clone(),
                     })
                     .collect();
 
-                // include our own slot info so the joiner learns the full map
+                // include ourselves so the joiner learns the full map and
+                // our role
                 members.push(MemberInfo {
                     id: self.local_id,
                     addr: self.local_addr,
                     incarnation: self.incarnation,
-                    is_primary: true,
+                    is_primary: self.local_replicates.is_none(),
+                    replicates: self.local_replicates,
                     config_epoch: self.local_config_epoch,
                     slots: self.local_slots.clone(),
                 });
@@ -567,17 +588,8 @@ impl GossipEngine {
                     sender,
                     members.len()
                 );
-                let sender_is_new = !self.members.contains_key(&sender);
-                self.ensure_member(sender, from);
-                if sender_is_new {
-                    let (sender_slots, epoch) = self
-                        .members
-                        .get(&sender)
-                        .map(|m| (m.slots.clone(), m.config_epoch))
-                        .unwrap_or_default();
-                    self.emit(GossipEvent::MemberJoined(sender, from, sender_slots, epoch));
-                }
-
+                // the sender lists itself among the members, with its role
+                // and slots
                 for member in members {
                     if member.id == self.local_id {
                         continue;
@@ -593,7 +605,7 @@ impl GossipEngine {
                             state: MemberStatus::Alive,
                             state_change: Instant::now(),
                             is_primary: member.is_primary,
-                            replicates: None,
+                            replicates: member.replicates,
                             slots: slots.clone(),
                             config_epoch: member.config_epoch,
                         });
@@ -603,7 +615,21 @@ impl GossipEngine {
                             slots,
                             member.config_epoch,
                         ));
+                        // a joining node starts out as a primary; tell the
+                        // cluster state about a replica, or it counts it
+                        // among the primaries that vote in elections
+                        if !member.is_primary {
+                            self.emit(GossipEvent::RoleChanged(
+                                member.id,
+                                false,
+                                member.replicates,
+                            ));
+                        }
                     }
+                }
+                if !self.members.contains_key(&sender) {
+                    self.ensure_member(sender, from);
+                    self.emit(GossipEvent::MemberJoined(sender, from, Vec::new(), 0));
                 }
                 vec![]
             }
@@ -856,8 +882,9 @@ impl GossipEngine {
 
                 NodeUpdate::Dead { node, incarnation } => {
                     if *node == self.local_id {
-                        // Refute death claim
-                        self.incarnation = incarnation.saturating_add(1);
+                        // refute the death claim with an incarnation newer
+                        // than both the claim's and our own, never older
+                        self.incarnation = self.incarnation.max(incarnation.saturating_add(1));
                         self.queue_update(NodeUpdate::Alive {
                             node: self.local_id,
                             addr: self.local_addr,
@@ -1554,6 +1581,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn welcome_reports_the_senders_replica_role() {
+        let (tx, _rx) = mpsc::channel(16);
+        let local = NodeId::new();
+        let mut engine = GossipEngine::new(local, test_addr(6379), GossipConfig::default(), tx);
+        let primary = NodeId::new();
+        engine.queue_role_update(local, 1, false, Some(primary));
+
+        let msg = GossipMessage::Join {
+            sender: NodeId::new(),
+            sender_addr: test_addr(6380),
+        };
+        let responses = engine.handle_message(msg, test_addr(6380));
+        let GossipMessage::Welcome { members, .. } = &responses[0].1 else {
+            panic!("expected Welcome");
+        };
+        let me = members.iter().find(|m| m.id == local).unwrap();
+        assert!(!me.is_primary);
+        assert_eq!(me.replicates, Some(primary));
+    }
+
+    #[tokio::test]
+    async fn a_joiner_learns_replica_roles_from_the_welcome() {
+        let (tx, mut rx) = mpsc::channel(16);
+        let mut engine =
+            GossipEngine::new(NodeId::new(), test_addr(6379), GossipConfig::default(), tx);
+        let (sender, primary) = (NodeId::new(), NodeId::new());
+        let msg = GossipMessage::Welcome {
+            sender,
+            members: vec![MemberInfo {
+                id: sender,
+                addr: test_addr(6380),
+                incarnation: 1,
+                is_primary: false,
+                replicates: Some(primary),
+                config_epoch: 0,
+                slots: vec![],
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380));
+        assert_eq!(engine.members[&sender].replicates, Some(primary));
+
+        engine.take_events().send().await;
+        let mut role = None;
+        while let Ok(event) = rx.try_recv() {
+            if let GossipEvent::RoleChanged(id, is_primary, replicates) = event {
+                role = Some((id, is_primary, replicates));
+            }
+        }
+        assert_eq!(role, Some((sender, false, Some(primary))));
+    }
+
+    #[tokio::test]
+    async fn refuting_a_stale_death_claim_never_lowers_the_incarnation() {
+        let (tx, _rx) = mpsc::channel(16);
+        let local = NodeId::new();
+        let mut engine = GossipEngine::new(local, test_addr(6379), GossipConfig::default(), tx);
+        engine.set_incarnation(10);
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![NodeUpdate::Dead {
+                node: local,
+                incarnation: 3,
+            }],
+        };
+        engine.handle_message(msg, test_addr(6380));
+        assert!(engine.local_incarnation() >= 10);
+    }
+
+    #[tokio::test]
     async fn welcome_propagates_member_slots() {
         let (tx, mut rx) = mpsc::channel(16);
         let mut engine =
@@ -1570,6 +1667,7 @@ mod tests {
                 addr: test_addr(6381),
                 incarnation: 1,
                 is_primary: true,
+                replicates: None,
                 config_epoch: 1,
                 slots: slots.clone(),
             }],

@@ -244,6 +244,8 @@ pub(super) async fn prepare_command(
 /// error to send:
 /// - READONLY for a write while failover has paused writes, or MOVED to the
 ///   primary (READONLY if it is unknown) for a write on a replica
+/// - CLUSTERDOWN for a write on a primary that can't reach a majority of
+///   the primaries
 /// - CROSSSLOT when the command's keys hash to different slots
 /// - MOVED, ASK or CLUSTERDOWN when this node does not serve the key's slot
 /// - while the slot migrates out: ASK when none of the keys are still here,
@@ -277,6 +279,11 @@ pub(super) async fn cluster_slot_check(
             }
             return Some(Frame::Error(
                 "READONLY You can't write against a read only replica.".into(),
+            ));
+        }
+        if !cluster.reaches_majority_of_primaries().await {
+            return Some(Frame::Error(
+                "CLUSTERDOWN this primary can't reach a majority of the primaries".into(),
             ));
         }
     }

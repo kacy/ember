@@ -9,7 +9,7 @@
 //! nodes claim a slot, the higher epoch wins. Failover elections run over
 //! gossip as well, and a promoted replica claims its slots at a new epoch.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,6 +77,10 @@ pub struct ClusterCoordinator {
     writes_paused: std::sync::atomic::AtomicBool,
     /// in-progress automatic failover election (we are the candidate).
     election: Mutex<Option<ElectionAttempt>>,
+    /// the replica this node last voted for to replace each failed
+    /// primary, and when. it votes for one replica per failed primary at a
+    /// time, so two replicas of the same primary can't both win.
+    failover_votes: Mutex<HashMap<NodeId, (NodeId, std::time::Instant)>>,
     /// optional shared secret for authenticating cluster transport messages.
     secret: Option<Arc<ClusterSecret>>,
     /// the task pulling data from our primary, while this node is a replica
@@ -158,6 +162,7 @@ impl ClusterCoordinator {
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            failover_votes: Mutex::new(HashMap::new()),
             save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
             secret,
@@ -204,9 +209,10 @@ impl ClusterCoordinator {
             }
         }
 
-        // set local slots in gossip engine
+        // set local slots and role in gossip engine
         let local_slots = state.slot_map.slots_for_node(local_id);
         gossip.set_local_slots(local_slots, state.local_epoch());
+        gossip.set_local_role(state.nodes.get(&local_id).and_then(|n| n.replicates));
 
         let coordinator = Self {
             state: RwLock::new(state),
@@ -220,6 +226,7 @@ impl ClusterCoordinator {
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            failover_votes: Mutex::new(HashMap::new()),
             save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
             secret,

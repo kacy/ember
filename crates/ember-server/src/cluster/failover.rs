@@ -53,7 +53,8 @@ impl ClusterCoordinator {
         // this requires a shared offset oracle (e.g., gossip-advertised offset).
         tokio::time::sleep(std::time::Duration::from_millis(ELECTION_STAGGER_MS)).await;
 
-        // Re-read cluster state — the primary may have recovered during our sleep.
+        // Re-read cluster state — the primary may have recovered during our
+        // sleep, or another replica may already have taken over its slots.
         let (epoch, voters, still_failed) = {
             let state = self.state.read().await;
             let epoch = state.config_epoch + round;
@@ -72,29 +73,33 @@ impl ClusterCoordinator {
                 .nodes
                 .get(&failed_primary)
                 .map(|n| n.flags.fail)
-                .unwrap_or(true);
+                .unwrap_or(true)
+                && !state.slot_map.slots_for_node(failed_primary).is_empty();
             (epoch, voters, still_failed)
         };
 
         if !still_failed {
             debug!(
-                "election: primary {} recovered before election started",
+                "election: primary {} recovered or was replaced before the election",
                 failed_primary
             );
             return false;
         }
 
-        if voters.is_empty() {
-            // nobody can confirm the primary is really gone, so promoting
-            // could leave two primaries serving the same slots
+        // the quorum is a majority of all primaries, the failed one
+        // included, as in Redis Cluster. a replica cut off with fewer than
+        // half of them can't win, so the failed primary, which may still be
+        // serving on the other side of a partition, keeps its slots.
+        let total_primaries = voters.len() + 1;
+        let quorum = Election::quorum(total_primaries);
+        if voters.len() < quorum {
             warn!(
-                "election: no other primaries to vote; automatic failover of {} needs at \
-                 least one more primary in the cluster",
-                failed_primary
+                "election: automatic failover of {failed_primary} needs {quorum} votes but \
+                 only {} other primaries exist; add primaries for automatic failover",
+                voters.len()
             );
             return false;
         }
-        let total_primaries = voters.len();
 
         // ask every voter directly
         let requests: Vec<_> = {
@@ -114,11 +119,7 @@ impl ClusterCoordinator {
             });
         }
 
-        info!(
-            "election: starting for epoch {} ({} primary voters needed)",
-            epoch,
-            Election::quorum(total_primaries)
-        );
+        info!("election: starting for epoch {epoch} ({quorum} votes needed)");
 
         self.send_direct(requests).await;
 
@@ -156,6 +157,24 @@ impl ClusterCoordinator {
         // The candidate names that primary in the request, since news of
         // who replicates whom may not have reached this node yet; if it has,
         // the two must agree.
+        //
+        // As in Redis Cluster, once a primary votes for a replica to
+        // replace a failed primary, it votes for no other replica of it for
+        // two failure timeouts. Otherwise a second replica of the same
+        // primary could win a later round and both would serve its slots.
+        // By then the winner has claimed the slots, and the other replicas
+        // stop their elections. The same replica can ask again, since a
+        // round can fall short of a quorum.
+        let cooldown = 2 * self.gossip.lock().await.failure_timeout();
+        let mut votes = self.failover_votes.lock().await;
+        if let Some((chosen, at)) = votes.get(&failed_primary) {
+            if *chosen != candidate && at.elapsed() < cooldown {
+                debug!(
+                    "election: voted for {chosen} to replace {failed_primary}; not voting for {candidate}"
+                );
+                return;
+            }
+        }
         {
             let mut state = self.state.write().await;
             let is_primary = state
@@ -191,6 +210,8 @@ impl ClusterCoordinator {
             }
             state.last_vote_epoch = epoch;
         }
+        votes.insert(failed_primary, (candidate, std::time::Instant::now()));
+        drop(votes);
         // the vote goes to disk before it is granted, so a restart can't
         // lead to a second vote in the same epoch
         self.save_config().await;
@@ -222,7 +243,9 @@ impl ClusterCoordinator {
             let mut guard = self.election.lock().await;
             match guard.as_mut() {
                 Some(attempt) if attempt.inner.epoch == epoch && attempt.voters.contains(&from) => {
-                    attempt.inner.record_vote(from, attempt.voters.len())
+                    // the failed primary counts toward the total, though it
+                    // can't vote
+                    attempt.inner.record_vote(from, attempt.voters.len() + 1)
                 }
                 _ => false,
             }
