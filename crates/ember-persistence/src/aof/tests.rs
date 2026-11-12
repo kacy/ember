@@ -925,53 +925,6 @@ mod encrypted {
         AofRecord::Del { key: key.into() }
     }
 
-    /// Writes a v3 AOF, which encrypts with the master key directly.
-    fn write_v3(path: &Path, key: &EncryptionKey, records: &[AofRecord]) -> Result {
-        let mut file = Vec::new();
-        format::write_header_versioned(
-            &mut file,
-            format::AOF_MAGIC,
-            format::FORMAT_VERSION_ENCRYPTED_V3,
-        )?;
-        let cipher = key.legacy_cipher();
-        for record in records {
-            let (nonce, ciphertext) = cipher.encrypt(&record.to_bytes()?)?;
-            file.extend_from_slice(&nonce);
-            format::write_len(&mut file, ciphertext.len())?;
-            file.extend_from_slice(&ciphertext);
-        }
-        fs::write(path, file)?;
-        Ok(())
-    }
-
-    #[test]
-    fn v3_file_is_still_read_and_needs_rewrite() -> Result {
-        let dir = temp_dir();
-        let path = dir.path().join("v3.aof");
-        let key = test_key();
-        write_v3(&path, &key, &[del("a"), del("b")])?;
-
-        let mut reader = AofReader::open_encrypted(&path, key.clone())?;
-        assert_eq!(reader.read_record()?, Some(del("a")));
-        assert_eq!(reader.read_record()?, Some(del("b")));
-        assert_eq!(reader.read_record()?, None);
-
-        let mut writer = AofWriter::open_encrypted(&path, key.clone())?;
-        assert!(writer.needs_rewrite());
-        writer.truncate(7)?;
-        writer.write_record(&del("c"))?;
-        writer.sync()?;
-
-        let mut reader = AofReader::open_encrypted(&path, key)?;
-        assert_eq!(reader.version, format::FORMAT_VERSION_ENCRYPTED);
-        assert_eq!(
-            reader.read_record()?,
-            Some(AofRecord::Checkpoint { snapshot_crc: 7 })
-        );
-        assert_eq!(reader.read_record()?, Some(del("c")));
-        Ok(())
-    }
-
     #[test]
     fn reopened_v4_file_keeps_its_salt() -> Result {
         let dir = temp_dir();
@@ -1127,5 +1080,29 @@ fn appends_after_a_truncate_land_in_the_new_file() -> Result {
     );
     assert_eq!(reader.read_record()?, None);
     assert!(!path.with_extension("aof.tmp").exists());
+    Ok(())
+}
+
+#[test]
+fn a_file_in_an_older_layout_is_refused_and_rewritten() -> Result {
+    let dir = temp_dir();
+    let path = dir.path().join("old.aof");
+    // a version 2 header, the layout before frames
+    fs::write(&path, b"EAOF\x02")?;
+    assert!(matches!(
+        AofReader::open(&path),
+        Err(FormatError::UnsupportedVersion(2))
+    ));
+
+    let mut writer = AofWriter::open(&path)?;
+    assert!(writer.needs_rewrite());
+    writer.truncate(7)?;
+    writer.write_record(&AofRecord::Del { key: "k".into() })?;
+    drop(writer);
+    let mut reader = AofReader::open(&path)?;
+    assert_eq!(
+        reader.read_record()?,
+        Some(AofRecord::Checkpoint { snapshot_crc: 7 })
+    );
     Ok(())
 }

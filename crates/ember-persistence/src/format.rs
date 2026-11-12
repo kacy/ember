@@ -2,6 +2,7 @@
 //!
 //! Provides TLV-style encoding primitives, CRC32 checksums, and magic
 //! byte constants. All multi-byte integers are stored in little-endian.
+//! The file header and record framing are in [`crate::frame`].
 
 use std::io::{self, Read, Write};
 
@@ -13,27 +14,6 @@ pub const AOF_MAGIC: &[u8; 4] = b"EAOF";
 
 /// Magic bytes for the snapshot file header.
 pub const SNAP_MAGIC: &[u8; 4] = b"ESNP";
-
-/// Current unencrypted format version.
-///
-/// v1: original format (strings only)
-/// v2: type-tagged entries (string, list, sorted set, hash, set)
-pub const FORMAT_VERSION: u8 = 2;
-
-/// Format version for encrypted files (requires the `encryption` feature).
-///
-/// v4: per-record AES-256-GCM with a key derived from the master key and a
-/// random salt stored in the file header.
-pub const FORMAT_VERSION_ENCRYPTED: u8 = 4;
-
-/// The earlier encrypted format, which used the master key for every file.
-/// Still read; files in it are rewritten as v4.
-pub const FORMAT_VERSION_ENCRYPTED_V3: u8 = 3;
-
-/// Whether files with this header version hold encrypted records.
-pub fn is_encrypted(version: u8) -> bool {
-    version == FORMAT_VERSION_ENCRYPTED || version == FORMAT_VERSION_ENCRYPTED_V3
-}
 
 /// Errors that can occur when reading or writing persistence formats.
 #[derive(Debug, Error)]
@@ -71,43 +51,6 @@ pub fn crc32(data: &[u8]) -> u32 {
     let mut h = Hasher::new();
     h.update(data);
     h.finalize()
-}
-
-/// Reader adapter that feeds every byte it returns into a CRC32 hasher.
-///
-/// A record can then be decoded straight from the stream and its checksum
-/// compared afterwards, with no second parser to rebuild the record bytes.
-pub struct CrcReader<R> {
-    inner: R,
-    hasher: Hasher,
-}
-
-impl<R: Read> CrcReader<R> {
-    pub fn new(inner: R) -> Self {
-        Self {
-            inner,
-            hasher: Hasher::new(),
-        }
-    }
-
-    /// Returns the checksum of every byte read so far.
-    pub fn finalize(self) -> u32 {
-        self.hasher.finalize()
-    }
-
-    /// Returns the hasher, to combine with a running checksum over several
-    /// records.
-    pub fn into_hasher(self) -> Hasher {
-        self.hasher
-    }
-}
-
-impl<R: Read> Read for CrcReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        self.hasher.update(&buf[..n]);
-        Ok(n)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,42 +191,6 @@ pub fn read_exact(r: &mut impl Read, buf: &mut [u8]) -> Result<(), FormatError> 
     })
 }
 
-/// Writes a file header: magic bytes + version byte.
-pub fn write_header(w: &mut impl Write, magic: &[u8; 4]) -> io::Result<()> {
-    w.write_all(magic)?;
-    write_u8(w, FORMAT_VERSION)
-}
-
-/// Writes a file header with an explicit version byte.
-pub fn write_header_versioned(w: &mut impl Write, magic: &[u8; 4], version: u8) -> io::Result<()> {
-    w.write_all(magic)?;
-    write_u8(w, version)
-}
-
-/// The maximum format version this build can read.
-///
-/// When the `encryption` feature is compiled in, v3 and v4 (encrypted)
-/// files are supported. Without the feature, only v1 and v2 are accepted.
-#[cfg(feature = "encryption")]
-const MAX_READABLE_VERSION: u8 = FORMAT_VERSION_ENCRYPTED;
-#[cfg(not(feature = "encryption"))]
-const MAX_READABLE_VERSION: u8 = FORMAT_VERSION;
-
-/// Reads and validates a file header. Returns an error if magic doesn't
-/// match or version is unsupported. Returns the format version.
-pub fn read_header(r: &mut impl Read, expected_magic: &[u8; 4]) -> Result<u8, FormatError> {
-    let mut magic = [0u8; 4];
-    read_exact(r, &mut magic)?;
-    if &magic != expected_magic {
-        return Err(FormatError::InvalidMagic);
-    }
-    let version = read_u8(r)?;
-    if version == 0 || version > MAX_READABLE_VERSION {
-        return Err(FormatError::UnsupportedVersion(version));
-    }
-    Ok(version)
-}
-
 /// Verifies that `data` matches the expected CRC32 checksum.
 pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), FormatError> {
     let actual = crc32(data);
@@ -406,28 +313,6 @@ mod tests {
         let mut buf = Vec::new();
         write_bytes(&mut buf, b"").unwrap();
         assert_eq!(read_bytes(&mut Cursor::new(&buf)).unwrap(), b"");
-    }
-
-    #[test]
-    fn header_round_trip() {
-        let mut buf = Vec::new();
-        write_header(&mut buf, AOF_MAGIC).unwrap();
-        read_header(&mut Cursor::new(&buf), AOF_MAGIC).unwrap();
-    }
-
-    #[test]
-    fn header_wrong_magic() {
-        let mut buf = Vec::new();
-        write_header(&mut buf, AOF_MAGIC).unwrap();
-        let err = read_header(&mut Cursor::new(&buf), SNAP_MAGIC).unwrap_err();
-        assert!(matches!(err, FormatError::InvalidMagic));
-    }
-
-    #[test]
-    fn header_wrong_version() {
-        let buf = vec![b'E', b'A', b'O', b'F', 99];
-        let err = read_header(&mut Cursor::new(&buf), AOF_MAGIC).unwrap_err();
-        assert!(matches!(err, FormatError::UnsupportedVersion(99)));
     }
 
     #[test]

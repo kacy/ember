@@ -4,11 +4,11 @@
 //! random 12-byte nonce. AES-GCM provides authenticated encryption — a
 //! tampered ciphertext is detected immediately rather than producing garbage.
 //!
-//! Each v4 file starts with a random salt, and its records are encrypted
-//! with a key derived from the master key and that salt. Random nonces
-//! stay far from GCM's collision limits because no key encrypts more than
-//! one file, and a record copied from one file into another fails to
-//! decrypt. v3 files, which use the master key directly, are still read.
+//! Each encrypted file's header holds a random salt, and its records are
+//! encrypted with a key derived from the master key and that salt. Random
+//! nonces stay far from GCM's collision limits because no key encrypts more
+//! than one file, and a record copied from one file into another fails to
+//! decrypt.
 //!
 //! This module is only compiled when the `encryption` feature is enabled.
 
@@ -31,7 +31,7 @@ pub const NONCE_SIZE: usize = 12;
 /// AES-256-GCM authentication tag size in bytes.
 pub const TAG_SIZE: usize = 16;
 
-/// Size of the random salt at the start of each v4 file.
+/// Size of the random salt in each encrypted file's header.
 pub const SALT_SIZE: usize = 16;
 
 /// A 256-bit master key for AES-256-GCM.
@@ -118,7 +118,7 @@ impl EncryptionKey {
         &self.bytes
     }
 
-    /// Returns the cipher for a v4 file with this salt. Its key is derived
+    /// Returns the cipher for a file with this salt. Its key is derived
     /// from the master key and the salt with HKDF-SHA256.
     pub fn file_cipher(&self, salt: &[u8; SALT_SIZE]) -> FileCipher {
         let mut subkey = Zeroizing::new([0u8; 32]);
@@ -126,11 +126,6 @@ impl EncryptionKey {
             .expand(b"ember file key", subkey.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         FileCipher::new(&subkey)
-    }
-
-    /// Returns the cipher for a v3 file, which used the master key directly.
-    pub fn legacy_cipher(&self) -> FileCipher {
-        FileCipher::new(&self.bytes)
     }
 
     /// Picks a salt for a new file, writes it to `w` and returns the file's
@@ -142,16 +137,9 @@ impl EncryptionKey {
         Ok(self.file_cipher(&salt))
     }
 
-    /// Returns the cipher for an existing file with header `version`. For a
-    /// v4 file, reads the salt from `r`, which must be positioned at it.
-    pub fn read_file_cipher(
-        &self,
-        version: u8,
-        r: &mut impl Read,
-    ) -> Result<FileCipher, FormatError> {
-        if version == format::FORMAT_VERSION_ENCRYPTED_V3 {
-            return Ok(self.legacy_cipher());
-        }
+    /// Reads a file's salt from `r`, which must be positioned at it, and
+    /// returns the file's cipher.
+    pub fn read_file_cipher(&self, r: &mut impl Read) -> Result<FileCipher, FormatError> {
         let mut salt = [0u8; SALT_SIZE];
         format::read_exact(r, &mut salt)?;
         Ok(self.file_cipher(&salt))
@@ -217,7 +205,6 @@ mod tests {
             other.decrypt(&nonce, &ciphertext),
             Err(FormatError::DecryptionFailed)
         ));
-        assert!(key.legacy_cipher().decrypt(&nonce, &ciphertext).is_err());
     }
 
     #[test]
@@ -229,9 +216,7 @@ mod tests {
             .unwrap()
             .encrypt(b"data")
             .unwrap();
-        let cipher = key
-            .read_file_cipher(format::FORMAT_VERSION_ENCRYPTED, &mut file.as_slice())
-            .unwrap();
+        let cipher = key.read_file_cipher(&mut file.as_slice()).unwrap();
         assert_eq!(cipher.decrypt(&nonce, &ciphertext).unwrap(), b"data");
     }
 

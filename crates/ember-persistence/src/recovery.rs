@@ -35,15 +35,8 @@ use tracing::warn;
 
 use crate::aof::{self, AofReader, AofRecord};
 use crate::format::FormatError;
+use crate::frame::Key;
 use crate::snapshot::{self, SnapValue, SnapshotReader};
-
-/// Type alias for an optional encryption key reference. When the
-/// `encryption` feature is disabled, this is always `Option<&()>` —
-/// always `None` — and all encryption branches compile away.
-#[cfg(feature = "encryption")]
-type EncryptionKeyRef<'a> = &'a crate::encryption::EncryptionKey;
-#[cfg(not(feature = "encryption"))]
-type EncryptionKeyRef<'a> = &'a ();
 
 /// Receives the state that recovery reads back.
 pub trait Recover {
@@ -106,7 +99,7 @@ pub fn recover_shard_encrypted(
 fn recover_shard_impl(
     data_dir: &Path,
     shard_id: u16,
-    #[allow(unused_variables)] key: Option<EncryptionKeyRef<'_>>,
+    key: Option<&Key>,
     target: &mut impl Recover,
 ) -> Result<RecoveryResult, RecoveryError> {
     let mut result = RecoveryResult::default();
@@ -158,16 +151,9 @@ type LoadedEntry = (String, SnapValue, Option<Duration>);
 fn load_snapshot(
     path: &Path,
     expected_shard_id: u16,
-    #[allow(unused_variables)] encryption_key: Option<EncryptionKeyRef<'_>>,
+    key: Option<&Key>,
 ) -> Result<(Vec<LoadedEntry>, u32), FormatError> {
-    #[cfg(feature = "encryption")]
-    let mut reader = if let Some(key) = encryption_key {
-        SnapshotReader::open_encrypted(path, key.clone())?
-    } else {
-        SnapshotReader::open(path)?
-    };
-    #[cfg(not(feature = "encryption"))]
-    let mut reader = SnapshotReader::open(path)?;
+    let mut reader = SnapshotReader::open_with(path, key)?;
 
     if reader.shard_id != expected_shard_id {
         return Err(FormatError::InvalidData(format!(
@@ -176,21 +162,14 @@ fn load_snapshot(
         )));
     }
 
-    // entries store the TTL left when the snapshot was written. the file's
-    // modification time is that moment, so the time since then has passed
-    // for every key too.
-    let written_ago_ms = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .map_or(0, |d| d.as_millis().min(i64::MAX as u128) as i64);
-
     let mut entries = Vec::new();
     while let Some(entry) = reader.read_entry()? {
-        let ttl = match entry.expire_ms {
-            ms if ms < 0 => None,
-            ms if ms <= written_ago_ms => continue,
-            ms => Some(Duration::from_millis((ms - written_ago_ms) as u64)),
+        let ttl = match entry.expires_at_ms {
+            0 => None,
+            at => match aof::ms_until(at) {
+                Some(ms) => Some(Duration::from_millis(ms)),
+                None => continue, // expired since the snapshot was written
+            },
         };
         entries.push((entry.key, entry.value, ttl));
     }
@@ -214,7 +193,7 @@ struct AofScan {
 fn scan_aof(
     path: &Path,
     snapshot_crc: Option<u32>,
-    key: Option<EncryptionKeyRef<'_>>,
+    key: Option<&Key>,
 ) -> Result<AofScan, FormatError> {
     let mut reader = open_aof(path, key)?;
     let (mut index, mut start, mut stale, mut anchored) = (0, 0, false, false);
@@ -248,7 +227,7 @@ fn scan_aof(
 fn replay_aof(
     path: &Path,
     start: usize,
-    key: Option<EncryptionKeyRef<'_>>,
+    key: Option<&Key>,
     target: &mut impl Recover,
 ) -> Result<usize, FormatError> {
     let mut reader = open_aof(path, key)?;
@@ -276,15 +255,8 @@ fn always_replayed(#[allow(unused_variables)] record: &AofRecord) -> bool {
     false
 }
 
-fn open_aof(
-    path: &Path,
-    #[allow(unused_variables)] key: Option<EncryptionKeyRef<'_>>,
-) -> Result<AofReader, FormatError> {
-    #[cfg(feature = "encryption")]
-    if let Some(key) = key {
-        return AofReader::open_encrypted(path, key.clone());
-    }
-    AofReader::open(path)
+fn open_aof(path: &Path, key: Option<&Key>) -> Result<AofReader, FormatError> {
+    AofReader::open_with(path, key)
 }
 
 /// Cuts off a partial record left at the end of the AOF by a crash.
@@ -356,15 +328,16 @@ mod tests {
             .collect()
     }
 
-    /// Writes a snapshot of shard 0 holding `keys` and returns its CRC.
-    fn write_snapshot(dir: &Path, keys: &[(&str, i64)]) -> u32 {
+    /// Writes a snapshot of shard 0 holding `keys`, each with the unix ms
+    /// time it expires at (0 for never), and returns its CRC.
+    fn write_snapshot(dir: &Path, keys: &[(&str, u64)]) -> u32 {
         let mut writer = SnapshotWriter::create(snapshot::snapshot_path(dir, 0), 0).unwrap();
-        for &(key, expire_ms) in keys {
+        for &(key, expires_at_ms) in keys {
             writer
                 .write_entry(&SnapEntry {
                     key: key.into(),
                     value: SnapValue::String(Bytes::from("v")),
-                    expire_ms,
+                    expires_at_ms,
                 })
                 .unwrap();
         }
@@ -405,7 +378,7 @@ mod tests {
     #[test]
     fn snapshot_then_aof() {
         let dir = temp_dir();
-        write_snapshot(dir.path(), &[("a", -1), ("b", 60_000)]);
+        write_snapshot(dir.path(), &[("a", 0), ("b", aof::unix_now_ms() + 60_000)]);
         write_aof(dir.path(), &[del("a")]);
 
         let (target, result) = recover(dir.path());
@@ -419,20 +392,25 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_ttls_count_the_time_since_it_was_written() {
+    fn keys_that_expired_since_the_snapshot_are_left_out() {
+        // the expiry is a point in time, so a snapshot restored from a
+        // backup, whatever its file time, can't bring back expired keys
         let dir = temp_dir();
-        write_snapshot(dir.path(), &[("short", 60_000), ("forever", -1)]);
-        // the snapshot was taken an hour ago
-        let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
-        std::fs::File::options()
-            .write(true)
-            .open(snapshot::snapshot_path(dir.path(), 0))
-            .unwrap()
-            .set_modified(hour_ago)
-            .unwrap();
+        let now = aof::unix_now_ms();
+        write_snapshot(
+            dir.path(),
+            &[
+                ("gone", now - 1_000),
+                ("forever", 0),
+                ("later", now + 60_000),
+            ],
+        );
 
         let (target, _) = recover(dir.path());
-        assert_eq!(target.restored, [("forever".to_string(), None)]);
+        let keys: Vec<_> = target.restored.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["forever", "later"]);
+        let later_ttl = target.restored[1].1.unwrap();
+        assert!(later_ttl > Duration::from_secs(50) && later_ttl <= Duration::from_secs(60));
     }
 
     #[test]
@@ -507,6 +485,43 @@ mod tests {
         assert_eq!(recover(dir.path()).0.applied, [del("a")]);
         write_aof(dir.path(), &[del("c")]);
         assert_eq!(recover(dir.path()).0.applied, [del("a"), del("c")]);
+    }
+
+    #[test]
+    fn a_zeroed_tail_is_cut_off() {
+        // some filesystems leave zeros where a crash cut off a write
+        use std::io::Write;
+
+        let dir = temp_dir();
+        write_aof(dir.path(), &[del("a")]);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(aof::aof_path(dir.path(), 0))
+            .unwrap()
+            .write_all(&[0; 64])
+            .unwrap();
+
+        assert_eq!(recover(dir.path()).0.applied, [del("a")]);
+        write_aof(dir.path(), &[del("b")]);
+        assert_eq!(recover(dir.path()).0.applied, [del("a"), del("b")]);
+    }
+
+    #[test]
+    fn a_damaged_length_mid_file_fails_recovery() {
+        // a length claiming more than the file holds looks like a torn
+        // tail. its check copy tells it apart, so the records after it
+        // aren't cut off
+        let dir = temp_dir();
+        let ends = write_aof(dir.path(), &[del("a"), del("b"), del("c")]);
+        let path = aof::aof_path(dir.path(), 0);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[ends[0] as usize + 3] = 0x7f; // the second record's length
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut target = Recorded::default();
+        let err = recover_shard(dir.path(), 0, &mut target).unwrap_err();
+        assert!(matches!(err, RecoveryError::Aof { .. }), "{err}");
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 
     #[test]

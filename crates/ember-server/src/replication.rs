@@ -691,11 +691,14 @@ impl ReplicationClient {
         })?;
 
         for entry in entries {
-            // expire_ms is the time left, or negative for no expiry
-            let ttl_ms = match entry.expire_ms {
-                ms if ms < 0 => 0,
-                0 => continue, // expired while the snapshot was in flight
-                ms => ms as u64,
+            // the time the key expires at, or 0 for no expiry. RESTORE
+            // takes the time left, with 0 for none
+            let ttl_ms = match entry.expires_at_ms {
+                0 => 0,
+                at => match ember_persistence::aof::ms_until(at) {
+                    Some(ms) => ms,
+                    None => continue, // expired while the snapshot was in flight
+                },
             };
             let data = snapshot::serialize_snap_value(&entry.value)
                 .map_err(|e| std::io::Error::other(format!("snapshot value encode failed: {e}")))?;

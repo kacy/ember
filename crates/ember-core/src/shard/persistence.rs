@@ -93,10 +93,10 @@ pub(super) fn handle_serialize_snapshot(
 ) -> ShardResponse {
     let entries: Vec<SnapEntry> = keyspace
         .iter_entries()
-        .map(|(key, value, expire_ms)| SnapEntry {
+        .map(|(key, value, ttl_ms)| SnapEntry {
             key: key.to_owned(),
             value: value_to_snap(value),
-            expire_ms,
+            expires_at_ms: expires_at(ttl_ms),
         })
         .collect();
 
@@ -191,6 +191,14 @@ pub(super) fn handle_snapshot(
             ShardResponse::Err(format!("snapshot failed: {e}"))
         }
     }
+}
+
+/// Turns the TTL left, or -1 for none, into the unix ms time a snapshot
+/// stores, or 0 for none.
+fn expires_at(ttl_ms: i64) -> u64 {
+    u64::try_from(ttl_ms).map_or(0, |ms| {
+        ember_persistence::aof::unix_now_ms().saturating_add(ms)
+    })
 }
 
 /// Converts a `Value` reference to a `SnapValue` for serialization.
@@ -298,7 +306,7 @@ pub(super) fn write_snapshot(
         writer.write_entry(&SnapEntry {
             key: key.to_owned(),
             value: value_to_snap(value),
-            expire_ms: ttl_ms,
+            expires_at_ms: expires_at(ttl_ms),
         })?;
         count += 1;
     }

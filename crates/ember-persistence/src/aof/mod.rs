@@ -1,20 +1,8 @@
 //! Append-only file for recording mutations.
 //!
-//! Each shard writes its own AOF file (`shard-{id}.aof`). Records are
-//! written after successful mutations. The binary format uses a simple
-//! tag + payload + CRC32 structure for each record.
-//!
-//! File layout:
-//! ```text
-//! [EAOF magic: 4B][version: 1B]
-//! [record]*
-//! ```
-//!
-//! Record layout:
-//! ```text
-//! [tag: 1B][payload...][crc32: 4B]
-//! ```
-//! The CRC32 covers the tag + payload bytes.
+//! Each shard writes its own AOF file (`shard-{id}.aof`): a header, then one
+//! frame per record, in the layout described in [`crate::frame`]. Records
+//! are written after successful mutations.
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -22,6 +10,7 @@ use std::io::{BufReader, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use crate::format::{self, FormatError};
+use crate::frame::{self, Codec, Frame, Key};
 
 mod record;
 
@@ -49,6 +38,10 @@ pub enum FsyncPolicy {
 pub struct AofWriter {
     file: File,
     path: PathBuf,
+    /// Encodes records for this file.
+    codec: Codec,
+    /// The key new files are encrypted with.
+    key: Option<Key>,
     /// Encoded records not yet written to the file.
     pending: Vec<u8>,
     /// Length of the file up to the end of the last whole record.
@@ -59,96 +52,57 @@ pub struct AofWriter {
     /// The existing file is in a different format than this writer writes.
     /// See [`AofWriter::needs_rewrite`].
     needs_rewrite: bool,
-    #[cfg(feature = "encryption")]
-    encryption: Option<Encryption>,
-}
-
-/// The master key, kept to start new files, and the cipher of the current one.
-#[cfg(feature = "encryption")]
-struct Encryption {
-    key: crate::encryption::EncryptionKey,
-    cipher: crate::encryption::FileCipher,
 }
 
 impl AofWriter {
     /// Opens (or creates) a plaintext AOF file. A new file gets a header;
     /// an existing one is appended to.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, FormatError> {
-        Self::open_versioned(
-            path.into(),
-            format::FORMAT_VERSION,
-            #[cfg(feature = "encryption")]
-            None,
-        )
+        Self::open_with(path.into(), None)
     }
 
-    /// Opens (or creates) an encrypted AOF file using AES-256-GCM. A new
-    /// file gets a v4 header.
+    /// Opens (or creates) an AOF file encrypted with `key`.
     #[cfg(feature = "encryption")]
-    pub fn open_encrypted(
-        path: impl Into<PathBuf>,
-        key: crate::encryption::EncryptionKey,
-    ) -> Result<Self, FormatError> {
-        Self::open_versioned(path.into(), format::FORMAT_VERSION_ENCRYPTED, Some(key))
+    pub fn open_encrypted(path: impl Into<PathBuf>, key: Key) -> Result<Self, FormatError> {
+        Self::open_with(path.into(), Some(key))
     }
 
-    fn open_versioned(
-        path: PathBuf,
-        version: u8,
-        #[cfg(feature = "encryption")] key: Option<crate::encryption::EncryptionKey>,
-    ) -> Result<Self, FormatError> {
-        let existing = fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false);
+    fn open_with(path: PathBuf, key: Option<Key>) -> Result<Self, FormatError> {
+        let existing = fs::metadata(&path).is_ok_and(|m| m.len() > 0);
         let mut file = open_persistence_file(&path)?;
-        let mut writer = Vec::new();
 
-        // the file's current version, and for an encrypted file the
-        // cipher to keep appending with. a header that cannot be read
-        // counts as a different format.
-        #[cfg(feature = "encryption")]
-        let (current_version, cipher) = if existing {
-            match read_existing_header(&path, key.as_ref()) {
-                Ok((v, cipher)) => (Some(v), cipher),
-                Err(_) => (None, None),
+        // an existing file is appended to with its own codec. one this
+        // writer can't append to, encrypted the other way or unreadable,
+        // must be rewritten first, which starts a new file with a new
+        // header; until then any codec will do
+        let mut header = Vec::new();
+        let (codec, needs_rewrite) = if existing {
+            let found = File::open(&path).map_err(FormatError::from).and_then(|f| {
+                frame::read_header(&mut BufReader::new(f), format::AOF_MAGIC, key.as_ref())
+            });
+            match found {
+                Ok(codec) if codec.is_encrypted() == key.is_some() => (codec, false),
+                _ => (
+                    frame::write_header(&mut header, format::AOF_MAGIC, key.as_ref())?,
+                    true,
+                ),
             }
         } else {
-            format::write_header_versioned(&mut writer, format::AOF_MAGIC, version)?;
-            let cipher = key
-                .as_ref()
-                .map(|k| k.write_new_file_salt(&mut writer))
-                .transpose()?;
-            (Some(version), cipher)
+            let codec = frame::write_header(&mut header, format::AOF_MAGIC, key.as_ref())?;
+            file.write_all(&header)?;
+            (codec, false)
         };
-        #[cfg(not(feature = "encryption"))]
-        let current_version = if existing {
-            File::open(&path)
-                .map_err(FormatError::from)
-                .and_then(|f| format::read_header(&mut BufReader::new(f), format::AOF_MAGIC))
-                .ok()
-        } else {
-            format::write_header_versioned(&mut writer, format::AOF_MAGIC, version)?;
-            Some(version)
-        };
-        // a new file's header goes straight to disk
-        file.write_all(&writer)?;
         let written_len = file.metadata()?.len();
-
-        // a file that needs a rewrite is truncated before anything is
-        // written, which picks a new salt; until then any cipher will do
-        #[cfg(feature = "encryption")]
-        let encryption = key.map(|key| {
-            let cipher = cipher.unwrap_or_else(|| key.legacy_cipher());
-            Encryption { key, cipher }
-        });
 
         Ok(Self {
             file,
             path,
+            codec,
+            key,
             pending: Vec::new(),
             written_len,
             torn: false,
-            needs_rewrite: current_version != Some(version),
-            #[cfg(feature = "encryption")]
-            encryption,
+            needs_rewrite,
         })
     }
 
@@ -163,12 +117,7 @@ impl AofWriter {
     /// Queues a record. It reaches the file on the next
     /// [`flush`](Self::flush) or [`sync`](Self::sync).
     pub fn write_record(&mut self, record: &AofRecord) -> Result<(), FormatError> {
-        write_encoded(
-            &mut self.pending,
-            record,
-            #[cfg(feature = "encryption")]
-            self.encryption.as_ref().map(|enc| &enc.cipher),
-        )
+        encode_record(&self.codec, record, &mut self.pending)
     }
 
     /// Writes the queued records to the OS. On failure the file is cut
@@ -215,34 +164,14 @@ impl AofWriter {
             _ => {}
         }
         let mut tmp_file = open_persistence_file(&tmp_path)?;
-        let mut tmp_writer = Vec::new();
-
-        // the new file's cipher. the old one stays in use until the rename
-        #[cfg(feature = "encryption")]
-        let cipher = match self.encryption {
-            Some(ref enc) => {
-                format::write_header_versioned(
-                    &mut tmp_writer,
-                    format::AOF_MAGIC,
-                    format::FORMAT_VERSION_ENCRYPTED,
-                )?;
-                Some(enc.key.write_new_file_salt(&mut tmp_writer)?)
-            }
-            None => {
-                format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
-                None
-            }
-        };
-        #[cfg(not(feature = "encryption"))]
-        format::write_header(&mut tmp_writer, format::AOF_MAGIC)?;
-
-        write_encoded(
-            &mut tmp_writer,
+        let mut contents = Vec::new();
+        let codec = frame::write_header(&mut contents, format::AOF_MAGIC, self.key.as_ref())?;
+        encode_record(
+            &codec,
             &AofRecord::Checkpoint { snapshot_crc },
-            #[cfg(feature = "encryption")]
-            cipher.as_ref(),
+            &mut contents,
         )?;
-        tmp_file.write_all(&tmp_writer)?;
+        tmp_file.write_all(&contents)?;
         tmp_file.sync_all()?;
 
         // atomic rename: old AOF is replaced only after new file is durable.
@@ -251,15 +180,19 @@ impl AofWriter {
         fs::rename(&tmp_path, &self.path)?;
         sync_parent_dir(&self.path);
         self.file = tmp_file;
-        self.written_len = tmp_writer.len() as u64;
+        self.codec = codec;
+        self.written_len = contents.len() as u64;
         self.torn = false;
-        #[cfg(feature = "encryption")]
-        if let (Some(enc), Some(cipher)) = (self.encryption.as_mut(), cipher) {
-            enc.cipher = cipher;
-        }
         self.needs_rewrite = false;
         Ok(())
     }
+}
+
+/// Appends `record` to `out` as one frame.
+fn encode_record(codec: &Codec, record: &AofRecord, out: &mut Vec<u8>) -> Result<(), FormatError> {
+    let plain = record.to_bytes()?;
+    frame::write_frame(out, &codec.seal(&plain)?)?;
+    Ok(())
 }
 
 /// A file that records are appended to. A trait so tests can make writes
@@ -319,114 +252,43 @@ pub(crate) fn sync_parent_dir(path: &Path) {
     }
 }
 
-/// Writes one record. With a cipher: `[nonce: 12B][len: 4B][ciphertext]`.
-/// Otherwise the v2 format: `[tag+payload][crc32: 4B]`.
-fn write_encoded(
-    w: &mut impl Write,
-    record: &AofRecord,
-    #[cfg(feature = "encryption")] cipher: Option<&crate::encryption::FileCipher>,
-) -> Result<(), FormatError> {
-    let payload = record.to_bytes()?;
-
-    #[cfg(feature = "encryption")]
-    if let Some(cipher) = cipher {
-        let (nonce, ciphertext) = cipher.encrypt(&payload)?;
-        w.write_all(&nonce)?;
-        format::write_len(w, ciphertext.len())?;
-        w.write_all(&ciphertext)?;
-        return Ok(());
-    }
-
-    let checksum = format::crc32(&payload);
-    w.write_all(&payload)?;
-    format::write_u32(w, checksum)?;
-    Ok(())
-}
-
-/// Reads the header of an existing AOF: its version and, when it is
-/// encrypted and `key` is given, the cipher for its records.
-#[cfg(feature = "encryption")]
-fn read_existing_header(
-    path: &Path,
-    key: Option<&crate::encryption::EncryptionKey>,
-) -> Result<(u8, Option<crate::encryption::FileCipher>), FormatError> {
-    let mut reader = BufReader::new(File::open(path)?);
-    let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
-    let cipher = match key {
-        Some(key) if format::is_encrypted(version) => {
-            Some(key.read_file_cipher(version, &mut reader)?)
-        }
-        _ => None,
-    };
-    Ok((version, cipher))
-}
-
 /// Reader for iterating over AOF records.
 pub struct AofReader {
     reader: BufReader<File>,
-    /// Format version from the file header. v2 = plaintext, v3/v4 = encrypted.
-    version: u8,
-    /// End offset of the last complete record read. See [`AofReader::valid_len`].
+    codec: Codec,
+    /// End offset of the last whole record read. See [`AofReader::valid_len`].
     valid_len: u64,
-    /// Set for an encrypted file.
-    #[cfg(feature = "encryption")]
-    cipher: Option<crate::encryption::FileCipher>,
 }
 
 impl fmt::Debug for AofReader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AofReader")
-            .field("version", &self.version)
+            .field("encrypted", &self.codec.is_encrypted())
             .finish()
     }
 }
 
 impl AofReader {
-    /// Opens an AOF file and validates the header.
+    /// Opens a plaintext AOF file and reads the header.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, FormatError> {
-        let reader = Self::open_with_key(
-            path,
-            #[cfg(feature = "encryption")]
-            None,
-        )?;
-        if format::is_encrypted(reader.version) {
-            return Err(FormatError::EncryptionRequired);
-        }
-        Ok(reader)
+        Self::open_with(path.as_ref(), None)
     }
 
-    /// Opens an AOF file with an encryption key for decrypting v3/v4 records.
-    ///
-    /// Also handles v2 (plaintext) files — the key is simply unused,
-    /// allowing transparent migration.
+    /// Opens an AOF file that may be encrypted with `key`. Plaintext files
+    /// are read too.
     #[cfg(feature = "encryption")]
-    pub fn open_encrypted(
-        path: impl AsRef<Path>,
-        key: crate::encryption::EncryptionKey,
-    ) -> Result<Self, FormatError> {
-        Self::open_with_key(path, Some(key))
+    pub fn open_encrypted(path: impl AsRef<Path>, key: Key) -> Result<Self, FormatError> {
+        Self::open_with(path.as_ref(), Some(&key))
     }
 
-    fn open_with_key(
-        path: impl AsRef<Path>,
-        #[cfg(feature = "encryption")] encryption_key: Option<crate::encryption::EncryptionKey>,
-    ) -> Result<Self, FormatError> {
-        let mut reader = BufReader::new(File::open(path.as_ref())?);
-        let version = format::read_header(&mut reader, format::AOF_MAGIC)?;
-        #[cfg(feature = "encryption")]
-        let cipher = match encryption_key {
-            Some(key) if format::is_encrypted(version) => {
-                Some(key.read_file_cipher(version, &mut reader)?)
-            }
-            _ => None,
-        };
+    pub(crate) fn open_with(path: &Path, key: Option<&Key>) -> Result<Self, FormatError> {
+        let mut reader = BufReader::new(File::open(path)?);
+        let codec = frame::read_header(&mut reader, format::AOF_MAGIC, key)?;
         let valid_len = reader.stream_position()?;
         Ok(Self {
             reader,
-            version,
+            codec,
             valid_len,
-            #[cfg(feature = "encryption")]
-            cipher,
         })
     }
 
@@ -434,24 +296,15 @@ impl AofReader {
     ///
     /// Returns `Ok(None)` at end of file. A record cut short by a crash
     /// mid-write also returns `Ok(None)`; [`valid_len`](Self::valid_len)
-    /// then tells the caller where the complete records end.
+    /// then tells the caller where the whole records end.
     pub fn read_record(&mut self) -> Result<Option<AofRecord>, FormatError> {
-        #[cfg(feature = "encryption")]
-        let result = if format::is_encrypted(self.version) {
-            self.read_encrypted_record()
-        } else {
-            self.read_v2_record()
-        };
-        #[cfg(not(feature = "encryption"))]
-        let result = self.read_v2_record();
-
-        match result {
-            Ok(record) => {
+        match frame::read_frame(&mut self.reader)? {
+            Frame::End | Frame::Torn => Ok(None),
+            Frame::Body(body) => {
+                let record = AofRecord::from_bytes(&self.codec.open(body)?)?;
                 self.valid_len = self.reader.stream_position()?;
                 Ok(Some(record))
             }
-            Err(FormatError::UnexpectedEof) => Ok(None),
-            Err(e) => Err(e),
         }
     }
 
@@ -460,41 +313,6 @@ impl AofReader {
     /// `None` is a partial record left by a crash.
     pub fn valid_len(&self) -> u64 {
         self.valid_len
-    }
-
-    /// Reads a v2 (plaintext) record: tag + payload + crc32.
-    fn read_v2_record(&mut self) -> Result<AofRecord, FormatError> {
-        let mut crc_reader = format::CrcReader::new(&mut self.reader);
-        let record = AofRecord::decode(&mut crc_reader)?;
-        let computed = crc_reader.finalize();
-        let stored = format::read_u32(&mut self.reader)?;
-        format::verify_crc32_values(computed, stored)?;
-        Ok(record)
-    }
-
-    /// Reads an encrypted record: nonce + len + ciphertext.
-    #[cfg(feature = "encryption")]
-    fn read_encrypted_record(&mut self) -> Result<AofRecord, FormatError> {
-        let cipher = self
-            .cipher
-            .as_ref()
-            .ok_or(FormatError::EncryptionRequired)?;
-
-        let mut nonce = [0u8; crate::encryption::NONCE_SIZE];
-        format::read_exact(&mut self.reader, &mut nonce)?;
-
-        let ct_len = format::read_u32(&mut self.reader)? as usize;
-        if ct_len > format::MAX_FIELD_LEN {
-            return Err(FormatError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("encrypted record length {ct_len} exceeds maximum"),
-            )));
-        }
-        let mut ciphertext = vec![0u8; ct_len];
-        format::read_exact(&mut self.reader, &mut ciphertext)?;
-
-        let plaintext = cipher.decrypt(&nonce, &ciphertext)?;
-        AofRecord::from_bytes(&plaintext)
     }
 }
 
