@@ -337,6 +337,29 @@ impl ClusterCoordinator {
         Frame::Simple("OK".into())
     }
 
+    /// Whether this node can reach a majority of the cluster's primaries,
+    /// counting itself.
+    ///
+    /// A primary that can't is on the minority side of a partition, where
+    /// the majority may already be promoting one of its replicas. It stops
+    /// taking writes then, as Redis Cluster does, so writes aren't
+    /// acknowledged on both sides and lost when the partition heals.
+    pub async fn reaches_majority_of_primaries(&self) -> bool {
+        let state = self.state.read().await;
+        let primaries = state
+            .nodes
+            .values()
+            .filter(|n| n.role == NodeRole::Primary && !n.flags.handshake);
+        let (mut total, mut reachable) = (0, 0);
+        for node in primaries {
+            total += 1;
+            if node.id == self.local_id || node.is_healthy() {
+                reachable += 1;
+            }
+        }
+        reachable * 2 > total
+    }
+
     /// Checks slot ownership with migration-aware routing.
     ///
     /// During a migration, as in Redis Cluster:

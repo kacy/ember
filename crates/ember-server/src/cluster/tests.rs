@@ -586,6 +586,65 @@ async fn add_primary(coord: &ClusterCoordinator, failed: bool) -> NodeId {
 }
 
 #[tokio::test]
+async fn a_primary_takes_writes_only_while_it_reaches_a_majority() {
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    assert!(coord.reaches_majority_of_primaries().await, "alone");
+
+    let a = add_primary(&coord, false).await;
+    let b = add_primary(&coord, false).await;
+    assert!(coord.reaches_majority_of_primaries().await);
+
+    // cut off from both others: 1 of 3 is no majority
+    for id in [a, b] {
+        coord
+            .state
+            .write()
+            .await
+            .nodes
+            .get_mut(&id)
+            .unwrap()
+            .flags
+            .pfail = true;
+    }
+    assert!(!coord.reaches_majority_of_primaries().await);
+
+    // one back: 2 of 3
+    coord
+        .state
+        .write()
+        .await
+        .nodes
+        .get_mut(&a)
+        .unwrap()
+        .flags
+        .pfail = false;
+    assert!(coord.reaches_majority_of_primaries().await);
+}
+
+#[tokio::test]
+async fn a_primary_votes_for_one_replica_of_a_failed_primary() {
+    // two replicas of the same failed primary ask in different epochs. the
+    // second must not win too, or both would serve the slots
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    let failed = add_primary(&coord, true).await;
+    let (first, second) = (NodeId::new(), NodeId::new());
+
+    coord.handle_vote_request(first, failed, 1).await;
+    assert_eq!(coord.state.read().await.last_vote_epoch, 1);
+    coord.handle_vote_request(second, failed, 2).await;
+    assert_eq!(coord.state.read().await.last_vote_epoch, 1);
+
+    // the first replica can ask again after a round without a quorum
+    coord.handle_vote_request(first, failed, 3).await;
+    assert_eq!(coord.state.read().await.last_vote_epoch, 3);
+
+    // another failed primary is a separate failover
+    let other = add_primary(&coord, true).await;
+    coord.handle_vote_request(NodeId::new(), other, 4).await;
+    assert_eq!(coord.state.read().await.last_vote_epoch, 4);
+}
+
+#[tokio::test]
 async fn primary_grants_vote_once_per_epoch() {
     // A primary should grant a vote for a given epoch exactly once.
     let (coord, _rx) = test_coordinator_bootstrapped();
