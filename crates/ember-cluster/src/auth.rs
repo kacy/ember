@@ -1,6 +1,6 @@
 //! Shared-secret authentication for cluster transport.
 //!
-//! When a `ClusterSecret` is configured, every gossip UDP message and Raft TCP
+//! When a `ClusterSecret` is configured, every gossip UDP message and replication
 //! frame is authenticated with HMAC-SHA256. Unauthenticated messages are silently
 //! dropped to prevent oracle attacks.
 

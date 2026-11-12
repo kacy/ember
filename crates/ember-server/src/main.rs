@@ -26,9 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
-use ember_cluster::{
-    raft_id_from_node_id, GossipConfig, NodeId, RaftNode, RaftStorage, SlotRange, SLOT_COUNT,
-};
+use ember_cluster::{GossipConfig, NodeId};
 use ember_core::{ReplicationEvent, ShardPersistenceConfig};
 use tracing::info;
 #[cfg(feature = "protobuf")]
@@ -194,16 +192,16 @@ struct Args {
     #[arg(long, env = "EMBER_CLUSTER_PORT_OFFSET")]
     cluster_port_offset: Option<u16>,
 
-    /// port offset for the Raft TCP listener (data_port + offset).
-    /// defaults to cluster_port_offset + 1 (e.g. 10001)
-    #[arg(long, env = "EMBER_CLUSTER_RAFT_PORT_OFFSET")]
+    /// ignored. raft was removed; the flag is still accepted so existing
+    /// scripts keep working.
+    #[arg(long, env = "EMBER_CLUSTER_RAFT_PORT_OFFSET", hide = true)]
     cluster_raft_port_offset: Option<u16>,
 
     /// node timeout in milliseconds for failure detection
     #[arg(long, env = "EMBER_CLUSTER_NODE_TIMEOUT")]
     cluster_node_timeout: Option<u64>,
 
-    /// shared secret for authenticating cluster transport (gossip + raft).
+    /// shared secret for authenticating cluster transport (gossip and replication).
     /// when set, unauthenticated messages are silently dropped.
     #[arg(long, env = "EMBER_CLUSTER_AUTH_PASS")]
     cluster_auth_pass: Option<String>,
@@ -692,7 +690,7 @@ async fn main() {
     if cluster_secret.is_some() {
         info!("cluster transport authentication enabled");
     } else if cfg.cluster.enabled && !addr.ip().to_canonical().is_loopback() {
-        // gossip, Raft and replication would accept anyone who can reach
+        // gossip and replication would accept anyone who can reach
         // them: slot takeovers, forced failovers, a full copy of the data
         exit_err(
             "error: cluster mode on a non-loopback address requires cluster-auth-pass \
@@ -770,8 +768,6 @@ async fn main() {
             ));
         }
 
-        let raft_port_offset = cfg.cluster.raft_port_offset;
-
         // cluster requires a data directory for nodes.conf persistence.
         let cluster_data_dir = engine_config
             .persistence
@@ -797,7 +793,7 @@ async fn main() {
 
         let conf_path = cluster_data_dir.join("nodes.conf");
 
-        let (coordinator, event_rx, local_id, is_bootstrap) = if conf_path.exists() {
+        let (coordinator, event_rx) = if conf_path.exists() {
             // restore from saved config
             let data = std::fs::read_to_string(&conf_path)
                 .unwrap_or_else(|e| exit_err(format!("failed to read nodes.conf: {e}")));
@@ -812,8 +808,7 @@ async fn main() {
             .unwrap_or_else(|e| exit_err(format!("failed to parse nodes.conf: {e}")));
 
             info!("cluster mode: restored from nodes.conf");
-            let id = coord.local_id();
-            (coord, rx, id, false)
+            (coord, rx)
         } else if cfg.cluster.bootstrap {
             let local_id = NodeId::new();
             let (coord, rx) = ClusterCoordinator::new(
@@ -826,7 +821,7 @@ async fn main() {
             )
             .unwrap_or_else(|e| exit_err(format!("error: {e}")));
             info!("cluster mode: bootstrapped with all 16384 slots");
-            (coord, rx, local_id, true)
+            (coord, rx)
         } else {
             let local_id = NodeId::new();
             let (coord, rx) = ClusterCoordinator::new(
@@ -839,83 +834,10 @@ async fn main() {
             )
             .unwrap_or_else(|e| exit_err(format!("error: {e}")));
             info!("cluster mode: waiting for CLUSTER MEET");
-            (coord, rx, local_id, false)
+            (coord, rx)
         };
 
         let coordinator = Arc::new(coordinator);
-
-        // only start and attach raft for bootstrapped nodes. non-bootstrap
-        // nodes use direct writes for ADDSLOTS/DELSLOTS and will join a raft
-        // group later when they meet an existing cluster.
-        if is_bootstrap {
-            let raft_port = addr
-                .port()
-                .checked_add(raft_port_offset)
-                .unwrap_or_else(|| exit_err("error: raft port offset overflows u16"));
-            let raft_addr = std::net::SocketAddr::new(addr.ip(), raft_port);
-            let raft_id = raft_id_from_node_id(local_id);
-
-            let raft_dir = cluster_data_dir.join("raft");
-            let (storage, state_rx) = RaftStorage::open(raft_dir)
-                .unwrap_or_else(|e| exit_err(format!("failed to open raft storage: {e}")));
-            let has_existing_log = storage.has_log_entries();
-
-            let raft_node = match RaftNode::start(
-                raft_id,
-                raft_addr,
-                storage.clone(),
-                coordinator.cluster_secret(),
-            )
-            .await
-            {
-                Ok(node) => Arc::new(node),
-                Err(e) => exit_err(format!("failed to start raft node: {e}")),
-            };
-
-            // only bootstrap on first start — if we have persisted log entries
-            // the node will recover from disk state instead
-            if !has_existing_log {
-                if let Err(e) = raft_node.bootstrap_single().await {
-                    exit_err(format!("failed to bootstrap raft: {e}"));
-                }
-            }
-
-            // wait for leader election (single member, usually < 50ms)
-            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-            while !raft_node.is_leader() {
-                if tokio::time::Instant::now() > deadline {
-                    exit_err("raft leader election timed out");
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-
-            // on fresh bootstrap, register this node and assign all slots
-            // through raft so reconciliation sees the canonical state.
-            // on recovery these are already in the persisted log.
-            if !has_existing_log {
-                if let Err(e) = raft_node
-                    .propose(ember_cluster::ClusterCommand::AddNode {
-                        node_id: local_id,
-                        raft_id,
-                        addr: addr.to_string(),
-                        is_primary: true,
-                    })
-                    .await
-                {
-                    tracing::warn!("AddNode proposal failed: {e}");
-                }
-                let cmd = ember_cluster::ClusterCommand::AssignSlots {
-                    node_id: local_id,
-                    slots: vec![SlotRange::new(0, SLOT_COUNT - 1)],
-                };
-                if let Err(e) = raft_node.propose(cmd).await {
-                    tracing::warn!("bootstrap AssignSlots proposal failed: {e}");
-                }
-            }
-
-            coordinator.attach_raft(Arc::clone(&raft_node));
-            coordinator.spawn_raft_reconciliation(state_rx);
-        }
 
         // spawn gossip networking tasks
         coordinator.spawn_gossip(addr, event_rx).await;

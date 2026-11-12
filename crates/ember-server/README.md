@@ -13,7 +13,7 @@ the main server binary for [ember](https://github.com/kacy/ember). accepts TCP c
 - **metrics** — prometheus exporter, per-command histogram/counter recording, background stats poller
 - **slowlog** — ring buffer for slow command logging with configurable threshold and capacity
 - **tls** — optional TLS support on a separate port, with mTLS for client certificate verification
-- **cluster** — cluster mode integration: gossip event loop, raft consensus, slot routing, replication, failover
+- **cluster** — cluster mode integration: gossip event loop, slot routing, replication, failover
 - **replication** — primary→replica data streaming with AOF-based sync
 
 ## running

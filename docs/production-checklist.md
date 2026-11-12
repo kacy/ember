@@ -255,7 +255,7 @@ if ember should accept connections only on localhost, bind to `127.0.0.1`. use a
 
 **cluster transport auth**
 
-in clustered deployments, gossip, Raft and replication traffic between nodes is authenticated with HMAC-SHA256. set the same key on every node:
+in clustered deployments, gossip and replication traffic between nodes is authenticated with HMAC-SHA256. set the same key on every node:
 
 ```toml
 [cluster]

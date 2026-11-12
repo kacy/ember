@@ -4,32 +4,31 @@
 //! coordinator that handles gossip networking, cluster commands,
 //! and slot ownership validation.
 //!
-//! When a `RaftNode` is attached, topology mutations (ADDSLOTS, DELSLOTS,
-//! SETSLOT, FORGET) are proposed through Raft consensus before returning OK.
-//! Read-only commands and node-local migration state skip Raft entirely.
+//! Cluster configuration follows the Redis Cluster model. Each node owns
+//! its slots at a config epoch and announces them over gossip; when two
+//! nodes claim a slot, the higher epoch wins. Failover elections run over
+//! gossip as well, and a promoted replica claims its slots at a new epoch.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use ember_cluster::{
-    key_slot, raft_id_from_node_id, BasicNode, ClusterCommand, ClusterNode, ClusterSecret,
-    ClusterState, ClusterStateData, ConfigParseError, Election, GossipConfig, GossipEngine,
-    GossipEvent, GossipMessage, MigrationManager, NodeId, NodeRole, RaftNode, RaftProposalError,
-    SlotRange, SLOT_COUNT,
+    key_slot, ClusterNode, ClusterSecret, ClusterState, ConfigParseError, Election, GossipConfig,
+    GossipEngine, GossipEvent, GossipMessage, MigrationManager, NodeId, NodeRole, SlotRange,
+    SLOT_COUNT,
 };
 use ember_core::Engine;
 use ember_protocol::Frame;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, watch, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 mod commands;
 mod failover;
 mod gossip;
-mod raft;
 mod replication;
 
 /// Snapshot of cluster health for the /health HTTP endpoint.
@@ -43,8 +42,6 @@ pub struct ClusterHealthSummary {
 ///
 /// Thread-safe via interior mutability: `RwLock` for state (many readers,
 /// rare writers) and `Mutex` for gossip (single writer during ticks).
-///
-/// Call `attach_raft` after wrapping in `Arc` to enable Raft-backed mutations.
 pub struct ClusterCoordinator {
     state: RwLock<ClusterState>,
     gossip: Mutex<GossipEngine>,
@@ -57,8 +54,6 @@ pub struct ClusterCoordinator {
     udp_socket: Mutex<Option<Arc<UdpSocket>>>,
     /// directory for nodes.conf persistence (None disables saving)
     data_dir: Option<PathBuf>,
-    /// raft node for linearizable topology mutations; set once after startup
-    raft_node: std::sync::OnceLock<Arc<RaftNode>>,
     /// engine handle for replication; set once during startup
     engine: std::sync::OnceLock<Arc<Engine>>,
     /// temporarily pauses writes on this node during failover coordination.
@@ -145,7 +140,6 @@ impl ClusterCoordinator {
             bind_addr,
             udp_socket: Mutex::new(None),
             data_dir,
-            raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
@@ -207,7 +201,6 @@ impl ClusterCoordinator {
             bind_addr,
             udp_socket: Mutex::new(None),
             data_dir: Some(data_dir),
-            raft_node: std::sync::OnceLock::new(),
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
@@ -217,18 +210,6 @@ impl ClusterCoordinator {
 
         Ok((coordinator, event_rx))
     }
-
-    /// Returns the local node ID.
-    pub fn local_id(&self) -> NodeId {
-        self.local_id
-    }
-
-    /// Returns the cluster transport secret, if configured.
-    pub fn cluster_secret(&self) -> Option<Arc<ClusterSecret>> {
-        self.secret.clone()
-    }
-
-    // -- raft integration --
 
     /// Returns a snapshot of cluster health for the /health HTTP endpoint.
     ///
@@ -316,27 +297,6 @@ impl ClusterCoordinator {
     }
 
     // -- gossip networking --
-}
-
-/// Compacts a flat list of slot numbers into contiguous `SlotRange` values.
-fn compact_slots(slots: &[u16]) -> Vec<SlotRange> {
-    let mut sorted: Vec<u16> = slots.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-
-    let mut ranges = Vec::new();
-    let mut i = 0;
-    while i < sorted.len() {
-        let start = sorted[i];
-        let mut end = start;
-        while i + 1 < sorted.len() && sorted[i + 1] == end + 1 {
-            i += 1;
-            end = sorted[i];
-        }
-        ranges.push(SlotRange::new(start, end));
-        i += 1;
-    }
-    ranges
 }
 
 /// Writes data to a temporary file and atomically renames it to the target path.

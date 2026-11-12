@@ -36,7 +36,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **protected mode** — rejects non-loopback connections when no password is set on public binds
 - **observability** — prometheus metrics (`--metrics-port`), enriched INFO with 6 sections, SLOWLOG command
 - **sharded engine** — shared-nothing, thread-per-core design with no cross-shard locking
-- **cluster mode** — distributed keyspace across multiple nodes: 16384 hash slots, SWIM gossip, Raft-based topology, MOVED/ASK redirects, live slot migration
+- **cluster mode** — distributed keyspace across multiple nodes: 16384 hash slots, SWIM gossip, epoch-based slot ownership and failover, MOVED/ASK redirects, live slot migration
 - **active expiration** — background sampling cleans up expired keys without client access
 - **memory limits** — per-shard byte-level accounting with configurable limits
 - **lru eviction** — approximate LRU via random sampling when memory pressure hits
@@ -209,7 +209,7 @@ ember-cli -p 6380 --tls --tls-insecure PING
 
 ## clustering
 
-ember distributes keys across 16384 hash slots using CRC16. each node owns a non-overlapping range of slots. gossip (SWIM) propagates membership and health; Raft commits topology changes; MOVED and ASK redirects keep clients pointing at the right node during normal operation and live slot migration.
+ember distributes keys across 16384 hash slots using CRC16. each node owns a non-overlapping range of slots. gossip (SWIM) propagates membership, health and slot ownership, and config epochs settle conflicting slot claims; MOVED and ASK redirects keep clients pointing at the right node during normal operation and live slot migration.
 
 ### quickstart
 
@@ -299,7 +299,7 @@ make cluster-clean  # stop + delete ./data/cluster/
 
 replication commands (REPLICATE, FAILOVER) are implemented — see the status table below.
 
-see [ARCHITECTURE.md](ARCHITECTURE.md) for how clustering works under the hood (raft, gossip, hash slots, migration).
+see [ARCHITECTURE.md](ARCHITECTURE.md) for how clustering works under the hood (gossip, config epochs, hash slots, migration).
 
 ## protobuf storage
 
@@ -464,7 +464,7 @@ crates/
   ember-core/         core engine (keyspace, types, sharding)
   ember-protocol/     RESP3 wire protocol
   ember-persistence/  AOF and snapshot durability
-  ember-cluster/      raft consensus, gossip, slot management, migration
+  ember-cluster/      gossip, failover, slot management, migration
   ember-cli/          interactive CLI client (REPL, cluster subcommands, benchmark)
 ```
 
@@ -501,7 +501,7 @@ redis-benchmark, 64B values, P=16, 8 threads. take these comparisons with a grai
 
 ember uses a thread-per-core architecture with channel-based routing. each shard owns a partition of the keyspace with no cross-shard locking on the hot path. supports all data types and enables atomic multi-key operations.
 
-**cluster mode** (`--cluster-enabled`): multiple ember nodes form a single distributed cache. the keyspace is partitioned into 16384 hash slots using CRC16 — each node owns a non-overlapping range. SWIM gossip propagates membership and health across nodes; topology changes (adding nodes, reassigning slots) go through a Raft consensus group so the cluster view is always consistent. clients are routed via MOVED redirects when a key lands on a different node, and ASK redirects during live slot migration.
+**cluster mode** (`--cluster-enabled`): multiple ember nodes form a single distributed cache. the keyspace is partitioned into 16384 hash slots using CRC16 — each node owns a non-overlapping range. SWIM gossip propagates membership, health and slot ownership across nodes. as in Redis Cluster, each primary claims its slots at a config epoch, and the higher epoch wins when two claims conflict. clients are routed via MOVED redirects when a key lands on a different node, and ASK redirects during live slot migration.
 
 contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 

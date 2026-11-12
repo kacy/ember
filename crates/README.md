@@ -12,7 +12,7 @@ this directory contains all ember workspace crates. each crate is self-contained
 | `ember-core` | `emberkv-core` | shared-nothing storage engine, keyspace, sharding, expiry, eviction |
 | `ember-protocol` | `ember-protocol` | RESP3 parser/serializer, typed `Command` enum, 170+ commands |
 | `ember-persistence` | `ember-persistence` | AOF, snapshots, crash recovery, optional AES-256-GCM encryption |
-| `ember-cluster` | `ember-cluster` | SWIM gossip, openraft consensus, slot migration, failover |
+| `ember-cluster` | `ember-cluster` | SWIM gossip, config epochs, slot migration, failover |
 | `ember-client` | `ember-client` | async Rust client with pipelining, TLS, pub/sub, vector |
 | `ember-cli` | `emberkv-cli` | interactive REPL, cluster subcommands, built-in benchmark |
 
