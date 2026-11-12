@@ -124,31 +124,24 @@ impl Keyspace {
             return Err(WrongType);
         };
 
+        // the cursor is a position in the set, so a scan step costs
+        // O(count) instead of walking every earlier member again
         let target = if count == 0 { 10 } else { count };
         let mut result = Vec::with_capacity(target);
-        let mut pos = 0u64;
-        let mut done = true;
-
-        for member in set.iter() {
-            if pos < cursor {
-                pos += 1;
-                continue;
-            }
-            if let Some(pat) = pattern {
-                if !glob_match(pat, member) {
-                    pos += 1;
-                    continue;
-                }
-            }
-            result.push(member.clone());
+        let mut pos = usize::try_from(cursor).unwrap_or(usize::MAX);
+        while pos < set.len() && result.len() < target {
+            let member = &set[pos];
             pos += 1;
-            if result.len() >= target {
-                done = false;
-                break;
+            if pattern.is_none_or(|pat| glob_match(pat, member)) {
+                result.push(member.clone());
             }
         }
 
-        Ok(if done { (0, result) } else { (pos, result) })
+        Ok(if pos >= set.len() {
+            (0, result)
+        } else {
+            (pos as u64, result)
+        })
     }
 
     /// Returns the union of all given sets.
@@ -344,8 +337,7 @@ impl Keyspace {
         self.reserve_memory(true, dest, memory::HASHSET_BASE_OVERHEAD, member_bytes)?;
 
         let stored = members.clone();
-        let set: std::collections::HashSet<String> = members.into_iter().collect();
-        let value = Value::Set(Box::new(set));
+        let value = Value::Set(Box::new(members.into_iter().collect()));
         self.memory.add(dest, &value);
         let entry = Entry::new(value, None);
         self.entries.insert(CompactString::from(dest), entry);
@@ -377,18 +369,15 @@ impl Keyspace {
         let result = if count > 0 {
             // distinct members, up to set size
             let n = (count as usize).min(set.len());
-            set.iter()
-                .choose_multiple(&mut rng, n)
+            rand::seq::index::sample(&mut rng, set.len(), n)
                 .into_iter()
-                .cloned()
+                .map(|i| set[i].clone())
                 .collect()
         } else {
             // allow duplicates, return exactly |count| elements
             let n = count.unsigned_abs() as usize;
-            let members: Vec<&String> = set.iter().collect();
-            use rand::Rng;
             (0..n)
-                .map(|_| members[rng.random_range(0..members.len())].clone())
+                .map(|_| set[rng.random_range(0..set.len())].clone())
                 .collect()
         };
 
@@ -420,17 +409,14 @@ impl Keyspace {
 
         let n = count.min(set.len());
         let mut rng = rand::rng();
-        let chosen: Vec<String> = set
-            .iter()
-            .choose_multiple(&mut rng, n)
-            .into_iter()
-            .cloned()
-            .collect();
-
+        let mut chosen = Vec::with_capacity(n);
         let mut removed_bytes = 0usize;
-        for member in &chosen {
-            set.remove(member);
-            removed_bytes += member.len() + memory::HASHSET_MEMBER_OVERHEAD;
+        for _ in 0..n {
+            let index = rng.random_range(0..set.len());
+            if let Some(member) = set.swap_remove_index(index) {
+                removed_bytes += member.len() + memory::HASHSET_MEMBER_OVERHEAD;
+                chosen.push(member);
+            }
         }
         let is_empty = set.is_empty();
 

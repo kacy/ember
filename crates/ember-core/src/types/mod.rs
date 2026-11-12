@@ -4,15 +4,17 @@
 //! sets, hashes, and sets are supported.
 
 pub mod hash;
+pub mod set;
 pub mod sorted_set;
 #[cfg(feature = "vector")]
 pub mod vector;
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 use bytes::Bytes;
 
 use hash::HashValue;
+use set::SetValue;
 use sorted_set::SortedSet;
 
 /// A stored value in the keyspace.
@@ -41,9 +43,9 @@ pub enum Value {
     /// inline Value enum size.
     Hash(Box<HashValue>),
 
-    /// Unordered set of unique string members. Boxed to reduce inline
-    /// Value enum size.
-    Set(Box<HashSet<String>>),
+    /// Set of unique string members. Boxed to reduce inline Value enum
+    /// size.
+    Set(Box<SetValue>),
 
     /// HNSW-backed vector set for similarity search. Each element is a
     /// named string mapped to a dense float vector. Boxed: inline, it made

@@ -206,7 +206,7 @@ pub(super) fn value_to_snap(value: &Value) -> SnapValue {
             SnapValue::SortedSet(members)
         }
         Value::Hash(hash) => SnapValue::Hash(hash.to_hash_map()),
-        Value::Set(set) => SnapValue::Set((**set).clone()),
+        Value::Set(set) => SnapValue::Set(set.iter().cloned().collect()),
         #[cfg(feature = "vector")]
         Value::Vector(ref vs) => {
             let mut elements = Vec::with_capacity(vs.len());
@@ -245,7 +245,7 @@ pub(super) fn snap_to_value(snap: SnapValue) -> Value {
             Value::SortedSet(Box::new(ss))
         }
         SnapValue::Hash(map) => Value::Hash(Box::new(crate::types::hash::HashValue::from(map))),
-        SnapValue::Set(set) => Value::Set(Box::new(set)),
+        SnapValue::Set(set) => Value::Set(Box::new(set.into_iter().collect())),
         #[cfg(feature = "vector")]
         SnapValue::Vector {
             metric,

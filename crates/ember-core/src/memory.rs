@@ -286,10 +286,7 @@ pub fn value_size(value: &Value) -> usize {
                 }
             }
         }
-        Value::Set(set) => {
-            let member_bytes: usize = set.iter().map(|m| m.len() + HASHSET_MEMBER_OVERHEAD).sum();
-            HASHSET_BASE_OVERHEAD + member_bytes
-        }
+        Value::Set(set) => set.memory_usage(),
         #[cfg(feature = "vector")]
         Value::Vector(vs) => vs.memory_usage(),
         // type_name: String struct = 24 bytes (ptr+len+cap) on 64-bit.
@@ -483,7 +480,7 @@ mod tests {
 
     #[test]
     fn big_set_is_large() {
-        let mut s = std::collections::HashSet::new();
+        let mut s = crate::types::set::SetValue::default();
         for i in 0..=LAZY_FREE_THRESHOLD {
             s.insert(format!("m{i}"));
         }

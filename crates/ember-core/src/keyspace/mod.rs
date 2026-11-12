@@ -11,7 +11,6 @@ use std::time::Duration;
 use ahash::AHashMap;
 use bytes::Bytes;
 use compact_str::CompactString;
-use rand::seq::IteratorRandom;
 use rand::Rng;
 
 use tracing::warn;
