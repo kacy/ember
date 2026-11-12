@@ -317,7 +317,8 @@ impl Keyspace {
     /// `expire` controls what happens to the TTL:
     /// - `None` — leave the TTL unchanged (plain GET semantics)
     /// - `Some(None)` — remove the TTL (PERSIST semantics)
-    /// - `Some(Some(duration))` — set a new TTL from now
+    /// - `Some(Some(duration))` — set a new TTL from now. A zero duration,
+    ///   which a deadline in the past becomes, deletes the key, as in Redis.
     ///
     /// Returns `Ok(None)` if the key does not exist or has expired.
     /// Returns `Err(WrongType)` if the key holds a non-string value.
@@ -338,6 +339,10 @@ impl Keyspace {
             },
         };
 
+        if expire == Some(Some(Duration::ZERO)) {
+            self.del(key);
+            return Ok(Some(bytes));
+        }
         if let Some(new_expire) = expire {
             let entry = self.entries.get_mut(key).expect("verified above");
             match new_expire {
@@ -1094,6 +1099,15 @@ mod tests {
         let val = ks.getex("k", Some(Some(Duration::from_secs(30)))).unwrap();
         assert_eq!(val, Some(Bytes::from("v")));
         assert!(matches!(ks.ttl("k"), TtlResult::Seconds(_)));
+    }
+
+    #[test]
+    fn getex_with_a_zero_ttl_deletes_the_key() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v"), None, false, false);
+        let val = ks.getex("k", Some(Some(Duration::ZERO))).unwrap();
+        assert_eq!(val, Some(Bytes::from("v")));
+        assert!(!ks.exists("k"));
     }
 
     #[test]

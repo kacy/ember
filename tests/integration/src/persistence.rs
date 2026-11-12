@@ -130,3 +130,33 @@ async fn aof_recovery() {
 
     drop(data_dir);
 }
+
+/// GETEX with a deadline already past deletes the key, and replay must
+/// not bring it back.
+#[tokio::test]
+async fn getex_with_a_past_deadline_stays_deleted_after_restart() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let path = data_dir.path().to_path_buf();
+    let start = || {
+        TestServer::start_with(ServerOptions {
+            appendonly: true,
+            data_dir_path: Some(path.clone()),
+            ..Default::default()
+        })
+    };
+
+    {
+        let server = start();
+        let mut c = server.connect().await;
+        c.ok(&["SET", "k", "v"]).await;
+        assert_eq!(
+            c.get_bulk(&["GETEX", "k", "PXAT", "1"]).await,
+            Some("v".into())
+        );
+        assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
+    }
+
+    let server = start();
+    let mut c = server.connect().await;
+    assert_eq!(c.get_bulk(&["GET", "k"]).await, None);
+}
