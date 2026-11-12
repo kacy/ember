@@ -3,6 +3,7 @@
 //! Each variant maps to a Redis-like data type. Strings, lists, sorted
 //! sets, hashes, and sets are supported.
 
+mod block_list;
 pub mod hash;
 pub mod list;
 pub mod set;

@@ -4,24 +4,22 @@
 //! are ordered by (score, member) — ties in score are broken
 //! lexicographically, matching Redis semantics.
 //!
-//! Implementation uses a sorted `Vec<(OrderedFloat<f64>, Arc<str>)>` for
-//! O(log n) rank queries and fast iteration, plus a
-//! `HashMap<Arc<str>, OrderedFloat<f64>>` for O(1) member→score lookups.
-//! Member strings are shared via `Arc<str>` between both structures,
-//! so each string is stored once on the heap.
+//! Members are kept in order in a [`BlockList`] of `(score, member)` pairs,
+//! plus a `HashMap<Arc<str>, OrderedFloat<f64>>` for O(1) member→score
+//! lookups. Member strings are shared via `Arc<str>` between both
+//! structures, so each string is stored once on the heap.
 //!
-//! Compared to a BTreeMap-based design, the sorted Vec gives:
-//! - O(log n) `rank()` via binary search (was O(n) with BTreeMap::range.count())
-//! - Better cache locality for iteration (contiguous memory vs pointer-chasing)
-//! - Lower memory per member (~24 bytes for a Vec slot vs ~64 for a BTreeMap node)
-//!   The tradeoff is O(n) insert/remove due to Vec shifting, but for typical
-//!   sorted set sizes that shifting is cache-friendly memmove and faster than
-//!   BTreeMap's O(log n) with high constant factor.
+//! The block list keeps the contiguous layout and small per-member cost of
+//! a sorted `Vec`, but an insert or remove shifts one block of at most 1024
+//! entries instead of every later member. Finding a rank sums block
+//! lengths, which is O(n / 1024).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ordered_float::OrderedFloat;
+
+use super::block_list::BlockList;
 
 pub use ember_protocol::command::ScoreBound;
 
@@ -68,7 +66,7 @@ impl AddResult {
 pub struct SortedSet {
     /// Score-ordered index for rank queries and iteration.
     /// Kept sorted by `(score, member_name)` at all times.
-    sorted: Vec<(OrderedFloat<f64>, Arc<str>)>,
+    sorted: BlockList<(OrderedFloat<f64>, Arc<str>)>,
     /// Member→score index for O(1) lookups.
     scores: HashMap<Arc<str>, OrderedFloat<f64>>,
     /// Cached sum of member string lengths for O(1) `memory_usage()`.
@@ -79,7 +77,7 @@ impl SortedSet {
     /// Creates an empty sorted set.
     pub fn new() -> Self {
         Self {
-            sorted: Vec::new(),
+            sorted: BlockList::default(),
             scores: HashMap::new(),
             data_bytes: 0,
         }
@@ -159,7 +157,7 @@ impl SortedSet {
     /// Returns the 0-based rank of a member (lowest score = rank 0).
     /// Returns `None` if the member is not present.
     ///
-    /// O(log n) — binary search over the sorted Vec.
+    /// O(n / 1024): see [`BlockList`].
     pub fn rank(&self, member: &str) -> Option<usize> {
         let (name, &score) = self.scores.get_key_value(member)?;
         Some(self.search_idx(score, name).unwrap())
@@ -168,7 +166,6 @@ impl SortedSet {
     /// Returns the reverse rank of a member (highest score = rank 0).
     /// Returns `None` if the member is not present.
     ///
-    /// O(log n) — binary search followed by subtraction.
     pub fn rev_rank(&self, member: &str) -> Option<usize> {
         let rank = self.rank(member)?;
         Some(self.sorted.len() - 1 - rank)
@@ -185,8 +182,8 @@ impl SortedSet {
         let s = s as usize;
         let e = e as usize;
 
-        self.sorted[s..=e]
-            .iter()
+        self.sorted
+            .range(s, e + 1)
             .map(|(score, member)| (&**member, score.0))
             .collect()
     }
@@ -204,8 +201,8 @@ impl SortedSet {
         let lo = (len - 1 - e) as usize;
         let hi = (len - 1 - s) as usize;
 
-        self.sorted[lo..=hi]
-            .iter()
+        self.sorted
+            .range(lo, hi + 1)
             .rev()
             .map(|(score, member)| (&**member, score.0))
             .collect()
@@ -232,8 +229,9 @@ impl SortedSet {
             return Vec::new();
         }
 
-        let iter = self.sorted[start..=end]
-            .iter()
+        let iter = self
+            .sorted
+            .range(start, end + 1)
             .skip(offset)
             .map(|(score, member)| (&**member, score.0));
 
@@ -258,8 +256,9 @@ impl SortedSet {
             return Vec::new();
         }
 
-        let iter = self.sorted[start..=end]
-            .iter()
+        let iter = self
+            .sorted
+            .range(start, end + 1)
             .rev()
             .skip(offset)
             .map(|(score, member)| (&**member, score.0));
@@ -298,11 +297,9 @@ impl SortedSet {
     /// Removes and returns up to `count` members with the lowest scores.
     ///
     /// Returns (member, score) pairs in ascending score order.
-    /// Uses `drain` for O(count) instead of repeated O(n) removals.
     pub fn pop_min(&mut self, count: usize) -> Vec<(String, f64)> {
-        let n = count.min(self.sorted.len());
-        let drained: Vec<_> = self.sorted.drain(..n).collect();
-        let mut result = Vec::with_capacity(n);
+        let drained = self.sorted.drain_front(count);
+        let mut result = Vec::with_capacity(drained.len());
         for (score, member) in drained {
             self.scores.remove(&*member);
             self.data_bytes -= member.len();
@@ -314,12 +311,9 @@ impl SortedSet {
     /// Removes and returns up to `count` members with the highest scores.
     ///
     /// Returns (member, score) pairs in descending score order.
-    /// Uses `split_off` for O(count) removal from the tail.
     pub fn pop_max(&mut self, count: usize) -> Vec<(String, f64)> {
-        let n = count.min(self.sorted.len());
-        let split_at = self.sorted.len() - n;
-        let tail = self.sorted.split_off(split_at);
-        let mut result = Vec::with_capacity(n);
+        let tail = self.sorted.drain_back(count);
+        let mut result = Vec::with_capacity(tail.len());
         for (score, member) in tail.into_iter().rev() {
             self.scores.remove(&*member);
             self.data_bytes -= member.len();
@@ -372,7 +366,7 @@ impl SortedSet {
         Self::MEMBER_FIXED_OVERHEAD + member.len()
     }
 
-    /// Finds the position of `(score, name)` in the sorted Vec.
+    /// Finds the position of `(score, name)` in the sorted order.
     ///
     /// Returns `Ok(idx)` if found, `Err(insertion_point)` if not found.
     /// The sort key is `(score, member_name)` — same ordering as the set itself.
@@ -763,15 +757,37 @@ mod tests {
     }
 
     #[test]
-    fn rank_is_o_log_n() {
-        // verify rank is correct for a larger set (regression guard for binary search)
+    fn ranks_and_ranges_span_blocks() {
+        // enough members for several blocks, added out of order
+        let n = 5000;
         let mut ss = SortedSet::new();
-        for i in 0..100 {
-            ss.add(&format!("member:{i:03}"), i as f64);
+        for i in (0..n).rev() {
+            ss.add(&format!("member:{i:05}"), i as f64);
         }
-        for i in 0..100 {
-            assert_eq!(ss.rank(&format!("member:{i:03}")), Some(i));
+        for i in [0, 1, 1023, 1024, 2500, n - 1] {
+            assert_eq!(ss.rank(&format!("member:{i:05}")), Some(i));
+            assert_eq!(ss.rev_rank(&format!("member:{i:05}")), Some(n - 1 - i));
         }
+        let mid = ss.range_by_rank(1020, 1030);
+        assert_eq!(mid.len(), 11);
+        assert_eq!(mid[0], ("member:01020", 1020.0));
+        let rev = ss.rev_range_by_rank(0, 2);
+        assert_eq!(rev[0].0, "member:04999");
+        let by_score = ss.range_by_score(
+            ScoreBound::Inclusive(2000.0),
+            ScoreBound::Exclusive(3100.0),
+            0,
+            None,
+        );
+        assert_eq!(by_score.len(), 1100);
+        assert_eq!(
+            ss.count_by_score(ScoreBound::Inclusive(2000.0), ScoreBound::Exclusive(3100.0)),
+            1100
+        );
+        assert_eq!(ss.pop_min(1500).last().unwrap().0, "member:01499");
+        assert_eq!(ss.pop_max(1500).last().unwrap().0, "member:03500");
+        assert_eq!(ss.len(), 2000);
+        assert_eq!(ss.rank("member:01500"), Some(0));
     }
 
     #[test]
