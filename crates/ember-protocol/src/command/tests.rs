@@ -1830,6 +1830,7 @@ fn migrate_basic() {
             timeout_ms: 5000,
             copy: false,
             replace: false,
+            auth: None,
         },
     );
 }
@@ -1856,8 +1857,38 @@ fn migrate_with_options() {
             timeout_ms: 10000,
             copy: true,
             replace: true,
+            auth: None,
         },
     );
+}
+
+#[test]
+fn migrate_with_auth() {
+    let parse = |extra: &[&str]| {
+        let mut args = vec!["MIGRATE", "h", "1", "k", "0", "10"];
+        args.extend_from_slice(extra);
+        match Command::from_frame(cmd(&args)) {
+            Ok(Command::Migrate { auth, .. }) => Ok(auth),
+            Ok(other) => panic!("{other:?}"),
+            Err(e) => Err(e),
+        }
+    };
+    assert_eq!(
+        parse(&["AUTH", "pw"]).unwrap(),
+        Some(MigrateAuth {
+            username: None,
+            password: "pw".into()
+        })
+    );
+    assert_eq!(
+        parse(&["REPLACE", "AUTH2", "u", "pw"]).unwrap(),
+        Some(MigrateAuth {
+            username: Some("u".into()),
+            password: "pw".into()
+        })
+    );
+    assert!(parse(&["AUTH"]).is_err());
+    assert!(parse(&["AUTH2", "u"]).is_err());
 }
 
 #[test]

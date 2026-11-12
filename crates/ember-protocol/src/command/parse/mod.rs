@@ -9,7 +9,9 @@ use bytes::Bytes;
 use crate::error::ProtocolError;
 use crate::types::Frame;
 
-use super::{BitOpKind, BitRange, BitRangeUnit, Command, ScoreBound, SetExpire, ZAddFlags};
+use super::{
+    BitOpKind, BitRange, BitRangeUnit, Command, MigrateAuth, ScoreBound, SetExpire, ZAddFlags,
+};
 
 mod cluster;
 mod hashes;
