@@ -160,6 +160,8 @@ pub struct MemberInfo {
     pub addr: SocketAddr,
     pub incarnation: u64,
     pub is_primary: bool,
+    /// The primary this member replicates, if it is a replica.
+    pub replicates: Option<NodeId>,
     pub config_epoch: u64,
     pub slots: Vec<SlotRange>,
 }
@@ -552,15 +554,7 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
             buf.put_u8(if *is_primary { 1 } else { 0 });
-            match replicates {
-                Some(primary_id) => {
-                    buf.put_u8(1);
-                    encode_node_id(buf, primary_id);
-                }
-                None => {
-                    buf.put_u8(0);
-                }
-            }
+            encode_optional_node_id(buf, replicates);
         }
         NodeUpdate::VoteRequest {
             candidate,
@@ -645,12 +639,7 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
             let node = decode_node_id(buf)?;
             let incarnation = safe_get_u64_le(buf)?;
             let is_primary = safe_get_u8(buf)? != 0;
-            let has_replicates = safe_get_u8(buf)? != 0;
-            let replicates = if has_replicates {
-                Some(decode_node_id(buf)?)
-            } else {
-                None
-            };
+            let replicates = decode_optional_node_id(buf)?;
             Ok(NodeUpdate::RoleChanged {
                 node,
                 incarnation,
@@ -687,11 +676,30 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
     }
 }
 
+fn encode_optional_node_id(buf: &mut BytesMut, id: &Option<NodeId>) {
+    match id {
+        Some(id) => {
+            buf.put_u8(1);
+            encode_node_id(buf, id);
+        }
+        None => buf.put_u8(0),
+    }
+}
+
+fn decode_optional_node_id(buf: &mut &[u8]) -> io::Result<Option<NodeId>> {
+    if safe_get_u8(buf)? != 0 {
+        Ok(Some(decode_node_id(buf)?))
+    } else {
+        Ok(None)
+    }
+}
+
 fn encode_member_info(buf: &mut BytesMut, member: &MemberInfo) {
     encode_node_id(buf, &member.id);
     encode_socket_addr(buf, &member.addr);
     buf.put_u64_le(member.incarnation);
     buf.put_u8(if member.is_primary { 1 } else { 0 });
+    encode_optional_node_id(buf, &member.replicates);
     buf.put_u64_le(member.config_epoch);
     encode_slot_ranges(buf, &member.slots);
 }
@@ -701,6 +709,7 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
     let addr = decode_socket_addr(buf)?;
     let incarnation = safe_get_u64_le(buf)?;
     let is_primary = safe_get_u8(buf)? != 0;
+    let replicates = decode_optional_node_id(buf)?;
     let config_epoch = safe_get_u64_le(buf)?;
     let slots = decode_slot_ranges(buf)?;
     Ok(MemberInfo {
@@ -708,6 +717,7 @@ fn decode_member_info(buf: &mut &[u8]) -> io::Result<MemberInfo> {
         addr,
         incarnation,
         is_primary,
+        replicates,
         config_epoch,
         slots,
     })
@@ -829,6 +839,7 @@ mod tests {
                     addr: test_addr(),
                     incarnation: 1,
                     is_primary: true,
+                    replicates: None,
                     config_epoch: 1,
                     slots: vec![SlotRange::new(0, 5460)],
                 },
@@ -837,6 +848,7 @@ mod tests {
                     addr: test_addr(),
                     incarnation: 2,
                     is_primary: false,
+                    replicates: Some(NodeId::new()),
                     config_epoch: 1,
                     slots: vec![],
                 },

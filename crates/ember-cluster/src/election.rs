@@ -4,8 +4,9 @@
 //! it. Each replica starts a timed election: it broadcasts a `VoteRequest`
 //! via gossip and waits for primary nodes to respond with `VoteGranted`.
 //!
-//! The first replica to collect votes from a majority of the alive primaries
-//! wins the election and promotes itself via `CLUSTER FAILOVER FORCE`.
+//! The first replica to collect votes from a majority of all primaries, the
+//! failed one included, wins the election and promotes itself via
+//! `CLUSTER FAILOVER FORCE`.
 //!
 //! # Fairness
 //!
@@ -43,9 +44,9 @@ impl Election {
 
     /// Records a vote from `from`. Returns `true` if quorum is newly reached.
     ///
-    /// `total_primaries` is the number of alive primaries (excluding the
-    /// failed one) at the time the election started.  Quorum is a simple
-    /// majority: `total_primaries / 2 + 1`.
+    /// `total_primaries` is the number of primaries when the election
+    /// started, the failed one included. Quorum is a simple majority:
+    /// `total_primaries / 2 + 1`.
     ///
     /// Once quorum is reached this returns `true` exactly once; subsequent
     /// calls return `false` so the caller promotes exactly once.
