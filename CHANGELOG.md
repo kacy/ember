@@ -7,7 +7,7 @@
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### fixes
-- AOF durability:
+- AOF durability (#449):
   - under `appendfsync everysec` and `no`, writes now reach the OS before their replies, so a crash of the process loses no acknowledged write. before, they sat in an 8 KB buffer, and `no` never flushed it
   - a write that fails part way, as on a full disk, no longer leaves a partial record that made the rest of the file unreadable
   - any failed AOF write or fsync now rejects writes until a retry succeeds, not only a full disk
