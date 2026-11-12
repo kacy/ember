@@ -261,21 +261,73 @@ fn noeviction_returns_oom_when_full() {
     assert!(ks.exists("a"));
 }
 
+/// The tracked total must match the sum of the entries' sizes, which each
+/// value type counts itself.
+fn assert_memory_matches(ks: &Keyspace) {
+    let total: usize = ks.entries.iter().map(|(k, e)| e.entry_size(k)).sum();
+    assert_eq!(ks.memory.used_bytes(), total);
+    assert_eq!(ks.memory.key_count(), ks.entries.len());
+}
+
 #[test]
-fn value_sizes_past_u32_fall_back_to_the_value() {
-    let mut entry = Entry::new(Value::String(Bytes::from("abc")), None);
-    let real = entry.value_size();
+fn memory_matches_the_entries_after_collection_writes() {
+    let mut ks = Keyspace::new();
+    let b = |s: &str| Bytes::from(s.to_owned());
 
-    entry.set_value_size(u32::MAX as usize + 10);
-    // the cache cannot hold that size, so it is read from the value
-    assert_eq!(entry.value_size(), real);
-    entry.grow_value_size(5);
-    assert_eq!(entry.value_size(), real);
+    ks.rpush("l", &[b("a"), b("bbb"), b("cc"), b("bbb")])
+        .unwrap();
+    ks.lpush("l", &[b("dddd")]).unwrap();
+    ks.lset("l", 1, b("eeeeee")).unwrap();
+    ks.linsert("l", true, b"cc", b("f")).unwrap();
+    ks.lrem("l", 0, b"bbb").unwrap();
+    ks.ltrim("l", 1, -1).unwrap();
+    ks.lpop("l").unwrap();
+    assert_memory_matches(&ks);
 
-    entry.set_value_size(100);
-    entry.grow_value_size(5);
-    entry.shrink_value_size(200);
-    assert_eq!(entry.value_size(), 0);
+    let members: Vec<String> = (0..50).map(|i| format!("m{i}")).collect();
+    ks.sadd("s", &members).unwrap();
+    ks.srem("s", &members[..10]).unwrap();
+    ks.spop("s", 5).unwrap();
+    ks.smove("s", "s2", &members[20]).unwrap();
+    assert_memory_matches(&ks);
+
+    // past 32 fields the hash switches to its map form
+    let fields: Vec<(String, Bytes)> = (0..40).map(|i| (format!("f{i}"), b("v"))).collect();
+    ks.hset("h", &fields[..10]).unwrap();
+    assert_memory_matches(&ks);
+    ks.hset("h", &fields).unwrap();
+    ks.hset("h", &[("f1".into(), b("longer value"))]).unwrap();
+    ks.hincrby("h", "n", 5).unwrap();
+    ks.hincrbyfloat("h", "x", 1.5).unwrap();
+    ks.hdel("h", &["f2".into(), "f3".into()]).unwrap();
+    assert_memory_matches(&ks);
+
+    let scored: Vec<(f64, String)> = (0..20).map(|i| (i as f64, format!("z{i}"))).collect();
+    ks.zadd("z", &scored, &ZAddFlags::default()).unwrap();
+    ks.zincrby("z", 2.0, "new").unwrap();
+    ks.zrem("z", &["z1".into()]).unwrap();
+    ks.zpopmin("z", 3).unwrap();
+    ks.zpopmax("z", 3).unwrap();
+    assert_memory_matches(&ks);
+
+    // emptying a collection removes the key
+    ks.zpopmin("z", 100).unwrap();
+    ks.ltrim("l", 1, 0).unwrap();
+    assert!(!ks.exists("z"));
+    assert!(!ks.exists("l"));
+    assert_memory_matches(&ks);
+
+    // a write that adds nothing to a new key leaves no key behind
+    let xx = ZAddFlags {
+        xx: true,
+        ..ZAddFlags::default()
+    };
+    ks.zadd("z", &scored, &xx).unwrap();
+    assert!(!ks.exists("z"));
+    assert!(ks.hincrby("h2", "f", 1).is_ok());
+    ks.hset("h3", &[("f".into(), b("not a number"))]).unwrap();
+    assert!(ks.hincrby("h3", "f", 1).is_err());
+    assert_memory_matches(&ks);
 }
 
 #[test]
@@ -1228,4 +1280,15 @@ fn sort_wrong_type() {
     ks.set("str".into(), Bytes::from("hello"), None, false, false);
     let result = ks.sort("str", false, false, None);
     assert!(result.is_err());
+}
+
+#[test]
+fn smove_onto_the_same_set_changes_nothing() {
+    let mut ks = Keyspace::new();
+    ks.sadd("s", &["only".into()]).unwrap();
+    ks.expire("s", 100);
+    assert_eq!(ks.smove("s", "s", "only"), Ok(true));
+    assert_eq!(ks.smove("s", "s", "missing"), Ok(false));
+    // moving the last member out and back used to drop the TTL
+    assert!(matches!(ks.ttl("s"), TtlResult::Seconds(_)));
 }

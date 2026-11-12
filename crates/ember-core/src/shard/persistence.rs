@@ -197,7 +197,7 @@ pub(super) fn handle_snapshot(
 pub(super) fn value_to_snap(value: &Value) -> SnapValue {
     match value {
         Value::String(data) => SnapValue::String(data.clone()),
-        Value::List(deque) => SnapValue::List(deque.clone()),
+        Value::List(list) => SnapValue::List((**list).clone()),
         Value::SortedSet(ss) => {
             let members: Vec<(f64, String)> = ss
                 .iter()
@@ -236,7 +236,7 @@ pub(super) fn value_to_snap(value: &Value) -> SnapValue {
 pub(super) fn snap_to_value(snap: SnapValue) -> Value {
     match snap {
         SnapValue::String(data) => Value::String(data),
-        SnapValue::List(deque) => Value::List(deque),
+        SnapValue::List(deque) => Value::List(deque.into_iter().collect()),
         SnapValue::SortedSet(members) => {
             let mut ss = crate::types::sorted_set::SortedSet::new();
             for (score, member) in members {

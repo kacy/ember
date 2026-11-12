@@ -119,7 +119,7 @@ mod tests {
         for i in 0..100 {
             list.push_back(Bytes::from(format!("item-{i}")));
         }
-        handle.defer_value(Value::List(list));
+        handle.defer_value(Value::List(list.into_iter().collect()));
         // give the drop thread a moment to process
         std::thread::sleep(std::time::Duration::from_millis(10));
     }

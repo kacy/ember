@@ -47,13 +47,14 @@ pub fn effective_limit(max_bytes: usize) -> usize {
 ///
 /// Accounts for: the CompactString key (24 bytes inline on 64-bit),
 /// Entry struct fields (Value enum tag + Bytes/collection inline storage,
-/// expires_at_ms, cached_value_size, last_access_secs), plus hashbrown
+/// expires_at_ms, last_access_secs), plus hashbrown
 /// per-entry bookkeeping (1 control byte + empty slot waste at ~87.5%
 /// load factor).
 ///
 /// Reduced from 128 to 104 after structural optimizations:
 /// - moved 8-byte `version` field to a lazy side table
-/// - packed `cached_value_size` as u32 (was usize)
+/// - packed a cached value size as u32 (was usize); the field is gone
+///   now that every value type counts its own size
 /// - bumped from 100 to 104 for CI platforms where Entry is 72 bytes
 /// - bumped to 120 for the `IndexMap` keyspace, which stores each entry's
 ///   hash (8 bytes) next to it and keeps an index table (8 bytes plus a
@@ -226,11 +227,6 @@ pub(crate) const VECDEQUE_BASE_OVERHEAD: usize = 24;
 /// No per-field heap allocation — everything is contiguous in the buffer.
 pub(crate) const PACKED_HASH_ENTRY_OVERHEAD: usize = 6;
 
-/// Base overhead for the packed hash buffer.
-///
-/// Vec struct (ptr + len + cap = 24 bytes) plus the 2-byte field count header.
-pub(crate) const PACKED_HASH_BASE_OVERHEAD: usize = 26;
-
 /// Estimated overhead per entry in a HashMap (for large hashes).
 ///
 /// Each entry has: key CompactString (24 bytes), value Bytes (24 bytes),
@@ -239,16 +235,6 @@ pub(crate) const HASHMAP_ENTRY_OVERHEAD: usize = 64;
 
 /// Base overhead for an empty HashMap (bucket array pointer + len + capacity).
 pub(crate) const HASHMAP_BASE_OVERHEAD: usize = 48;
-
-/// Estimated overhead per field for a hash in its current form. Packed and
-/// full hashes carry very different per-field costs, so removals must use
-/// the one that matches how the fields were counted.
-pub(crate) fn hash_field_overhead(hash: &crate::types::hash::HashValue) -> usize {
-    match hash {
-        crate::types::hash::HashValue::Packed(_) => PACKED_HASH_ENTRY_OVERHEAD,
-        crate::types::hash::HashValue::Full(_) => HASHMAP_ENTRY_OVERHEAD,
-    }
-}
 
 /// Estimated overhead per member in a HashSet.
 ///
@@ -262,30 +248,9 @@ pub(crate) const HASHSET_BASE_OVERHEAD: usize = 48;
 pub fn value_size(value: &Value) -> usize {
     match value {
         Value::String(data) => data.len(),
-        Value::List(deque) => {
-            let element_bytes: usize = deque
-                .iter()
-                .map(|b| b.len() + VECDEQUE_ELEMENT_OVERHEAD)
-                .sum();
-            VECDEQUE_BASE_OVERHEAD + element_bytes
-        }
+        Value::List(list) => list.memory_usage(),
         Value::SortedSet(ss) => ss.memory_usage(),
-        Value::Hash(hash) => {
-            use crate::types::hash::HashValue;
-            match hash.as_ref() {
-                HashValue::Packed(buf) => {
-                    // Vec struct overhead (24 bytes) + buffer contents
-                    24 + buf.len()
-                }
-                HashValue::Full(map) => {
-                    let entry_bytes: usize = map
-                        .iter()
-                        .map(|(k, v)| k.len() + v.len() + HASHMAP_ENTRY_OVERHEAD)
-                        .sum();
-                    HASHMAP_BASE_OVERHEAD + entry_bytes
-                }
-            }
-        }
+        Value::Hash(hash) => hash.memory_usage(),
         Value::Set(set) => set.memory_usage(),
         #[cfg(feature = "vector")]
         Value::Vector(vs) => vs.memory_usage(),
@@ -392,7 +357,7 @@ mod tests {
         let mut deque = std::collections::VecDeque::new();
         deque.push_back(Bytes::from("hello"));
         deque.push_back(Bytes::from("world"));
-        let val = Value::List(deque);
+        let val = Value::List(deque.into_iter().collect());
 
         let size = value_size(&val);
         // base overhead + 2 elements (each: data len + element overhead)
@@ -404,7 +369,7 @@ mod tests {
 
     #[test]
     fn empty_list_value_size() {
-        let val = Value::List(std::collections::VecDeque::new());
+        let val = Value::List(Default::default());
         assert_eq!(value_size(&val), VECDEQUE_BASE_OVERHEAD);
     }
 
@@ -456,7 +421,7 @@ mod tests {
         for _ in 0..LAZY_FREE_THRESHOLD {
             d.push_back(Bytes::from("x"));
         }
-        assert!(!is_large_value(&Value::List(d)));
+        assert!(!is_large_value(&Value::List(d.into_iter().collect())));
     }
 
     #[test]
@@ -465,7 +430,7 @@ mod tests {
         for _ in 0..=LAZY_FREE_THRESHOLD {
             d.push_back(Bytes::from("x"));
         }
-        assert!(is_large_value(&Value::List(d)));
+        assert!(is_large_value(&Value::List(d.into_iter().collect())));
     }
 
     #[test]

@@ -104,8 +104,8 @@ impl Keyspace {
         let new_size = memory::entry_size(&key, &new_value);
 
         // single lookup: check existence, gather old size and expiry state.
-        // treat expired entries as non-existent. uses cached_value_size
-        // for O(1) size lookup instead of walking the value.
+        // treat expired entries as non-existent. every value type counts
+        // its own size, so the size lookup is O(1).
         let old_info = self.entries.get(key.as_str()).and_then(|e| {
             if e.is_expired() {
                 None
@@ -570,7 +570,11 @@ mod tests {
         let mut ks = Keyspace::new();
         let mut list = std::collections::VecDeque::new();
         list.push_back(Bytes::from("item"));
-        ks.restore("mylist".into(), Value::List(list), None);
+        ks.restore(
+            "mylist".into(),
+            Value::List(list.into_iter().collect()),
+            None,
+        );
 
         assert!(ks.get("mylist").is_err());
     }
@@ -585,7 +589,7 @@ mod tests {
 
         let mut list = std::collections::VecDeque::new();
         list.push_back(Bytes::from("item"));
-        ks.restore("l".into(), Value::List(list), None);
+        ks.restore("l".into(), Value::List(list.into_iter().collect()), None);
         assert_eq!(ks.value_type("l"), "list");
 
         ks.zadd("z", &[(1.0, "a".into())], &ZAddFlags::default())

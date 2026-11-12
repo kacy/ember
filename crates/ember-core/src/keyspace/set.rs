@@ -1,5 +1,9 @@
 use super::*;
 
+fn empty_set() -> Value {
+    Value::Set(Box::default())
+}
+
 impl Keyspace {
     /// Adds one or more members to a set.
     ///
@@ -9,78 +13,25 @@ impl Keyspace {
         if members.is_empty() {
             return Ok(0);
         }
-
-        self.remove_if_expired(key);
-
-        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::Set(_)))?;
-
-        let member_increase: usize = members
+        let increase = members
             .iter()
             .map(|m| m.len() + memory::HASHSET_MEMBER_OVERHEAD)
             .sum();
-        self.reserve_memory(is_new, key, memory::HASHSET_BASE_OVERHEAD, member_increase)?;
-
-        if is_new {
-            self.insert_empty(key, Value::Set(Box::default()));
-        }
-
-        let track_access = self.track_access;
-        let added = self
-            .track_size(key, |entry| {
-                let Value::Set(ref mut set) = entry.value else {
-                    unreachable!("type verified by ensure_collection_type");
-                };
-                let mut added = 0;
-                for member in members {
-                    if set.insert(member.clone()) {
-                        added += 1;
-                    }
-                }
-                entry.touch(track_access);
-                added
-            })
-            .unwrap_or(0);
-
-        Ok(added)
+        self.edit_or_create(key, Value::as_set_mut, empty_set, increase, |set| {
+            let added = members.iter().filter(|m| set.insert((*m).clone())).count();
+            (added, added > 0)
+        })
     }
 
     /// Removes one or more members from a set.
     ///
     /// Returns the number of members that were actually removed.
     pub fn srem(&mut self, key: &str, members: &[String]) -> Result<usize, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(0);
-        }
-
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(0);
-        };
-        if !matches!(entry.value, Value::Set(_)) {
-            return Err(WrongType);
-        }
-
-        let old_entry_size = entry.entry_size(key);
-
-        let mut removed = 0;
-        let mut removed_bytes: usize = 0;
-        let is_empty = if let Value::Set(ref mut set) = entry.value {
-            for member in members {
-                if set.remove(member) {
-                    removed_bytes += member.len() + memory::HASHSET_MEMBER_OVERHEAD;
-                    removed += 1;
-                }
-            }
-            set.is_empty()
-        } else {
-            false
-        };
-        if removed > 0 {
-            self.bump_version(key);
-        }
-
-        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
-
-        Ok(removed)
+        let removed = self.edit(key, Value::as_set_mut, |set| {
+            let removed = members.iter().filter(|m| set.remove(m)).count();
+            (removed, removed > 0)
+        })?;
+        Ok(removed.unwrap_or(0))
     }
 
     /// Returns all members of a set.
@@ -386,47 +337,19 @@ impl Keyspace {
 
     /// Removes and returns up to `count` random members from a set.
     pub fn spop(&mut self, key: &str, count: usize) -> Result<Vec<String>, WrongType> {
-        if self.remove_if_expired(key) || count == 0 {
+        if count == 0 {
             return Ok(vec![]);
         }
-
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(vec![]);
-        };
-        if !matches!(entry.value, Value::Set(_)) {
-            return Err(WrongType);
-        }
-
-        let old_entry_size = entry.entry_size(key);
-
-        // reborrow to get mutable access to the set
-        let Value::Set(ref mut set) = entry.value else {
-            unreachable!("type checked above");
-        };
-        if set.is_empty() {
-            return Ok(vec![]);
-        }
-
-        let n = count.min(set.len());
-        let mut rng = rand::rng();
-        let mut chosen = Vec::with_capacity(n);
-        let mut removed_bytes = 0usize;
-        for _ in 0..n {
-            let index = rng.random_range(0..set.len());
-            if let Some(member) = set.swap_remove_index(index) {
-                removed_bytes += member.len() + memory::HASHSET_MEMBER_OVERHEAD;
-                chosen.push(member);
-            }
-        }
-        let is_empty = set.is_empty();
-
-        if !chosen.is_empty() {
-            self.bump_version(key);
-        }
-
-        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
-
-        Ok(chosen)
+        let popped = self.edit(key, Value::as_set_mut, |set| {
+            let mut rng = rand::rng();
+            let n = count.min(set.len());
+            let chosen: Vec<String> = (0..n)
+                .filter_map(|_| set.swap_remove_index(rng.random_range(0..set.len())))
+                .collect();
+            let changed = !chosen.is_empty();
+            (chosen, changed)
+        })?;
+        Ok(popped.unwrap_or_default())
     }
 
     /// Checks membership for multiple members at once.
@@ -475,37 +398,20 @@ impl Keyspace {
             }
         }
 
-        let old_src_size = self
-            .entries
-            .get(source)
-            .map(|e| e.entry_size(source))
-            .unwrap_or(0);
-
-        // try removing the member from source
-        let removed = if let Some(entry) = self.entries.get_mut(source) {
-            if let Value::Set(ref mut set) = entry.value {
-                set.remove(member)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !removed {
-            return Ok(false);
+        if source == destination {
+            let present = self.edit(source, Value::as_set_mut, |set| {
+                (set.contains(member), false)
+            })?;
+            return Ok(present == Some(true));
         }
 
-        let member_bytes = member.len() + memory::HASHSET_MEMBER_OVERHEAD;
-
-        let src_empty = self
-            .entries
-            .get(source)
-            .map(|e| matches!(&e.value, Value::Set(s) if s.is_empty()))
-            .unwrap_or(false);
-
-        self.cleanup_after_remove(source, old_src_size, src_empty, member_bytes);
-        self.bump_version(source);
+        let removed = self.edit(source, Value::as_set_mut, |set| {
+            let removed = set.remove(member);
+            (removed, removed)
+        })?;
+        if removed != Some(true) {
+            return Ok(false);
+        }
 
         // add to destination (creates the set if needed). on failure, put
         // the member back so a failed move changes nothing; the removal just

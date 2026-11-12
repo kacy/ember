@@ -1,5 +1,9 @@
 use super::*;
 
+fn empty_zset() -> Value {
+    Value::SortedSet(Box::default())
+}
+
 impl Keyspace {
     /// Adds members with scores to a sorted set, with optional ZADD flags.
     ///
@@ -14,56 +18,26 @@ impl Keyspace {
         members: &[(f64, String)],
         flags: &ZAddFlags,
     ) -> Result<ZAddResult, WriteError> {
-        self.remove_if_expired(key);
-
-        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
-
         // worst-case estimate: assume all members are new
-        let member_increase: usize = members
+        let increase = members
             .iter()
             .map(|(_, m)| SortedSet::estimated_member_cost(m))
             .sum();
-        self.reserve_memory(is_new, key, SortedSet::BASE_OVERHEAD, member_increase)?;
-
-        if is_new {
-            self.insert_empty(key, Value::SortedSet(Box::default()));
-        }
-
-        let track_access = self.track_access;
-        let (count, applied) = self
-            .track_size(key, |entry| {
-                let Value::SortedSet(ref mut ss) = entry.value else {
-                    unreachable!("type verified by ensure_collection_type");
-                };
-                let mut count = 0;
-                let mut applied = Vec::new();
-                for (score, member) in members {
-                    let result = ss.add_with_flags(member, *score, flags);
-                    if result.added || result.updated {
-                        applied.push((*score, member.clone()));
-                    }
-                    if flags.ch {
-                        if result.added || result.updated {
-                            count += 1;
-                        }
-                    } else if result.added {
-                        count += 1;
-                    }
+        self.edit_or_create(key, Value::as_zset_mut, empty_zset, increase, |zset| {
+            let mut count = 0;
+            let mut applied = Vec::new();
+            for (score, member) in members {
+                let result = zset.add_with_flags(member, *score, flags);
+                if result.added || result.updated {
+                    applied.push((*score, member.clone()));
                 }
-                entry.touch(track_access);
-                (count, applied)
-            })
-            .unwrap_or_default();
-
-        // clean up if the set is still empty (e.g. XX flag on a new key)
-        if let Some(entry) = self.entries.get(key) {
-            if matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty()) {
-                self.memory.remove_with_size(entry.entry_size(key));
-                self.entries.swap_remove(key);
+                if result.added || (flags.ch && result.updated) {
+                    count += 1;
+                }
             }
-        }
-
-        Ok(ZAddResult { count, applied })
+            let changed = !applied.is_empty();
+            (ZAddResult { count, applied }, changed)
+        })
     }
 
     /// Removes members from a sorted set. Returns the names of members
@@ -72,42 +46,12 @@ impl Keyspace {
     ///
     /// Returns `Err(WrongType)` if the key holds a non-sorted-set value.
     pub fn zrem(&mut self, key: &str, members: &[String]) -> Result<Vec<String>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(vec![]);
-        }
-
-        let Some(entry) = self.entries.get(key) else {
-            return Ok(vec![]);
-        };
-        if !matches!(entry.value, Value::SortedSet(_)) {
-            return Err(WrongType);
-        }
-
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(vec![]);
-        };
-        let old_entry_size = entry.entry_size(key);
-        let track_access = self.track_access;
-        let mut removed = Vec::new();
-        let mut removed_bytes: usize = 0;
-        if let Value::SortedSet(ref mut ss) = entry.value {
-            for member in members {
-                if ss.remove(member) {
-                    removed_bytes += SortedSet::estimated_member_cost(member);
-                    removed.push(member.clone());
-                }
-            }
-        }
-        entry.touch(track_access);
-
-        let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
-        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
-
-        if !removed.is_empty() {
-            self.bump_version(key);
-        }
-
-        Ok(removed)
+        let removed = self.edit(key, Value::as_zset_mut, |zset| {
+            let removed: Vec<String> = members.iter().filter(|m| zset.remove(m)).cloned().collect();
+            let changed = !removed.is_empty();
+            (removed, changed)
+        })?;
+        Ok(removed.unwrap_or_default())
     }
 
     /// Returns the score for a member in a sorted set.
@@ -262,35 +206,11 @@ impl Keyspace {
     ///
     /// Returns the new score.
     pub fn zincrby(&mut self, key: &str, increment: f64, member: &str) -> Result<f64, WriteError> {
-        self.remove_if_expired(key);
-
-        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::SortedSet(_)))?;
-
         // worst case: member is new
-        self.reserve_memory(
-            is_new,
-            key,
-            SortedSet::BASE_OVERHEAD,
-            SortedSet::estimated_member_cost(member),
-        )?;
-
-        if is_new {
-            self.insert_empty(key, Value::SortedSet(Box::default()));
-        }
-
-        let track_access = self.track_access;
-        let new_score = self
-            .track_size(key, |entry| {
-                let Value::SortedSet(ref mut ss) = entry.value else {
-                    unreachable!("type verified by ensure_collection_type");
-                };
-                let score = ss.incr(member, increment);
-                entry.touch(track_access);
-                score
-            })
-            .unwrap_or(increment);
-
-        Ok(new_score)
+        let increase = SortedSet::estimated_member_cost(member);
+        self.edit_or_create(key, Value::as_zset_mut, empty_zset, increase, |zset| {
+            (zset.incr(member, increment), true)
+        })
     }
 
     /// Returns members with scores in the given range, in ascending order.
@@ -338,87 +258,27 @@ impl Keyspace {
     /// Removes and returns up to `count` members with the lowest scores.
     /// Deletes the key if the set becomes empty.
     pub fn zpopmin(&mut self, key: &str, count: usize) -> Result<Vec<(String, f64)>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(vec![]);
-        }
-        let Some(entry) = self.entries.get(key) else {
-            return Ok(vec![]);
-        };
-        if !matches!(entry.value, Value::SortedSet(_)) {
-            return Err(WrongType);
-        }
-
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(vec![]);
-        };
-        let old_entry_size = entry.entry_size(key);
-        let track_access = self.track_access;
-        let mut removed_bytes = 0usize;
-        let popped = if let Value::SortedSet(ref mut ss) = entry.value {
-            let items = ss.pop_min(count);
-            for (member, _) in &items {
-                removed_bytes += SortedSet::estimated_member_cost(member);
-            }
-            items
-        } else {
-            vec![]
-        };
-
-        if !popped.is_empty() {
-            entry.touch(track_access);
-        }
-
-        let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
-        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
-
-        if !popped.is_empty() {
-            self.bump_version(key);
-        }
-
-        Ok(popped)
+        self.zpop(key, count, SortedSet::pop_min)
     }
 
     /// Removes and returns up to `count` members with the highest scores.
     /// Deletes the key if the set becomes empty.
     pub fn zpopmax(&mut self, key: &str, count: usize) -> Result<Vec<(String, f64)>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(vec![]);
-        }
-        let Some(entry) = self.entries.get(key) else {
-            return Ok(vec![]);
-        };
-        if !matches!(entry.value, Value::SortedSet(_)) {
-            return Err(WrongType);
-        }
+        self.zpop(key, count, SortedSet::pop_max)
+    }
 
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(vec![]);
-        };
-        let old_entry_size = entry.entry_size(key);
-        let track_access = self.track_access;
-        let mut removed_bytes = 0usize;
-        let popped = if let Value::SortedSet(ref mut ss) = entry.value {
-            let items = ss.pop_max(count);
-            for (member, _) in &items {
-                removed_bytes += SortedSet::estimated_member_cost(member);
-            }
-            items
-        } else {
-            vec![]
-        };
-
-        if !popped.is_empty() {
-            entry.touch(track_access);
-        }
-
-        let is_empty = matches!(&entry.value, Value::SortedSet(ss) if ss.is_empty());
-        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
-
-        if !popped.is_empty() {
-            self.bump_version(key);
-        }
-
-        Ok(popped)
+    fn zpop(
+        &mut self,
+        key: &str,
+        count: usize,
+        pop: fn(&mut SortedSet, usize) -> Vec<(String, f64)>,
+    ) -> Result<Vec<(String, f64)>, WrongType> {
+        let popped = self.edit(key, Value::as_zset_mut, |zset| {
+            let popped = pop(zset, count);
+            let changed = !popped.is_empty();
+            (popped, changed)
+        })?;
+        Ok(popped.unwrap_or_default())
     }
 
     /// Returns the number of members in a sorted set, or 0 if the key doesn't exist.

@@ -5,7 +5,6 @@
 //! keys are removed lazily on access. Memory usage is tracked on
 //! every mutation for eviction and stats reporting.
 
-use std::collections::VecDeque;
 use std::time::Duration;
 
 use ahash::AHashMap;
@@ -19,6 +18,7 @@ use crate::dropper::DropHandle;
 use crate::glob::glob_match;
 use crate::memory::{self, MemoryTracker};
 use crate::time;
+use crate::types::list::ListValue;
 use crate::types::sorted_set::{ScoreBound, SortedSet, ZAddFlags};
 use crate::types::{self, normalize_range, Value};
 
@@ -92,6 +92,15 @@ impl std::fmt::Display for IncrError {
 
 impl std::error::Error for IncrError {}
 
+impl From<WriteError> for IncrError {
+    fn from(e: WriteError) -> Self {
+        match e {
+            WriteError::WrongType => IncrError::WrongType,
+            WriteError::OutOfMemory => IncrError::OutOfMemory,
+        }
+    }
+}
+
 /// Errors that can occur during INCRBYFLOAT operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum IncrFloatError {
@@ -119,6 +128,15 @@ impl std::fmt::Display for IncrFloatError {
 }
 
 impl std::error::Error for IncrFloatError {}
+
+impl From<WriteError> for IncrFloatError {
+    fn from(e: WriteError) -> Self {
+        match e {
+            WriteError::WrongType => IncrFloatError::WrongType,
+            WriteError::OutOfMemory => IncrFloatError::OutOfMemory,
+        }
+    }
+}
 
 /// Error returned when RENAME fails because the source key doesn't exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,8 +306,7 @@ type ExpirySet = indexmap::IndexSet<CompactString, ahash::RandomState>;
 /// Field order is chosen for cache-line packing: `value` and
 /// `expires_at_ms` (the hot-path read fields) sit at the front so
 /// they share the first L1 cache line with the HashMap key pointer.
-/// `cached_value_size` is warm (used on writes). `last_access_secs`
-/// is cold (only used during eviction sampling).
+/// `last_access_secs` is cold (only used during eviction sampling).
 ///
 /// Version tracking for WATCH/EXEC lives in a separate side table on
 /// Keyspace (`versions` map), not on every entry. This saves 8 bytes
@@ -299,12 +316,6 @@ pub(crate) struct Entry {
     pub(crate) value: Value,
     /// Monotonic expiry timestamp in ms. 0 = no expiry.
     pub(crate) expires_at_ms: u64,
-    /// Cached result of `memory::value_size(&self.value)`, so memory
-    /// accounting is O(1) instead of walking whole collections. A u32
-    /// saves 4 bytes per entry. Collections can outgrow it, so
-    /// `SIZE_NOT_CACHED` marks a size read from the value instead. Access
-    /// it only through `value_size` and the setters below.
-    cached_value_size: u32,
     /// Monotonic last access time in seconds since process start (for LRU).
     /// Using u32 saves 4 bytes per entry; wraps at ~136 years.
     pub(crate) last_access_secs: u32,
@@ -312,11 +323,9 @@ pub(crate) struct Entry {
 
 impl Entry {
     pub(crate) fn new(value: Value, ttl: Option<Duration>) -> Self {
-        let cached_value_size = cache_size(memory::value_size(&value));
         Self {
             value,
             expires_at_ms: time::expiry_from_duration(ttl),
-            cached_value_size,
             last_access_secs: time::now_secs(),
         }
     }
@@ -336,48 +345,16 @@ impl Entry {
         }
     }
 
-    /// Returns the full estimated memory footprint of this entry
-    /// (key + value + overhead) using the cached value size.
+    /// Returns the estimated memory footprint of this entry: key, value
+    /// and overhead. Every value type counts its own size, so this is O(1).
     fn entry_size(&self, key: &str) -> usize {
         key.len() + self.value_size() + memory::ENTRY_OVERHEAD
     }
 
     /// Returns the estimated size of the value.
     pub(crate) fn value_size(&self) -> usize {
-        match self.cached_value_size {
-            SIZE_NOT_CACHED => memory::value_size(&self.value),
-            size => size as usize,
-        }
+        memory::value_size(&self.value)
     }
-
-    pub(crate) fn set_value_size(&mut self, size: usize) {
-        self.cached_value_size = cache_size(size);
-    }
-
-    /// Adds `bytes` to the cached size. A size that is not cached is read
-    /// from the value, which already includes the change.
-    pub(crate) fn grow_value_size(&mut self, bytes: usize) {
-        if self.cached_value_size != SIZE_NOT_CACHED {
-            self.set_value_size(self.cached_value_size as usize + bytes);
-        }
-    }
-
-    /// Subtracts `bytes` from the cached size, stopping at zero.
-    pub(crate) fn shrink_value_size(&mut self, bytes: usize) {
-        if self.cached_value_size != SIZE_NOT_CACHED {
-            self.set_value_size((self.cached_value_size as usize).saturating_sub(bytes));
-        }
-    }
-}
-
-/// Marks a value size too large for `Entry::cached_value_size`.
-const SIZE_NOT_CACHED: u32 = u32::MAX;
-
-fn cache_size(size: usize) -> u32 {
-    u32::try_from(size)
-        .ok()
-        .filter(|&s| s != SIZE_NOT_CACHED)
-        .unwrap_or(SIZE_NOT_CACHED)
 }
 
 /// Result of a TTL query, matching Redis semantics.
@@ -544,45 +521,79 @@ impl Keyspace {
         self.track_expiry(key, entry.expires_at_ms != 0, false);
     }
 
-    /// Cleans up after removing an element from a collection (list, sorted
-    /// set, hash, or set). If the collection is now empty, removes the key
-    /// entirely and subtracts `old_size` from the memory tracker. Otherwise
-    /// subtracts `removed_bytes` (the byte cost of the removed element(s))
-    /// without rescanning the remaining collection, and updates the cached
-    /// value size.
-    fn cleanup_after_remove(
+    /// Runs `f` on the collection at `key` and keeps the bookkeeping
+    /// right: memory use, the access time, the WATCH version, and removing
+    /// the key once the collection is empty. `pick` selects the collection
+    /// type. `f` returns its result and whether it changed the collection.
+    ///
+    /// Returns `Ok(None)` when the key doesn't exist and `Err(WrongType)`
+    /// when it holds another type.
+    pub(crate) fn edit<C: ?Sized, T>(
         &mut self,
         key: &str,
-        old_size: usize,
-        is_empty: bool,
-        removed_bytes: usize,
-    ) {
-        if is_empty {
+        pick: fn(&mut Value) -> Option<&mut C>,
+        f: impl FnOnce(&mut C) -> (T, bool),
+    ) -> Result<Option<T>, WrongType> {
+        if self.remove_if_expired(key) {
+            return Ok(None);
+        }
+        let track_access = self.track_access;
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Ok(None);
+        };
+        let old_size = entry.entry_size(key);
+        let collection = pick(&mut entry.value).ok_or(WrongType)?;
+        let (result, changed) = f(collection);
+        entry.touch(track_access);
+
+        if entry.value.is_empty_collection() {
             if let Some(removed) = self.entries.swap_remove(key) {
                 self.untrack_expiry(key, &removed);
             }
             self.memory.remove_with_size(old_size);
-        } else {
-            self.memory.shrink_by(removed_bytes);
-            if let Some(entry) = self.entries.get_mut(key) {
-                entry.shrink_value_size(removed_bytes);
-            }
+        } else if changed {
+            let new_size = entry.entry_size(key);
+            self.memory.adjust(old_size, new_size);
         }
+        if changed {
+            self.bump_version(key);
+        }
+        Ok(Some(result))
     }
 
-    /// Checks whether a key either doesn't exist or holds the expected
-    /// collection type. Returns `Ok(true)` if the key is new,
-    /// `Ok(false)` if it exists with the right type, or `Err(WrongType)`
-    /// if the key exists with a different type.
-    fn ensure_collection_type(
-        &self,
+    /// Like [`edit`](Self::edit), but creates the key with `empty()` when
+    /// it doesn't exist. `increase` is the most the write can add to memory
+    /// use; the write fails with `OutOfMemory` when the limit leaves no
+    /// room for it, even after eviction.
+    pub(crate) fn edit_or_create<C: ?Sized, T>(
+        &mut self,
         key: &str,
-        type_check: fn(&Value) -> bool,
-    ) -> Result<bool, WriteError> {
-        match self.entries.get(key) {
-            None => Ok(true),
-            Some(e) if type_check(&e.value) => Ok(false),
-            Some(_) => Err(WriteError::WrongType),
+        pick: fn(&mut Value) -> Option<&mut C>,
+        empty: fn() -> Value,
+        increase: usize,
+        f: impl FnOnce(&mut C) -> (T, bool),
+    ) -> Result<T, WriteError> {
+        self.remove_if_expired(key);
+        let is_new = match self.entries.get_mut(key) {
+            None => true,
+            Some(entry) => {
+                pick(&mut entry.value).ok_or(WriteError::WrongType)?;
+                false
+            }
+        };
+        let new_value = is_new.then(empty);
+        let increase = increase + new_value.as_ref().map_or(0, |v| memory::entry_size(key, v));
+        if !self.enforce_memory_limit(key, increase) {
+            return Err(WriteError::OutOfMemory);
+        }
+        if let Some(value) = new_value {
+            self.insert_empty(key, value);
+        }
+        // the key was checked or created above, and eviction skips it, so
+        // the edit always finds it
+        match self.edit(key, pick, f) {
+            Ok(Some(result)) => Ok(result),
+            Ok(None) | Err(WrongType) => Err(WriteError::WrongType),
         }
     }
 
@@ -615,26 +626,6 @@ impl Keyspace {
         let entry = Entry::new(value, None);
         self.entries.insert(CompactString::from(key), entry);
         self.bump_version(key);
-    }
-
-    /// Measures entry size before and after a mutation, adjusting the
-    /// memory tracker for the difference.
-    ///
-    /// Uses `cached_value_size` for the pre-mutation size (O(1)) and
-    /// recomputes after the mutation to update the cache. This halves
-    /// the cost of memory tracking for large collections.
-    fn track_size<T>(&mut self, key: &str, f: impl FnOnce(&mut Entry) -> T) -> Option<T> {
-        let entry = self.entries.get_mut(key)?;
-        let old_size = entry.entry_size(key);
-        let result = f(entry);
-        // re-lookup after mutation (f consumed the borrow)
-        let entry = self.entries.get_mut(key)?;
-        let new_value_size = memory::value_size(&entry.value);
-        entry.set_value_size(new_value_size);
-        let new_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
-        self.memory.adjust(old_size, new_size);
-        self.bump_version(key);
-        Some(result)
     }
 
     /// Updates the set of keys with a TTL when `key` goes from having one
@@ -969,7 +960,7 @@ impl Keyspace {
     /// Returns the estimated memory usage in bytes for the given key,
     /// or `None` if the key does not exist or is expired.
     ///
-    /// Uses the cached value size for O(1) cost. The estimate covers the
+    /// O(1), since every value type counts its own size. The estimate covers the
     /// key string, the serialized value, and the per-entry overhead.
     pub fn memory_usage(&mut self, key: &str) -> Option<usize> {
         if self.remove_if_expired(key) {

@@ -4,16 +4,16 @@
 //! sets, hashes, and sets are supported.
 
 pub mod hash;
+pub mod list;
 pub mod set;
 pub mod sorted_set;
 #[cfg(feature = "vector")]
 pub mod vector;
 
-use std::collections::VecDeque;
-
 use bytes::Bytes;
 
 use hash::HashValue;
+use list::ListValue;
 use set::SetValue;
 use sorted_set::SortedSet;
 
@@ -28,9 +28,9 @@ pub enum Value {
     /// and zero-copy slicing.
     String(Bytes),
 
-    /// Ordered list of binary-safe elements. `VecDeque` gives us
-    /// O(1) push/pop at both ends and good cache locality.
-    List(VecDeque<Bytes>),
+    /// Ordered list of binary-safe elements, with O(1) push and pop at
+    /// both ends.
+    List(ListValue),
 
     /// Sorted set of unique string members, each with a float score.
     /// Members are ordered by (score, member_name). Boxed to keep the
@@ -86,6 +86,48 @@ impl PartialEq for Value {
                     data: d2,
                 },
             ) => t1 == t2 && d1 == d2,
+            _ => false,
+        }
+    }
+}
+
+impl Value {
+    pub(crate) fn as_list_mut(&mut self) -> Option<&mut ListValue> {
+        match self {
+            Value::List(list) => Some(list),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_set_mut(&mut self) -> Option<&mut SetValue> {
+        match self {
+            Value::Set(set) => Some(set),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_hash_mut(&mut self) -> Option<&mut HashValue> {
+        match self {
+            Value::Hash(hash) => Some(hash),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_zset_mut(&mut self) -> Option<&mut SortedSet> {
+        match self {
+            Value::SortedSet(zset) => Some(zset),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` for a list, set, hash or sorted set with no members.
+    /// The keyspace removes such keys, as Redis does.
+    pub(crate) fn is_empty_collection(&self) -> bool {
+        match self {
+            Value::List(list) => list.is_empty(),
+            Value::Set(set) => set.is_empty(),
+            Value::Hash(hash) => hash.is_empty(),
+            Value::SortedSet(zset) => zset.is_empty(),
             _ => false,
         }
     }

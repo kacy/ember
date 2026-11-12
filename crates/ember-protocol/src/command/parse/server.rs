@@ -91,7 +91,7 @@ pub(super) fn parse_memory_cmd(args: &[Frame]) -> Result<Command, ProtocolError>
             return Err(wrong_arity("MEMORY USAGE"));
         }
         let key = extract_string(&args[1])?;
-        // Accept but ignore SAMPLES count — we always use the cached value size.
+        // Accept but ignore SAMPLES count; the size estimate is exact, not sampled.
         Ok(Command::MemoryUsage { key })
     } else {
         Err(ProtocolError::InvalidCommandFrame(format!(

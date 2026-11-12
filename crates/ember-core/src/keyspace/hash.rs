@@ -2,6 +2,10 @@ use compact_str::CompactString;
 
 use super::*;
 
+fn empty_hash() -> Value {
+    Value::Hash(Box::default())
+}
+
 impl Keyspace {
     /// Sets one or more field-value pairs in a hash.
     ///
@@ -11,47 +15,20 @@ impl Keyspace {
         if fields.is_empty() {
             return Ok(0);
         }
-
-        self.remove_if_expired(key);
-
-        let is_new = self.ensure_collection_type(key, |v| matches!(v, Value::Hash(_)))?;
-
-        let field_increase: usize = fields
+        let increase = fields
             .iter()
             .map(|(f, v)| f.len() + v.len() + memory::PACKED_HASH_ENTRY_OVERHEAD)
             .sum();
-        self.reserve_memory(
-            is_new,
-            key,
-            memory::PACKED_HASH_BASE_OVERHEAD,
-            field_increase,
-        )?;
-
-        if is_new {
-            self.insert_empty(key, Value::Hash(Box::default()));
-        }
-
-        let track_access = self.track_access;
-        let added = self
-            .track_size(key, |entry| {
-                let Value::Hash(ref mut hash) = entry.value else {
-                    unreachable!("type verified by ensure_collection_type");
-                };
-                let mut added = 0;
-                for (field, value) in fields {
-                    if hash
-                        .insert(CompactString::from(field.as_str()), value.clone())
+        self.edit_or_create(key, Value::as_hash_mut, empty_hash, increase, |hash| {
+            let added = fields
+                .iter()
+                .filter(|(field, value)| {
+                    hash.insert(CompactString::from(field.as_str()), value.clone())
                         .is_none()
-                    {
-                        added += 1;
-                    }
-                }
-                entry.touch(track_access);
-                added
-            })
-            .unwrap_or(0);
-
-        Ok(added)
+                })
+                .count();
+            (added, true)
+        })
     }
 
     /// Gets the value of a field in a hash.
@@ -87,39 +64,16 @@ impl Keyspace {
     ///
     /// Returns the fields that were actually removed.
     pub fn hdel(&mut self, key: &str, fields: &[String]) -> Result<Vec<String>, WrongType> {
-        if self.remove_if_expired(key) {
-            return Ok(vec![]);
-        }
-
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Ok(vec![]);
-        };
-        if !matches!(entry.value, Value::Hash(_)) {
-            return Err(WrongType);
-        }
-
-        let old_entry_size = entry.entry_size(key);
-        let mut removed = Vec::new();
-        let mut removed_bytes: usize = 0;
-        let is_empty = if let Value::Hash(ref mut hash) = entry.value {
-            let overhead = memory::hash_field_overhead(hash);
-            for field in fields {
-                if let Some(val) = hash.remove(field) {
-                    removed_bytes += field.len() + val.len() + overhead;
-                    removed.push(field.clone());
-                }
-            }
-            hash.is_empty()
-        } else {
-            false
-        };
-        if !removed.is_empty() {
-            self.bump_version(key);
-        }
-
-        self.cleanup_after_remove(key, old_entry_size, is_empty, removed_bytes);
-
-        Ok(removed)
+        let removed = self.edit(key, Value::as_hash_mut, |hash| {
+            let removed: Vec<String> = fields
+                .iter()
+                .filter(|field| hash.remove(field).is_some())
+                .cloned()
+                .collect();
+            let changed = !removed.is_empty();
+            (removed, changed)
+        })?;
+        Ok(removed.unwrap_or_default())
     }
 
     /// Checks if a field exists in a hash.
@@ -151,66 +105,18 @@ impl Keyspace {
     ///
     /// Creates the hash and field if they don't exist, starting from 0.
     pub fn hincrby(&mut self, key: &str, field: &str, delta: i64) -> Result<i64, IncrError> {
-        self.remove_if_expired(key);
-
-        let is_new = match self.entries.get(key) {
-            None => true,
-            Some(e) if matches!(e.value, Value::Hash(_)) => false,
-            Some(_) => return Err(IncrError::WrongType),
-        };
-
-        // estimate memory for new field (worst case: new hash + new field)
-        let val_str_len = 20; // max i64 string length
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD
-                + key.len()
-                + memory::PACKED_HASH_BASE_OVERHEAD
-                + field.len()
-                + val_str_len
-                + memory::PACKED_HASH_ENTRY_OVERHEAD
-        } else {
-            field.len() + val_str_len + memory::PACKED_HASH_ENTRY_OVERHEAD
-        };
-
-        if !self.enforce_memory_limit(key, estimated_increase) {
-            return Err(IncrError::OutOfMemory);
-        }
-
-        if is_new {
-            let value = Value::Hash(Box::default());
-            self.memory.add(key, &value);
-            let entry = Entry::new(value, None);
-            self.entries.insert(CompactString::from(key), entry);
-            self.bump_version(key);
-        }
-
-        // safe: key was either just inserted above or verified to exist
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Err(IncrError::WrongType);
-        };
-        let old_entry_size = entry.entry_size(key);
-
-        let Value::Hash(ref mut hash) = entry.value else {
-            return Err(IncrError::WrongType);
-        };
-        let current_val = match hash.get(field) {
-            Some(data) => {
-                let s = std::str::from_utf8(data).map_err(|_| IncrError::NotAnInteger)?;
-                s.parse::<i64>().map_err(|_| IncrError::NotAnInteger)?
-            }
-            None => 0,
-        };
-        let new_val = current_val.checked_add(delta).ok_or(IncrError::Overflow)?;
-        hash.insert(field.into(), Bytes::from(new_val.to_string()));
-        entry.touch(self.track_access);
-
-        let new_value_size = memory::value_size(&entry.value);
-        entry.set_value_size(new_value_size);
-        let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
-        self.memory.adjust(old_entry_size, new_entry_size);
-        self.bump_version(key);
-
-        Ok(new_val)
+        // 20 bytes holds any i64
+        let value = self.hash_update(key, field, 20, |current| {
+            let current = match current {
+                Some(data) => std::str::from_utf8(data)
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .ok_or(IncrError::NotAnInteger)?,
+                None => 0,
+            };
+            current.checked_add(delta).ok_or(IncrError::Overflow)
+        })?;
+        Ok(value)
     }
 
     /// Increments a field's float value by the given amount.
@@ -224,70 +130,47 @@ impl Keyspace {
         field: &str,
         delta: f64,
     ) -> Result<String, IncrFloatError> {
-        self.remove_if_expired(key);
-
-        let is_new = match self.entries.get(key) {
-            None => true,
-            Some(e) if matches!(e.value, Value::Hash(_)) => false,
-            Some(_) => return Err(IncrFloatError::WrongType),
-        };
-
-        // generous float string length estimate
-        let val_str_len = 32usize;
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD
-                + key.len()
-                + memory::PACKED_HASH_BASE_OVERHEAD
-                + field.len()
-                + val_str_len
-                + memory::PACKED_HASH_ENTRY_OVERHEAD
-        } else {
-            field.len() + val_str_len + memory::PACKED_HASH_ENTRY_OVERHEAD
-        };
-
-        if !self.enforce_memory_limit(key, estimated_increase) {
-            return Err(IncrFloatError::OutOfMemory);
-        }
-
-        if is_new {
-            let value = Value::Hash(Box::default());
-            self.memory.add(key, &value);
-            let entry = Entry::new(value, None);
-            self.entries.insert(CompactString::from(key), entry);
-            self.bump_version(key);
-        }
-
-        let Some(entry) = self.entries.get_mut(key) else {
-            return Err(IncrFloatError::WrongType);
-        };
-        let old_entry_size = entry.entry_size(key);
-
-        let Value::Hash(ref mut hash) = entry.value else {
-            return Err(IncrFloatError::WrongType);
-        };
-        let current = match hash.get(field) {
-            Some(data) => {
-                let s = std::str::from_utf8(data).map_err(|_| IncrFloatError::NotAFloat)?;
-                s.parse::<f64>().map_err(|_| IncrFloatError::NotAFloat)?
+        let value = self.hash_update(key, field, 32, |current| {
+            let current = match current {
+                Some(data) => std::str::from_utf8(data)
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .ok_or(IncrFloatError::NotAFloat)?,
+                None => 0.0,
+            };
+            let new_val = current + delta;
+            if new_val.is_nan() || new_val.is_infinite() {
+                return Err(IncrFloatError::NanOrInfinity);
             }
-            None => 0.0,
-        };
-        let new_val = current + delta;
-        if new_val.is_nan() || new_val.is_infinite() {
-            return Err(IncrFloatError::NanOrInfinity);
-        }
+            Ok(format_float(new_val))
+        })?;
+        Ok(value)
+    }
 
-        let formatted = format_float(new_val);
-        hash.insert(field.into(), Bytes::from(formatted.clone()));
-        entry.touch(self.track_access);
-
-        let new_value_size = memory::value_size(&entry.value);
-        entry.set_value_size(new_value_size);
-        let new_entry_size = key.len() + new_value_size + memory::ENTRY_OVERHEAD;
-        self.memory.adjust(old_entry_size, new_entry_size);
-        self.bump_version(key);
-
-        Ok(formatted)
+    /// Replaces `field` with `update(current value)`, creating the hash and
+    /// field as needed. `max_len` bounds the new value's length for the
+    /// memory check. Nothing changes when `update` fails.
+    fn hash_update<V: ToString, E: From<WriteError>>(
+        &mut self,
+        key: &str,
+        field: &str,
+        max_len: usize,
+        update: impl FnOnce(Option<&[u8]>) -> Result<V, E>,
+    ) -> Result<V, E> {
+        let increase = field.len() + max_len + memory::PACKED_HASH_ENTRY_OVERHEAD;
+        self.edit_or_create(
+            key,
+            Value::as_hash_mut,
+            empty_hash,
+            increase,
+            |hash| match update(hash.get(field)) {
+                Ok(value) => {
+                    hash.insert(field.into(), Bytes::from(value.to_string()));
+                    (Ok(value), true)
+                }
+                Err(e) => (Err(e), false),
+            },
+        )?
     }
 
     /// Returns all field names in a hash.
