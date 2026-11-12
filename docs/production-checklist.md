@@ -38,7 +38,7 @@ for systemd-managed deployments, set `LimitNOFILE=65536` in the service unit. fo
 
 **transparent hugepages**
 
-THP interacts badly with the allocator patterns of long-running memory-intensive processes. disable it:
+the default build tells jemalloc not to use transparent huge pages, so ember's heap stays on normal pages even when THP is set to `always`. you only need to change the host setting for a build without jemalloc, which logs a warning at startup when THP is `always`. to turn THP off on the host:
 
 ```bash
 echo never > /sys/kernel/mm/transparent_hugepage/enabled
