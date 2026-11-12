@@ -171,7 +171,7 @@ persistence is per-shard:
 - each shard has its own snapshot file
 - recovery can run shard-by-shard in parallel
 
-the AOF format is binary and append-only. every record has a stable tag plus a CRC32 checksum. snapshots are also binary, include a header and footer checksum, and are written by streaming the live keyspace once.
+the AOF and snapshot files share one layout: a header with a version and flags, then one frame per record or entry. a frame holds its length twice, the second time inverted, then the body and a CRC32 of the body. that lets recovery tell a last frame cut short by a crash, which it drops, from damage elsewhere, which stops the start. snapshots store each key's expiry as a unix time, so a snapshot restored later doesn't bring back keys that expired in between. snapshots are written by streaming the live keyspace once.
 
 both snapshot writes and AOF rewrites use the usual safe pattern:
 

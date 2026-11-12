@@ -2,6 +2,10 @@
 
 ## unreleased
 
+### changed
+- new layout for AOF and snapshot files, version 5. every record and entry is a frame with its length stored twice and a CRC, so recovery tells a record cut short by a crash from damage in the middle of the file. a header flag marks encryption. files from earlier versions are no longer read
+- snapshots store each key's expiry as a unix time. they stored the TTL left and recovery subtracted the time since the file's mtime, so a snapshot restored from a backup brought back keys that had expired
+
 ### removed
 - concurrent mode: `--concurrent`, `EMBER_CONCURRENT`, the `concurrent` config key and the helm `ember.concurrent` value. the default mode is faster, serving about 35% more requests without pipelining and 2.6× more with a pipeline of 16 on a 32-core machine. concurrent mode also left strings out of the AOF and replication, rejected collection commands, and ran SET NX/XX and INCR as separate read and write steps (#446)
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
