@@ -7,7 +7,7 @@
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### fixes
-- jemalloc no longer uses transparent huge pages. on a host with THP set to `always`, an idle 32-shard server used 290 MB instead of 19 MB, and 2.5M keys took 975 MB instead of 665 MB. `_RJEM_MALLOC_CONF` still overrides the setting. builds without jemalloc log a warning at startup when THP is `always`
+- jemalloc no longer uses transparent huge pages. on a host with THP set to `always`, an idle 32-shard server used 290 MB instead of 19 MB, and 2.5M keys took 975 MB instead of 665 MB. `_RJEM_MALLOC_CONF` still overrides the setting. builds without jemalloc log a warning at startup when THP is `always` (#447)
 - gossip now converges after a partition heals: updates are resent several times, nodes declared dead keep being probed so they can refute it, and acks carry the sender's slot claims (#444)
 
 ## 0.4.10 (2026-07-04)
