@@ -24,7 +24,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-#[cfg(feature = "protobuf")]
 use crate::cluster::ClusterCoordinator;
 use crate::config::{build_engine_config, parse_eviction_policy, parse_fsync_policy, EmberConfig};
 use clap::Parser;
