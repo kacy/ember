@@ -753,9 +753,11 @@ pub(super) fn to_aof_records(
             },
             ShardResponse::Value(Some(_)),
         ) => match new_expire {
-            Some(ms) if ms > 0 => smallvec![expire_at(key, Duration::from_millis(ms))],
+            // a deadline already past deletes the key
+            Some(0) => smallvec![AofRecord::Del { key }],
+            Some(ms) => smallvec![expire_at(key, Duration::from_millis(ms))],
             // GETEX PERSIST clears the expiry, so log a PERSIST record
-            _ => smallvec![AofRecord::Persist { key }],
+            None => smallvec![AofRecord::Persist { key }],
         },
         // FLUSHDB ASYNC hands its reply to a later step, so log it whatever
         // the placeholder response says
@@ -1087,6 +1089,23 @@ mod tests {
         let mut resp = ShardResponse::Bool(true);
         let record = to_aof_records(req, &mut resp).into_iter().next().unwrap();
         assert!(matches!(record, AofRecord::Persist { .. }));
+    }
+
+    #[test]
+    fn to_aof_records_for_getex() {
+        let log = |expire| {
+            let req = ShardRequest::GetEx {
+                key: "k".into(),
+                expire: Some(expire),
+            };
+            let mut resp = ShardResponse::Value(Some(Value::String(Bytes::from("v"))));
+            to_aof_records(req, &mut resp).into_iter().next().unwrap()
+        };
+        assert!(matches!(log(Some(5_000)), AofRecord::Pexpireat { .. }));
+        assert!(matches!(log(None), AofRecord::Persist { .. }));
+        // a deadline already past deletes the key, so replay must not bring
+        // it back without a TTL
+        assert!(matches!(log(Some(0)), AofRecord::Del { .. }));
     }
 
     #[test]
