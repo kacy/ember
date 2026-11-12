@@ -339,14 +339,13 @@ impl ClusterCoordinator {
 
     /// Checks slot ownership with migration-aware routing.
     ///
-    /// Returns `None` if the command should be handled locally.
-    /// Returns `Some(Frame)` with MOVED, ASK, or CLUSTERDOWN if not.
-    ///
-    /// During migration:
-    /// - Source node returns ASK for keys already transferred to the target
-    /// - Target node allows access when the client sent ASKING
-    /// - Keys not yet migrated are served locally by the source
-    pub async fn check_slot_with_migration(&self, key: &[u8], asking: bool) -> Option<Frame> {
+    /// During a migration, as in Redis Cluster:
+    /// - the source serves the keys it still has, and sends a client whose
+    ///   keys are gone to the target with ASK ([`SlotCheck::AskIfMissing`]).
+    ///   Keys written during the move so land on the target too
+    /// - the target serves the slot to a client that sent ASKING
+    /// - a key MIGRATE is copying right now gets TRYAGAIN
+    pub async fn check_slot_with_migration(&self, key: &[u8], asking: bool) -> SlotCheck {
         let slot = key_slot(key);
         let state = self.state.read().await;
         let migration = self.migration.lock().await;
@@ -355,40 +354,38 @@ impl ClusterCoordinator {
             // MIGRATE is copying this key: a write now would be lost when the
             // local copy is deleted, so the client retries shortly
             if migration.is_key_in_flight(key) {
-                return Some(Frame::Error(
+                return SlotCheck::Reply(Frame::Error(
                     "TRYAGAIN the key is being migrated, retry shortly".into(),
                 ));
             }
-            // slot is migrating out — if key already moved, ASK redirect
-            if migration.is_migrating(slot) && migration.is_key_migrated(slot, key) {
-                if let Some(m) = migration.get_outgoing(slot) {
-                    if let Some(target) = state.nodes.get(&m.target) {
-                        return Some(Frame::Error(format!("ASK {} {}", slot, target.addr)));
-                    }
-                }
-            }
-            return None; // handle locally
+            let target = migration
+                .get_outgoing(slot)
+                .and_then(|m| state.nodes.get(&m.target));
+            return match target {
+                Some(target) => SlotCheck::AskIfMissing {
+                    slot,
+                    addr: target.addr.to_string(),
+                },
+                None => SlotCheck::Local,
+            };
         }
 
         // not our slot — but are we importing it and client sent ASKING?
         if migration.is_importing(slot) && asking {
-            return None; // allow access
+            return SlotCheck::Local;
         }
 
         // standard redirect
-        match state.slot_owner(slot) {
-            Some(owner) => Some(Frame::Error(format!("MOVED {} {}", slot, owner.addr))),
-            None => Some(Frame::Error("CLUSTERDOWN Hash slot not served".into())),
-        }
+        SlotCheck::Reply(match state.slot_owner(slot) {
+            Some(owner) => Frame::Error(format!("MOVED {} {}", slot, owner.addr)),
+            None => Frame::Error("CLUSTERDOWN Hash slot not served".into()),
+        })
     }
 
-    /// Marks a key as migrated during slot migration.
-    ///
-    /// Called after MIGRATE successfully transfers a key to the target node.
-    /// Subsequent accesses for this key on the source will return ASK redirects.
-    pub async fn mark_key_migrated(&self, slot: u16, key: &[u8]) {
-        let mut migration = self.migration.lock().await;
-        migration.key_migrated(slot, key.to_vec());
+    /// Counts a key MIGRATE moved out of `slot`, for the migration's
+    /// progress.
+    pub async fn mark_key_migrated(&self, slot: u16) {
+        self.migration.lock().await.key_migrated(slot);
     }
 
     /// Marks a key as being copied by MIGRATE, so commands for it get

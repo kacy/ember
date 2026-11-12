@@ -180,8 +180,6 @@ pub struct MigrationManager {
     outgoing: HashMap<u16, Migration>,
     /// Migrations where this node is the target (slot is importing in).
     incoming: HashMap<u16, Migration>,
-    /// Keys that have been migrated but not yet confirmed.
-    pending_keys: HashMap<u16, HashSet<Vec<u8>>>,
     /// Keys a MIGRATE is copying to another node right now.
     in_flight: HashSet<Vec<u8>>,
 }
@@ -230,7 +228,6 @@ impl MigrationManager {
 
         let migration = Migration::new_importing(slot, source, local_id);
         self.incoming.insert(slot, migration);
-        self.pending_keys.insert(slot, HashSet::new());
         self.incoming
             .get(&slot)
             .ok_or(MigrationError::NoMigrationInProgress { slot })
@@ -254,17 +251,13 @@ impl MigrationManager {
 
         let migration = Migration::new_migrating(slot, local_id, target);
         self.outgoing.insert(slot, migration);
-        self.pending_keys.insert(slot, HashSet::new());
         self.outgoing
             .get(&slot)
             .ok_or(MigrationError::NoMigrationInProgress { slot })
     }
 
-    /// Record that a key has been migrated.
-    pub fn key_migrated(&mut self, slot: u16, key: Vec<u8>) {
-        if let Some(keys) = self.pending_keys.get_mut(&slot) {
-            keys.insert(key);
-        }
+    /// Counts a key that MIGRATE moved out of `slot`.
+    pub fn key_migrated(&mut self, slot: u16) {
         if let Some(migration) = self.outgoing.get_mut(&slot) {
             migration.record_migrated(1);
         }
@@ -286,16 +279,8 @@ impl MigrationManager {
         self.in_flight.contains(key)
     }
 
-    /// Check if a specific key has been migrated.
-    pub fn is_key_migrated(&self, slot: u16, key: &[u8]) -> bool {
-        self.pending_keys
-            .get(&slot)
-            .is_some_and(|keys| keys.contains(key))
-    }
-
     /// Complete a migration and clean up state.
     pub fn complete_migration(&mut self, slot: u16) -> Option<Migration> {
-        self.pending_keys.remove(&slot);
         // Try outgoing first, then incoming
         self.outgoing
             .remove(&slot)
@@ -308,7 +293,6 @@ impl MigrationManager {
 
     /// Abort a migration and clean up state.
     pub fn abort_migration(&mut self, slot: u16) -> Option<Migration> {
-        self.pending_keys.remove(&slot);
         self.outgoing
             .remove(&slot)
             .or_else(|| self.incoming.remove(&slot))
@@ -615,18 +599,12 @@ mod tests {
     }
 
     #[test]
-    fn manager_key_tracking() {
+    fn manager_counts_migrated_keys() {
         let mut manager = MigrationManager::new();
-        let local = node_id();
-        let target = node_id();
-
-        manager.start_migrate(100, local, target).unwrap();
-
-        assert!(!manager.is_key_migrated(100, b"key1"));
-
-        manager.key_migrated(100, b"key1".to_vec());
-        assert!(manager.is_key_migrated(100, b"key1"));
-        assert!(!manager.is_key_migrated(100, b"key2"));
+        manager.start_migrate(100, node_id(), node_id()).unwrap();
+        manager.key_migrated(100);
+        manager.key_migrated(100);
+        assert_eq!(manager.get_outgoing(100).unwrap().keys_migrated, 2);
     }
 
     #[test]
@@ -636,7 +614,7 @@ mod tests {
         let target = node_id();
 
         manager.start_migrate(100, local, target).unwrap();
-        manager.key_migrated(100, b"key1".to_vec());
+        manager.key_migrated(100);
 
         let completed = manager.complete_migration(100);
         assert!(completed.is_some());
@@ -644,7 +622,6 @@ mod tests {
 
         // State should be cleaned up
         assert!(!manager.is_migrating(100));
-        assert!(!manager.is_key_migrated(100, b"key1"));
     }
 
     #[test]

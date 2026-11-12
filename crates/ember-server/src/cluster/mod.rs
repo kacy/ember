@@ -26,6 +26,18 @@ use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
+/// Where a command's keys are served, from [`ClusterCoordinator::check_slot_with_migration`].
+#[derive(Debug, PartialEq)]
+pub enum SlotCheck {
+    /// Run the command here.
+    Local,
+    /// Reply with this error instead: MOVED, CLUSTERDOWN or TRYAGAIN.
+    Reply(Frame),
+    /// The slot is moving to `addr`. Serve the command here if its keys
+    /// are still here, and send the client there with ASK if they are gone.
+    AskIfMissing { slot: u16, addr: String },
+}
+
 mod commands;
 mod failover;
 mod gossip;

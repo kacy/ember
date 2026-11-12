@@ -214,11 +214,11 @@ async fn check_slot_owned_no_migration() {
     let (coord, _rx) = test_coordinator_bootstrapped();
     // "foo" hashes to some slot — we own all slots
     let result = coord.check_slot_with_migration(b"foo", false).await;
-    assert!(result.is_none(), "should handle locally");
+    assert_eq!(result, SlotCheck::Local);
 }
 
 #[tokio::test]
-async fn check_slot_ask_when_key_migrated() {
+async fn a_migrating_slot_asks_for_keys_that_are_gone() {
     let (coord, _rx) = test_coordinator_bootstrapped();
     let target = NodeId::new();
 
@@ -237,25 +237,20 @@ async fn check_slot_ask_when_key_migrated() {
         .cluster_setslot_migrating(slot, &target.0.to_string())
         .await;
 
-    // mark "foo" as migrated via the migration manager directly
-    {
-        let mut migration = coord.migration.lock().await;
-        migration.key_migrated(slot, b"foo".to_vec());
-    }
-
-    // should return ASK redirect
+    // the connection serves the keys still here and sends the client to
+    // the target for the rest
     let result = coord.check_slot_with_migration(b"foo", false).await;
-    match result {
-        Some(Frame::Error(msg)) => {
-            assert!(msg.starts_with("ASK"), "expected ASK, got: {msg}");
-            assert!(msg.contains("127.0.0.1:6380"));
+    assert_eq!(
+        result,
+        SlotCheck::AskIfMissing {
+            slot,
+            addr: "127.0.0.1:6380".into()
         }
-        other => panic!("expected ASK error, got {other:?}"),
-    }
+    );
 }
 
 #[tokio::test]
-async fn check_slot_local_when_key_not_migrated() {
+async fn a_migrating_slot_with_an_unknown_target_is_served_here() {
     let (coord, _rx) = test_coordinator_bootstrapped();
     let target = NodeId::new();
 
@@ -264,9 +259,9 @@ async fn check_slot_local_when_key_not_migrated() {
         .cluster_setslot_migrating(slot, &target.0.to_string())
         .await;
 
-    // "foo" NOT migrated yet — should serve locally
+    // there is nowhere to send the client yet
     let result = coord.check_slot_with_migration(b"foo", false).await;
-    assert!(result.is_none(), "should handle locally");
+    assert_eq!(result, SlotCheck::Local);
 }
 
 #[tokio::test]
@@ -281,7 +276,7 @@ async fn check_slot_importing_with_asking() {
 
     // with asking=true, should allow local access
     let result = coord.check_slot_with_migration(b"foo", true).await;
-    assert!(result.is_none(), "should allow with ASKING");
+    assert_eq!(result, SlotCheck::Local);
 }
 
 #[tokio::test]
@@ -311,7 +306,7 @@ async fn check_slot_importing_without_asking() {
     // without asking, should return MOVED to the owner
     let result = coord.check_slot_with_migration(b"foo", false).await;
     match result {
-        Some(Frame::Error(msg)) => {
+        SlotCheck::Reply(Frame::Error(msg)) => {
             assert!(msg.starts_with("MOVED"), "expected MOVED, got: {msg}");
         }
         other => panic!("expected MOVED error, got {other:?}"),
@@ -323,7 +318,7 @@ async fn check_slot_unassigned_returns_clusterdown() {
     let (coord, _rx) = test_coordinator(); // no slots assigned
     let result = coord.check_slot_with_migration(b"foo", false).await;
     match result {
-        Some(Frame::Error(msg)) => {
+        SlotCheck::Reply(Frame::Error(msg)) => {
             assert!(
                 msg.contains("CLUSTERDOWN"),
                 "expected CLUSTERDOWN, got: {msg}"
@@ -389,48 +384,6 @@ async fn from_config_restores_coordinator() {
     let state = restored_coord.state.read().await;
     assert!(state.owns_slot(0));
     assert!(state.owns_slot(16383));
-}
-
-#[tokio::test]
-async fn mark_key_migrated_triggers_ask_redirect() {
-    let (coord, _rx) = test_coordinator_bootstrapped();
-
-    // set up a migration: slot 12182 (hash of "foo") migrating to a target
-    let target = NodeId::new();
-    let target_addr: SocketAddr = "127.0.0.1:6380".parse().unwrap();
-
-    // add target node to state
-    {
-        let mut state = coord.state.write().await;
-        state.add_node(ClusterNode::new_primary(target, target_addr));
-    }
-
-    // start migrating slot 12182
-    coord
-        .cluster_setslot_migrating(12182, &target.0.to_string())
-        .await;
-
-    // before marking the key, it should be served locally
-    let result = coord.check_slot_with_migration(b"foo", false).await;
-    assert!(
-        result.is_none(),
-        "key should be served locally before migration"
-    );
-
-    // mark the key as migrated
-    coord.mark_key_migrated(12182, b"foo").await;
-
-    // now it should return ASK
-    let result = coord.check_slot_with_migration(b"foo", false).await;
-    match result {
-        Some(Frame::Error(msg)) => {
-            assert!(
-                msg.starts_with("ASK 12182"),
-                "expected ASK redirect, got: {msg}"
-            );
-        }
-        other => panic!("expected ASK redirect, got {other:?}"),
-    }
 }
 
 // -- cluster_replicate --

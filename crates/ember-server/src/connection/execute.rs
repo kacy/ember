@@ -33,7 +33,7 @@ pub(super) async fn execute(
 ) -> Frame {
     // cluster checks: replica writes, slot ownership, cross-slot keys.
     // when `asking` is true, importing slots are allowed through.
-    if let Some(redirect) = super::dispatch::cluster_slot_check(ctx, &cmd, asking).await {
+    if let Some(redirect) = super::dispatch::cluster_slot_check(ctx, engine, &cmd, asking).await {
         return redirect;
     }
 
@@ -274,9 +274,22 @@ pub(super) async fn execute(
             port,
             key,
             timeout_ms,
+            copy,
             replace,
-            ..
-        } => exec::cluster::migrate(host, port, key, timeout_ms, replace, &cx).await,
+            auth,
+            db: _,
+        } => {
+            let req = exec::cluster::MigrateRequest {
+                host,
+                port,
+                key,
+                timeout_ms,
+                copy,
+                replace,
+                auth,
+            };
+            exec::cluster::migrate(req, &cx).await
+        }
         Command::Restore {
             key,
             ttl_ms,

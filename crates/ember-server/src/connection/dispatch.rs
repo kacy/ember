@@ -4,6 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::cluster::SlotCheck;
 use crate::connection_common::{
     frame_to_monitor_args, validate_command_sizes, MonitorEvent, Session,
 };
@@ -11,7 +12,7 @@ use crate::pubsub::PubSubManager;
 use crate::server::ServerContext;
 use crate::slowlog::SlowLog;
 use bytes::Bytes;
-use ember_core::Engine;
+use ember_core::{Engine, ShardRequest, ShardResponse};
 use ember_protocol::{Command, Frame};
 
 use super::route::Routing;
@@ -215,7 +216,7 @@ pub(super) async fn prepare_command(
     };
 
     // cluster slot validation (migration-aware when cluster is enabled)
-    if let Some(redirect) = cluster_slot_check(ctx, &cmd, was_asking).await {
+    if let Some(redirect) = cluster_slot_check(ctx, engine, &cmd, was_asking).await {
         return PreparedDispatch::Immediate(PendingResponse::Immediate(redirect));
     }
 
@@ -245,6 +246,8 @@ pub(super) async fn prepare_command(
 ///   primary (READONLY if it is unknown) for a write on a replica
 /// - CROSSSLOT when the command's keys hash to different slots
 /// - MOVED, ASK or CLUSTERDOWN when this node does not serve the key's slot
+/// - while the slot migrates out: ASK when none of the keys are still here,
+///   and TRYAGAIN when only some are, as in Redis Cluster
 ///
 /// Every command path calls this, so the write checks cover pipelined
 /// commands as well as those that go through `execute`. The `asking` flag
@@ -252,6 +255,7 @@ pub(super) async fn prepare_command(
 /// to importing slots during migration.
 pub(super) async fn cluster_slot_check(
     ctx: &ServerContext,
+    engine: &Engine,
     cmd: &Command,
     asking: bool,
 ) -> Option<Frame> {
@@ -290,7 +294,32 @@ pub(super) async fn cluster_slot_check(
             return Some(err);
         }
     }
-    cluster
+    match cluster
         .check_slot_with_migration(first.as_bytes(), asking)
         .await
+    {
+        SlotCheck::Local => None,
+        SlotCheck::Reply(frame) => Some(frame),
+        SlotCheck::AskIfMissing { slot, addr } => {
+            let mut here = 0;
+            for key in keys.iter() {
+                let exists = ShardRequest::Exists {
+                    key: key.to_owned(),
+                };
+                let idx = engine.shard_for_key(key);
+                if let Ok(ShardResponse::Bool(true)) = engine.send_to_shard(idx, exists).await {
+                    here += 1;
+                }
+            }
+            if here == keys.iter().count() {
+                None
+            } else if here == 0 {
+                Some(Frame::Error(format!("ASK {slot} {addr}")))
+            } else {
+                Some(Frame::Error(
+                    "TRYAGAIN Multiple keys request during rehashing of slot".into(),
+                ))
+            }
+        }
+    }
 }
