@@ -7,6 +7,12 @@
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### fixes
+- AOF durability:
+  - under `appendfsync everysec` and `no`, writes now reach the OS before their replies, so a crash of the process loses no acknowledged write. before, they sat in an 8 KB buffer, and `no` never flushed it
+  - a write that fails part way, as on a full disk, no longer leaves a partial record that made the rest of the file unreadable
+  - any failed AOF write or fsync now rejects writes until a retry succeeds, not only a full disk
+  - an AOF rewrite fsyncs the directory and keeps its file handle instead of reopening the file
+  - shutdown fsyncs the AOF even when the runtime drops the shard task
 - GETEX with a deadline already past now deletes the key, as in Redis. it was logged to the AOF as PERSIST, so the key came back without a TTL after a restart and on replicas (#448)
 - jemalloc no longer uses transparent huge pages. on a host with THP set to `always`, an idle 32-shard server used 290 MB instead of 19 MB, and 2.5M keys took 975 MB instead of 665 MB. `_RJEM_MALLOC_CONF` still overrides the setting. builds without jemalloc log a warning at startup when THP is `always` (#447)
 - gossip now converges after a partition heals: updates are resent several times, nodes declared dead keep being probed so they can refute it, and acks carry the sender's slot claims (#444)

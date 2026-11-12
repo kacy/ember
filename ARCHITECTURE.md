@@ -77,9 +77,9 @@ inside each shard, the main loop waits on three kinds of work:
 
 - inbound requests from the engine
 - active expiry ticks
-- periodic fsync ticks when AOF is running in `everysec` mode
+- fsync ticks, which fsync the AOF under `appendfsync everysec` and retry a failed AOF write
 
-after the loop wakes up for a request, it drains as much queued work as it can before going back to `select!`. that is a simple optimization, but it matters a lot for pipelined clients.
+after the loop wakes up for a request, it drains as much queued work as it can before going back to `select!`. that is a simple optimization, but it matters a lot for pipelined clients. at the end of each burst the shard writes the burst's AOF records to the OS in one call, then sends the replies it held, so a process crash can't lose a write that was acknowledged.
 
 the other important optimization lives one layer up: the RESP connection handler groups commands by target shard and uses `dispatch_batch_to_shard()` when several commands in the same pipeline hit the same shard. that keeps deep pipelines from burning one channel slot per command.
 
@@ -266,7 +266,6 @@ a few subsystems run off the main request path:
 | subsystem | purpose |
 |---|---|
 | drop thread | frees large collections without stalling a shard |
-| fsync thread | handles `appendfsync everysec` work |
 | metrics tasks | collect stats for Prometheus and health endpoints |
 | keyspace notification task | listens for expired-key broadcasts when enabled |
 | gossip / cluster tasks | drive membership, reconciliation, and failover work |
