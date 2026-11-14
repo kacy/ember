@@ -1,28 +1,37 @@
-//! Serving gRPC over TLS with the server's own certificate.
+//! The gRPC listener: accepts connections within `maxclients`, and runs
+//! the TLS handshake when TLS is configured.
 
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::server::{Connected, TcpConnectInfo};
 use tracing::warn;
 
-/// A gRPC connection after its TLS handshake. It reports the TCP
-/// addresses, so protected mode can check the peer as it does without TLS.
-pub(crate) struct TlsConn {
-    stream: TlsStream<TcpStream>,
+/// An accepted gRPC connection. It holds one of the `maxclients` places
+/// while open, and reports its TCP addresses so protected mode can check
+/// the peer.
+pub(crate) struct Conn {
+    io: Io,
     info: TcpConnectInfo,
+    _permit: OwnedSemaphorePermit,
 }
 
-impl Connected for TlsConn {
+enum Io {
+    Plain(TcpStream),
+    Tls(Box<TlsStream<TcpStream>>),
+}
+
+impl Connected for Conn {
     type ConnectInfo = TcpConnectInfo;
 
     fn connect_info(&self) -> TcpConnectInfo {
@@ -30,41 +39,57 @@ impl Connected for TlsConn {
     }
 }
 
-impl AsyncRead for TlsConn {
+impl AsyncRead for Conn {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().stream).poll_read(cx, buf)
+        match &mut self.get_mut().io {
+            Io::Plain(s) => Pin::new(s).poll_read(cx, buf),
+            Io::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
     }
 }
 
-impl AsyncWrite for TlsConn {
+impl AsyncWrite for Conn {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.get_mut().stream).poll_write(cx, buf)
+        match &mut self.get_mut().io {
+            Io::Plain(s) => Pin::new(s).poll_write(cx, buf),
+            Io::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().stream).poll_flush(cx)
+        match &mut self.get_mut().io {
+            Io::Plain(s) => Pin::new(s).poll_flush(cx),
+            Io::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+        match &mut self.get_mut().io {
+            Io::Plain(s) => Pin::new(s).poll_shutdown(cx),
+            Io::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
     }
 }
 
-/// Accepts connections on `addr` and completes their TLS handshakes, for
-/// `Server::serve_with_incoming`. Each handshake runs in its own task, so
-/// a slow client doesn't hold up the others.
+/// Accepts connections on `addr` for `Server::serve_with_incoming`.
+///
+/// Each connection takes a place from `clients`, the semaphore RESP
+/// connections share, and is closed when none is left. With `tls`, each
+/// handshake runs in its own task, so a slow client doesn't hold up the
+/// others.
 pub(crate) async fn incoming(
     addr: SocketAddr,
-    acceptor: TlsAcceptor,
-) -> io::Result<ReceiverStream<io::Result<TlsConn>>> {
+    tls: Option<TlsAcceptor>,
+    clients: Arc<Semaphore>,
+) -> io::Result<ReceiverStream<io::Result<Conn>>> {
     let listener = TcpListener::bind(addr).await?;
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(async move {
@@ -77,11 +102,32 @@ pub(crate) async fn incoming(
                     continue;
                 }
             };
+            let Ok(permit) = Arc::clone(&clients).try_acquire_owned() else {
+                warn!("connection limit reached, dropping gRPC connection from {peer}");
+                continue;
+            };
+            let _ = stream.set_nodelay(true);
+            let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60));
+            let _ = socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive);
             let info = stream.connect_info();
-            let (acceptor, tx) = (acceptor.clone(), tx.clone());
+            let Some(acceptor) = tls.clone() else {
+                let conn = Conn {
+                    io: Io::Plain(stream),
+                    info,
+                    _permit: permit,
+                };
+                let _ = tx.send(Ok(conn)).await;
+                continue;
+            };
+            let tx = tx.clone();
             tokio::spawn(async move {
                 if let Some(stream) = crate::server::tls_handshake(acceptor, stream, peer).await {
-                    let _ = tx.send(Ok(TlsConn { stream, info })).await;
+                    let conn = Conn {
+                        io: Io::Tls(Box::new(stream)),
+                        info,
+                        _permit: permit,
+                    };
+                    let _ = tx.send(Ok(conn)).await;
                 }
             });
         }

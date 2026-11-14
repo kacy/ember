@@ -29,6 +29,7 @@ pub mod proto {
 
 mod hashes;
 mod keyspace;
+pub(crate) mod listener;
 mod lists;
 mod pubsub;
 mod reply;
@@ -36,7 +37,6 @@ mod server;
 mod sets;
 mod sorted_sets;
 mod strings;
-pub(crate) mod tls;
 mod vector;
 
 use proto::ember_cache_server::EmberCache;

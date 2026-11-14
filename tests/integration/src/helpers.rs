@@ -59,6 +59,8 @@ pub struct ServerOptions {
     /// Start the gRPC listener on a free port. When false, gRPC is disabled
     /// so test servers don't compete for the default port.
     pub grpc: bool,
+    /// Most concurrent client connections (--maxclients).
+    pub maxclients: Option<usize>,
     /// Events the replication broadcast channel holds
     /// (`replication-broadcast-capacity`, set through a config file).
     pub replication_broadcast_capacity: Option<usize>,
@@ -130,6 +132,9 @@ impl TestServer {
         }
         if let Some(secs) = opts.idle_timeout_secs {
             cmd.arg("--idle-timeout-secs").arg(secs.to_string());
+        }
+        if let Some(max) = opts.maxclients {
+            cmd.arg("--maxclients").arg(max.to_string());
         }
         if let Some(capacity) = opts.replication_broadcast_capacity {
             let path = std::env::temp_dir().join(format!("ember-test-{port}.toml"));
