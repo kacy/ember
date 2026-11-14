@@ -229,7 +229,7 @@ membership and failure detection use SWIM-style gossip. cluster configuration fo
 
 replication is a primary-to-replica stream built on top of the same persistence primitives used for local durability:
 
-1. a replica connects and performs a handshake
+1. a replica connects, and in a handshake each side proves it holds the cluster secret
 2. the primary sends one in-memory snapshot per shard plus the current offset
 3. the replica loads those snapshots and acknowledges their offsets
 4. the primary streams incremental `AofRecord` updates, and the replica acknowledges them as it applies them
