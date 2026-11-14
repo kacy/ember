@@ -231,10 +231,10 @@ replication is a primary-to-replica stream built on top of the same persistence 
 
 1. a replica connects and performs a handshake
 2. the primary sends one in-memory snapshot per shard plus the current offset
-3. the replica loads those snapshots
-4. the primary streams incremental `AofRecord` updates
+3. the replica loads those snapshots and acknowledges their offsets
+4. the primary streams incremental `AofRecord` updates, and the replica acknowledges them as it applies them
 
-successful mutations inside a shard emit `ReplicationEvent`s with monotonically increasing per-shard offsets. the replication server uses those offsets for streaming and for the `WAIT` command's acknowledgement tracking.
+each record a shard writes gets the next per-shard offset. a shard collects its records during a burst of requests and sends them as one `ReplicationEvent` on a broadcast channel, so the shards lock the channel once per burst. for each replica, the primary moves those events into a queue of its own, up to 256 MiB. records written during a full sync wait there until the replica has loaded it. a replica that falls further behind is told to resync and starts over with a full sync. the replica applies records in batches, one message per shard. the acknowledged offsets drive the `WAIT` command, which counts a replica only once it has loaded its full sync.
 
 ### slot migration
 

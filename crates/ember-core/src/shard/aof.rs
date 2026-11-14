@@ -886,24 +886,60 @@ impl AofLog {
     }
 }
 
-/// Broadcasts a single replication event, used by blocking pop operations
-/// that bypass the normal process_message path.
-pub(super) fn broadcast_replication(
-    record: AofRecord,
-    replication_tx: &Option<broadcast::Sender<ReplicationEvent>>,
-    replication_offset: &AtomicU64,
+/// Collects a shard's replication records during a burst and sends them
+/// to the replicas as one event at its end.
+///
+/// Every shard sends into one broadcast channel, and each send locks it,
+/// so one send per record caps the primary's write rate.
+pub(super) struct ReplicationLog {
+    tx: broadcast::Sender<ReplicationEvent>,
+    /// Offset of the last record taken. Shared with the `ShardHandle`, so
+    /// WAIT can read it as soon as the write is applied.
+    offset: Arc<AtomicU64>,
+    pending: Vec<AofRecord>,
     shard_id: u16,
-) {
-    if let Some(ref tx) = *replication_tx {
-        let offset = replication_offset.fetch_add(1, Ordering::Release) + 1;
-        if tx
-            .send(ReplicationEvent {
-                shard_id,
-                offset,
-                record,
-            })
-            .is_err()
-        {
+}
+
+impl ReplicationLog {
+    pub(super) fn new(
+        tx: broadcast::Sender<ReplicationEvent>,
+        offset: Arc<AtomicU64>,
+        shard_id: u16,
+    ) -> Self {
+        Self {
+            tx,
+            offset,
+            pending: Vec::new(),
+            shard_id,
+        }
+    }
+
+    /// The offset of the last record taken.
+    pub(super) fn offset(&self) -> u64 {
+        self.offset.load(Ordering::Acquire)
+    }
+
+    /// Takes records applied by a write, numbering each with the next
+    /// offset.
+    pub(super) fn push(&mut self, records: impl IntoIterator<Item = AofRecord>) {
+        for record in records {
+            self.offset.fetch_add(1, Ordering::Release);
+            self.pending.push(record);
+        }
+    }
+
+    /// Sends the records taken since the last call as one event.
+    pub(super) fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let records: Arc<[AofRecord]> = std::mem::take(&mut self.pending).into();
+        let event = ReplicationEvent {
+            shard_id: self.shard_id,
+            offset: self.offset() + 1 - records.len() as u64,
+            records,
+        };
+        if self.tx.send(event).is_err() {
             // no replicas are currently connected — normal during startup
             // or after a replica disconnects, but tracked so operators
             // can alert on unexpected drops in a replicated deployment.

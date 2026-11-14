@@ -11,8 +11,6 @@ pub struct ReplicationInfo {
     pub role: NodeRole,
     /// Address of the primary this node replicates from (replica only).
     pub primary_addr: Option<std::net::SocketAddr>,
-    /// Number of connected replicas (primary only).
-    pub replica_count: usize,
 }
 
 impl ClusterCoordinator {
@@ -136,8 +134,6 @@ impl ClusterCoordinator {
     }
 
     /// Returns replication status for the `INFO replication` section.
-    ///
-    /// Returns `(role, Option<primary_addr>)`.
     pub async fn replication_info(&self) -> ReplicationInfo {
         let state = self.state.read().await;
         let local = state.nodes.get(&self.local_id);
@@ -150,15 +146,6 @@ impl ClusterCoordinator {
         } else {
             None
         };
-        let replica_count = if role == NodeRole::Primary {
-            local.map(|n| n.replicas.len()).unwrap_or(0)
-        } else {
-            0
-        };
-        ReplicationInfo {
-            role,
-            primary_addr,
-            replica_count,
-        }
+        ReplicationInfo { role, primary_addr }
     }
 }

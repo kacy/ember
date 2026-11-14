@@ -115,12 +115,9 @@ fn pop_for(
     if let Some(ref mut aof) = *ctx.aof {
         aof.append(std::slice::from_ref(&record));
     }
-    aof::broadcast_replication(
-        record,
-        ctx.replication_tx,
-        ctx.replication_offset,
-        ctx.shard_id,
-    );
+    if let Some(ref mut replication) = *ctx.replication {
+        replication.push([record]);
+    }
     true
 }
 

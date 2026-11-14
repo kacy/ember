@@ -379,7 +379,14 @@ async fn render_info(
             match info.role {
                 NodeRole::Primary => {
                     out.push_str("role:primary\r\n");
-                    out.push_str(&format!("connected_replicas:{}\r\n", info.replica_count));
+                    out.push_str(&format!(
+                        "connected_replicas:{}\r\n",
+                        ctx.replica_tracker.connected_count()
+                    ));
+                    out.push_str(&format!(
+                        "sync_full:{}\r\n",
+                        ctx.replica_tracker.full_syncs()
+                    ));
                 }
                 NodeRole::Replica => {
                     out.push_str("role:replica\r\n");

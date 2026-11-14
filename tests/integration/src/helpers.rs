@@ -59,6 +59,9 @@ pub struct ServerOptions {
     /// Start the gRPC listener on a free port. When false, gRPC is disabled
     /// so test servers don't compete for the default port.
     pub grpc: bool,
+    /// Events the replication broadcast channel holds
+    /// (`replication-broadcast-capacity`, set through a config file).
+    pub replication_broadcast_capacity: Option<usize>,
 }
 
 impl TestServer {
@@ -127,6 +130,15 @@ impl TestServer {
         }
         if let Some(secs) = opts.idle_timeout_secs {
             cmd.arg("--idle-timeout-secs").arg(secs.to_string());
+        }
+        if let Some(capacity) = opts.replication_broadcast_capacity {
+            let path = std::env::temp_dir().join(format!("ember-test-{port}.toml"));
+            std::fs::write(
+                &path,
+                format!("[engine]\nreplication-broadcast-capacity = {capacity}\n"),
+            )
+            .expect("failed to write the test config");
+            cmd.arg("--config").arg(path);
         }
 
         let data_dir = if opts.appendonly || opts.cluster_enabled {

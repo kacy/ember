@@ -78,19 +78,20 @@ use crate::types::sorted_set::{ScoreBound, ZAddFlags};
 use crate::types::Value;
 use ember_protocol::command::{BitOpKind, BitRange};
 
-/// A mutation event broadcast to replication subscribers.
+/// Mutations broadcast to replication subscribers, one event per burst of
+/// requests a shard handles.
 ///
-/// Published after every successful mutation on the hot path. The
-/// `offset` is per-shard and monotonically increasing — replicas use it
-/// to detect gaps and trigger re-sync when they fall behind.
+/// Each record has a per-shard offset that increases by one per record.
+/// The first record's offset is `offset`, the next one `offset + 1`, and
+/// so on.
 #[derive(Debug, Clone)]
 pub struct ReplicationEvent {
     /// The shard that produced this event.
     pub shard_id: u16,
-    /// Monotonically increasing per-shard offset.
+    /// Offset of the first record.
     pub offset: u64,
-    /// The mutation record, ready to replay on a replica.
-    pub record: AofRecord,
+    /// The mutation records, in order, ready to replay on a replica.
+    pub records: Arc<[AofRecord]>,
 }
 
 /// Optional persistence configuration for a shard.
@@ -312,6 +313,8 @@ async fn run_shard(prepared: PreparedShard) {
         schema_registry,
     } = prepared;
     let shard_id = config.shard_id;
+    let mut replication =
+        replication_tx.map(|tx| aof::ReplicationLog::new(tx, replication_offset, shard_id));
     // tokio's interval panics on zero, so hold both to at least 1ms
     let expiry_interval = config.expiry_interval.max(Duration::from_millis(1));
     let fsync_interval = config.fsync_interval.max(Duration::from_millis(1));
@@ -432,8 +435,7 @@ async fn run_shard(prepared: PreparedShard) {
                             persistence: &persistence,
                             drop_handle: &drop_handle,
                             shard_id,
-                            replication_tx: &replication_tx,
-                            replication_offset: &replication_offset,
+                            replication: &mut replication,
                             lpop_waiters: &mut lpop_waiters,
                             rpop_waiters: &mut rpop_waiters,
                             #[cfg(feature = "protobuf")]
@@ -443,6 +445,9 @@ async fn run_shard(prepared: PreparedShard) {
                         drain_queued(&mut rx, |msg| process_message(msg, &mut ctx));
                         if let Some(ref mut aof) = aof {
                             aof.flush();
+                        }
+                        if let Some(ref mut replication) = replication {
+                            replication.flush();
                         }
                         for (reply, response) in held_replies.drain(..) {
                             reply.send(response);
@@ -487,10 +492,8 @@ struct ProcessCtx<'a> {
     persistence: &'a Option<ShardPersistenceConfig>,
     drop_handle: &'a Option<DropHandle>,
     shard_id: u16,
-    replication_tx: &'a Option<broadcast::Sender<ReplicationEvent>>,
-    /// Offset of the last replication event sent. Shared with the
-    /// `ShardHandle` so WAIT can read it.
-    replication_offset: &'a AtomicU64,
+    /// Where replication records wait for the end of the burst.
+    replication: &'a mut Option<aof::ReplicationLog>,
     /// Waiters for BLPOP — keyed by list name, FIFO order.
     lpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
     /// Waiters for BRPOP — keyed by list name, FIFO order.
@@ -666,16 +669,8 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     }
 
     // broadcast mutation events to replication subscribers
-    if let Some(ref tx) = *ctx.replication_tx {
-        for record in records {
-            let offset = ctx.replication_offset.fetch_add(1, Ordering::Release) + 1;
-            // ignore send errors — no subscribers or lagged consumers
-            let _ = tx.send(ReplicationEvent {
-                shard_id,
-                offset,
-                record,
-            });
-        }
+    if let Some(ref mut replication) = *ctx.replication {
+        replication.push(records);
     }
 
     if let Some(key) = pushed_key {
@@ -685,9 +680,10 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
     // handle special requests that need access to persistence state
     match request_kind {
         RequestKind::SerializeSnapshot => {
-            // the snapshot covers every event up to the current offset,
-            // since this task sends all of them and is busy doing this now
-            let offset = ctx.replication_offset.load(Ordering::Acquire);
+            // the snapshot covers every record up to the current offset,
+            // including those not yet sent: they go out later with offsets
+            // the replica knows to skip
+            let offset = ctx.replication.as_ref().map_or(0, |r| r.offset());
             let resp = persistence::handle_serialize_snapshot(ctx.keyspace, shard_id, offset);
             ctx.respond(reply, resp);
             return;

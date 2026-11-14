@@ -1026,3 +1026,83 @@ fn cluster_on_a_public_address_needs_a_cluster_secret() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cluster-auth-pass"), "{stderr}");
 }
+
+/// Sends the commands `make(0)`, `make(1)`, … `make(count - 1)` in
+/// pipelined chunks and checks that none fails.
+async fn pipeline(
+    c: &mut crate::helpers::TestClient,
+    count: usize,
+    make: impl Fn(usize) -> Vec<String>,
+) {
+    for start in (0..count).step_by(1000) {
+        let end = (start + 1000).min(count);
+        let mut out = Vec::new();
+        for i in start..end {
+            let args = make(i);
+            out.extend_from_slice(format!("*{}\r\n", args.len()).as_bytes());
+            for arg in args {
+                out.extend_from_slice(format!("${}\r\n{arg}\r\n", arg.len()).as_bytes());
+            }
+        }
+        c.write_raw(&out).await;
+        for _ in start..end {
+            let reply = c.read_frame().await;
+            assert!(!matches!(reply, Frame::Error(_)), "{reply:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_replica_keeps_up_with_writes_during_its_full_sync() {
+    use std::time::{Duration, Instant};
+
+    let opts = || ServerOptions {
+        cluster_enabled: true,
+        ..Default::default()
+    };
+    // a broadcast channel smaller than the writes made during the full
+    // sync, which a replica that waited on it would miss
+    let primary = TestServer::start_with(ServerOptions {
+        cluster_bootstrap: true,
+        replication_broadcast_capacity: Some(1024),
+        ..opts()
+    });
+    let replica = TestServer::start_with(opts());
+    let mut c0 = primary.connect().await;
+    let mut c1 = replica.connect().await;
+
+    // enough data that the full sync takes a while
+    pipeline(&mut c0, 50_000, |i| {
+        vec!["SET".into(), format!("key:{i}"), "x".repeat(64)]
+    })
+    .await;
+
+    let primary_id = c0.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+        .await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(
+        c1.cmd(&["CLUSTER", "REPLICATE", &primary_id]).await,
+        Frame::Simple(_)
+    ) {
+        assert!(
+            Instant::now() <= deadline,
+            "replica never learned the primary"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    // writes while the replica loads the full sync. they wait for it in
+    // the replica's queue
+    pipeline(&mut c0, 100_000, |_| vec!["INCR".into(), "counter".into()]).await;
+
+    assert_eq!(c0.get_int(&["WAIT", "1", "30000"]).await, 1);
+    assert_eq!(
+        c1.get_bulk(&["GET", "counter"]).await,
+        Some("100000".into())
+    );
+    assert_eq!(c1.get_int(&["DBSIZE"]).await, 50_001);
+    let info = c0.get_bulk(&["INFO", "replication"]).await.unwrap();
+    assert!(info.contains("connected_replicas:1"), "{info}");
+    assert!(info.contains("sync_full:1"), "the replica resynced: {info}");
+}
