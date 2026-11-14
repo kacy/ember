@@ -479,8 +479,11 @@ pub enum TransactionState {
     /// Queuing mode — frames accumulate until EXEC or DISCARD.
     Queuing {
         queue: Vec<Frame>,
-        /// Set when a command in the queue had a parse error. EXEC returns
-        /// EXECABORT instead of executing.
+        /// Bytes the queue and the watched keys hold, which may not pass
+        /// `max_command_memory`: a transaction counts as one command.
+        bytes: usize,
+        /// Set when a command in the queue had a parse error, or the queue
+        /// grew too large. EXEC returns EXECABORT instead of executing.
         error: bool,
     },
 }

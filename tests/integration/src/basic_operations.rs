@@ -705,3 +705,25 @@ async fn every_command_in_the_table_reaches_a_handler() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_transaction_larger_than_a_command_may_be_is_discarded() {
+    use ember_protocol::Frame;
+
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.ok(&["MULTI"]).await;
+    // 33 values of 4 MiB pass the 128 MiB a command may hold
+    let value = "x".repeat(4 * 1024 * 1024);
+    let mut rejected = false;
+    for i in 0..33 {
+        match c.cmd(&["SET", &format!("k{i}"), &value]).await {
+            Frame::Simple(s) if s == "QUEUED" => {}
+            Frame::Error(e) if e.contains("too large") => rejected = true,
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+    assert!(rejected, "the queue was never cut off");
+    assert!(c.err(&["EXEC"]).await.starts_with("EXECABORT"));
+    assert_eq!(c.get_int(&["DBSIZE"]).await, 0);
+}
