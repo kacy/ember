@@ -81,7 +81,7 @@ see [docs/compatibility.md](docs/compatibility.md) for the full command support 
 - **RENAME** requires the source and destination keys to hash to the same shard. cross-shard renames return an error.
 - **transactions** (MULTI/EXEC) are fully atomic within a single shard. cross-shard transactions execute in order but are not globally atomic — the same limitation as Redis Cluster.
 - **geo commands** are coming in a future release.
-- `redis-cli` connects on port 6379 (RESP3). the typed gRPC API is on port 6380 (when `--features grpc` is compiled in).
+- `redis-cli` connects on port 6379 (RESP3). the typed gRPC API is on port 6380 (when `--features grpc` is compiled in), over TLS when `tls-port` is set.
 
 ## install
 
