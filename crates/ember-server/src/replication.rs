@@ -30,31 +30,32 @@
 //! // Incremental records (unbounded stream):
 //! [MSG_RECORD: 1B][shard_id: 2B][offset: 8B][record_len: 4B][record_bytes]
 //!
-//! // Replica → primary, after applying each record:
+//! // Replica → primary, after loading the snapshots and after applying
+//! // records. offset is the newest one applied on that shard:
 //! [MSG_ACK: 1B][shard_id: 2B][offset: 8B]
 //!
-//! // When replica falls behind (broadcast lag):
+//! // When the replica falls too far behind (see REPLICA_QUEUE_LIMIT):
 //! [MSG_RESYNC: 1B]    primary closes the connection; replica reconnects
 //! ```
 //!
-//! Offsets count replication events per shard. A snapshot's offset is the
-//! last event it contains, so the replica skips records at or below it.
+//! Offsets count replication records per shard. A snapshot's offset is the
+//! last record it contains, so the replica skips records at or below it.
 
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use ember_cluster::ClusterSecret;
 use ember_core::{Engine, ShardRequest, ShardResponse};
 use ember_persistence::aof::AofRecord;
 use ember_persistence::snapshot;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 // -- protocol constants --
@@ -72,10 +73,19 @@ const MSG_RECORD: u8 = 4;
 const MSG_RESYNC: u8 = 5;
 const MSG_ACK: u8 = 6;
 
+/// The most record bytes the primary queues for one replica. Writes made
+/// while the replica loads its full sync wait in this queue. A replica
+/// that falls further behind is sent MSG_RESYNC.
+const REPLICA_QUEUE_LIMIT: usize = 256 * 1024 * 1024;
+
+/// The most requests a replica collects before sending them to its shards.
+const MAX_BATCH: usize = 4096;
+
 /// Tracks each replica's acknowledged offset per shard for WAIT.
 ///
-/// A replica starts at the offsets of the snapshot it received and moves
-/// forward as it acknowledges records. WAIT compares these against the
+/// A replica starts at offset 0 on every shard. It acknowledges the
+/// snapshots' offsets once it has loaded them, then each record it
+/// applies. WAIT compares these against the
 /// shards' current offsets from [`Engine::replication_offsets`].
 #[derive(Debug)]
 pub struct ReplicaTracker {
@@ -83,6 +93,8 @@ pub struct ReplicaTracker {
     /// assigned when the replica connects.
     acked: Mutex<HashMap<u64, Vec<u64>>>,
     next_id: AtomicU64,
+    /// Full syncs started since the server started.
+    full_syncs: AtomicU64,
 }
 
 impl ReplicaTracker {
@@ -90,15 +102,16 @@ impl ReplicaTracker {
         Self {
             acked: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(0),
+            full_syncs: AtomicU64::new(0),
         }
     }
 
-    /// Registers a replica that loaded snapshots at `snapshot_offsets`.
-    /// Returns its id.
-    pub fn register(&self, snapshot_offsets: Vec<u64>) -> u64 {
+    /// Registers a replica of a primary with `shards` shards. Returns its
+    /// id.
+    pub fn register(&self, shards: usize) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut map) = self.acked.lock() {
-            map.insert(id, snapshot_offsets);
+            map.insert(id, vec![0; shards]);
         }
         id
     }
@@ -130,6 +143,16 @@ impl ReplicaTracker {
                     .count()
             })
             .unwrap_or(0)
+    }
+
+    /// Counts a full sync sent to a replica.
+    pub fn full_sync_started(&self) {
+        self.full_syncs.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Full syncs started since the server started.
+    pub fn full_syncs(&self) -> u64 {
+        self.full_syncs.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of currently connected replicas.
@@ -343,17 +366,20 @@ impl ReplicationServer {
 
         // subscribe before snapshotting so we don't miss events that
         // happen between snapshot and incremental stream start
-        let mut rx = match self.engine.subscribe_replication() {
-            Some(rx) => rx,
-            None => {
-                return Err(std::io::Error::other(
-                    "replication channel not configured on this engine",
-                ));
-            }
+        let Some(rx) = self.engine.subscribe_replication() else {
+            return Err(std::io::Error::other(
+                "replication channel not configured on this engine",
+            ));
         };
+        // move events into this replica's own queue as they happen. the
+        // broadcast ring holds a fixed number of events, too few to cover a
+        // full sync under write load
+        let (queue_tx, mut queue) = mpsc::unbounded_channel();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let forwarder = tokio::spawn(forward_events(rx, queue_tx, Arc::clone(&queued)));
 
         // --- full sync ---
-        let mut snapshot_offsets = Vec::with_capacity(self.engine.shard_count());
+        self.tracker.full_sync_started();
         for shard_idx in 0..self.engine.shard_count() {
             let resp = self
                 .engine
@@ -388,7 +414,6 @@ impl ReplicationServer {
             write_u8(&mut stream, MSG_SHARD_OFFSET).await?;
             write_u16_le(&mut stream, shard_id).await?;
             write_u64_le(&mut stream, offset).await?;
-            snapshot_offsets.push(offset);
         }
 
         stream.flush().await?;
@@ -401,7 +426,8 @@ impl ReplicationServer {
         let mut writer = BufWriter::with_capacity(65536, write_inner);
 
         // Register this replica and spawn an ACK reader task.
-        let replica_id = self.tracker.register(snapshot_offsets);
+        // WAIT counts the replica once it acknowledges having loaded these
+        let replica_id = self.tracker.register(self.engine.shard_count());
         let tracker = Arc::clone(&self.tracker);
         let mut ack_reader = read_half;
 
@@ -426,52 +452,86 @@ impl ReplicationServer {
         });
 
         // --- incremental stream ---
-        let result = self.stream_records(&mut writer, &mut rx).await;
+        let result = stream_records(&mut writer, &mut queue, &queued).await;
 
         // clean up regardless of result
+        forwarder.abort();
         ack_task.abort();
         self.tracker.remove(replica_id);
 
         result
     }
+}
 
-    /// Streams replication records to the replica until the connection closes
-    /// or the broadcast channel is exhausted.
-    async fn stream_records(
-        &self,
-        writer: &mut BufWriter<tokio::io::WriteHalf<TcpStream>>,
-        rx: &mut broadcast::Receiver<ember_core::ReplicationEvent>,
-    ) -> std::io::Result<()> {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    let record_bytes = event.record.to_bytes().map_err(|e| {
-                        std::io::Error::other(format!("record serialization failed: {e}"))
-                    })?;
-                    let record_len = u32::try_from(record_bytes.len()).map_err(|_| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, "record too large")
-                    })?;
-
-                    write_u8(writer, MSG_RECORD).await?;
-                    write_u16_le(writer, event.shard_id).await?;
-                    write_u64_le(writer, event.offset).await?;
-                    write_u32_le(writer, record_len).await?;
-                    writer.write_all(&record_bytes).await?;
-                    writer.flush().await?;
-                }
-                Err(broadcast::error::RecvError::Lagged(count)) => {
-                    warn!("replication stream lagged by {count} events; triggering resync");
-                    let _ = write_u8(writer, MSG_RESYNC).await;
-                    let _ = writer.flush().await;
-                    return Ok(());
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    info!("replication broadcast channel closed; disconnecting replica");
-                    return Ok(());
-                }
+/// Encodes the records of each replication event as MSG_RECORD frames and
+/// queues them for one replica. Stops, closing the queue, when the replica
+/// falls more than [`REPLICA_QUEUE_LIMIT`] bytes behind or the broadcast
+/// ring overruns.
+async fn forward_events(
+    mut rx: broadcast::Receiver<ember_core::ReplicationEvent>,
+    queue: mpsc::UnboundedSender<Bytes>,
+    queued: Arc<AtomicUsize>,
+) {
+    loop {
+        let event = match rx.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(count)) => {
+                warn!("replication stream lagged by {count} events; triggering resync");
+                return;
             }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let mut frames = BytesMut::new();
+        for (offset, record) in (event.offset..).zip(event.records.iter()) {
+            let bytes = match record.to_bytes() {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    error!("replication record serialization failed: {e}");
+                    return;
+                }
+            };
+            let Ok(len) = u32::try_from(bytes.len()) else {
+                error!("replication record too large: {} bytes", bytes.len());
+                return;
+            };
+            frames.put_u8(MSG_RECORD);
+            frames.put_u16_le(event.shard_id);
+            frames.put_u64_le(offset);
+            frames.put_u32_le(len);
+            frames.put_slice(&bytes);
+        }
+
+        let size = frames.len();
+        if queued.fetch_add(size, Ordering::Relaxed) + size > REPLICA_QUEUE_LIMIT {
+            warn!("replica is over {REPLICA_QUEUE_LIMIT} bytes behind; triggering resync");
+            return;
+        }
+        if queue.send(frames.freeze()).is_err() {
+            return;
         }
     }
+}
+
+/// Writes queued records to the replica, flushing whenever the queue runs
+/// dry. Once the forwarder closes the queue, the rest of it is stale: it
+/// sends MSG_RESYNC instead, so the replica starts over with a full sync.
+async fn stream_records(
+    writer: &mut BufWriter<tokio::io::WriteHalf<TcpStream>>,
+    queue: &mut mpsc::UnboundedReceiver<Bytes>,
+    queued: &AtomicUsize,
+) -> std::io::Result<()> {
+    while let Some(frame) = queue.recv().await {
+        if queue.is_closed() {
+            break;
+        }
+        queued.fetch_sub(frame.len(), Ordering::Relaxed);
+        writer.write_all(&frame).await?;
+        if queue.is_empty() {
+            writer.flush().await?;
+        }
+    }
+    write_u8(writer, MSG_RESYNC).await?;
+    writer.flush().await
 }
 
 // -- replica-side client --
@@ -540,7 +600,9 @@ impl ReplicationClient {
     /// Performs full sync + incremental stream for one connection session.
     /// Resets `backoff` once the handshake succeeds, so a replica that ran
     /// fine for hours does not wait the maximum delay after one drop.
-    async fn sync(&self, mut stream: TcpStream, backoff: &mut Duration) -> std::io::Result<()> {
+    async fn sync(&self, stream: TcpStream, backoff: &mut Duration) -> std::io::Result<()> {
+        // reads come through a buffer; writes go straight to the socket
+        let mut stream = BufReader::with_capacity(65536, stream);
         let our_shards = self.engine.shard_count() as u16;
 
         // send handshake
@@ -599,6 +661,7 @@ impl ReplicationClient {
             .map_err(|e| std::io::Error::other(format!("flush before sync failed: {e:?}")))?;
 
         // receive per-shard snapshots and the offset each one covers
+        let mut batch = Batch::new(usize::from(primary_shards));
         let mut snapshot_offsets = vec![0u64; usize::from(primary_shards)];
         let mut snap_buf = Vec::new();
         for _ in 0..primary_shards {
@@ -609,7 +672,7 @@ impl ReplicationClient {
             snap_buf.clear();
             snap_buf.resize(snap_len, 0);
             stream.read_exact(&mut snap_buf).await?;
-            self.apply_snapshot(shard_id, &snap_buf).await?;
+            self.apply_snapshot(&mut batch, shard_id, &snap_buf).await?;
 
             expect_tag(&mut stream, MSG_SHARD_OFFSET, "MSG_SHARD_OFFSET").await?;
             let offset_shard = read_u16_le(&mut stream).await?;
@@ -618,10 +681,19 @@ impl ReplicationClient {
                 *slot = offset;
             }
         }
+        batch.apply(&self.engine).await;
+        let mut acks = Vec::new();
+        for (shard, offset) in snapshot_offsets.iter().enumerate() {
+            acks.push(MSG_ACK);
+            acks.extend_from_slice(&(shard as u16).to_le_bytes());
+            acks.extend_from_slice(&offset.to_le_bytes());
+        }
+        stream.write_all(&acks).await?;
 
         info!("full sync applied, starting incremental replay");
 
-        // incremental stream
+        // incremental stream. records are collected into a batch, which
+        // is applied and acknowledged once the buffered input is used up
         loop {
             let msg = read_u8(&mut stream).await?;
             match msg {
@@ -649,20 +721,10 @@ impl ReplicationClient {
                     // the handshake checked that both sides have the same shard
                     // count, so the primary's shard id picks the same shard a
                     // key lookup would, and it also covers keyless records
-                    if !in_snapshot {
-                        if let Some(request) = ember_core::from_aof_record(&record) {
-                            if let Err(e) =
-                                self.engine.send_to_shard(shard_id.into(), request).await
-                            {
-                                warn!("replication apply failed: {e:?}");
-                            }
-                        }
-                    }
-
-                    // acknowledge the record so WAIT can count this replica
-                    write_u8(&mut stream, MSG_ACK).await?;
-                    write_u16_le(&mut stream, shard_id).await?;
-                    write_u64_le(&mut stream, offset).await?;
+                    let request = (!in_snapshot)
+                        .then(|| ember_core::from_aof_record(&record))
+                        .flatten();
+                    batch.push(shard_id, request, Some(offset));
                 }
                 MSG_RESYNC => {
                     info!("primary requested resync; reconnecting");
@@ -675,6 +737,18 @@ impl ReplicationClient {
                     ));
                 }
             }
+
+            // acknowledge once the records are applied, so WAIT can count
+            // this replica
+            if stream.buffer().is_empty() || batch.is_full() {
+                let mut acks = Vec::new();
+                for (shard, offset) in batch.apply(&self.engine).await {
+                    acks.push(MSG_ACK);
+                    acks.extend_from_slice(&shard.to_le_bytes());
+                    acks.extend_from_slice(&offset.to_le_bytes());
+                }
+                stream.write_all(&acks).await?;
+            }
         }
     }
 
@@ -682,7 +756,12 @@ impl ReplicationClient {
     ///
     /// Each entry goes in through RESTORE, which replaces the key with the
     /// snapshot's value as is, for every value type.
-    async fn apply_snapshot(&self, shard_id: u16, data: &[u8]) -> std::io::Result<()> {
+    async fn apply_snapshot(
+        &self,
+        batch: &mut Batch,
+        shard_id: u16,
+        data: &[u8],
+    ) -> std::io::Result<()> {
         let (_, entries) = snapshot::read_snapshot_from_bytes(data).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -708,11 +787,80 @@ impl ReplicationClient {
                 data: Bytes::from(data),
                 replace: true,
             };
-            if let Err(e) = self.engine.send_to_shard(shard_id.into(), request).await {
-                warn!("snapshot restore failed: {e:?}");
+            batch.push(shard_id, Some(request), None);
+            if batch.is_full() {
+                batch.apply(&self.engine).await;
             }
         }
         Ok(())
+    }
+}
+
+/// Requests a replica has collected for its shards, and the offsets to
+/// acknowledge once they are applied.
+///
+/// Each shard gets its requests as one message, and the shards apply them
+/// in parallel.
+struct Batch {
+    requests: Vec<Vec<ShardRequest>>,
+    /// The newest offset collected for each shard.
+    acks: Vec<Option<u64>>,
+    len: usize,
+}
+
+impl Batch {
+    fn new(shards: usize) -> Self {
+        Self {
+            requests: (0..shards).map(|_| Vec::new()).collect(),
+            acks: vec![None; shards],
+            len: 0,
+        }
+    }
+
+    /// Adds `request` for `shard`, if there is one, and `offset` to
+    /// acknowledge once it is applied.
+    fn push(&mut self, shard: u16, request: Option<ShardRequest>, offset: Option<u64>) {
+        let shard = usize::from(shard);
+        if let (Some(request), Some(requests)) = (request, self.requests.get_mut(shard)) {
+            requests.push(request);
+            self.len += 1;
+        }
+        if let Some(ack) = self.acks.get_mut(shard) {
+            *ack = offset.or(*ack);
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.len >= MAX_BATCH
+    }
+
+    /// Sends the requests to their shards and waits until all are applied.
+    /// Returns the `(shard, offset)` pairs this covers.
+    async fn apply(&mut self, engine: &Engine) -> Vec<(u16, u64)> {
+        let mut replies = Vec::with_capacity(self.len);
+        for (shard, requests) in self.requests.iter_mut().enumerate() {
+            if requests.is_empty() {
+                continue;
+            }
+            match engine
+                .dispatch_batch_to_shard(shard, std::mem::take(requests))
+                .await
+            {
+                Ok(batch) => replies.extend(batch),
+                Err(e) => warn!("replication apply failed: {e:?}"),
+            }
+        }
+        self.len = 0;
+        for reply in replies {
+            if reply.await.is_err() {
+                warn!("replication apply failed: shard dropped the request");
+            }
+        }
+        self.acks
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(shard, ack)| Some((shard as u16, ack.take()?)))
+            .collect()
     }
 }
 
@@ -723,8 +871,11 @@ mod tests {
     #[test]
     fn tracker_counts_replicas_that_reached_every_shard() {
         let tracker = ReplicaTracker::new();
-        let a = tracker.register(vec![3, 0]);
-        let b = tracker.register(vec![3, 0]);
+        let a = tracker.register(2);
+        let b = tracker.register(2);
+        // both loaded snapshots at offsets [3, 0]
+        tracker.update(a, 0, 3);
+        tracker.update(b, 0, 3);
         tracker.update(a, 1, 2);
         // a replica that is ahead on one shard but behind on another does not count
         tracker.update(b, 0, 9);
