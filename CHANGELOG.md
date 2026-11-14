@@ -10,6 +10,9 @@
 - concurrent mode: `--concurrent`, `EMBER_CONCURRENT`, the `concurrent` config key and the helm `ember.concurrent` value. the default mode is faster, serving about 35% more requests without pipelining and 2.6× more with a pipeline of 16 on a 32-core machine. concurrent mode also left strings out of the AOF and replication, rejected collection commands, and ran SET NX/XX and INCR as separate read and write steps (#446)
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
+### performance
+- cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock
+
 ### fixes
 - failover safety (#452):
   - an election needs a majority of all primaries, the failed one included, as in Redis Cluster. it counted only the other primaries, so with two primaries a replica cut off with one of them won with a single vote while its primary kept serving

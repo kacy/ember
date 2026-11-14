@@ -1,5 +1,6 @@
 use super::failover::MAX_VOTE_EPOCH_AHEAD;
 use super::*;
+use ember_protocol::Command;
 
 /// Creates a test coordinator with a single node that owns no slots.
 fn test_coordinator() -> (ClusterCoordinator, mpsc::Receiver<GossipEvent>) {
@@ -15,6 +16,20 @@ fn test_coordinator_bootstrapped() -> (ClusterCoordinator, mpsc::Receiver<Gossip
     let addr: SocketAddr = "127.0.0.1:6379".parse().unwrap();
     let config = GossipConfig::default();
     ClusterCoordinator::new(local_id, addr, config, true, None, None).unwrap()
+}
+
+fn get(key: &str) -> Command {
+    Command::Get { key: key.into() }
+}
+
+fn set(key: &str) -> Command {
+    Command::Set {
+        key: key.into(),
+        value: Bytes::from_static(b"v"),
+        expire: None,
+        nx: false,
+        xx: false,
+    }
 }
 
 #[test]
@@ -149,7 +164,7 @@ async fn setslot_node_completes_migration() {
     assert!(matches!(resp, Frame::Simple(_)));
 
     // migration should be cleaned up
-    let migration = coord.migration.lock().await;
+    let migration = coord.migration.read().unwrap();
     assert!(!migration.is_migrating(0));
 }
 
@@ -165,7 +180,7 @@ async fn setslot_stable_aborts_migration() {
     assert!(matches!(resp, Frame::Simple(_)));
 
     // migration should be cleaned up
-    let migration = coord.migration.lock().await;
+    let migration = coord.migration.read().unwrap();
     assert!(!migration.is_importing(100));
 }
 
@@ -207,13 +222,13 @@ async fn delslots_queues_gossip_update() {
     assert_eq!(state.slot_map.owner(2), Some(coord.local_id));
 }
 
-// -- check_slot_with_migration tests --
+// -- check_command tests --
 
 #[tokio::test]
 async fn check_slot_owned_no_migration() {
     let (coord, _rx) = test_coordinator_bootstrapped();
     // "foo" hashes to some slot — we own all slots
-    let result = coord.check_slot_with_migration(b"foo", false).await;
+    let result = coord.check_command(&get("foo"), false).await;
     assert_eq!(result, SlotCheck::Local);
 }
 
@@ -239,7 +254,7 @@ async fn a_migrating_slot_asks_for_keys_that_are_gone() {
 
     // the connection serves the keys still here and sends the client to
     // the target for the rest
-    let result = coord.check_slot_with_migration(b"foo", false).await;
+    let result = coord.check_command(&get("foo"), false).await;
     assert_eq!(
         result,
         SlotCheck::AskIfMissing {
@@ -260,7 +275,7 @@ async fn a_migrating_slot_with_an_unknown_target_is_served_here() {
         .await;
 
     // there is nowhere to send the client yet
-    let result = coord.check_slot_with_migration(b"foo", false).await;
+    let result = coord.check_command(&get("foo"), false).await;
     assert_eq!(result, SlotCheck::Local);
 }
 
@@ -275,7 +290,7 @@ async fn check_slot_importing_with_asking() {
         .await;
 
     // with asking=true, should allow local access
-    let result = coord.check_slot_with_migration(b"foo", true).await;
+    let result = coord.check_command(&get("foo"), true).await;
     assert_eq!(result, SlotCheck::Local);
 }
 
@@ -304,7 +319,7 @@ async fn check_slot_importing_without_asking() {
         .await;
 
     // without asking, should return MOVED to the owner
-    let result = coord.check_slot_with_migration(b"foo", false).await;
+    let result = coord.check_command(&get("foo"), false).await;
     match result {
         SlotCheck::Reply(Frame::Error(msg)) => {
             assert!(msg.starts_with("MOVED"), "expected MOVED, got: {msg}");
@@ -316,7 +331,7 @@ async fn check_slot_importing_without_asking() {
 #[tokio::test]
 async fn check_slot_unassigned_returns_clusterdown() {
     let (coord, _rx) = test_coordinator(); // no slots assigned
-    let result = coord.check_slot_with_migration(b"foo", false).await;
+    let result = coord.check_command(&get("foo"), false).await;
     match result {
         SlotCheck::Reply(Frame::Error(msg)) => {
             assert!(
@@ -451,13 +466,26 @@ async fn cluster_replicate_updates_state() {
 }
 
 #[tokio::test]
-async fn primary_addr_for_slot_returns_primary_addr() {
-    let (coord, _rx) = test_coordinator_bootstrapped();
+async fn a_replica_sends_writes_to_its_primary_and_serves_reads() {
+    let (coord, _rx) = test_coordinator();
+    let primary_id = NodeId::new();
+    {
+        let mut state = coord.state.write().await;
+        let primary = ClusterNode::new_primary(primary_id, "127.0.0.1:6380".parse().unwrap());
+        state.add_node(primary);
+        state.slot_map.assign(key_slot(b"foo"), primary_id);
+    }
+    coord.cluster_replicate(&primary_id.0.to_string()).await;
 
-    // the bootstrap coordinator owns all slots — find any one
-    let addr = coord.primary_addr_for_slot(0).await;
-    assert!(addr.is_some(), "should find primary for slot 0");
-    assert_eq!(addr.unwrap().port(), 6379);
+    let slot = key_slot(b"foo");
+    assert_eq!(
+        coord.check_command(&set("foo"), false).await,
+        SlotCheck::Reply(Frame::Error(format!("MOVED {slot} 127.0.0.1:6380")))
+    );
+    assert_eq!(
+        coord.check_command(&get("foo"), false).await,
+        SlotCheck::Local
+    );
 }
 
 #[tokio::test]
@@ -585,14 +613,18 @@ async fn add_primary(coord: &ClusterCoordinator, failed: bool) -> NodeId {
     id
 }
 
+async fn takes_writes(coord: &ClusterCoordinator) -> bool {
+    coord.check_command(&set("foo"), false).await == SlotCheck::Local
+}
+
 #[tokio::test]
 async fn a_primary_takes_writes_only_while_it_reaches_a_majority() {
     let (coord, _rx) = test_coordinator_bootstrapped();
-    assert!(coord.reaches_majority_of_primaries().await, "alone");
+    assert!(takes_writes(&coord).await, "alone");
 
     let a = add_primary(&coord, false).await;
     let b = add_primary(&coord, false).await;
-    assert!(coord.reaches_majority_of_primaries().await);
+    assert!(takes_writes(&coord).await);
 
     // cut off from both others: 1 of 3 is no majority
     for id in [a, b] {
@@ -606,7 +638,7 @@ async fn a_primary_takes_writes_only_while_it_reaches_a_majority() {
             .flags
             .pfail = true;
     }
-    assert!(!coord.reaches_majority_of_primaries().await);
+    assert!(!takes_writes(&coord).await);
 
     // one back: 2 of 3
     coord
@@ -618,7 +650,7 @@ async fn a_primary_takes_writes_only_while_it_reaches_a_majority() {
         .unwrap()
         .flags
         .pfail = false;
-    assert!(coord.reaches_majority_of_primaries().await);
+    assert!(takes_writes(&coord).await);
 }
 
 #[tokio::test]

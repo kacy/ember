@@ -57,7 +57,7 @@ pub struct ClusterHealthSummary {
 pub struct ClusterCoordinator {
     state: RwLock<ClusterState>,
     gossip: Mutex<GossipEngine>,
-    migration: Mutex<MigrationManager>,
+    migration: std::sync::RwLock<MigrationManager>,
     local_id: NodeId,
     gossip_port_offset: u16,
     /// local data-plane bind address (used to compute replication port)
@@ -153,7 +153,7 @@ impl ClusterCoordinator {
         let coordinator = Self {
             state: RwLock::new(state),
             gossip: Mutex::new(gossip),
-            migration: Mutex::new(MigrationManager::new()),
+            migration: std::sync::RwLock::new(MigrationManager::new()),
             local_id,
             gossip_port_offset: port_offset,
             bind_addr,
@@ -217,7 +217,7 @@ impl ClusterCoordinator {
         let coordinator = Self {
             state: RwLock::new(state),
             gossip: Mutex::new(gossip),
-            migration: Mutex::new(MigrationManager::new()),
+            migration: std::sync::RwLock::new(MigrationManager::new()),
             local_id,
             gossip_port_offset: port_offset,
             bind_addr,
