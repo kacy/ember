@@ -75,12 +75,26 @@ fn require_file(path: &Path, make_err: impl FnOnce(String) -> TlsError) -> Resul
     }
 }
 
-/// Loads TLS configuration and creates a `TlsAcceptor`.
+/// Loads TLS configuration and creates a `TlsAcceptor` for RESP clients.
+pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
+    Ok(TlsAcceptor::from(Arc::new(load_server_config(config)?)))
+}
+
+/// Creates a `TlsAcceptor` for gRPC clients from the same configuration.
+/// gRPC runs over HTTP/2, which clients ask for during the handshake.
+#[cfg(feature = "grpc")]
+pub fn load_grpc_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
+    let mut server_config = load_server_config(config)?;
+    server_config.alpn_protocols = vec![b"h2".to_vec()];
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+/// Builds the rustls server configuration.
 ///
 /// Reads certificates and private key from PEM files. If `ca_cert_file` is
 /// specified, sets up client certificate verification. When `auth_clients`
 /// is true, clients must present valid certificates signed by the CA.
-pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
+fn load_server_config(config: &TlsConfig) -> Result<rustls::ServerConfig, TlsError> {
     // load server certificates
     let cert_path = Path::new(&config.cert_file);
     require_file(cert_path, TlsError::CertFileNotFound)?;
@@ -146,7 +160,7 @@ pub fn load_tls_acceptor(config: &TlsConfig) -> Result<TlsAcceptor, TlsError> {
             .with_single_cert(certs, key)?
     };
 
-    Ok(TlsAcceptor::from(Arc::new(server_config)))
+    Ok(server_config)
 }
 
 #[cfg(test)]

@@ -154,6 +154,7 @@ struct Args {
 
     // -- gRPC options --
     /// port for gRPC connections (default 6380). set to 0 to disable it.
+    /// when tls-port is set, gRPC uses the same TLS settings.
     #[cfg(feature = "grpc")]
     #[arg(long, env = "EMBER_GRPC_PORT")]
     grpc_port: Option<u16>,
@@ -705,6 +706,13 @@ async fn main() {
             // without a CA there is nothing to verify client certificates
             // against, so TLS would quietly accept every client
             exit_err("tls-auth-clients requires tls-ca-cert-file");
+        }
+
+        #[cfg(feature = "grpc")]
+        if cfg.grpc_port == tls_port {
+            exit_err(format!(
+                "tls-port and the gRPC port are both {tls_port}; move one, or disable gRPC with --no-grpc"
+            ));
         }
 
         let tls_addr = parse_bind_addr(&cfg.bind, tls_port, "TLS");

@@ -36,6 +36,7 @@ mod server;
 mod sets;
 mod sorted_sets;
 mod strings;
+pub(crate) mod tls;
 mod vector;
 
 use proto::ember_cache_server::EmberCache;
