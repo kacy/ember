@@ -11,9 +11,15 @@
 - raft and the `openraft` dependency. raft only ever ran on the bootstrap node, and gossip with config epochs already decided slot ownership and failover, as in Redis Cluster. `raft-port-offset` and `--cluster-raft-port-offset` are still accepted and ignored, so existing configs keep working (#443)
 
 ### performance
+- replication keeps up with the primary under heavy writes. on a 32-core machine a replica loads a full sync of 1.26M keys in about 1 second instead of 13.5, and stays in step with 1.1M writes a second. a replica that fell behind, as every one did under load, was resynced from scratch in a loop and served a partial dataset each time:
+  - the primary queues each replica's records itself, up to 256 MiB, so writes during a full sync no longer overrun the 65,536-event broadcast channel. a replica further behind gets a resync at once instead of first receiving the stale backlog
+  - shards send their records once per burst instead of once per record. every send locks the broadcast channel, which held the primary to about 600k writes a second with a replica attached
+  - the replica applies records and snapshot keys in batches, one message per shard, instead of waiting for each one
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- WAIT counts a replica only once it has loaded its full sync. it counted the replica as soon as the primary had sent the snapshot, while the replica was still loading it, or had just flushed its data to start over
+- `INFO replication` on a primary counts the replicas streaming from it in `connected_replicas`. it counted the replicas gossip had reported, which could read 0 while one streamed. a new `sync_full` field counts the full syncs sent
 - failover safety (#452):
   - an election needs a majority of all primaries, the failed one included, as in Redis Cluster. it counted only the other primaries, so with two primaries a replica cut off with one of them won with a single vote while its primary kept serving
   - a primary votes for one replica per failed primary for two failure timeouts, so two replicas of the same primary can't both win. a replica stops its election once another node owns the failed primary's slots
