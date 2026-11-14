@@ -149,7 +149,7 @@ fn accept_connection(
 
 /// Performs TLS handshake with a 10-second timeout to prevent slowloris attacks.
 /// Returns `None` on handshake failure or timeout.
-async fn tls_handshake(
+pub(crate) async fn tls_handshake(
     acceptor: TlsAcceptor,
     stream: TcpStream,
     peer: SocketAddr,
@@ -465,16 +465,36 @@ pub async fn run_threaded(
             Arc::clone(&slow_log),
             Arc::clone(&pubsub),
         );
-        info!("gRPC listening on {grpc_addr}");
-        let server = tonic::transport::Server::builder()
+        // gRPC takes the TLS settings of the RESP TLS port, so a server
+        // that encrypts RESP doesn't serve gRPC in plaintext
+        let tls = match tls.as_ref() {
+            Some((_, tls_config)) => Some(crate::tls::load_grpc_acceptor(tls_config)?),
+            None => None,
+        };
+        let router = tonic::transport::Server::builder()
             .concurrency_limit_per_connection(256)
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
             .tcp_keepalive(Some(Duration::from_secs(60)))
-            .add_service(svc.into_service())
-            .serve(grpc_addr);
+            .add_service(svc.into_service());
         Some(tokio::spawn(async move {
-            if let Err(e) = server.await {
+            let result = match tls {
+                Some(acceptor) => match crate::grpc::tls::incoming(grpc_addr, acceptor).await {
+                    Ok(incoming) => {
+                        info!("gRPC listening on {grpc_addr} with TLS");
+                        router.serve_with_incoming(incoming).await
+                    }
+                    Err(e) => {
+                        error!("failed to bind gRPC on {grpc_addr}: {e}");
+                        return;
+                    }
+                },
+                None => {
+                    info!("gRPC listening on {grpc_addr}");
+                    router.serve(grpc_addr).await
+                }
+            };
+            if let Err(e) = result {
                 error!("gRPC server error: {e}");
             }
         }))

@@ -711,6 +711,7 @@ dependencies = [
  "ember-client",
  "ember-protocol",
  "ember-server",
+ "hyper-util",
  "prost 0.13.5",
  "prost-reflect",
  "rcgen",
@@ -722,6 +723,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-build",
+ "tower",
 ]
 
 [[package]]

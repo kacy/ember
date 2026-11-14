@@ -25,6 +25,9 @@ tokio-rustls = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
+# both come with tonic; the gRPC TLS test connects through them
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = "0.5"
 
 [build-dependencies]
 tonic-build = { workspace = true }

@@ -203,12 +203,14 @@ run `INFO all` to get everything at once.
 ember supports TLS for encrypting client connections. configure it in your config file:
 
 ```toml
-tls-port = 6380
+tls-port = 6381
 tls-cert-file = /etc/ember/server.crt
 tls-key-file  = /etc/ember/server.key
 ```
 
 the plain RESP port and the TLS port operate independently. you can run both simultaneously during a migration, or disable the plain port entirely once clients are updated.
+
+when TLS is configured, the gRPC port (6380 by default) uses the same certificate, key and client certificate settings, and no longer accepts plaintext. gRPC clients must connect with TLS and negotiate HTTP/2 (ALPN `h2`), which standard gRPC libraries do. the TLS port and the gRPC port must differ.
 
 **client certificate verification (mtls)**
 
