@@ -18,6 +18,12 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- replication hardening (#456):
+  - the replica checks that the primary holds the cluster secret before taking its data. only the primary checked the replica, so anything that could pose as the primary's address could replace a replica's data. each side signs the other's nonce after a label for its role, so one side's answer can't be relayed as the other's. the replication protocol version is now 3
+  - the primary drops a connection that hasn't finished the handshake within 10 seconds, and runs at most 16 handshakes at once. an idle connection held a task forever before authenticating
+  - either side drops a connection on which a read or write makes no progress for 60 seconds, as Redis's `repl-timeout`. the primary sends a heartbeat after 10 seconds without data and the replica answers it. a primary that stopped responding left its replica waiting forever
+  - the replica reads snapshot and record bodies into buffers that grow as the bytes arrive. it allocated the full length from the header, up to 4 GiB, before reading any of it
+  - on a shard count mismatch the primary sends its status byte before closing. it was left unflushed, so the replica saw only a closed connection
 - WAIT counts a replica only once it has loaded its full sync. it counted the replica as soon as the primary had sent the snapshot, while the replica was still loading it, or had just flushed its data to start over (#455)
 - `INFO replication` on a primary counts the replicas streaming from it in `connected_replicas`. it counted the replicas gossip had reported, which could read 0 while one streamed. a new `sync_full` field counts the full syncs sent (#455)
 - failover safety (#452):

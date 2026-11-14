@@ -264,7 +264,7 @@ in clustered deployments, gossip and replication traffic between nodes is authen
 auth-pass = "shared-cluster-secret"
 ```
 
-nodes that do not present the correct HMAC are rejected, and a replica without the key cannot pull data from its primary. a cluster node bound to anything other than loopback refuses to start without this setting.
+nodes that do not present the correct HMAC are rejected. a replication connection checks both ends: a replica without the key cannot pull data from its primary, and a replica takes no data from a primary without the key. only the replication handshake is authenticated, not each record after it, and the stream is not encrypted, so keep replication traffic on a trusted network. a cluster node bound to anything other than loopback refuses to start without this setting.
 
 **key and value size limits**
 
