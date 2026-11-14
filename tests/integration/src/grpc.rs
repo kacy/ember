@@ -2655,3 +2655,61 @@ async fn grpc_pipeline_errors_do_not_abort() {
     assert_eq!(resp.id, 7);
     assert!(matches!(resp.result, Some(PipeResult::Error(_))));
 }
+
+#[tokio::test]
+async fn grpc_uses_the_tls_settings_of_the_tls_port() {
+    use std::sync::Arc;
+
+    use hyper_util::rt::TokioIo;
+    use rustls::pki_types::ServerName;
+    use tonic::transport::Endpoint;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let (cert_path, key_path, cert_der) = crate::tls::generate_test_cert(tmp.path());
+    let server = TestServer::start_with(ServerOptions {
+        grpc: true,
+        tls_cert_file: Some(cert_path),
+        tls_key_file: Some(key_path),
+        ..Default::default()
+    });
+    let port = server.grpc_port.unwrap();
+
+    // a plaintext client gets nowhere
+    let plain = match EmberCacheClient::connect(format!("http://127.0.0.1:{port}")).await {
+        Ok(mut c) => c.ping(PingRequest { message: None }).await.is_ok(),
+        Err(_) => false,
+    };
+    assert!(!plain, "gRPC answered in plaintext");
+
+    // a client that trusts the server's certificate and asks for HTTP/2
+    let mut config = crate::tls::client_config(cert_der);
+    config.alpn_protocols = vec![b"h2".to_vec()];
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let channel = Endpoint::from_static("http://localhost")
+        .connect_with_connector(tower::service_fn(move |_| {
+            let connector = connector.clone();
+            async move {
+                let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+                let name = ServerName::try_from("localhost").unwrap();
+                let tls = connector.connect(name, tcp).await?;
+                Ok::<_, std::io::Error>(TokioIo::new(tls))
+            }
+        }))
+        .await
+        .expect("TLS connection failed");
+    let mut client = EmberCacheClient::new(channel);
+    let reply = client.ping(PingRequest { message: None }).await.unwrap();
+    assert_eq!(reply.into_inner().message, "PONG");
+}
+
+#[test]
+fn the_tls_port_and_the_grpc_port_must_differ() {
+    let output = std::process::Command::new(crate::helpers::server_binary())
+        .args(["--port", "0", "--tls-port", "16998", "--grpc-port", "16998"])
+        .args(["--tls-cert-file", "cert.pem", "--tls-key-file", "key.pem"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tls-port and the gRPC port"), "{stderr}");
+}

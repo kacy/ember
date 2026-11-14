@@ -17,7 +17,9 @@ use crate::helpers::{ServerOptions, TestServer};
 /// Generates a self-signed cert/key pair for `localhost` and writes PEM files
 /// into the given directory. Returns the cert path, key path, and the raw DER
 /// bytes needed to build a client-side trust store.
-fn generate_test_cert(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+pub(crate) fn generate_test_cert(
+    dir: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
     let rcgen::CertifiedKey { cert, key_pair } =
         rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("rcgen cert generation failed");
@@ -38,7 +40,7 @@ fn generate_test_cert(dir: &std::path::Path) -> (std::path::PathBuf, std::path::
 ///
 /// This simulates a client that has been explicitly configured to trust the
 /// server's self-signed cert — the same trust model as pinned certificates.
-fn client_config(cert_der: Vec<u8>) -> rustls::ClientConfig {
+pub(crate) fn client_config(cert_der: Vec<u8>) -> rustls::ClientConfig {
     let mut root_store = rustls::RootCertStore::empty();
     root_store
         .add(CertificateDer::from(cert_der))
