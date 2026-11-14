@@ -779,20 +779,51 @@ impl ConfigRegistry {
 
         let toml_str = cfg.to_toml()?;
 
-        // atomic write: write to temp file, then rename
-        let tmp_path = config_path.with_extension("tmp");
-        std::fs::write(&tmp_path, toml_str.as_bytes())
-            .map_err(|e| format!("ERR failed to write config: {e}"))?;
-        std::fs::rename(&tmp_path, config_path)
-            .map_err(|e| format!("ERR failed to rename config file: {e}"))?;
-
-        Ok(())
+        write_private(config_path, toml_str.as_bytes())
+            .map_err(|e| format!("ERR failed to write config: {e}"))
     }
+}
+
+/// Replaces `path` with `contents` atomically, through a temp file and a
+/// rename. The file may hold requirepass, so the temp file is created
+/// readable by the owner only, then given the permissions `path` had.
+fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let permissions = std::fs::metadata(path)?.permissions();
+    let tmp_path = path.with_extension("tmp");
+    // a temp file left by a crash keeps its old permissions when reopened
+    let _ = std::fs::remove_file(&tmp_path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&tmp_path)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    file.set_permissions(permissions)?;
+    std::fs::rename(&tmp_path, path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rewritten_config_keeps_its_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ember.toml");
+        std::fs::write(&path, "requirepass = \"old\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        write_private(&path, b"requirepass = \"new\"\n").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("new"));
+    }
 
     #[test]
     fn parse_plain_bytes() {
