@@ -386,8 +386,12 @@ where
                         }
                     }
                 } else if session.is_authenticated() || is_allowed_before_auth(&frame) {
-                    let response = dispatch::process(
+                    // through the transaction handler, so MULTI, EXEC and
+                    // WATCH work in a batch with AUTH as they do without
+                    let response = handler::handle_frame_with_tx(
                         frame,
+                        &mut tx_state,
+                        &mut watched_keys,
                         &engine,
                         ctx,
                         slow_log,

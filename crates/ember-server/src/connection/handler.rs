@@ -49,6 +49,7 @@ pub(super) async fn handle_frame_with_tx(
                     Ok(Command::Multi) => {
                         *tx_state = TransactionState::Queuing {
                             queue: Vec::new(),
+                            bytes: watched_keys.iter().map(|(key, _)| watch_size(key)).sum(),
                             error: false,
                         };
                         Frame::Simple("OK".into())
@@ -63,6 +64,11 @@ pub(super) async fn handle_frame_with_tx(
             } else if cmd_name == Some("WATCH") {
                 match Command::from_frame(frame) {
                     Ok(Command::Watch { keys }) => {
+                        let watched: usize = watched_keys.iter().map(|(k, _)| watch_size(k)).sum();
+                        let adding: usize = keys.iter().map(|k| watch_size(k)).sum();
+                        if watched + adding > ctx.limits.max_command_memory {
+                            return Frame::Error("ERR too many keys watched".into());
+                        }
                         // query current version for each key
                         for key in keys {
                             let ver = match engine
@@ -90,7 +96,11 @@ pub(super) async fn handle_frame_with_tx(
                 .await
             }
         }
-        TransactionState::Queuing { queue, error } => {
+        TransactionState::Queuing {
+            queue,
+            bytes,
+            error,
+        } => {
             match cmd_name {
                 Some("MULTI") => Frame::Error("ERR MULTI calls can not be nested".into()),
                 Some("WATCH") => Frame::Error("ERR WATCH inside MULTI is not allowed".into()),
@@ -149,6 +159,10 @@ pub(super) async fn handle_frame_with_tx(
                     queue.push(frame);
                     Frame::Simple("QUEUED".into())
                 }
+                _ if *bytes + request_size(&frame) > ctx.limits.max_command_memory => {
+                    *error = true;
+                    Frame::Error("ERR transaction too large; it will be discarded".into())
+                }
                 _ => {
                     // validate the command parses correctly before queuing
                     match Command::from_frame(frame.clone()) {
@@ -161,6 +175,7 @@ pub(super) async fn handle_frame_with_tx(
                                 )
                                 .await
                             } else {
+                                *bytes += request_size(&frame);
                                 queue.push(frame);
                                 Frame::Simple("QUEUED".into())
                             }
@@ -173,6 +188,26 @@ pub(super) async fn handle_frame_with_tx(
                 }
             }
         }
+    }
+}
+
+/// The memory a watched key takes, counting its entry.
+fn watch_size(key: &str) -> usize {
+    key.len() + 32
+}
+
+/// The memory a queued request takes: its arguments, plus the overhead of
+/// each.
+fn request_size(frame: &Frame) -> usize {
+    match frame {
+        Frame::Array(args) => args
+            .iter()
+            .map(|arg| match arg {
+                Frame::Bulk(b) => b.len() + 32,
+                _ => 32,
+            })
+            .sum(),
+        _ => 32,
     }
 }
 

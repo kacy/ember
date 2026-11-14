@@ -425,15 +425,14 @@ impl AclState {
         self.users.get(name).cloned().map(Arc::new)
     }
 
-    /// Creates or updates a user by applying rules.
+    /// Creates or updates a user by applying rules. The rules apply all
+    /// together or, if one is invalid, not at all.
     pub fn set_user(&mut self, name: &str, rules: &[String]) -> Result<(), String> {
-        let user = self
-            .users
-            .entry(name.to_string())
-            .or_insert_with(AclUser::new);
+        let mut user = self.users.get(name).cloned().unwrap_or_else(AclUser::new);
         for rule in rules {
-            apply_rule(user, rule)?;
+            apply_rule(&mut user, rule)?;
         }
+        self.users.insert(name.to_string(), user);
         Ok(())
     }
 
@@ -1138,6 +1137,21 @@ mod tests {
         assert!(err.starts_with("line 1"));
         let err = AclState::new(None).load_file("user x bogus\n").unwrap_err();
         assert!(err.contains("bogus"));
+    }
+
+    #[test]
+    fn setuser_applies_no_rule_when_one_is_invalid() {
+        let mut acl = AclState::new(None);
+        let rules = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        acl.set_user("alice", &rules(&["on", ">pw"])).unwrap();
+
+        assert!(acl.set_user("alice", &rules(&["off", "bogus"])).is_err());
+        assert!(
+            acl.get_user("alice").unwrap().enabled,
+            "the valid rule applied"
+        );
+        assert!(acl.set_user("bob", &rules(&["on", "bogus"])).is_err());
+        assert!(acl.get_user("bob").is_none(), "the user was created");
     }
 
     #[test]

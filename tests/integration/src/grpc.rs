@@ -2713,3 +2713,30 @@ fn the_tls_port_and_the_grpc_port_must_differ() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("tls-port and the gRPC port"), "{stderr}");
 }
+
+#[tokio::test]
+async fn grpc_connections_count_against_maxclients() {
+    let server = TestServer::start_with(ServerOptions {
+        grpc: true,
+        maxclients: Some(1),
+        ..Default::default()
+    });
+    let port = server.grpc_port.unwrap();
+    let ping = || async move {
+        match EmberCacheClient::connect(format!("http://127.0.0.1:{port}")).await {
+            Ok(mut c) => c.ping(PingRequest { message: None }).await.is_ok(),
+            Err(_) => false,
+        }
+    };
+
+    // the startup probes' connections let go of the place first
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // a RESP client takes the only place
+    let mut resp = server.connect().await;
+    resp.cmd(&["PING"]).await;
+    assert!(!ping().await, "gRPC went past maxclients");
+
+    drop(resp);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(ping().await);
+}

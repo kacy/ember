@@ -475,26 +475,19 @@ pub async fn run_threaded(
             .concurrency_limit_per_connection(256)
             .http2_keepalive_interval(Some(Duration::from_secs(30)))
             .http2_keepalive_timeout(Some(Duration::from_secs(10)))
-            .tcp_keepalive(Some(Duration::from_secs(60)))
             .add_service(svc.into_service());
+        let clients = Arc::clone(&semaphore);
         Some(tokio::spawn(async move {
-            let result = match tls {
-                Some(acceptor) => match crate::grpc::tls::incoming(grpc_addr, acceptor).await {
-                    Ok(incoming) => {
-                        info!("gRPC listening on {grpc_addr} with TLS");
-                        router.serve_with_incoming(incoming).await
-                    }
-                    Err(e) => {
-                        error!("failed to bind gRPC on {grpc_addr}: {e}");
-                        return;
-                    }
-                },
-                None => {
-                    info!("gRPC listening on {grpc_addr}");
-                    router.serve(grpc_addr).await
+            let with_tls = if tls.is_some() { " with TLS" } else { "" };
+            let incoming = match crate::grpc::listener::incoming(grpc_addr, tls, clients).await {
+                Ok(incoming) => incoming,
+                Err(e) => {
+                    error!("failed to bind gRPC on {grpc_addr}: {e}");
+                    return;
                 }
             };
-            if let Err(e) = result {
+            info!("gRPC listening on {grpc_addr}{with_tls}");
+            if let Err(e) = router.serve_with_incoming(incoming).await {
                 error!("gRPC server error: {e}");
             }
         }))

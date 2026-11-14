@@ -139,3 +139,53 @@ async fn monitor_needs_permission() {
     // the connection stays in normal mode
     assert_eq!(reader.get_bulk(&["GET", "cache:1"]).await, None);
 }
+
+/// Writes `commands` to the connection in one write, so the server reads
+/// them as one batch, and returns their replies.
+async fn send_batch(
+    c: &mut crate::helpers::TestClient,
+    commands: &[&[&str]],
+) -> Vec<ember_protocol::Frame> {
+    let mut out = Vec::new();
+    for args in commands {
+        out.extend_from_slice(format!("*{}\r\n", args.len()).as_bytes());
+        for arg in *args {
+            out.extend_from_slice(format!("${}\r\n{arg}\r\n", arg.len()).as_bytes());
+        }
+    }
+    c.write_raw(&out).await;
+    let mut replies = Vec::new();
+    for _ in commands {
+        replies.push(c.read_frame().await);
+    }
+    replies
+}
+
+#[tokio::test]
+async fn a_transaction_in_the_same_batch_as_auth_is_queued() {
+    use ember_protocol::Frame;
+
+    let server = TestServer::start_with(ServerOptions {
+        requirepass: Some("pass".into()),
+        ..Default::default()
+    });
+    let mut c = server.connect().await;
+    let replies = send_batch(
+        &mut c,
+        &[&["AUTH", "pass"], &["MULTI"], &["SET", "k", "v"], &["EXEC"]],
+    )
+    .await;
+    assert_eq!(replies[2], Frame::Simple("QUEUED".into()), "{replies:?}");
+    assert!(
+        matches!(&replies[3], Frame::Array(r) if r.len() == 1),
+        "{replies:?}"
+    );
+
+    // a transaction already open keeps queueing when AUTH arrives
+    c.ok(&["MULTI"]).await;
+    let replies = send_batch(&mut c, &[&["AUTH", "pass"], &["SET", "k", "w"]]).await;
+    assert_eq!(replies[1], Frame::Simple("QUEUED".into()), "{replies:?}");
+    assert_eq!(c.cmd(&["GET", "k"]).await, Frame::Simple("QUEUED".into()));
+    assert!(matches!(c.cmd(&["EXEC"]).await, Frame::Array(r) if r.len() == 2));
+    assert_eq!(c.get_bulk(&["GET", "k"]).await, Some("w".into()));
+}
