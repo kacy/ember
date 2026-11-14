@@ -238,23 +238,18 @@ pub(super) async fn prepare_command(
     }
 }
 
-/// Checks whether this cluster node may run the command.
+/// Checks whether this cluster node may run the command, using
+/// [`check_command`](crate::cluster::ClusterCoordinator::check_command).
 ///
-/// Returns `None` if the command should proceed. Otherwise returns the
-/// error to send:
-/// - READONLY for a write while failover has paused writes, or MOVED to the
-///   primary (READONLY if it is unknown) for a write on a replica
-/// - CLUSTERDOWN for a write on a primary that can't reach a majority of
-///   the primaries
-/// - CROSSSLOT when the command's keys hash to different slots
-/// - MOVED, ASK or CLUSTERDOWN when this node does not serve the key's slot
-/// - while the slot migrates out: ASK when none of the keys are still here,
-///   and TRYAGAIN when only some are, as in Redis Cluster
+/// Returns `None` if the command should proceed, or the error to send.
+/// While the slot migrates out, it looks up the keys here: it replies ASK
+/// when none of them are still here, and TRYAGAIN when only some are, as in
+/// Redis Cluster.
 ///
-/// Every command path calls this, so the write checks cover pipelined
-/// commands as well as those that go through `execute`. The `asking` flag
-/// is set when the client sent ASKING before this command, allowing access
-/// to importing slots during migration.
+/// Every command path calls this, so the checks cover pipelined commands
+/// as well as those that go through `execute`. The `asking` flag is set
+/// when the client sent ASKING before this command, allowing access to
+/// importing slots during migration.
 pub(super) async fn cluster_slot_check(
     ctx: &ServerContext,
     engine: &Engine,
@@ -262,52 +257,11 @@ pub(super) async fn cluster_slot_check(
     asking: bool,
 ) -> Option<Frame> {
     let cluster = ctx.cluster.as_ref()?;
-    let is_replica = cluster.is_replica().await;
-
-    if cmd.is_write() {
-        if cluster.is_writes_paused() {
-            return Some(Frame::Error(
-                "READONLY Failover in progress; writes are temporarily paused.".into(),
-            ));
-        }
-        if is_replica {
-            if let Some(key) = cmd.primary_key() {
-                let slot = ember_cluster::key_slot(key.as_bytes());
-                if let Some(addr) = cluster.primary_addr_for_slot(slot).await {
-                    return Some(Frame::Error(format!("MOVED {slot} {addr}")));
-                }
-            }
-            return Some(Frame::Error(
-                "READONLY You can't write against a read only replica.".into(),
-            ));
-        }
-        if !cluster.reaches_majority_of_primaries().await {
-            return Some(Frame::Error(
-                "CLUSTERDOWN this primary can't reach a majority of the primaries".into(),
-            ));
-        }
-    }
-
-    // replicas serve every read locally
-    if is_replica {
-        return None;
-    }
-
-    let keys = cmd.keys();
-    let first = keys.iter().next()?;
-    if keys.iter().nth(1).is_some() {
-        let all: Vec<&str> = keys.iter().collect();
-        if let Err(err) = cluster.check_crossslot(&all) {
-            return Some(err);
-        }
-    }
-    match cluster
-        .check_slot_with_migration(first.as_bytes(), asking)
-        .await
-    {
+    match cluster.check_command(cmd, asking).await {
         SlotCheck::Local => None,
         SlotCheck::Reply(frame) => Some(frame),
         SlotCheck::AskIfMissing { slot, addr } => {
+            let keys = cmd.keys();
             let mut here = 0;
             for key in keys.iter() {
                 let exists = ShardRequest::Exists {

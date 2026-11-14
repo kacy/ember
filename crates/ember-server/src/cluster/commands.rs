@@ -1,6 +1,7 @@
 //! The CLUSTER subcommands and the per-command slot checks.
 
 use super::*;
+use ember_protocol::Command;
 
 impl ClusterCoordinator {
     /// CLUSTER INFO
@@ -233,7 +234,7 @@ impl ClusterCoordinator {
             return Frame::Error("ERR can't import from myself".into());
         }
 
-        let mut migration = self.migration.lock().await;
+        let mut migration = self.migration.write().unwrap();
         match migration.start_import(slot, source_id, self.local_id) {
             Ok(_) => Frame::Simple("OK".into()),
             Err(e) => Frame::Error(format!("ERR {e}")),
@@ -266,7 +267,7 @@ impl ClusterCoordinator {
 
         // record in-node migration state so ASK redirects work during transfer
         {
-            let mut migration = self.migration.lock().await;
+            let mut migration = self.migration.write().unwrap();
             if let Err(e) = migration.start_migrate(slot, self.local_id, target_id) {
                 return Frame::Error(format!("ERR {e}"));
             }
@@ -289,7 +290,7 @@ impl ClusterCoordinator {
         };
 
         {
-            let mut migration = self.migration.lock().await;
+            let mut migration = self.migration.write().unwrap();
             migration.complete_migration(slot);
         }
 
@@ -332,9 +333,68 @@ impl ClusterCoordinator {
             return Frame::Error(format!("ERR Invalid or out of range slot {slot}"));
         }
 
-        let mut migration = self.migration.lock().await;
+        let mut migration = self.migration.write().unwrap();
         migration.abort_migration(slot);
         Frame::Simple("OK".into())
+    }
+
+    /// Decides whether this node may run `cmd`, from one read of the
+    /// cluster state. The connection calls it for every command, so it
+    /// takes each lock once.
+    ///
+    /// In order, it replies with:
+    /// - READONLY for a write while failover has paused writes
+    /// - MOVED to the slot's primary for a write on a replica, or READONLY
+    ///   if that primary is unknown. Replicas serve every read
+    /// - CLUSTERDOWN for a write on a primary that can't reach a majority
+    ///   of the primaries
+    /// - CROSSSLOT when the keys hash to different slots
+    /// - the result of [`slot_check`] for the first key
+    pub async fn check_command(&self, cmd: &Command, asking: bool) -> SlotCheck {
+        let keys = cmd.keys();
+        let first = keys.iter().next();
+        let state = self.state.read().await;
+        let is_replica = state
+            .nodes
+            .get(&self.local_id)
+            .is_some_and(|n| n.role == NodeRole::Replica);
+
+        if cmd.is_write() {
+            if self.is_writes_paused() {
+                return SlotCheck::Reply(Frame::Error(
+                    "READONLY Failover in progress; writes are temporarily paused.".into(),
+                ));
+            }
+            if is_replica {
+                let slot = first.map(|key| key_slot(key.as_bytes()));
+                return SlotCheck::Reply(Frame::Error(
+                    match slot.and_then(|slot| primary_for_slot(&state, slot).map(|a| (slot, a))) {
+                        Some((slot, addr)) => format!("MOVED {slot} {addr}"),
+                        None => "READONLY You can't write against a read only replica.".into(),
+                    },
+                ));
+            }
+            if !self.reaches_majority_of_primaries(&state) {
+                return SlotCheck::Reply(Frame::Error(
+                    "CLUSTERDOWN this primary can't reach a majority of the primaries".into(),
+                ));
+            }
+        }
+
+        let Some(first) = first else {
+            return SlotCheck::Local;
+        };
+        if is_replica {
+            return SlotCheck::Local;
+        }
+        let slot = key_slot(first.as_bytes());
+        if keys.iter().any(|key| key_slot(key.as_bytes()) != slot) {
+            return SlotCheck::Reply(Frame::Error(
+                "CROSSSLOT Keys in request don't hash to the same slot".into(),
+            ));
+        }
+        let migration = self.migration.read().unwrap_or_else(|e| e.into_inner());
+        slot_check(&state, &migration, first.as_bytes(), slot, asking)
     }
 
     /// Whether this node can reach a majority of the cluster's primaries,
@@ -344,8 +404,7 @@ impl ClusterCoordinator {
     /// the majority may already be promoting one of its replicas. It stops
     /// taking writes then, as Redis Cluster does, so writes aren't
     /// acknowledged on both sides and lost when the partition heals.
-    pub async fn reaches_majority_of_primaries(&self) -> bool {
-        let state = self.state.read().await;
+    fn reaches_majority_of_primaries(&self, state: &ClusterState) -> bool {
         let primaries = state
             .nodes
             .values()
@@ -360,85 +419,21 @@ impl ClusterCoordinator {
         reachable * 2 > total
     }
 
-    /// Checks slot ownership with migration-aware routing.
-    ///
-    /// During a migration, as in Redis Cluster:
-    /// - the source serves the keys it still has, and sends a client whose
-    ///   keys are gone to the target with ASK ([`SlotCheck::AskIfMissing`]).
-    ///   Keys written during the move so land on the target too
-    /// - the target serves the slot to a client that sent ASKING
-    /// - a key MIGRATE is copying right now gets TRYAGAIN
-    pub async fn check_slot_with_migration(&self, key: &[u8], asking: bool) -> SlotCheck {
-        let slot = key_slot(key);
-        let state = self.state.read().await;
-        let migration = self.migration.lock().await;
-
-        if state.owns_slot(slot) {
-            // MIGRATE is copying this key: a write now would be lost when the
-            // local copy is deleted, so the client retries shortly
-            if migration.is_key_in_flight(key) {
-                return SlotCheck::Reply(Frame::Error(
-                    "TRYAGAIN the key is being migrated, retry shortly".into(),
-                ));
-            }
-            let target = migration
-                .get_outgoing(slot)
-                .and_then(|m| state.nodes.get(&m.target));
-            return match target {
-                Some(target) => SlotCheck::AskIfMissing {
-                    slot,
-                    addr: target.addr.to_string(),
-                },
-                None => SlotCheck::Local,
-            };
-        }
-
-        // not our slot — but are we importing it and client sent ASKING?
-        if migration.is_importing(slot) && asking {
-            return SlotCheck::Local;
-        }
-
-        // standard redirect
-        SlotCheck::Reply(match state.slot_owner(slot) {
-            Some(owner) => Frame::Error(format!("MOVED {} {}", slot, owner.addr)),
-            None => Frame::Error("CLUSTERDOWN Hash slot not served".into()),
-        })
-    }
-
     /// Counts a key MIGRATE moved out of `slot`, for the migration's
     /// progress.
     pub async fn mark_key_migrated(&self, slot: u16) {
-        self.migration.lock().await.key_migrated(slot);
+        self.migration.write().unwrap().key_migrated(slot);
     }
 
     /// Marks a key as being copied by MIGRATE, so commands for it get
     /// TRYAGAIN until [`end_key_transfer`](Self::end_key_transfer). Returns
     /// `false` if another MIGRATE is already copying it.
     pub async fn begin_key_transfer(&self, key: &[u8]) -> bool {
-        self.migration.lock().await.begin_key_transfer(key)
+        self.migration.write().unwrap().begin_key_transfer(key)
     }
 
     pub async fn end_key_transfer(&self, key: &[u8]) {
-        self.migration.lock().await.end_key_transfer(key);
-    }
-
-    /// Checks that all keys hash to the same slot.
-    ///
-    /// Returns `Ok(())` if all keys are in the same slot.
-    /// Returns `Err(Frame)` with a CROSSSLOT error if they span multiple slots.
-    pub fn check_crossslot<S: AsRef<[u8]>>(&self, keys: &[S]) -> Result<(), Frame> {
-        if keys.len() <= 1 {
-            return Ok(());
-        }
-        let first_slot = key_slot(keys[0].as_ref());
-        for key in &keys[1..] {
-            if key_slot(key.as_ref()) != first_slot {
-                return Err(Frame::Error(
-                    "CROSSSLOT Keys in request don't hash to the same slot".into(),
-                ));
-            }
-        }
-        Ok(())
+        self.migration.write().unwrap().end_key_transfer(key);
     }
 
     /// CLUSTER REPLICATE node-id
@@ -498,19 +493,57 @@ impl ClusterCoordinator {
 
         Frame::Simple("OK".into())
     }
+}
 
-    /// Returns the address of the primary that owns the given slot.
-    ///
-    /// Used when redirecting write commands on replicas via MOVED.
-    pub async fn primary_addr_for_slot(&self, slot: u16) -> Option<std::net::SocketAddr> {
-        let state = self.state.read().await;
-        let owner_id = state.slot_map.owner(slot)?;
-        let node = state.nodes.get(&owner_id)?;
-        // Only redirect to primaries; if the owner is somehow a replica, skip.
-        if node.role == NodeRole::Primary {
-            Some(node.addr)
-        } else {
-            None
+/// Where the key `key` in `slot` is served, for a node that may serve it.
+///
+/// During a migration, as in Redis Cluster:
+/// - the source serves the keys it still has, and sends a client whose
+///   keys are gone to the target with ASK ([`SlotCheck::AskIfMissing`]).
+///   Keys written during the move so land on the target too
+/// - the target serves the slot to a client that sent ASKING
+/// - a key MIGRATE is copying right now gets TRYAGAIN
+fn slot_check(
+    state: &ClusterState,
+    migration: &MigrationManager,
+    key: &[u8],
+    slot: u16,
+    asking: bool,
+) -> SlotCheck {
+    if state.owns_slot(slot) {
+        // MIGRATE is copying this key: a write now would be lost when the
+        // local copy is deleted, so the client retries shortly
+        if migration.is_key_in_flight(key) {
+            return SlotCheck::Reply(Frame::Error(
+                "TRYAGAIN the key is being migrated, retry shortly".into(),
+            ));
         }
+        let target = migration
+            .get_outgoing(slot)
+            .and_then(|m| state.nodes.get(&m.target));
+        return match target {
+            Some(target) => SlotCheck::AskIfMissing {
+                slot,
+                addr: target.addr.to_string(),
+            },
+            None => SlotCheck::Local,
+        };
     }
+
+    // not our slot, but we are importing it and the client sent ASKING
+    if migration.is_importing(slot) && asking {
+        return SlotCheck::Local;
+    }
+
+    SlotCheck::Reply(match state.slot_owner(slot) {
+        Some(owner) => Frame::Error(format!("MOVED {} {}", slot, owner.addr)),
+        None => Frame::Error("CLUSTERDOWN Hash slot not served".into()),
+    })
+}
+
+/// The address of the primary that owns `slot`, if that owner is a known
+/// primary.
+fn primary_for_slot(state: &ClusterState, slot: u16) -> Option<std::net::SocketAddr> {
+    let node = state.nodes.get(&state.slot_map.owner(slot)?)?;
+    (node.role == NodeRole::Primary).then_some(node.addr)
 }
