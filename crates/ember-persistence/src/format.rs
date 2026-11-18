@@ -39,6 +39,9 @@ pub enum FormatError {
     #[error("file is encrypted but no encryption key was provided")]
     EncryptionRequired,
 
+    #[error("file is not encrypted but an encryption key was provided")]
+    NotEncrypted,
+
     #[error("decryption failed (wrong key or tampered data)")]
     DecryptionFailed,
 

@@ -407,6 +407,28 @@ mod tests {
     }
 
     #[test]
+    fn replay_skips_records_over_the_size_limits() {
+        // a corrupt or crafted AOF must not make startup allocate without bound
+        let dir = tempfile::tempdir().unwrap();
+        let records = [
+            AofRecord::SetRange {
+                key: "s".into(),
+                offset: usize::MAX,
+                value: Bytes::from("x"),
+            },
+            AofRecord::SetBit {
+                key: "b".into(),
+                offset: u64::MAX,
+                value: 1,
+            },
+            set("after", "1"),
+        ];
+        let (mut ks, _) = recover_from(dir.path(), &records, Keyspace::new());
+        assert_eq!(get_string(&mut ks, "s"), None);
+        assert_eq!(get_string(&mut ks, "after"), Some(Bytes::from("1")));
+    }
+
+    #[test]
     fn replay_ignores_the_memory_limit_and_restores_it() {
         // every recovered key was stored once already; evicting or
         // refusing some of them at startup would lose data
@@ -943,7 +965,7 @@ mod tests {
 
     #[cfg(feature = "encryption")]
     #[tokio::test]
-    async fn turning_encryption_on_keeps_existing_data() {
+    async fn a_key_refuses_plaintext_files() {
         use ember_persistence::encryption::EncryptionKey;
 
         let dir = tempfile::tempdir().unwrap();
@@ -978,15 +1000,15 @@ mod tests {
         handle.send(set("plain")).await.unwrap();
         drop(handle);
         tokio::time::sleep(Duration::from_millis(500)).await;
+        let before = read_files(dir.path());
 
-        // the plaintext AOF is rewritten encrypted, then appended to
-        let handle = spawn(Some(key.clone()));
-        handle.send(set("encrypted")).await.unwrap();
-        drop(handle);
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
+        // a plaintext file could have been swapped in, so the shard stops
+        // without touching it
         let handle = spawn(Some(key));
-        assert_eq!(get(&handle, "plain").await, Some(Bytes::from("v")));
-        assert_eq!(get(&handle, "encrypted").await, Some(Bytes::from("v")));
+        let resp = handle.send(ShardRequest::DbSize).await;
+        assert!(matches!(resp, Err(ShardError::Unavailable)), "{resp:?}");
+        drop(handle);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(read_files(dir.path()), before);
     }
 }

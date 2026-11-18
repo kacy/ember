@@ -194,13 +194,13 @@ memory limits are off during replay, since every recovered key was stored once a
 
 ### encryption at rest
 
-when the `encryption` feature is enabled, AOF records and snapshot entries are stored in the v4 encrypted format using AES-256-GCM.
+when the `encryption` feature is enabled and a key file is given, AOF records and snapshot entries are encrypted with AES-256-GCM. a header flag marks an encrypted file (see `ember-persistence/src/frame.rs`).
 
 encryption is done per record, not per file. that keeps incremental replay simple and avoids decrypting an entire file just to read one record. each record gets a random nonce.
 
-each file header holds a random 16-byte salt, and the file's records are encrypted with a key derived from the master key and that salt using HKDF-SHA256. no key encrypts more than one file, which keeps random nonces far from the AES-GCM collision limit, and a record copied into another file fails to decrypt. records are not bound to their position within a file.
+each file header holds a random 16-byte salt, and the file's records are encrypted with a key derived from the master key and that salt using HKDF-SHA256. no key encrypts more than one file, which keeps random nonces far from the AES-GCM collision limit, and a record copied into another file fails to decrypt. each record is also authenticated with its position in the file, so records can't be reordered, repeated or removed from the middle. to append to an existing AOF, the writer first counts the records already in it.
 
-v3 files, which used the master key for every record, are still read. a v3 AOF is rewritten as v4 when the shard starts, and snapshots move to v4 on the next save.
+with a key, plaintext files are refused, since anyone who can write to the data directory could otherwise swap one in. two changes go undetected: an AOF cut short after a whole record, which looks the same as a crash during a write, and a whole file replaced by an older one encrypted with the same key.
 
 ## clustering and replication
 

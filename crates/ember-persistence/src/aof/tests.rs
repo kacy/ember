@@ -816,12 +816,9 @@ mod encrypted {
     }
 
     #[test]
-    fn v2_file_readable_with_encryption_key() -> Result {
+    fn plaintext_file_refused_with_encryption_key() -> Result {
         let dir = temp_dir();
-        let path = dir.path().join("v2.aof");
-        let key = test_key();
-
-        // write a plaintext v2 file
+        let path = dir.path().join("plain.aof");
         {
             let mut writer = AofWriter::open(&path)?;
             writer.write_record(&AofRecord::Set {
@@ -832,10 +829,9 @@ mod encrypted {
             writer.sync()?;
         }
 
-        // read with encryption key — should work (v2 is plaintext)
-        let mut reader = AofReader::open_encrypted(&path, key)?;
-        let rec = reader.read_record()?.unwrap();
-        assert!(matches!(rec, AofRecord::Set { .. }));
+        // a plaintext file could have been swapped in for an encrypted one
+        let err = AofReader::open_encrypted(&path, test_key()).unwrap_err();
+        assert!(matches!(err, FormatError::NotEncrypted));
         Ok(())
     }
 

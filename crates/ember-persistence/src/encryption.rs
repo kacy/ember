@@ -8,7 +8,12 @@
 //! encrypted with a key derived from the master key and that salt. Random
 //! nonces stay far from GCM's collision limits because no key encrypts more
 //! than one file, and a record copied from one file into another fails to
-//! decrypt.
+//! decrypt. Each record is also authenticated with its position in the file,
+//! so records can't be reordered, repeated or removed from the middle.
+//!
+//! Encryption can't detect a file cut short after a whole record, which
+//! looks the same as a crash while appending, or a whole file replaced by an
+//! older one encrypted with the same key.
 //!
 //! This module is only compiled when the `encryption` feature is enabled.
 
@@ -17,7 +22,7 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 
 use aes_gcm::aead::rand_core::RngCore;
-use aes_gcm::aead::{Aead, KeyInit, OsRng};
+use aes_gcm::aead::{Aead, KeyInit, OsRng, Payload};
 use aes_gcm::{AeadCore, Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -100,13 +105,20 @@ impl EncryptionKey {
             )));
         }
 
-        for (i, byte) in key.bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&trimmed[i * 2..i * 2 + 2], 16).map_err(|_| {
-                FormatError::Io(io::Error::new(
+        // work on bytes: slicing the str would panic inside a multibyte char
+        let digit = |b: u8| (b as char).to_digit(16);
+        for (byte, pair) in key
+            .bytes
+            .iter_mut()
+            .zip(trimmed.as_bytes().as_chunks::<2>().0)
+        {
+            let (Some(hi), Some(lo)) = (digit(pair[0]), digit(pair[1])) else {
+                return Err(FormatError::Io(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "encryption key file contains invalid hex characters",
-                ))
-            })?;
+                )));
+            };
+            *byte = (hi * 16 + lo) as u8;
         }
 
         Ok(key)
@@ -158,26 +170,41 @@ impl FileCipher {
         }
     }
 
-    /// Encrypts a record. Returns `(nonce, ciphertext)`, where the
-    /// ciphertext ends with the 16-byte auth tag.
-    pub fn encrypt(&self, plaintext: &[u8]) -> Result<([u8; NONCE_SIZE], Vec<u8>), FormatError> {
+    /// Encrypts the record at `position` in the file. Returns
+    /// `(nonce, ciphertext)`, where the ciphertext ends with the 16-byte
+    /// auth tag.
+    pub fn encrypt(
+        &self,
+        position: u64,
+        plaintext: &[u8],
+    ) -> Result<([u8; NONCE_SIZE], Vec<u8>), FormatError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+        let payload = Payload {
+            msg: plaintext,
+            aad: &position.to_le_bytes(),
+        };
         let ciphertext = self
             .cipher
-            .encrypt(&nonce, plaintext)
+            .encrypt(&nonce, payload)
             .map_err(|e| FormatError::Io(io::Error::other(format!("encryption failed: {e}"))))?;
         Ok((nonce.into(), ciphertext))
     }
 
-    /// Decrypts a record produced by [`encrypt`](Self::encrypt). Returns
-    /// `DecryptionFailed` if the key is wrong or the data was changed.
+    /// Decrypts a record produced by [`encrypt`](Self::encrypt) at the same
+    /// `position`. Returns `DecryptionFailed` if the key is wrong, the data
+    /// was changed or the record was moved.
     pub fn decrypt(
         &self,
+        position: u64,
         nonce: &[u8; NONCE_SIZE],
         ciphertext: &[u8],
     ) -> Result<Vec<u8>, FormatError> {
+        let payload = Payload {
+            msg: ciphertext,
+            aad: &position.to_le_bytes(),
+        };
         self.cipher
-            .decrypt(Nonce::from_slice(nonce), ciphertext)
+            .decrypt(Nonce::from_slice(nonce), payload)
             .map_err(|_| FormatError::DecryptionFailed)
     }
 }
@@ -199,10 +226,10 @@ mod tests {
     #[test]
     fn each_salt_gets_its_own_key() {
         let key = test_key();
-        let (nonce, ciphertext) = key.file_cipher(&SALT).encrypt(b"data").unwrap();
+        let (nonce, ciphertext) = key.file_cipher(&SALT).encrypt(0, b"data").unwrap();
         let other = key.file_cipher(&[8; SALT_SIZE]);
         assert!(matches!(
-            other.decrypt(&nonce, &ciphertext),
+            other.decrypt(0, &nonce, &ciphertext),
             Err(FormatError::DecryptionFailed)
         ));
     }
@@ -214,10 +241,10 @@ mod tests {
         let (nonce, ciphertext) = key
             .write_new_file_salt(&mut file)
             .unwrap()
-            .encrypt(b"data")
+            .encrypt(0, b"data")
             .unwrap();
         let cipher = key.read_file_cipher(&mut file.as_slice()).unwrap();
-        assert_eq!(cipher.decrypt(&nonce, &ciphertext).unwrap(), b"data");
+        assert_eq!(cipher.decrypt(0, &nonce, &ciphertext).unwrap(), b"data");
     }
 
     #[test]
@@ -225,8 +252,8 @@ mod tests {
         let key = test_key();
         let plaintext = b"hello, encrypted world";
 
-        let (nonce, ciphertext) = cipher(&key).encrypt(plaintext).unwrap();
-        let decrypted = cipher(&key).decrypt(&nonce, &ciphertext).unwrap();
+        let (nonce, ciphertext) = cipher(&key).encrypt(0, plaintext).unwrap();
+        let decrypted = cipher(&key).decrypt(0, &nonce, &ciphertext).unwrap();
 
         assert_eq!(decrypted, plaintext);
     }
@@ -237,8 +264,10 @@ mod tests {
         let wrong_key = EncryptionKey::from_bytes([0xFF; 32]);
         let plaintext = b"secret data";
 
-        let (nonce, ciphertext) = cipher(&key).encrypt(plaintext).unwrap();
-        let err = cipher(&wrong_key).decrypt(&nonce, &ciphertext).unwrap_err();
+        let (nonce, ciphertext) = cipher(&key).encrypt(0, plaintext).unwrap();
+        let err = cipher(&wrong_key)
+            .decrypt(0, &nonce, &ciphertext)
+            .unwrap_err();
 
         assert!(matches!(err, FormatError::DecryptionFailed));
     }
@@ -248,12 +277,26 @@ mod tests {
         let key = test_key();
         let plaintext = b"integrity check";
 
-        let (nonce, mut ciphertext) = cipher(&key).encrypt(plaintext).unwrap();
+        let (nonce, mut ciphertext) = cipher(&key).encrypt(0, plaintext).unwrap();
         // flip a byte in the ciphertext
         ciphertext[0] ^= 0xFF;
 
-        let err = cipher(&key).decrypt(&nonce, &ciphertext).unwrap_err();
+        let err = cipher(&key).decrypt(0, &nonce, &ciphertext).unwrap_err();
         assert!(matches!(err, FormatError::DecryptionFailed));
+    }
+
+    #[test]
+    fn a_record_moved_to_another_position_fails() {
+        let key = test_key();
+        let (nonce, ciphertext) = cipher(&key).encrypt(3, b"data").unwrap();
+        assert_eq!(
+            cipher(&key).decrypt(3, &nonce, &ciphertext).unwrap(),
+            b"data"
+        );
+        assert!(matches!(
+            cipher(&key).decrypt(4, &nonce, &ciphertext),
+            Err(FormatError::DecryptionFailed)
+        ));
     }
 
     #[test]
@@ -261,11 +304,11 @@ mod tests {
         let key = test_key();
         let plaintext = b"";
 
-        let (nonce, ciphertext) = cipher(&key).encrypt(plaintext).unwrap();
+        let (nonce, ciphertext) = cipher(&key).encrypt(0, plaintext).unwrap();
         // ciphertext should be exactly the auth tag size
         assert_eq!(ciphertext.len(), TAG_SIZE);
 
-        let decrypted = cipher(&key).decrypt(&nonce, &ciphertext).unwrap();
+        let decrypted = cipher(&key).decrypt(0, &nonce, &ciphertext).unwrap();
         assert!(decrypted.is_empty());
     }
 
@@ -274,8 +317,8 @@ mod tests {
         let key = test_key();
         let plaintext = b"same data";
 
-        let (nonce1, ct1) = cipher(&key).encrypt(plaintext).unwrap();
-        let (nonce2, ct2) = cipher(&key).encrypt(plaintext).unwrap();
+        let (nonce1, ct1) = cipher(&key).encrypt(0, plaintext).unwrap();
+        let (nonce2, ct2) = cipher(&key).encrypt(0, plaintext).unwrap();
 
         // nonces should differ (probabilistically guaranteed with random nonces)
         assert_ne!(nonce1, nonce2);
@@ -310,6 +353,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("key.bad");
         std::fs::write(&path, "too short").unwrap();
+
+        let err = EncryptionKey::from_file(&path).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)));
+    }
+
+    #[test]
+    fn key_with_non_ascii_characters_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.hex");
+        // 64 bytes with a two-byte character at an odd offset
+        std::fs::write(&path, format!("a{}{}", "é", "b".repeat(61))).unwrap();
 
         let err = EncryptionKey::from_file(&path).unwrap_err();
         assert!(matches!(err, FormatError::Io(_)));

@@ -10,7 +10,8 @@
 //! ```
 //! Without encryption the body is the record's bytes. With it, the body is
 //! `[nonce: 12B][ciphertext]`, encrypted with a key derived from the master
-//! key and the file's salt. All integers are little-endian.
+//! key and the file's salt and authenticated with the frame's position in
+//! the file, counting from 0. All integers are little-endian.
 //!
 //! The inverted copy of the length tells a damaged length apart from a
 //! frame cut short. A crash while appending leaves a prefix of one frame:
@@ -41,9 +42,13 @@ pub enum Key {}
 /// How a file's frame bodies are encoded.
 pub enum Codec {
     Plain,
-    /// Boxed: the cipher's key schedule is large.
     #[cfg(feature = "encryption")]
-    Encrypted(Box<crate::encryption::FileCipher>),
+    Encrypted {
+        /// Boxed: the cipher's key schedule is large.
+        cipher: Box<crate::encryption::FileCipher>,
+        /// Position of the next frame in the file.
+        next: u64,
+    },
 }
 
 impl Codec {
@@ -51,13 +56,22 @@ impl Codec {
         !matches!(self, Codec::Plain)
     }
 
-    /// Encodes a record or entry as a frame body.
-    pub fn seal<'a>(&self, plain: &'a [u8]) -> Result<Cow<'a, [u8]>, FormatError> {
+    #[cfg(feature = "encryption")]
+    fn encrypted(cipher: crate::encryption::FileCipher) -> Self {
+        Codec::Encrypted {
+            cipher: Box::new(cipher),
+            next: 0,
+        }
+    }
+
+    /// Encodes the next record or entry as a frame body.
+    pub fn seal<'a>(&mut self, plain: &'a [u8]) -> Result<Cow<'a, [u8]>, FormatError> {
         match self {
             Codec::Plain => Ok(Cow::Borrowed(plain)),
             #[cfg(feature = "encryption")]
-            Codec::Encrypted(cipher) => {
-                let (nonce, ciphertext) = cipher.encrypt(plain)?;
+            Codec::Encrypted { cipher, next } => {
+                let (nonce, ciphertext) = cipher.encrypt(*next, plain)?;
+                *next += 1;
                 let mut body = Vec::with_capacity(nonce.len() + ciphertext.len());
                 body.extend_from_slice(&nonce);
                 body.extend_from_slice(&ciphertext);
@@ -66,21 +80,37 @@ impl Codec {
         }
     }
 
-    /// Decodes a frame body back into the record or entry bytes.
-    pub fn open(&self, body: Vec<u8>) -> Result<Vec<u8>, FormatError> {
+    /// Decodes the next frame body back into the record or entry bytes.
+    pub fn open(&mut self, body: Vec<u8>) -> Result<Vec<u8>, FormatError> {
         match self {
             Codec::Plain => Ok(body),
             #[cfg(feature = "encryption")]
-            Codec::Encrypted(cipher) => {
+            Codec::Encrypted { cipher, next } => {
                 use crate::encryption::NONCE_SIZE;
                 if body.len() < NONCE_SIZE {
                     return Err(FormatError::DecryptionFailed);
                 }
                 let (nonce, ciphertext) = body.split_at(NONCE_SIZE);
                 let nonce: &[u8; NONCE_SIZE] = nonce.try_into().expect("split at NONCE_SIZE");
-                cipher.decrypt(nonce, ciphertext)
+                let plain = cipher.decrypt(*next, nonce, ciphertext)?;
+                *next += 1;
+                Ok(plain)
             }
         }
+    }
+
+    /// Reads past the frames left in `r`, so the next frame sealed follows
+    /// them. Used to append to an existing file.
+    pub fn skip_frames(&mut self, r: &mut impl Read) -> Result<(), FormatError> {
+        #[cfg(feature = "encryption")]
+        if let Codec::Encrypted { next, .. } = self {
+            while let Frame::Body(_) = read_frame(r)? {
+                *next += 1;
+            }
+        }
+        #[cfg(not(feature = "encryption"))]
+        let _ = r;
+        Ok(())
     }
 }
 
@@ -101,7 +131,7 @@ pub fn write_header(
         #[cfg(feature = "encryption")]
         Some(key) => {
             out.push(FLAG_ENCRYPTED);
-            Ok(Codec::Encrypted(Box::new(key.write_new_file_salt(out)?)))
+            Ok(Codec::encrypted(key.write_new_file_salt(out)?))
         }
         #[cfg(not(feature = "encryption"))]
         Some(never) => match *never {},
@@ -109,7 +139,9 @@ pub fn write_header(
 }
 
 /// Reads a file header and returns the codec for its frames. An encrypted
-/// file needs `key`; a plaintext one is read with or without it.
+/// file needs `key`, and with a key only encrypted files are read: anyone
+/// who can write to the data directory could otherwise swap in a plaintext
+/// file with data of their own.
 pub fn read_header(
     r: &mut impl Read,
     magic: &[u8; 4],
@@ -130,14 +162,15 @@ pub fn read_header(
             "unknown header flags {flags:#04x}"
         )));
     }
-    if flags & FLAG_ENCRYPTED == 0 {
-        return Ok(Codec::Plain);
+    match (flags & FLAG_ENCRYPTED != 0, key) {
+        (false, None) => Ok(Codec::Plain),
+        (false, Some(_)) => Err(FormatError::NotEncrypted),
+        (true, None) => Err(FormatError::EncryptionRequired),
+        #[cfg(feature = "encryption")]
+        (true, Some(key)) => Ok(Codec::encrypted(key.read_file_cipher(r)?)),
+        #[cfg(not(feature = "encryption"))]
+        (true, Some(never)) => match *never {},
     }
-    #[cfg(feature = "encryption")]
-    if let Some(key) = key {
-        return Ok(Codec::Encrypted(Box::new(key.read_file_cipher(r)?)));
-    }
-    Err(FormatError::EncryptionRequired)
 }
 
 /// Appends `body` to `out` as one frame.
@@ -345,21 +378,98 @@ mod tests {
     fn encrypted_bodies_round_trip_and_need_the_key() {
         let key = Key::from_bytes([7; 32]);
         let mut out = Vec::new();
-        let codec = write_header(&mut out, b"TEST", Some(&key)).unwrap();
+        let mut codec = write_header(&mut out, b"TEST", Some(&key)).unwrap();
         let sealed = codec.seal(b"secret").unwrap().into_owned();
         assert_ne!(sealed, b"secret");
 
-        let reopened = read_header(&mut out.as_slice(), b"TEST", Some(&key)).unwrap();
+        let mut reopened = read_header(&mut out.as_slice(), b"TEST", Some(&key)).unwrap();
         assert_eq!(reopened.open(sealed.clone()).unwrap(), b"secret");
         assert!(matches!(
             read_header(&mut out.as_slice(), b"TEST", None),
             Err(FormatError::EncryptionRequired)
         ));
         let wrong = Key::from_bytes([8; 32]);
-        let other = read_header(&mut out.as_slice(), b"TEST", Some(&wrong)).unwrap();
+        let mut other = read_header(&mut out.as_slice(), b"TEST", Some(&wrong)).unwrap();
         assert!(matches!(
             other.open(sealed),
             Err(FormatError::DecryptionFailed)
         ));
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn a_key_refuses_plaintext_files() {
+        let mut out = Vec::new();
+        write_header(&mut out, b"TEST", None).unwrap();
+        let key = Key::from_bytes([7; 32]);
+        assert!(matches!(
+            read_header(&mut out.as_slice(), b"TEST", Some(&key)),
+            Err(FormatError::NotEncrypted)
+        ));
+    }
+
+    /// Writes an encrypted file with one frame per body and returns it with
+    /// the header's length.
+    #[cfg(feature = "encryption")]
+    fn encrypted_file(key: &Key, bodies: &[&[u8]]) -> (Vec<u8>, usize) {
+        let mut out = Vec::new();
+        let mut codec = write_header(&mut out, b"TEST", Some(key)).unwrap();
+        let header_len = out.len();
+        for body in bodies {
+            let sealed = codec.seal(body).unwrap().into_owned();
+            write_frame(&mut out, &sealed).unwrap();
+        }
+        (out, header_len)
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_frames_must_stay_in_place() {
+        let key = Key::from_bytes([7; 32]);
+        let open_all = |data: &[u8]| -> Result<Vec<Vec<u8>>, FormatError> {
+            let mut r = data;
+            let mut codec = read_header(&mut r, b"TEST", Some(&key))?;
+            let mut found = Vec::new();
+            while let Frame::Body(body) = read_frame(&mut r)? {
+                found.push(codec.open(body)?);
+            }
+            Ok(found)
+        };
+        // equal lengths, so both frames are the same size
+        let (file, header_len) = encrypted_file(&key, &[b"aaaa", b"bbbb"]);
+        assert_eq!(
+            open_all(&file).unwrap(),
+            [b"aaaa".to_vec(), b"bbbb".to_vec()]
+        );
+
+        let (header, frames) = file.split_at(header_len);
+        let (first, second) = frames.split_at(frames.len() / 2);
+        for frames in [[second, first], [first, first]] {
+            let changed = [header, frames[0], frames[1]].concat();
+            assert!(matches!(
+                open_all(&changed),
+                Err(FormatError::DecryptionFailed)
+            ));
+        }
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn skip_frames_continues_after_the_existing_frames() {
+        let key = Key::from_bytes([7; 32]);
+        let (mut file, _) = encrypted_file(&key, &[b"first"]);
+        let mut r = file.as_slice();
+        let mut codec = read_header(&mut r, b"TEST", Some(&key)).unwrap();
+        codec.skip_frames(&mut r).unwrap();
+        let sealed = codec.seal(b"second").unwrap().into_owned();
+        write_frame(&mut file, &sealed).unwrap();
+
+        let mut r = file.as_slice();
+        let mut codec = read_header(&mut r, b"TEST", Some(&key)).unwrap();
+        let mut found = Vec::new();
+        while let Frame::Body(body) = read_frame(&mut r).unwrap() {
+            found.push(codec.open(body).unwrap());
+        }
+        assert_eq!(found, [b"first".to_vec(), b"second".to_vec()]);
     }
 }

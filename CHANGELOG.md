@@ -18,6 +18,12 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- security fixes (#459):
+  - simple string and error replies turn CR and LF into spaces. many errors repeat client input, so a key or argument holding a line break could add replies of its own
+  - MULTI, EXEC, DISCARD, WATCH and UNWATCH check ACL permissions. they skipped the check, so a user could WATCH keys outside their key patterns
+  - an encryption key file with non-ASCII characters is refused at startup. the parser panicked on it
+  - with an encryption key, plaintext AOF and snapshot files are refused. anyone who could write to the data directory could swap in a plaintext file with data of their own. existing data can no longer be encrypted in place; see the troubleshooting guide
+  - encrypted records are authenticated with their position in the file, so they can't be reordered, repeated or removed from the middle. encrypted files from earlier builds fail to decrypt
 - connections and auth (#458):
   - MULTI, EXEC and WATCH work in a batch that also holds AUTH. such a batch skipped transaction handling: MULTI was refused, its commands ran at once, and an open transaction stopped queueing
   - ACL SETUSER applies all of its rules or, when one is invalid, none. it kept the rules before the invalid one, and created the user

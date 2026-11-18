@@ -78,7 +78,10 @@ impl AofWriter {
         let mut header = Vec::new();
         let (codec, needs_rewrite) = if existing {
             let found = File::open(&path).map_err(FormatError::from).and_then(|f| {
-                frame::read_header(&mut BufReader::new(f), format::AOF_MAGIC, key.as_ref())
+                let mut reader = BufReader::new(f);
+                let mut codec = frame::read_header(&mut reader, format::AOF_MAGIC, key.as_ref())?;
+                codec.skip_frames(&mut reader)?;
+                Ok(codec)
             });
             match found {
                 Ok(codec) if codec.is_encrypted() == key.is_some() => (codec, false),
@@ -117,7 +120,7 @@ impl AofWriter {
     /// Queues a record. It reaches the file on the next
     /// [`flush`](Self::flush) or [`sync`](Self::sync).
     pub fn write_record(&mut self, record: &AofRecord) -> Result<(), FormatError> {
-        encode_record(&self.codec, record, &mut self.pending)
+        encode_record(&mut self.codec, record, &mut self.pending)
     }
 
     /// Writes the queued records to the OS. On failure the file is cut
@@ -165,9 +168,9 @@ impl AofWriter {
         }
         let mut tmp_file = open_persistence_file(&tmp_path)?;
         let mut contents = Vec::new();
-        let codec = frame::write_header(&mut contents, format::AOF_MAGIC, self.key.as_ref())?;
+        let mut codec = frame::write_header(&mut contents, format::AOF_MAGIC, self.key.as_ref())?;
         encode_record(
-            &codec,
+            &mut codec,
             &AofRecord::Checkpoint { snapshot_crc },
             &mut contents,
         )?;
@@ -189,7 +192,11 @@ impl AofWriter {
 }
 
 /// Appends `record` to `out` as one frame.
-fn encode_record(codec: &Codec, record: &AofRecord, out: &mut Vec<u8>) -> Result<(), FormatError> {
+fn encode_record(
+    codec: &mut Codec,
+    record: &AofRecord,
+    out: &mut Vec<u8>,
+) -> Result<(), FormatError> {
     let plain = record.to_bytes()?;
     frame::write_frame(out, &codec.seal(&plain)?)?;
     Ok(())
@@ -274,8 +281,7 @@ impl AofReader {
         Self::open_with(path.as_ref(), None)
     }
 
-    /// Opens an AOF file that may be encrypted with `key`. Plaintext files
-    /// are read too.
+    /// Opens an AOF file encrypted with `key`.
     #[cfg(feature = "encryption")]
     pub fn open_encrypted(path: impl AsRef<Path>, key: Key) -> Result<Self, FormatError> {
         Self::open_with(path.as_ref(), Some(&key))
