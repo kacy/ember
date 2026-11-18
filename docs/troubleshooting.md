@@ -128,6 +128,7 @@ startup time is proportional to the size of the data being replayed. a large AOF
 a shard couldn't read one of its files, so the server stopped without changing any of them. the log line names the file and the reason.
 
 - `file is encrypted but no encryption key was provided` or `decryption failed`: start with the `encryption-key-file` that wrote the files
+- `file is not encrypted but an encryption key was provided`: the files were written without encryption, and a server with a key reads only encrypted files. start without `encryption-key-file`, or move the files out of `data-dir`. to encrypt existing data, start an empty server with the key and `appendonly` on as a replica of the unencrypted one. it writes everything it receives in encrypted form
 - `unsupported format version`: another version of ember wrote the files in a layout this one doesn't read. start that version again, or move the files out of `data-dir` to start without them
 - `crc32 mismatch`, `frame length failed its check`, `invalid magic bytes` or `unknown record tag`: the file is damaged. restore it from a backup, or move it out of `data-dir` to start without it. moving it out loses the data it holds
 
