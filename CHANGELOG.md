@@ -18,7 +18,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- security fixes (#PR):
+- security fixes (#459):
   - simple string and error replies turn CR and LF into spaces. many errors repeat client input, so a key or argument holding a line break could add replies of its own
   - MULTI, EXEC, DISCARD, WATCH and UNWATCH check ACL permissions. they skipped the check, so a user could WATCH keys outside their key patterns
   - an encryption key file with non-ASCII characters is refused at startup. the parser panicked on it
