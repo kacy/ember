@@ -407,6 +407,28 @@ mod tests {
     }
 
     #[test]
+    fn replay_skips_records_over_the_size_limits() {
+        // a corrupt or crafted AOF must not make startup allocate without bound
+        let dir = tempfile::tempdir().unwrap();
+        let records = [
+            AofRecord::SetRange {
+                key: "s".into(),
+                offset: usize::MAX,
+                value: Bytes::from("x"),
+            },
+            AofRecord::SetBit {
+                key: "b".into(),
+                offset: u64::MAX,
+                value: 1,
+            },
+            set("after", "1"),
+        ];
+        let (mut ks, _) = recover_from(dir.path(), &records, Keyspace::new());
+        assert_eq!(get_string(&mut ks, "s"), None);
+        assert_eq!(get_string(&mut ks, "after"), Some(Bytes::from("1")));
+    }
+
+    #[test]
     fn replay_ignores_the_memory_limit_and_restores_it() {
         // every recovered key was stored once already; evicting or
         // refusing some of them at startup would lose data
