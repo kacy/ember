@@ -261,12 +261,6 @@ impl ClusterCoordinator {
                             }
                             true
                         }
-                        GossipEvent::MemberLeft(id) => {
-                            info!("cluster: node {} left", id);
-                            state.remove_node(id);
-                            state.update_health();
-                            true
-                        }
                         GossipEvent::MemberAlive(id) => {
                             debug!("cluster: node {} alive", id);
                             if let Some(node) = state.nodes.get_mut(&id) {

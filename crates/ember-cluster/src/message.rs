@@ -111,8 +111,6 @@ pub enum NodeUpdate {
     Suspect { node: NodeId, incarnation: u64 },
     /// Node has been confirmed dead.
     Dead { node: NodeId, incarnation: u64 },
-    /// Node left the cluster gracefully.
-    Left { node: NodeId },
     /// Node's slot ownership changed. `config_epoch` is the node's config
     /// epoch: when two nodes claim a slot, the higher epoch wins.
     SlotsChanged {
@@ -178,7 +176,7 @@ const MSG_ELECTION: u8 = 7;
 const UPDATE_ALIVE: u8 = 1;
 const UPDATE_SUSPECT: u8 = 2;
 const UPDATE_DEAD: u8 = 3;
-const UPDATE_LEFT: u8 = 4;
+// 4 was Left, which nothing sent
 const UPDATE_SLOTS_CHANGED: u8 = 5;
 const UPDATE_ROLE_CHANGED: u8 = 6;
 const UPDATE_VOTE_REQUEST: u8 = 7;
@@ -528,10 +526,6 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
         }
-        NodeUpdate::Left { node } => {
-            buf.put_u8(UPDATE_LEFT);
-            encode_node_id(buf, node);
-        }
         NodeUpdate::SlotsChanged {
             node,
             incarnation,
@@ -618,10 +612,6 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
             let node = decode_node_id(buf)?;
             let incarnation = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::Dead { node, incarnation })
-        }
-        UPDATE_LEFT => {
-            let node = decode_node_id(buf)?;
-            Ok(NodeUpdate::Left { node })
         }
         UPDATE_SLOTS_CHANGED => {
             let node = decode_node_id(buf)?;
@@ -923,7 +913,6 @@ mod tests {
                 node,
                 incarnation: 3,
             },
-            NodeUpdate::Left { node },
             NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 4,

@@ -95,7 +95,6 @@ pub enum MemberStatus {
     Alive,
     Suspect,
     Dead,
-    Left,
 }
 
 /// Events emitted by the gossip engine.
@@ -108,8 +107,6 @@ pub enum GossipEvent {
     MemberSuspected(NodeId),
     /// A node has been confirmed dead.
     MemberFailed(NodeId),
-    /// A node left gracefully.
-    MemberLeft(NodeId),
     /// A node that was suspected is now alive.
     MemberAlive(NodeId),
     /// A node's slot claim changed. Fields: node ID, slots, config epoch.
@@ -186,8 +183,7 @@ fn subject(update: &NodeUpdate) -> Subject {
     match update {
         NodeUpdate::Alive { node, .. }
         | NodeUpdate::Suspect { node, .. }
-        | NodeUpdate::Dead { node, .. }
-        | NodeUpdate::Left { node } => Subject::Membership(*node),
+        | NodeUpdate::Dead { node, .. } => Subject::Membership(*node),
         NodeUpdate::SlotsChanged { node, .. } => Subject::Slots(*node),
         NodeUpdate::RoleChanged { node, .. } => Subject::Role(*node),
         NodeUpdate::VoteRequest { .. } | NodeUpdate::VoteGranted { .. } => Subject::Other,
@@ -693,18 +689,13 @@ impl GossipEngine {
         // rotation: after a partition heals, a probe is how a node learns
         // it was declared dead and refutes it.
         let target_info = {
-            let alive_members: Vec<_> = self
-                .members
-                .values()
-                .filter(|m| m.state != MemberStatus::Left)
-                .map(|m| (m.id, m.addr))
-                .collect();
+            let members: Vec<_> = self.members.values().map(|m| (m.id, m.addr)).collect();
 
-            if alive_members.is_empty() {
+            if members.is_empty() {
                 return outgoing;
             }
 
-            match alive_members.choose(&mut rand::rng()) {
+            match members.choose(&mut rand::rng()) {
                 Some(info) => *info,
                 None => return outgoing,
             }
@@ -898,19 +889,6 @@ impl GossipEngine {
                             member.state = MemberStatus::Dead;
                             member.state_change = Instant::now();
                             self.emit(GossipEvent::MemberFailed(*node));
-                        }
-                    }
-                }
-
-                NodeUpdate::Left { node } => {
-                    if *node == self.local_id {
-                        continue;
-                    }
-                    if let Some(member) = self.members.get_mut(node) {
-                        if member.state != MemberStatus::Left {
-                            member.state = MemberStatus::Left;
-                            member.state_change = Instant::now();
-                            self.emit(GossipEvent::MemberLeft(*node));
                         }
                     }
                 }
