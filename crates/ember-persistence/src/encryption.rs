@@ -100,13 +100,16 @@ impl EncryptionKey {
             )));
         }
 
-        for (i, byte) in key.bytes.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&trimmed[i * 2..i * 2 + 2], 16).map_err(|_| {
-                FormatError::Io(io::Error::new(
+        // work on bytes: slicing the str would panic inside a multibyte char
+        let digit = |b: u8| (b as char).to_digit(16);
+        for (byte, pair) in key.bytes.iter_mut().zip(trimmed.as_bytes().chunks_exact(2)) {
+            let (Some(hi), Some(lo)) = (digit(pair[0]), digit(pair[1])) else {
+                return Err(FormatError::Io(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "encryption key file contains invalid hex characters",
-                ))
-            })?;
+                )));
+            };
+            *byte = (hi * 16 + lo) as u8;
         }
 
         Ok(key)
@@ -310,6 +313,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("key.bad");
         std::fs::write(&path, "too short").unwrap();
+
+        let err = EncryptionKey::from_file(&path).unwrap_err();
+        assert!(matches!(err, FormatError::Io(_)));
+    }
+
+    #[test]
+    fn key_with_non_ascii_characters_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.hex");
+        // 64 bytes with a two-byte character at an odd offset
+        std::fs::write(&path, format!("a{}{}", "é", "b".repeat(61))).unwrap();
 
         let err = EncryptionKey::from_file(&path).unwrap_err();
         assert!(matches!(err, FormatError::Io(_)));
