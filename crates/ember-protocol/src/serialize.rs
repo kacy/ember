@@ -30,17 +30,9 @@ impl Frame {
             Frame::Simple(s) => match s.as_str() {
                 "OK" => dst.put_slice(wire::OK),
                 "PONG" => dst.put_slice(wire::PONG),
-                _ => {
-                    dst.put_u8(b'+');
-                    dst.put_slice(s.as_bytes());
-                    dst.put_slice(b"\r\n");
-                }
+                _ => put_line(b'+', s, dst),
             },
-            Frame::Error(msg) => {
-                dst.put_u8(b'-');
-                dst.put_slice(msg.as_bytes());
-                dst.put_slice(b"\r\n");
-            }
+            Frame::Error(msg) => put_line(b'-', msg, dst),
             Frame::Integer(n) => match *n {
                 0 => dst.put_slice(wire::ZERO),
                 1 => dst.put_slice(wire::ONE),
@@ -91,6 +83,23 @@ impl Frame {
     }
 }
 
+/// Writes a simple string or error line. CR and LF become spaces, because
+/// these frames end at the first CRLF: an error message that echoes client
+/// input could otherwise add replies of its own.
+fn put_line(prefix: u8, text: &str, dst: &mut BytesMut) {
+    dst.put_u8(prefix);
+    let bytes = text.as_bytes();
+    if bytes.iter().any(|&b| b == b'\r' || b == b'\n') {
+        dst.extend(bytes.iter().map(|&b| match b {
+            b'\r' | b'\n' => b' ',
+            b => b,
+        }));
+    } else {
+        dst.put_slice(bytes);
+    }
+    dst.put_slice(b"\r\n");
+}
+
 /// Writes an i64 as its decimal ASCII representation directly into the buffer.
 #[inline]
 fn write_i64(val: i64, dst: &mut BytesMut) {
@@ -118,6 +127,16 @@ mod tests {
     #[test]
     fn error() {
         assert_eq!(serialize(&Frame::Error("ERR bad".into())), b"-ERR bad\r\n");
+    }
+
+    #[test]
+    fn line_breaks_in_simple_strings_and_errors_become_spaces() {
+        let injected = "ERR unknown command 'x\r\n+OK'";
+        assert_eq!(
+            serialize(&Frame::Error(injected.into())),
+            b"-ERR unknown command 'x  +OK'\r\n"
+        );
+        assert_eq!(serialize(&Frame::Simple("a\nb\rc".into())), b"+a b c\r\n");
     }
 
     #[test]
