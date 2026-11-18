@@ -48,7 +48,7 @@ jobs:
       - name: build
         run: cargo build --workspace --features protobuf,grpc
       - name: unit tests
-        run: cargo test --workspace --features protobuf,grpc --exclude ember-integration-tests
+        run: cargo test --workspace --features protobuf,grpc,encryption --exclude ember-integration-tests
       - name: integration tests
         run: cargo test -p ember-integration-tests --test integration -- --test-threads=1
 
