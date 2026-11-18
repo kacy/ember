@@ -22,7 +22,7 @@
   - simple string and error replies turn CR and LF into spaces. many errors repeat client input, so a key or argument holding a line break could add replies of its own
   - MULTI, EXEC, DISCARD, WATCH and UNWATCH check ACL permissions. they skipped the check, so a user could WATCH keys outside their key patterns
   - an encryption key file with non-ASCII characters is refused at startup. the parser panicked on it
-  - with an encryption key, plaintext AOF and snapshot files are refused. anyone who could write to the data directory could swap in a plaintext file with data of their own
+  - with an encryption key, plaintext AOF and snapshot files are refused. anyone who could write to the data directory could swap in a plaintext file with data of their own. existing data can no longer be encrypted in place; see the troubleshooting guide
   - encrypted records are authenticated with their position in the file, so they can't be reordered, repeated or removed from the middle. encrypted files from earlier builds fail to decrypt
 - connections and auth (#458):
   - MULTI, EXEC and WATCH work in a batch that also holds AUTH. such a batch skipped transaction handling: MULTI was refused, its commands ran at once, and an open transaction stopped queueing
