@@ -3,6 +3,23 @@
 use super::*;
 
 impl ClusterCoordinator {
+    /// Encodes a gossip message, signed when a cluster secret is set.
+    pub(super) fn encode_gossip(&self, msg: &GossipMessage) -> Bytes {
+        match &self.secret {
+            Some(s) => msg.encode_authenticated(s),
+            None => msg.encode(),
+        }
+    }
+
+    /// Decodes a gossip message, checking its signature and age when a
+    /// cluster secret is set.
+    fn decode_gossip(&self, buf: &[u8]) -> std::io::Result<GossipMessage> {
+        match &self.secret {
+            Some(s) => GossipMessage::decode_authenticated(buf, s),
+            None => GossipMessage::decode(buf),
+        }
+    }
+
     /// Pushes the local node's current slot ownership into the gossip engine
     /// so it propagates to the rest of the cluster.
     /// Sends gossip messages straight to their addresses.
@@ -15,10 +32,7 @@ impl ClusterCoordinator {
             return;
         };
         for (addr, msg) in messages {
-            let encoded = match &self.secret {
-                Some(s) => msg.encode_authenticated(s),
-                None => msg.encode(),
-            };
+            let encoded = self.encode_gossip(&msg);
             if let Err(e) = sock.send_to(&encoded, addr).await {
                 debug!("gossip send to {addr} failed: {e}");
             }
@@ -43,10 +57,7 @@ impl ClusterCoordinator {
                 config_epoch,
                 slots,
             };
-            let encoded = match &self.secret {
-                Some(s) => msg.encode_authenticated(s),
-                None => msg.encode(),
-            };
+            let encoded = self.encode_gossip(&msg);
             (gossip.alive_member_addrs(), encoded)
         };
 
@@ -98,6 +109,9 @@ impl ClusterCoordinator {
         tokio::spawn(async move {
             let mut recv_buf = vec![0u8; 65535];
             let mut tick_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+            // a wrong secret or clocks too far apart drop every message, so
+            // say so, but at most once a minute
+            let mut last_drop_warning: Option<std::time::Instant> = None;
 
             loop {
                 tokio::select! {
@@ -110,10 +124,7 @@ impl ClusterCoordinator {
                         };
                         events.send().await;
                         for (target_addr, msg) in outgoing {
-                            let encoded = match &coordinator.secret {
-                                Some(s) => msg.encode_authenticated(s),
-                                None => msg.encode(),
-                            };
+                            let encoded = coordinator.encode_gossip(&msg);
                             if let Err(e) = sock.send_to(&encoded, target_addr).await {
                                 debug!("gossip send error to {target_addr}: {e}");
                             }
@@ -123,10 +134,7 @@ impl ClusterCoordinator {
                     result = sock.recv_from(&mut recv_buf) => {
                         match result {
                             Ok((len, from)) => {
-                                let decode_result = match &coordinator.secret {
-                                    Some(s) => GossipMessage::decode_authenticated(&recv_buf[..len], s),
-                                    None => GossipMessage::decode(&recv_buf[..len]),
-                                };
+                                let decode_result = coordinator.decode_gossip(&recv_buf[..len]);
                                 match decode_result {
                                     Ok(msg) => {
                                         let (replies, events) = {
@@ -135,17 +143,21 @@ impl ClusterCoordinator {
                                         };
                                         events.send().await;
                                         for (addr, reply) in replies {
-                                            let encoded = match &coordinator.secret {
-                                                Some(s) => reply.encode_authenticated(s),
-                                                None => reply.encode(),
-                                            };
+                                            let encoded = coordinator.encode_gossip(&reply);
                                             if let Err(e) = sock.send_to(&encoded, addr).await {
                                                 debug!("gossip reply error to {addr}: {e}");
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        debug!("gossip decode error from {from}: {e}");
+                                        let quiet = last_drop_warning
+                                            .is_some_and(|t| t.elapsed().as_secs() < 60);
+                                        if quiet {
+                                            debug!("dropped a gossip message from {from}: {e}");
+                                        } else {
+                                            warn!("dropped a gossip message from {from}: {e}");
+                                            last_drop_warning = Some(std::time::Instant::now());
+                                        }
                                     }
                                 }
                             }
@@ -259,12 +271,6 @@ impl ClusterCoordinator {
                             if replicates_failed {
                                 post_action = PostAction::StartElection(id);
                             }
-                            true
-                        }
-                        GossipEvent::MemberLeft(id) => {
-                            info!("cluster: node {} left", id);
-                            state.remove_node(id);
-                            state.update_health();
                             true
                         }
                         GossipEvent::MemberAlive(id) => {

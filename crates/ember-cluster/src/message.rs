@@ -111,8 +111,6 @@ pub enum NodeUpdate {
     Suspect { node: NodeId, incarnation: u64 },
     /// Node has been confirmed dead.
     Dead { node: NodeId, incarnation: u64 },
-    /// Node left the cluster gracefully.
-    Left { node: NodeId },
     /// Node's slot ownership changed. `config_epoch` is the node's config
     /// epoch: when two nodes claim a slot, the higher epoch wins.
     SlotsChanged {
@@ -178,7 +176,7 @@ const MSG_ELECTION: u8 = 7;
 const UPDATE_ALIVE: u8 = 1;
 const UPDATE_SUSPECT: u8 = 2;
 const UPDATE_DEAD: u8 = 3;
-const UPDATE_LEFT: u8 = 4;
+// 4 was Left, which nothing sent
 const UPDATE_SLOTS_CHANGED: u8 = 5;
 const UPDATE_ROLE_CHANGED: u8 = 6;
 const UPDATE_VOTE_REQUEST: u8 = 7;
@@ -399,20 +397,36 @@ impl GossipMessage {
         }
     }
 
-    /// Encodes the message with a trailing HMAC-SHA256 tag.
+    /// Encodes the message with the current time and a trailing
+    /// HMAC-SHA256 tag over both.
     pub fn encode_authenticated(&self, secret: &ClusterSecret) -> Bytes {
+        self.encode_authenticated_at(secret, unix_ms())
+    }
+
+    fn encode_authenticated_at(&self, secret: &ClusterSecret, now_ms: u64) -> Bytes {
         let mut buf = BytesMut::with_capacity(256);
+        buf.put_u64_le(now_ms);
         self.encode_into(&mut buf);
         let tag = secret.sign(&buf);
         buf.extend_from_slice(&tag);
         buf.freeze()
     }
 
-    /// Decodes a message, verifying the trailing HMAC-SHA256 tag first.
+    /// Decodes a message from [`encode_authenticated`](Self::encode_authenticated),
+    /// checking its tag and its age first.
     ///
-    /// Returns an error if the buffer is too short or the tag doesn't match.
+    /// A message sent more than [`MAX_MESSAGE_AGE`] ago, or that far in the
+    /// future, is refused, so a recorded message can't be replayed later.
     pub fn decode_authenticated(buf: &[u8], secret: &ClusterSecret) -> io::Result<Self> {
-        if buf.len() < TAG_LEN {
+        Self::decode_authenticated_at(buf, secret, unix_ms())
+    }
+
+    fn decode_authenticated_at(
+        buf: &[u8],
+        secret: &ClusterSecret,
+        now_ms: u64,
+    ) -> io::Result<Self> {
+        if buf.len() < 8 + TAG_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "message too short for auth tag",
@@ -425,8 +439,67 @@ impl GossipMessage {
                 "cluster auth failed",
             ));
         }
+        let mut payload = payload;
+        let sent_ms = safe_get_u64_le(&mut payload)?;
+        if sent_ms.abs_diff(now_ms) > MAX_MESSAGE_AGE.as_millis() as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "message sent {} ms from the local time; check that the clocks agree",
+                    sent_ms as i128 - now_ms as i128
+                ),
+            ));
+        }
         Self::decode(payload)
     }
+}
+
+/// Most bytes of member entries in one Welcome. A UDP datagram holds at
+/// most 65,507 bytes, and smaller ones are less likely to be fragmented.
+const WELCOME_MEMBER_BYTES: usize = 8 * 1024;
+
+impl GossipMessage {
+    /// Builds the Welcome messages that carry `members`, as many as it takes
+    /// to keep each one small enough for a datagram. The members keep their
+    /// order across the messages.
+    pub fn welcomes(sender: NodeId, members: Vec<MemberInfo>) -> Vec<GossipMessage> {
+        let mut welcomes = Vec::new();
+        let mut chunk = Vec::new();
+        let mut chunk_bytes = 0;
+        let mut entry = BytesMut::new();
+        for member in members {
+            entry.clear();
+            encode_member_info(&mut entry, &member);
+            let full = chunk_bytes + entry.len() > WELCOME_MEMBER_BYTES
+                || chunk.len() == MAX_COLLECTION_COUNT;
+            if full && !chunk.is_empty() {
+                welcomes.push(GossipMessage::Welcome {
+                    sender,
+                    members: std::mem::take(&mut chunk),
+                });
+                chunk_bytes = 0;
+            }
+            chunk_bytes += entry.len();
+            chunk.push(member);
+        }
+        if !chunk.is_empty() || welcomes.is_empty() {
+            welcomes.push(GossipMessage::Welcome {
+                sender,
+                members: chunk,
+            });
+        }
+        welcomes
+    }
+}
+
+/// How far a signed message's send time may be from the receiver's clock.
+/// Nodes with a cluster secret need clocks that agree within this.
+pub const MAX_MESSAGE_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn encode_node_id(buf: &mut BytesMut, id: &NodeId) {
@@ -528,10 +601,6 @@ fn encode_update(buf: &mut BytesMut, update: &NodeUpdate) {
             encode_node_id(buf, node);
             buf.put_u64_le(*incarnation);
         }
-        NodeUpdate::Left { node } => {
-            buf.put_u8(UPDATE_LEFT);
-            encode_node_id(buf, node);
-        }
         NodeUpdate::SlotsChanged {
             node,
             incarnation,
@@ -618,10 +687,6 @@ fn decode_update(buf: &mut &[u8]) -> io::Result<NodeUpdate> {
             let node = decode_node_id(buf)?;
             let incarnation = safe_get_u64_le(buf)?;
             Ok(NodeUpdate::Dead { node, incarnation })
-        }
-        UPDATE_LEFT => {
-            let node = decode_node_id(buf)?;
-            Ok(NodeUpdate::Left { node })
         }
         UPDATE_SLOTS_CHANGED => {
             let node = decode_node_id(buf)?;
@@ -923,7 +988,6 @@ mod tests {
                 node,
                 incarnation: 3,
             },
-            NodeUpdate::Left { node },
             NodeUpdate::SlotsChanged {
                 node,
                 incarnation: 4,
@@ -1103,6 +1167,63 @@ mod tests {
         // too short to even contain a 32-byte tag
         let result = GossipMessage::decode_authenticated(&[0u8; 16], &secret);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn old_and_future_messages_are_refused() {
+        let secret = ClusterSecret::from_password("test");
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let sent = 1_000_000_000;
+        let encoded = msg.encode_authenticated_at(&secret, sent);
+        let max = MAX_MESSAGE_AGE.as_millis() as u64;
+        for now in [sent - max, sent, sent + max] {
+            assert_eq!(
+                GossipMessage::decode_authenticated_at(&encoded, &secret, now).unwrap(),
+                msg
+            );
+        }
+        for now in [sent - max - 1, sent + max + 1] {
+            let err = GossipMessage::decode_authenticated_at(&encoded, &secret, now).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        }
+    }
+
+    #[test]
+    fn a_large_welcome_is_split_into_datagrams() {
+        let sender = NodeId::new();
+        // every other slot, so each member carries thousands of ranges
+        let slots: Vec<SlotRange> = (0..2000).map(|i| SlotRange::new(i * 2, i * 2)).collect();
+        let members: Vec<MemberInfo> = (0..20)
+            .map(|i| MemberInfo {
+                id: NodeId::new(),
+                addr: test_addr(),
+                incarnation: i,
+                is_primary: true,
+                replicates: None,
+                config_epoch: i,
+                slots: slots.clone(),
+            })
+            .collect();
+
+        let welcomes = GossipMessage::welcomes(sender, members.clone());
+        assert!(welcomes.len() > 1);
+        let secret = ClusterSecret::from_password("test");
+        let mut received = Vec::new();
+        for welcome in &welcomes {
+            let encoded = welcome.encode_authenticated(&secret);
+            assert!(encoded.len() <= 65_507, "{} bytes", encoded.len());
+            match GossipMessage::decode_authenticated(&encoded, &secret).unwrap() {
+                GossipMessage::Welcome { members, .. } => received.extend(members),
+                other => panic!("expected Welcome, got {other:?}"),
+            }
+        }
+        assert_eq!(received, members);
+
+        assert_eq!(GossipMessage::welcomes(sender, Vec::new()).len(), 1);
     }
 
     #[test]

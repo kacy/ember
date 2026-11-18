@@ -80,10 +80,7 @@ impl ClusterCoordinator {
             let mut gossip = self.gossip.lock().await;
             gossip.add_seed(new_id, gossip_addr);
             let msg = gossip.create_join_message();
-            match &self.secret {
-                Some(s) => msg.encode_authenticated(s),
-                None => msg.encode(),
-            }
+            self.encode_gossip(&msg)
         };
 
         // Insert placeholder before sending UDP so the gossip receive task always
