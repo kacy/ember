@@ -268,6 +268,8 @@ auth-pass = "shared-cluster-secret"
 
 nodes that do not present the correct HMAC are rejected. a replication connection checks both ends: a replica without the key cannot pull data from its primary, and a replica takes no data from a primary without the key. only the replication handshake is authenticated, not each record after it, and the stream is not encrypted, so keep replication traffic on a trusted network. a cluster node bound to anything other than loopback refuses to start without this setting.
 
+each signed gossip message carries the time it was sent, and a node drops messages more than 30 seconds older or newer than its own clock, so a recorded message can't be replayed later. keep the nodes' clocks in sync, for example with NTP. a node that drops messages logs a warning naming the sender and the time difference.
+
 **key and value size limits**
 
 ember enforces maximum sizes by default:
