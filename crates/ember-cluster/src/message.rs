@@ -397,20 +397,36 @@ impl GossipMessage {
         }
     }
 
-    /// Encodes the message with a trailing HMAC-SHA256 tag.
+    /// Encodes the message with the current time and a trailing
+    /// HMAC-SHA256 tag over both.
     pub fn encode_authenticated(&self, secret: &ClusterSecret) -> Bytes {
+        self.encode_authenticated_at(secret, unix_ms())
+    }
+
+    fn encode_authenticated_at(&self, secret: &ClusterSecret, now_ms: u64) -> Bytes {
         let mut buf = BytesMut::with_capacity(256);
+        buf.put_u64_le(now_ms);
         self.encode_into(&mut buf);
         let tag = secret.sign(&buf);
         buf.extend_from_slice(&tag);
         buf.freeze()
     }
 
-    /// Decodes a message, verifying the trailing HMAC-SHA256 tag first.
+    /// Decodes a message from [`encode_authenticated`](Self::encode_authenticated),
+    /// checking its tag and its age first.
     ///
-    /// Returns an error if the buffer is too short or the tag doesn't match.
+    /// A message sent more than [`MAX_MESSAGE_AGE`] ago, or that far in the
+    /// future, is refused, so a recorded message can't be replayed later.
     pub fn decode_authenticated(buf: &[u8], secret: &ClusterSecret) -> io::Result<Self> {
-        if buf.len() < TAG_LEN {
+        Self::decode_authenticated_at(buf, secret, unix_ms())
+    }
+
+    fn decode_authenticated_at(
+        buf: &[u8],
+        secret: &ClusterSecret,
+        now_ms: u64,
+    ) -> io::Result<Self> {
+        if buf.len() < 8 + TAG_LEN {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "message too short for auth tag",
@@ -423,8 +439,29 @@ impl GossipMessage {
                 "cluster auth failed",
             ));
         }
+        let mut payload = payload;
+        let sent_ms = safe_get_u64_le(&mut payload)?;
+        if sent_ms.abs_diff(now_ms) > MAX_MESSAGE_AGE.as_millis() as u64 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "message sent {} ms from the local time; check that the clocks agree",
+                    sent_ms as i128 - now_ms as i128
+                ),
+            ));
+        }
         Self::decode(payload)
     }
+}
+
+/// How far a signed message's send time may be from the receiver's clock.
+/// Nodes with a cluster secret need clocks that agree within this.
+pub const MAX_MESSAGE_AGE: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn encode_node_id(buf: &mut BytesMut, id: &NodeId) {
@@ -1092,6 +1129,29 @@ mod tests {
         // too short to even contain a 32-byte tag
         let result = GossipMessage::decode_authenticated(&[0u8; 16], &secret);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn old_and_future_messages_are_refused() {
+        let secret = ClusterSecret::from_password("test");
+        let msg = GossipMessage::Ping {
+            seq: 1,
+            sender: NodeId::new(),
+            updates: vec![],
+        };
+        let sent = 1_000_000_000;
+        let encoded = msg.encode_authenticated_at(&secret, sent);
+        let max = MAX_MESSAGE_AGE.as_millis() as u64;
+        for now in [sent - max, sent, sent + max] {
+            assert_eq!(
+                GossipMessage::decode_authenticated_at(&encoded, &secret, now).unwrap(),
+                msg
+            );
+        }
+        for now in [sent - max - 1, sent + max + 1] {
+            let err = GossipMessage::decode_authenticated_at(&encoded, &secret, now).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        }
     }
 
     #[test]
