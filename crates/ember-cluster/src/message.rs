@@ -454,6 +454,44 @@ impl GossipMessage {
     }
 }
 
+/// Most bytes of member entries in one Welcome. A UDP datagram holds at
+/// most 65,507 bytes, and smaller ones are less likely to be fragmented.
+const WELCOME_MEMBER_BYTES: usize = 8 * 1024;
+
+impl GossipMessage {
+    /// Builds the Welcome messages that carry `members`, as many as it takes
+    /// to keep each one small enough for a datagram. The members keep their
+    /// order across the messages.
+    pub fn welcomes(sender: NodeId, members: Vec<MemberInfo>) -> Vec<GossipMessage> {
+        let mut welcomes = Vec::new();
+        let mut chunk = Vec::new();
+        let mut chunk_bytes = 0;
+        let mut entry = BytesMut::new();
+        for member in members {
+            entry.clear();
+            encode_member_info(&mut entry, &member);
+            let full = chunk_bytes + entry.len() > WELCOME_MEMBER_BYTES
+                || chunk.len() == MAX_COLLECTION_COUNT;
+            if full && !chunk.is_empty() {
+                welcomes.push(GossipMessage::Welcome {
+                    sender,
+                    members: std::mem::take(&mut chunk),
+                });
+                chunk_bytes = 0;
+            }
+            chunk_bytes += entry.len();
+            chunk.push(member);
+        }
+        if !chunk.is_empty() || welcomes.is_empty() {
+            welcomes.push(GossipMessage::Welcome {
+                sender,
+                members: chunk,
+            });
+        }
+        welcomes
+    }
+}
+
 /// How far a signed message's send time may be from the receiver's clock.
 /// Nodes with a cluster secret need clocks that agree within this.
 pub const MAX_MESSAGE_AGE: std::time::Duration = std::time::Duration::from_secs(30);
@@ -1152,6 +1190,40 @@ mod tests {
             let err = GossipMessage::decode_authenticated_at(&encoded, &secret, now).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         }
+    }
+
+    #[test]
+    fn a_large_welcome_is_split_into_datagrams() {
+        let sender = NodeId::new();
+        // every other slot, so each member carries thousands of ranges
+        let slots: Vec<SlotRange> = (0..2000).map(|i| SlotRange::new(i * 2, i * 2)).collect();
+        let members: Vec<MemberInfo> = (0..20)
+            .map(|i| MemberInfo {
+                id: NodeId::new(),
+                addr: test_addr(),
+                incarnation: i,
+                is_primary: true,
+                replicates: None,
+                config_epoch: i,
+                slots: slots.clone(),
+            })
+            .collect();
+
+        let welcomes = GossipMessage::welcomes(sender, members.clone());
+        assert!(welcomes.len() > 1);
+        let secret = ClusterSecret::from_password("test");
+        let mut received = Vec::new();
+        for welcome in &welcomes {
+            let encoded = welcome.encode_authenticated(&secret);
+            assert!(encoded.len() <= 65_507, "{} bytes", encoded.len());
+            match GossipMessage::decode_authenticated(&encoded, &secret).unwrap() {
+                GossipMessage::Welcome { members, .. } => received.extend(members),
+                other => panic!("expected Welcome, got {other:?}"),
+            }
+        }
+        assert_eq!(received, members);
+
+        assert_eq!(GossipMessage::welcomes(sender, Vec::new()).len(), 1);
     }
 
     #[test]

@@ -541,25 +541,9 @@ impl GossipEngine {
                     incarnation: 1,
                 });
 
-                // send welcome with current members, including ourselves
-                let mut members: Vec<MemberInfo> = self
-                    .members
-                    .values()
-                    .filter(|m| m.state == MemberStatus::Alive)
-                    .map(|m| MemberInfo {
-                        id: m.id,
-                        addr: m.addr,
-                        incarnation: m.incarnation,
-                        is_primary: m.is_primary,
-                        replicates: m.replicates,
-                        config_epoch: m.config_epoch,
-                        slots: m.slots.clone(),
-                    })
-                    .collect();
-
-                // include ourselves so the joiner learns the full map and
-                // our role
-                members.push(MemberInfo {
+                // send welcome with current members. this node goes first,
+                // so the first message tells the joiner its role and slots
+                let mut members = vec![MemberInfo {
                     id: self.local_id,
                     addr: self.local_addr,
                     incarnation: self.incarnation,
@@ -567,15 +551,26 @@ impl GossipEngine {
                     replicates: self.local_replicates,
                     config_epoch: self.local_config_epoch,
                     slots: self.local_slots.clone(),
-                });
+                }];
+                members.extend(
+                    self.members
+                        .values()
+                        .filter(|m| m.state == MemberStatus::Alive)
+                        .map(|m| MemberInfo {
+                            id: m.id,
+                            addr: m.addr,
+                            incarnation: m.incarnation,
+                            is_primary: m.is_primary,
+                            replicates: m.replicates,
+                            config_epoch: m.config_epoch,
+                            slots: m.slots.clone(),
+                        }),
+                );
 
-                vec![(
-                    from,
-                    GossipMessage::Welcome {
-                        sender: self.local_id,
-                        members,
-                    },
-                )]
+                GossipMessage::welcomes(self.local_id, members)
+                    .into_iter()
+                    .map(|welcome| (from, welcome))
+                    .collect()
             }
 
             GossipMessage::Welcome { sender, members } => {
