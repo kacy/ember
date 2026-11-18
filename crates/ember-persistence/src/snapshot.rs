@@ -584,8 +584,7 @@ impl SnapshotReader {
         Self::open_with(path.as_ref(), None)
     }
 
-    /// Opens a snapshot file that may be encrypted with `key`. Plaintext
-    /// files are read too.
+    /// Opens a snapshot file encrypted with `key`.
     #[cfg(feature = "encryption")]
     pub fn open_encrypted(path: impl AsRef<Path>, key: Key) -> Result<Self, FormatError> {
         Self::open_with(path.as_ref(), Some(&key))
@@ -1098,11 +1097,9 @@ mod tests {
         }
 
         #[test]
-        fn v2_snapshot_readable_with_encryption_key() -> Result {
+        fn plaintext_snapshot_refused_with_encryption_key() -> Result {
             let dir = temp_dir();
-            let path = dir.path().join("v2.snap");
-            let key = test_key();
-
+            let path = dir.path().join("plain.snap");
             {
                 let mut writer = SnapshotWriter::create(&path, 0)?;
                 writer.write_entry(&SnapEntry {
@@ -1113,10 +1110,10 @@ mod tests {
                 writer.finish()?;
             }
 
-            let mut reader = SnapshotReader::open_encrypted(&path, key)?;
-            let entry = reader.read_entry()?.unwrap();
-            assert_eq!(entry.key, "k");
-            reader.verify_footer()?;
+            assert!(matches!(
+                SnapshotReader::open_encrypted(&path, test_key()),
+                Err(FormatError::NotEncrypted)
+            ));
             Ok(())
         }
 

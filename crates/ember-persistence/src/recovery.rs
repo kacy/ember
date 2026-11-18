@@ -84,8 +84,8 @@ pub fn recover_shard(
     recover_shard_impl(data_dir, shard_id, None, target)
 }
 
-/// Like [`recover_shard`], with a key for encrypted files. Plaintext files
-/// are read as well.
+/// Like [`recover_shard`], for files encrypted with `key`. Plaintext files
+/// are refused.
 #[cfg(feature = "encryption")]
 pub fn recover_shard_encrypted(
     data_dir: &Path,
