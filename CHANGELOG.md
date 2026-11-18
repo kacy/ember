@@ -18,7 +18,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- gossip hardening (#PR):
+- gossip hardening (#460):
   - with a cluster secret, each gossip message is signed with the time it was sent, and nodes drop messages more than 30 seconds off their own clock, so a recorded message can't be replayed later. nodes need clocks that agree within that
   - a Welcome reply is split across as many datagrams as it needs. a large cluster could build one bigger than a UDP datagram holds, and the joining node never received the member list
   - the Left update is gone. nothing sent it, but a node that received one removed the member for good
