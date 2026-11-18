@@ -41,6 +41,14 @@ pub(super) async fn handle_frame_with_tx(
     // peek at the command name without consuming the frame
     let cmd_name = super::peek_command_name(&frame);
 
+    // the transaction commands below don't go through dispatch, so check
+    // the user's permissions here
+    if cmd_name.is_some() {
+        if let Some(err) = session.check_frame(&frame) {
+            return err;
+        }
+    }
+
     match tx_state {
         TransactionState::None => {
             if cmd_name == Some("MULTI") {

@@ -140,6 +140,20 @@ async fn monitor_needs_permission() {
     assert_eq!(reader.get_bulk(&["GET", "cache:1"]).await, None);
 }
 
+#[tokio::test]
+async fn transaction_commands_need_permission() {
+    let (server, mut admin) = server_with_reader().await;
+    admin.ok(&["ACL", "SETUSER", "reader", "+watch"]).await;
+    let mut reader = server.connect().await;
+    reader.ok(&["AUTH", "reader", "reader-pass"]).await;
+
+    let err = reader.err(&["WATCH", "secret:1"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+    reader.ok(&["WATCH", "cache:1"]).await;
+    let err = reader.err(&["MULTI"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+}
+
 /// Writes `commands` to the connection in one write, so the server reads
 /// them as one batch, and returns their replies.
 async fn send_batch(
