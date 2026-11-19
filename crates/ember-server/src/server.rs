@@ -502,7 +502,11 @@ pub async fn run_threaded(
         None => None,
     };
 
-    let shutdown = Arc::new(tokio::sync::Notify::new());
+    // level-triggered, so a worker that starts waiting after shutdown was
+    // signaled still sees it
+    let (shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+    // each worker reports whether its listeners bound
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
     // spawn one OS thread per shard, each with its own single-threaded runtime
     let workers: Vec<std::thread::JoinHandle<()>> = prepared_shards
@@ -514,7 +518,8 @@ pub async fn run_threaded(
             let slow_log = Arc::clone(&slow_log);
             let pubsub = Arc::clone(&pubsub);
             let semaphore = Arc::clone(&semaphore);
-            let shutdown = Arc::clone(&shutdown);
+            let shutdown = shutdown.clone();
+            let bound = bound_tx.clone();
             let tls = tls_acceptor.as_ref().map(|(a, b)| (*a, b.clone()));
 
             std::thread::Builder::new()
@@ -528,14 +533,16 @@ pub async fn run_threaded(
                     {
                         Ok(rt) => rt,
                         Err(e) => {
-                            error!("worker {id}: failed to build tokio runtime: {e}");
+                            let _ = bound.send(Err(format!(
+                                "worker {id}: failed to build tokio runtime: {e}"
+                            )));
                             return;
                         }
                     };
 
                     rt.block_on(worker_main(
                         id, prepared, plain_addr, engine, ctx, slow_log, pubsub, semaphore, tls,
-                        shutdown,
+                        shutdown, bound,
                     ));
 
                     // give in-flight connection handlers time to finish
@@ -546,6 +553,21 @@ pub async fn run_threaded(
                 })
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
+    drop(bound_tx);
+
+    // every worker must have bound its listeners: one that didn't would
+    // leave its shard unserved while the server reported it was listening
+    let bind_results =
+        tokio::task::spawn_blocking(move || bound_rx.iter().collect::<Vec<_>>()).await?;
+    let reported = bind_results.len();
+    let bind_error = bind_results
+        .into_iter()
+        .find_map(Result::err)
+        .or_else(|| (reported != shard_count).then(|| "a worker stopped before binding".into()));
+    if let Some(e) = bind_error {
+        let _ = shutdown_tx.send(true);
+        return Err(e.into());
+    }
 
     // the shards recover on the worker threads started above
     wait_for_shards(&engine).await?;
@@ -562,7 +584,7 @@ pub async fn run_threaded(
     // await shutdown signal on the management runtime
     shutdown_signal().await;
     info!("shutdown signal received, stopping workers...");
-    shutdown.notify_waiters();
+    let _ = shutdown_tx.send(true);
 
     // join worker threads (blocking — use spawn_blocking to avoid starving
     // the management runtime while threads drain)
@@ -592,19 +614,17 @@ async fn worker_main(
     pubsub: Arc<PubSubManager>,
     semaphore: Arc<Semaphore>,
     tls: Option<(SocketAddr, TlsAcceptor)>,
-    shutdown: Arc<tokio::sync::Notify>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    bound: std::sync::mpsc::Sender<Result<(), String>>,
 ) {
-    // run the shard task on this worker's runtime
-    tokio::spawn(ember_core::run_prepared(prepared));
-
     // bind SO_REUSEPORT listener — the kernel distributes connections
     // across all workers listening on the same port. `port = 0` turns the
     // plaintext listener off, leaving TLS only
-    let listener = match addr.map(bind_reuse_port) {
+    let listener = match addr.map(|addr| (addr, bind_reuse_port(addr))) {
         None => None,
-        Some(Ok(l)) => Some(l),
-        Some(Err(e)) => {
-            error!("worker {id}: failed to bind {addr:?}: {e}");
+        Some((_, Ok(l))) => Some(l),
+        Some((addr, Err(e))) => {
+            let _ = bound.send(Err(format!("worker {id}: failed to bind {addr}: {e}")));
             return;
         }
     };
@@ -613,14 +633,22 @@ async fn worker_main(
         Some((tls_addr, acceptor)) => match bind_reuse_port(tls_addr) {
             Ok(l) => Some((l, acceptor)),
             Err(e) => {
-                error!("worker {id}: failed to bind TLS {tls_addr}: {e}");
+                let _ = bound.send(Err(format!(
+                    "worker {id}: failed to bind TLS {tls_addr}: {e}"
+                )));
                 return;
             }
         },
         None => None,
     };
+    let _ = bound.send(Ok(()));
+    drop(bound);
 
-    let shutdown_fut = shutdown.notified();
+    // run the shard task on this worker's runtime, now that its
+    // connections have somewhere to arrive
+    tokio::spawn(ember_core::run_prepared(prepared));
+
+    let shutdown_fut = shutdown.wait_for(|&stop| stop);
     tokio::pin!(shutdown_fut);
 
     // helpers to accept from each listener, or pend forever if it's off
