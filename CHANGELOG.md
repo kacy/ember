@@ -18,6 +18,14 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- AOF durability fixes (#464):
+  - under `appendfsync everysec` and `no`, a write whose AOF records couldn't be written at the end of its burst replies with an error. it replied OK
+  - BGSAVE, BGREWRITEAOF, FLUSHDB, FLUSHALL and the automatic save report a shard's failure. they replied OK or logged success whatever the shards said. BGSAVE without a data directory is now an error
+  - recovery reads AOF and snapshot frames of any size the writer produces. a record over 512 MiB, such as a large string with its framing, was written and then stopped every later start
+  - a new AOF's header and the shard count manifest are fsynced, and the manifest is only rewritten when it changes. recovery treats an empty AOF as missing. a power loss could leave an empty file that stopped startup
+  - BGREWRITEAOF works when the disk is too full to append to the old AOF. it tried to write the queued records to the old file first and failed, so the rewrite that would free space never ran
+  - a shard whose AOF can't be opened or rewritten at startup doesn't start, as when recovery fails. it ran without an AOF and accepted writes a restart would lose
+  - the server refuses a `tls-port` equal to `port`. both listeners bound to the same port and split connections between plaintext and TLS
 - ordering and lost-write fixes (#463):
   - in a pipeline, multi-key and server commands such as DEL, MGET, MSET and WAIT run after the commands before them. they ran while single-key commands were still being grouped by shard, so `SET k v` then `DEL k` in one pipeline deleted nothing and left the key set
   - WATCH notices a key that was deleted and created again, a FLUSHDB, and a watched key that didn't exist and was then created. EXEC committed in those cases

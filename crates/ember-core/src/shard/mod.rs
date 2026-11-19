@@ -365,9 +365,15 @@ async fn run_shard(prepared: PreparedShard) {
             let result = AofWriter::open(path);
             match result {
                 Ok(w) => Some(w),
+                // running on without the AOF would accept writes that a
+                // restart loses, so the shard stops as it does when
+                // recovery fails
                 Err(e) => {
-                    warn!(shard_id, "failed to open AOF writer: {e}");
-                    None
+                    error!(
+                        shard_id,
+                        "failed to open the aof, so the shard is not starting: {e}"
+                    );
+                    return;
                 }
             }
         }
@@ -395,8 +401,11 @@ async fn run_shard(prepared: PreparedShard) {
             #[cfg(feature = "protobuf")]
             &schema_registry,
         ) {
-            error!(shard_id, "aof rewrite failed, not writing to it: {e}");
-            aof_writer = None;
+            error!(
+                shard_id,
+                "aof rewrite failed, so the shard is not starting: {e}"
+            );
+            return;
         }
     }
 
@@ -410,7 +419,7 @@ async fn run_shard(prepared: PreparedShard) {
     // never sees OK for a write a process crash could lose. with
     // appendfsync always each write is already on disk before its reply.
     let hold_replies = aof.is_some() && fsync_policy != FsyncPolicy::Always;
-    let mut held_replies: Vec<(ReplySender, ShardResponse)> = Vec::new();
+    let mut held_replies: Vec<HeldReply> = Vec::new();
 
     // waiter registries for blocking list operations (BLPOP/BRPOP)
     let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
@@ -443,14 +452,17 @@ async fn run_shard(prepared: PreparedShard) {
                         };
                         process_message(msg, &mut ctx);
                         drain_queued(&mut rx, |msg| process_message(msg, &mut ctx));
-                        if let Some(ref mut aof) = aof {
-                            aof.flush();
-                        }
+                        let flushed = aof.as_mut().is_none_or(|aof| aof.flush());
                         if let Some(ref mut replication) = replication {
                             replication.flush();
                         }
-                        for (reply, response) in held_replies.drain(..) {
-                            reply.send(response);
+                        for held in held_replies.drain(..) {
+                            let response = if held.logged && !flushed {
+                                ShardResponse::Err(AOF_WRITE_FAILED.into())
+                            } else {
+                                held.response
+                            };
+                            held.reply.send(response);
                         }
                     }
                     None => break, // channel closed, shard shutting down
@@ -488,7 +500,7 @@ struct ProcessCtx<'a> {
     keyspace: &'a mut Keyspace,
     aof: &'a mut Option<aof::AofLog>,
     /// Where replies wait for the end of the burst, when they must.
-    held_replies: Option<&'a mut Vec<(ReplySender, ShardResponse)>>,
+    held_replies: Option<&'a mut Vec<HeldReply>>,
     persistence: &'a Option<ShardPersistenceConfig>,
     drop_handle: &'a Option<DropHandle>,
     shard_id: u16,
@@ -547,11 +559,34 @@ enum ReplySender {
     Reusable(mpsc::Sender<ShardResponse>),
 }
 
+/// A reply held until the end of a burst, when the AOF is flushed.
+struct HeldReply {
+    reply: ReplySender,
+    response: ShardResponse,
+    /// Whether the request logged AOF records. If the flush fails, the
+    /// reply becomes an error.
+    logged: bool,
+}
+
+/// The reply to a write that applied in memory but didn't reach the AOF.
+const AOF_WRITE_FAILED: &str = "ERR write applied in memory but could not be persisted to the AOF";
+
 impl ProcessCtx<'_> {
-    /// Sends `response`, or holds it until the burst is flushed.
+    /// Sends the reply to a request that logged nothing, or holds it until
+    /// the burst is flushed.
     fn respond(&mut self, reply: ReplySender, response: ShardResponse) {
+        self.respond_logged(reply, response, false);
+    }
+
+    /// Like [`respond`](Self::respond), for a request that may have logged
+    /// AOF records.
+    fn respond_logged(&mut self, reply: ReplySender, response: ShardResponse, logged: bool) {
         match self.held_replies {
-            Some(ref mut held) => held.push((reply, response)),
+            Some(ref mut held) => held.push(HeldReply {
+                reply,
+                response,
+                logged,
+            }),
             None => reply.send(response),
         }
     }
@@ -660,11 +695,10 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
 
     // log successful mutations. with appendfsync always, OK promises the
     // write is on disk
+    let logged = ctx.aof.is_some() && !records.is_empty();
     if let Some(ref mut aof) = *ctx.aof {
         if !aof.append(&records) {
-            response = ShardResponse::Err(
-                "ERR write applied in memory but could not be persisted to the AOF".into(),
-            );
+            response = ShardResponse::Err(AOF_WRITE_FAILED.into());
         }
     }
 
@@ -705,7 +739,11 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             if let Some(ref handle) = *ctx.drop_handle {
                 handle.defer_entries(old_entries);
             }
-            ctx.respond(reply, ShardResponse::Ok);
+            // the response is a placeholder unless logging failed
+            if !matches!(response, ShardResponse::Err(_)) {
+                response = ShardResponse::Ok;
+            }
+            ctx.respond_logged(reply, response, logged);
             return;
         }
         RequestKind::UpdateMemoryConfig {
@@ -720,7 +758,7 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         RequestKind::Other => {}
     }
 
-    ctx.respond(reply, response);
+    ctx.respond_logged(reply, response, logged);
 }
 
 /// Lightweight tag so we can identify requests that need special

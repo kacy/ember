@@ -616,6 +616,37 @@ mod tests {
         assert!(matches!(resp, ShardResponse::Bool(true)));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_shard_whose_aof_cannot_open_does_not_start() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // recovery finds no files, then creating the AOF fails
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        if std::fs::write(dir.path().join("probe"), b"").is_ok() {
+            return; // running as root, which ignores the permissions
+        }
+        let pcfg = ShardPersistenceConfig {
+            data_dir: dir.path().to_owned(),
+            append_only: true,
+            fsync_policy: FsyncPolicy::EverySec,
+            #[cfg(feature = "encryption")]
+            encryption_key: None,
+        };
+        let handle = spawn_shard(
+            16,
+            ShardConfig::default(),
+            Some(pcfg),
+            None,
+            None,
+            None,
+            #[cfg(feature = "protobuf")]
+            None,
+        );
+        assert!(handle.send(ShardRequest::DbSize).await.is_err());
+    }
+
     #[tokio::test]
     async fn shard_with_persistence_snapshot_and_recovery() {
         let dir = tempfile::tempdir().unwrap();

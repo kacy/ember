@@ -119,8 +119,10 @@ fn recover_shard_impl(
         snapshot_crc = Some(crc);
     }
 
+    // an empty AOF is one whose header never reached the disk, as a power
+    // loss right after creating it leaves. the writer starts it over
     let aof_path = aof::aof_path(data_dir, shard_id);
-    if !aof_path.exists() {
+    if std::fs::metadata(&aof_path).map_or(true, |m| m.len() == 0) {
         result.unanchored_aof = true;
         return Ok(result);
     }
@@ -307,6 +309,15 @@ mod tests {
         let mut target = Recorded::default();
         let result = recover_shard(dir, 0, &mut target).expect("recovery");
         (target, result)
+    }
+
+    #[test]
+    fn an_empty_aof_is_treated_as_missing() {
+        let dir = temp_dir();
+        std::fs::write(aof::aof_path(dir.path(), 0), b"").unwrap();
+        let (target, result) = recover(dir.path());
+        assert!(target.applied.is_empty());
+        assert!(result.unanchored_aof);
     }
 
     fn temp_dir() -> tempfile::TempDir {

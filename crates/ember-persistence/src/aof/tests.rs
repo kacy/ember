@@ -1027,6 +1027,27 @@ fn a_failed_write_keeps_the_records_and_leaves_whole_records_only() {
     assert!(pending.is_empty());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn truncate_works_when_the_old_file_cannot_be_written() -> Result {
+    let dir = temp_dir();
+    let path = dir.path().join("full.aof");
+    let mut writer = AofWriter::open(&path)?;
+    writer.write_record(&AofRecord::Del { key: "k".into() })?;
+    // every write to /dev/full fails with "no space left on device"
+    writer.file = OpenOptions::new().append(true).open("/dev/full")?;
+    assert!(writer.flush().is_err());
+
+    writer.truncate(7)?;
+    let mut reader = AofReader::open(&path)?;
+    assert_eq!(
+        reader.read_record()?,
+        Some(AofRecord::Checkpoint { snapshot_crc: 7 })
+    );
+    assert_eq!(reader.read_record()?, None, "the queued record was dropped");
+    Ok(())
+}
+
 #[test]
 fn records_reach_the_file_only_when_flushed() -> Result {
     let dir = temp_dir();

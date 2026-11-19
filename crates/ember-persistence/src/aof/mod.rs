@@ -93,6 +93,8 @@ impl AofWriter {
         } else {
             let codec = frame::write_header(&mut header, format::AOF_MAGIC, key.as_ref())?;
             file.write_all(&header)?;
+            file.sync_all()?;
+            sync_parent_dir(&path);
             (codec, false)
         };
         let written_len = file.metadata()?.len();
@@ -154,9 +156,12 @@ impl AofWriter {
     /// remains intact until the new file is fully synced and atomically
     /// renamed into place. If this fails, the old file stays in use.
     pub fn truncate(&mut self, snapshot_crc: u32) -> Result<(), FormatError> {
-        // the snapshot holds the queued records' writes too, but they must
-        // still reach the old file in case the rename below fails
-        self.flush()?;
+        // the snapshot holds the queued records' writes too, but they should
+        // still reach the old file in case the rename below fails. that
+        // can fail when the disk is full, which is when a rewrite is most
+        // needed, so it doesn't stop the rewrite: the records stay queued
+        // until the rename replaces the file
+        let _ = self.flush();
 
         // write a fresh header to a temp file next to the real AOF. the
         // file is opened for appending like the real one, which needs it
@@ -184,6 +189,7 @@ impl AofWriter {
         sync_parent_dir(&self.path);
         self.file = tmp_file;
         self.codec = codec;
+        self.pending.clear();
         self.written_len = contents.len() as u64;
         self.torn = false;
         self.needs_rewrite = false;

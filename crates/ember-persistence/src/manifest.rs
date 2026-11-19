@@ -7,7 +7,7 @@
 //! startup.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 
 const MANIFEST_FILE: &str = "shards";
@@ -35,19 +35,29 @@ pub fn check_shard_count(data_dir: &Path, shard_count: usize) -> Result<(), Stri
         Err(e) => return Err(io_error(e)),
     };
 
-    if let Some(previous) = previous {
-        if previous != shard_count {
+    match previous {
+        Some(previous) if previous != shard_count => {
             return Err(format!(
                 "{} holds data for {previous} shards, but the server is configured for \
                  {shard_count}. set shards = {previous} to use this data",
                 data_dir.display()
             ));
         }
+        // a manifest that already holds the count is left alone
+        Some(_) if manifest.exists() => return Ok(()),
+        _ => {}
     }
 
+    // synced before and after the rename, so a power loss can't leave an
+    // empty manifest that would stop the next start
     let tmp = data_dir.join(format!("{MANIFEST_FILE}.tmp"));
-    fs::write(&tmp, format!("{shard_count}\n")).map_err(io_error)?;
-    fs::rename(&tmp, &manifest).map_err(io_error)
+    let mut file = fs::File::create(&tmp).map_err(io_error)?;
+    file.write_all(format!("{shard_count}\n").as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(io_error)?;
+    fs::rename(&tmp, &manifest).map_err(io_error)?;
+    crate::aof::sync_parent_dir(&manifest);
+    Ok(())
 }
 
 /// Infers the shard count from `shard-<id>.aof` and `shard-<id>.snap` files.

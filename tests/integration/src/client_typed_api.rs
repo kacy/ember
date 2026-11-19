@@ -6,7 +6,7 @@
 
 use ember_client::{Client, ClientError, Pipeline};
 
-use crate::helpers::TestServer;
+use crate::helpers::{ServerOptions, TestServer};
 
 // Helper: connect a typed client to a freshly started server.
 async fn connect() -> (TestServer, Client) {
@@ -393,9 +393,21 @@ async fn info_returns_non_empty_string() {
 
 #[tokio::test]
 async fn bgsave_returns_status_string() {
-    let (_server, mut client) = connect().await;
+    let server = TestServer::start_with(ServerOptions {
+        appendonly: true,
+        ..Default::default()
+    });
+    let mut client = Client::connect("127.0.0.1", server.port)
+        .await
+        .expect("connect failed");
     let status = client.bgsave().await.unwrap();
     assert!(!status.is_empty());
+}
+
+#[tokio::test]
+async fn bgsave_without_a_data_dir_is_an_error() {
+    let (_server, mut client) = connect().await;
+    assert!(client.bgsave().await.is_err());
 }
 
 // --- slowlog ---
