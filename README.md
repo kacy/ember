@@ -27,7 +27,7 @@ a low-latency, memory-efficient, distributed cache written in Rust. designed to 
 - **key commands** — DEL, UNLINK, EXISTS, EXPIRE, EXPIREAT, EXPIRETIME, TTL, PEXPIRE, PEXPIREAT, PEXPIRETIME, PTTL, PERSIST, TYPE, SCAN, KEYS, RENAME, COPY, TOUCH, RANDOMKEY, SORT, OBJECT ENCODING/REFCOUNT, WAIT
 - **server commands** — PING, ECHO, INFO, DBSIZE, FLUSHDB, FLUSHALL, MEMORY USAGE, BGSAVE, BGREWRITEAOF, AUTH, QUIT, CONFIG GET/SET/REWRITE, SLOWLOG, CLIENT ID/SETNAME/GETNAME/LIST, TIME, LASTSAVE, ROLE, MONITOR, COMMAND/COMMAND COUNT/COMMAND INFO/COMMAND DOCS
 - **transactions** — MULTI, EXEC, DISCARD, WATCH/UNWATCH for optimistic locking
-- **acl** — per-user command permissions and key pattern restrictions: ACL SETUSER, GETUSER, DELUSER, LIST, WHOAMI, CAT, USERS
+- **acl** — per-user command permissions and key and pub/sub channel pattern restrictions: ACL SETUSER, GETUSER, DELUSER, LIST, WHOAMI, CAT, USERS
 - **pub/sub** — SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, plus PUBSUB introspection
 - **vector similarity search** — HNSW-backed approximate nearest neighbor search with cosine, L2, and inner product metrics (compile with `--features vector`)
 - **protobuf storage** — schema-validated protobuf values with field-level access (compile with `--features protobuf`)

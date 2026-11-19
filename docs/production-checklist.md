@@ -239,7 +239,7 @@ requirepass = "a-long-random-string"
 
 **acl**
 
-for multi-tenant or multi-team environments, use ACLs to restrict which commands and keys each user can access. `ACL SETUSER`, `ACL LIST`, and `ACL WHOAMI` manage this at runtime. define users in the config file for persistence across restarts.
+for multi-tenant or multi-team environments, use ACLs to restrict which commands, keys and pub/sub channels each user can access. as in Redis 7, a user created with ACL SETUSER can use no channels until given `&pattern` rules or `allchannels`, so the keyspace notification channels aren't open to every user who can subscribe. `ACL SETUSER`, `ACL LIST`, and `ACL WHOAMI` manage this at runtime. define users in the config file for persistence across restarts.
 
 the same users and permissions apply to gRPC. a gRPC client sends the password in the `authorization` metadata header and the user name in the `username` header. without a `username` header, the request logs in as `default`.
 

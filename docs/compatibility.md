@@ -324,7 +324,7 @@ all cluster commands are implemented. see the cluster documentation for operatio
 | ACL LIST | ✓ | |
 | ACL USERS | ✓ | |
 | ACL GETUSER | ✓ | |
-| ACL SETUSER | ✓ | permissions, key patterns, command categories |
+| ACL SETUSER | ✓ | permissions, key patterns, channel patterns, command categories |
 | ACL DELUSER | ✓ | |
 | ACL CAT | ✓ | lists command categories |
 | ACL LOG | ✗ | not implemented |

@@ -494,11 +494,23 @@ where
 
         tokio::select! {
             msg = crate::pubsub::recv_any(&mut subs.channels, &mut subs.patterns) => {
-                // stop delivering to a user that was deleted, switched off
-                // or lost SUBSCRIBE
+                // stop delivering to a user that was deleted, switched off,
+                // or lost SUBSCRIBE or a channel it listens to. the
+                // subscriptions are checked only when the users changed
                 let subscribe = Command::Subscribe { channels: Vec::new() };
                 if !session.still_allowed(ctx, &subscribe) {
                     return Ok(SubscriberExit::Close);
+                }
+                if session.users_changed_since_check() {
+                    let channels = Command::Subscribe {
+                        channels: subs.channels.keys().cloned().collect(),
+                    };
+                    let patterns = Command::PSubscribe {
+                        patterns: subs.patterns.keys().cloned().collect(),
+                    };
+                    if session.check(&channels).is_some() || session.check(&patterns).is_some() {
+                        return Ok(SubscriberExit::Close);
+                    }
                 }
                 if let Some(msg) = msg {
                     serialize_push_message(&msg, out);

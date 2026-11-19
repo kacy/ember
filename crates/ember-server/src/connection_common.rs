@@ -129,6 +129,9 @@ pub struct Session {
     user: Option<Arc<AclUser>>,
     username: String,
     generation: u64,
+    /// Set when `refresh` reloads the user. See
+    /// [`users_changed_since_check`](Self::users_changed_since_check).
+    users_changed: bool,
 }
 
 impl Session {
@@ -148,6 +151,7 @@ impl Session {
             user: user.map(Arc::new),
             username: username.into(),
             generation,
+            users_changed: false,
         }
     }
 
@@ -158,6 +162,7 @@ impl Session {
             user: None,
             username: String::new(),
             generation: 0,
+            users_changed: false,
         }
     }
 
@@ -170,6 +175,7 @@ impl Session {
                 user: Some(Arc::new(user)),
                 username: username.into(),
                 generation,
+                users_changed: false,
             }),
             Err(msg) => {
                 if msg.starts_with("WRONGPASS") {
@@ -212,6 +218,7 @@ impl Session {
             return;
         }
         self.generation = generation;
+        self.users_changed = true;
         if self.user.is_some() {
             self.user = ctx.acl.read().ok().and_then(|state| {
                 state
@@ -223,6 +230,13 @@ impl Session {
         }
     }
 
+    /// Whether [`refresh`](Self::refresh) reloaded the user since this was
+    /// last called. Subscriber mode uses it to recheck its subscriptions
+    /// only when the ACL users changed.
+    pub fn users_changed_since_check(&mut self) -> bool {
+        std::mem::take(&mut self.users_changed)
+    }
+
     /// Returns the error to send if this session's user may not run `cmd`.
     pub fn check(&self, cmd: &Command) -> Option<Frame> {
         let Some(user) = self.user.as_ref() else {
@@ -232,7 +246,7 @@ impl Session {
                 _ => Some(Frame::Error("NOAUTH Authentication required.".into())),
             };
         };
-        if user.allcommands && user.allkeys {
+        if user.allcommands && user.allkeys && user.allchannels {
             return None;
         }
         crate::acl::check_permission(user, cmd, cmd.command_name(), cmd.acl_categories())
