@@ -353,6 +353,9 @@ pub(super) fn resolve_shard_response(resp: ShardResponse, tag: ResponseTag) -> F
         },
         #[cfg(feature = "vector")]
         ResponseTag::VAddBatchResult => match resp {
+            ShardResponse::VAddBatchResult { error: Some(e), .. } => {
+                Frame::Error(format!("ERR vector index: {e}"))
+            }
             ShardResponse::VAddBatchResult { added_count, .. } => {
                 Frame::Integer(added_count as i64)
             }

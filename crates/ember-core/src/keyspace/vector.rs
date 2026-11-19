@@ -85,11 +85,11 @@ impl Keyspace {
 
     /// Adds multiple vectors to a vector set in a single operation.
     ///
-    /// All vectors are validated upfront (NaN/inf check) before any are inserted,
-    /// then inserted via the pre-validated path to skip redundant per-element checks.
-    /// Memory is tracked incrementally during the batch loop (no full-set rescan).
-    /// On usearch error mid-batch, returns the error but already-applied vectors
-    /// are included in the result for AOF persistence.
+    /// All vectors are validated upfront (dimension, NaN and infinity)
+    /// before any is inserted. An element named more than once takes its
+    /// last vector. If some vectors fail to go into the index, the others
+    /// stay, and the result lists what was applied and which existing
+    /// elements were lost, so the AOF and replicas can follow.
     #[allow(clippy::too_many_arguments)]
     pub fn vadd_batch(
         &mut self,
@@ -102,24 +102,26 @@ impl Keyspace {
     ) -> Result<VAddBatchResult, VectorWriteError> {
         use crate::types::vector::VectorSet;
 
+        let entries = last_of_each(entries);
         if entries.is_empty() {
-            return Ok(VAddBatchResult {
-                added_count: 0,
-                applied: Vec::new(),
-            });
+            return Ok(VAddBatchResult::default());
         }
 
         self.remove_if_expired(key);
 
-        // type check
-        let is_new = match self.entries.get(key) {
-            None => true,
-            Some(e) if matches!(e.value, Value::Vector(_)) => false,
+        // type check, and the dimension an existing set requires
+        let existing_dim = match self.entries.get(key) {
+            None => None,
+            Some(Entry {
+                value: Value::Vector(vs),
+                ..
+            }) => Some(vs.dim()),
             Some(_) => return Err(VectorWriteError::WrongType),
         };
+        let is_new = existing_dim.is_none();
 
         // validate all vectors upfront — reject entire batch on NaN/inf
-        let dim = entries[0].1.len();
+        let dim = existing_dim.unwrap_or(entries[0].1.len());
         for (elem, vec) in &entries {
             if vec.len() != dim {
                 return Err(VectorWriteError::IndexError(format!(
@@ -166,56 +168,40 @@ impl Keyspace {
             self.bump_version(key);
         }
 
-        // batch result: Ok((added_count, bytes_added)) or Err with partial info
-        let batch_outcome = {
-            let entry = match self.entries.get_mut(key) {
-                Some(e) => e,
-                None => return Err(VectorWriteError::IndexError("entry missing".into())),
-            };
-
-            let old_entry_size = entry.entry_size(key);
-            match entry.value {
-                Value::Vector(ref mut vs) => {
-                    // use parallel HNSW construction for large batches
-                    let result = vs
-                        .add_batch_parallel(&entries)
-                        .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
-
-                    entry.touch(self.track_access);
-                    let new_entry_size = entry.entry_size(key);
-                    let bytes_added = new_entry_size.saturating_sub(old_entry_size);
-                    self.memory.adjust(old_entry_size, new_entry_size);
-
-                    if let Some(err) = result.error {
-                        // partial success — track what was applied before returning error
-                        Err((err, result.added_count))
-                    } else {
-                        Ok((result.added_count, bytes_added))
-                    }
-                }
-                _ => return Err(VectorWriteError::WrongType),
-            }
+        let track_access = self.track_access;
+        let Some(entry) = self.entries.get_mut(key) else {
+            return Err(VectorWriteError::IndexError("entry missing".into()));
         };
-        // entry borrow released — safe to call bump_version
+        let old_entry_size = entry.entry_size(key);
+        let Value::Vector(ref mut vs) = entry.value else {
+            return Err(VectorWriteError::WrongType);
+        };
+        // updates that fail lose their old vector, so note which elements
+        // existed before
+        let existed: Vec<bool> = entries.iter().map(|(e, _)| vs.contains(e)).collect();
+        let batch = vs
+            .add_batch_parallel(&entries)
+            .map_err(|e| VectorWriteError::IndexError(e.to_string()))?;
+        entry.touch(track_access);
+        let new_entry_size = entry.entry_size(key);
+        self.memory.adjust(old_entry_size, new_entry_size);
+        self.bump_version(key);
 
-        match batch_outcome {
-            Err((err, added_count)) => {
-                self.bump_version(key);
-                Err(VectorWriteError::PartialBatch {
-                    message: format!(
-                        "batch error: {err} ({added_count} vectors added before failure)",
-                    ),
-                    applied: entries,
-                })
-            }
-            Ok((added_count, _bytes_added)) => {
-                self.bump_version(key);
-                Ok(VAddBatchResult {
-                    added_count,
-                    applied: entries,
-                })
+        let failed: std::collections::HashSet<&str> =
+            batch.failed.iter().map(String::as_str).collect();
+        let mut result = VAddBatchResult {
+            added_count: batch.added_count,
+            error: batch.error.map(|e| e.to_string()),
+            ..VAddBatchResult::default()
+        };
+        for ((element, vector), existed) in entries.into_iter().zip(existed) {
+            if !failed.contains(element.as_str()) {
+                result.applied.push((element, vector));
+            } else if existed {
+                result.removed.push(element);
             }
         }
+        Ok(result)
     }
 
     /// Searches for the k nearest neighbors in a vector set.
@@ -349,5 +335,79 @@ impl Keyspace {
                 _ => Err(WrongType),
             },
         }
+    }
+}
+
+/// Keeps the last vector given for each element, in the order the
+/// elements last appear.
+#[cfg(feature = "vector")]
+fn last_of_each(entries: Vec<(String, Vec<f32>)>) -> Vec<(String, Vec<f32>)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut kept: Vec<_> = entries
+        .into_iter()
+        .rev()
+        .filter(|(element, _)| seen.insert(element.clone()))
+        .collect();
+    kept.reverse();
+    kept
+}
+
+#[cfg(all(test, feature = "vector"))]
+mod tests {
+    use super::*;
+    use crate::types::vector::{DistanceMetric, QuantizationType};
+
+    fn add(
+        ks: &mut Keyspace,
+        entries: &[(&str, &[f32])],
+    ) -> Result<VAddBatchResult, VectorWriteError> {
+        let entries = entries
+            .iter()
+            .map(|(e, v)| (e.to_string(), v.to_vec()))
+            .collect();
+        ks.vadd_batch(
+            "v",
+            entries,
+            DistanceMetric::from_u8(0),
+            QuantizationType::from_u8(0),
+            16,
+            64,
+        )
+    }
+
+    fn set_len(ks: &Keyspace) -> usize {
+        match &ks.entries.get("v").unwrap().value {
+            Value::Vector(vs) => vs.len(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn a_batch_must_match_the_dimension_of_an_existing_set() {
+        let mut ks = Keyspace::new();
+        add(&mut ks, &[("a", &[1.0, 2.0])]).unwrap();
+        let result = add(&mut ks, &[("b", &[1.0, 2.0, 3.0])]);
+        assert!(matches!(result, Err(VectorWriteError::IndexError(_))));
+        assert_eq!(set_len(&ks), 1);
+    }
+
+    #[test]
+    fn an_element_named_twice_in_a_batch_takes_its_last_vector() {
+        let mut ks = Keyspace::new();
+        let result = add(
+            &mut ks,
+            &[("a", &[1.0, 0.0]), ("b", &[0.0, 1.0]), ("a", &[2.0, 2.0])],
+        )
+        .unwrap();
+        assert_eq!(result.added_count, 2);
+        assert!(result.error.is_none());
+        assert_eq!(
+            result.applied,
+            [
+                ("b".to_owned(), vec![0.0, 1.0]),
+                ("a".to_owned(), vec![2.0, 2.0])
+            ]
+        );
+        assert_eq!(set_len(&ks), 2);
     }
 }

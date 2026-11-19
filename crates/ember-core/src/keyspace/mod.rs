@@ -218,13 +218,18 @@ pub struct VAddResult {
 
 /// Result of a VADD_BATCH operation.
 #[cfg(feature = "vector")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VAddBatchResult {
     /// Number of newly added elements (not updates).
     pub added_count: usize,
     /// Elements that were actually inserted or updated, with their vectors.
     /// Only these should be persisted to the AOF.
     pub applied: Vec<(String, Vec<f32>)>,
+    /// Existing elements whose update failed. Their old vectors are gone,
+    /// so the AOF records them as removed.
+    pub removed: Vec<String>,
+    /// The first error, when some vectors couldn't be added.
+    pub error: Option<String>,
 }
 
 /// Errors from vector write operations.
@@ -237,12 +242,6 @@ pub enum VectorWriteError {
     OutOfMemory,
     /// usearch index error (dimension mismatch, capacity, etc).
     IndexError(String),
-    /// A batch insert partially succeeded before encountering an error.
-    /// The applied vectors should still be persisted to the AOF.
-    PartialBatch {
-        message: String,
-        applied: Vec<(String, Vec<f32>)>,
-    },
 }
 
 /// How the keyspace should handle writes when the memory limit is reached.
