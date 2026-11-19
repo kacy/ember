@@ -268,31 +268,14 @@ impl Keyspace {
         dest: &str,
         members: Vec<String>,
     ) -> Result<(usize, Vec<String>), WriteError> {
-        // delete destination first
-        self.remove_if_expired(dest);
-        if let Some(old) = self.entries.swap_remove(dest) {
-            self.memory.remove(dest, &old.value);
-            self.untrack_expiry(dest, &old);
-            self.defer_drop(old.value);
-        }
-
         let count = members.len();
         if count == 0 {
+            self.store_result(dest, None)?;
             return Ok((0, vec![]));
         }
-
-        let member_bytes: usize = members
-            .iter()
-            .map(|m| m.len() + memory::HASHSET_MEMBER_OVERHEAD)
-            .sum();
-        self.reserve_memory(true, dest, memory::HASHSET_BASE_OVERHEAD, member_bytes)?;
-
         let stored = members.clone();
         let value = Value::Set(Box::new(members.into_iter().collect()));
-        self.memory.add(dest, &value);
-        let entry = Entry::new(value, None);
-        self.entries.insert(CompactString::from(dest), entry);
-        self.bump_version(dest);
+        self.store_result(dest, Some(value))?;
 
         Ok((count, stored))
     }

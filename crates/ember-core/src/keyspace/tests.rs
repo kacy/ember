@@ -397,6 +397,35 @@ fn a_write_too_large_for_the_limit_evicts_nothing() {
     assert!(ks.take_evicted().is_empty());
 }
 
+/// Caps `ks` at its current usage plus `room` bytes, without eviction.
+fn cap_memory(ks: &mut Keyspace, room: usize) {
+    let used = ks.stats().used_bytes;
+    let max = (used + room) * 100 / memory::MEMORY_SAFETY_MARGIN_PERCENT + 1;
+    ks.update_memory_config(Some(max), EvictionPolicy::NoEviction);
+}
+
+#[test]
+fn a_store_result_too_large_keeps_the_old_destination() {
+    let mut ks = Keyspace::new();
+    let members: Vec<String> = (0..1000).map(|i| format!("member-{i}")).collect();
+    ks.sadd("src", &members).unwrap();
+    ks.sadd("dest", &["old".to_owned()]).unwrap();
+    let scored: Vec<(f64, String)> = members.iter().map(|m| (1.0, m.clone())).collect();
+    ks.zadd("zsrc", &scored, &ZAddFlags::default()).unwrap();
+    ks.zadd("zdest", &[(1.0, "old".into())], &ZAddFlags::default())
+        .unwrap();
+    cap_memory(&mut ks, 100);
+
+    let keys = ["src".to_owned()];
+    assert_eq!(ks.sunionstore("dest", &keys), Err(WriteError::OutOfMemory));
+    assert!(ks.sismember("dest", "old").unwrap());
+
+    let keys = ["zsrc".to_owned()];
+    assert_eq!(ks.zunionstore("zdest", &keys), Err(WriteError::OutOfMemory));
+    assert_eq!(ks.zscore("zdest", "old").unwrap(), Some(1.0));
+    assert_memory_matches(&ks);
+}
+
 #[test]
 fn safety_margin_rejects_near_raw_limit() {
     // the effective limit equals one small entry, so a second entry is

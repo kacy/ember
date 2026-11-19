@@ -571,15 +571,18 @@ pub(super) fn dispatch(
         },
         ShardRequest::ZDiffStore { dest, keys } => match ks.zdiffstore(dest, keys) {
             Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::ZInterStore { dest, keys } => match ks.zinterstore(dest, keys) {
             Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::ZUnionStore { dest, keys } => match ks.zunionstore(dest, keys) {
             Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::ZRandMember {
             key,

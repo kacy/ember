@@ -613,26 +613,33 @@ impl Keyspace {
         }
     }
 
-    /// Estimates the memory cost of a collection write and enforces the
-    /// limit. `base_overhead` is the fixed cost of a new collection
-    /// (e.g. VECDEQUE_BASE_OVERHEAD). Returns `Ok(())` on success.
-    fn reserve_memory(
-        &mut self,
-        is_new: bool,
-        key: &str,
-        base_overhead: usize,
-        element_increase: usize,
-    ) -> Result<(), WriteError> {
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD + key.len() + base_overhead + element_increase
-        } else {
-            element_increase
-        };
-        if self.enforce_memory_limit(key, estimated_increase) {
-            Ok(())
-        } else {
-            Err(WriteError::OutOfMemory)
+    /// Replaces `key` with the result of a STORE command, or deletes it for
+    /// an empty result. Checks the memory limit before touching the old
+    /// value, so on `OutOfMemory` the key keeps it.
+    fn store_result(&mut self, key: &str, value: Option<Value>) -> Result<(), WriteError> {
+        self.remove_if_expired(key);
+        if let Some(ref value) = value {
+            let old_size = self.entries.get(key).map_or(0, |e| e.entry_size(key));
+            let new_size = memory::entry_size(key, value);
+            if !self.enforce_memory_limit(key, new_size.saturating_sub(old_size)) {
+                return Err(WriteError::OutOfMemory);
+            }
         }
+        if let Some(old) = self.entries.swap_remove(key) {
+            self.memory.remove(key, &old.value);
+            self.untrack_expiry(key, &old);
+            self.defer_drop(old.value);
+        }
+        match value {
+            Some(value) => {
+                self.memory.add(key, &value);
+                self.entries
+                    .insert(CompactString::from(key), Entry::new(value, None));
+                self.bump_version(key);
+            }
+            None => self.remove_version(key),
+        }
+        Ok(())
     }
 
     /// Inserts a new key with an empty collection value. Used by
