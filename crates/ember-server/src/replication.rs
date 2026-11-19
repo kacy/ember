@@ -842,9 +842,9 @@ impl ReplicationClient {
         // a full sync replaces everything: keys the primary no longer has
         // must not survive it
         self.engine
-            .broadcast(|| ShardRequest::FlushDb)
+            .broadcast_ok(|| ShardRequest::FlushDb)
             .await
-            .map_err(|e| std::io::Error::other(format!("flush before sync failed: {e:?}")))?;
+            .map_err(|e| std::io::Error::other(format!("flush before sync failed: {e}")))?;
 
         // receive per-shard snapshots and the offset each one covers
         let mut batch = Batch::new(usize::from(primary_shards));

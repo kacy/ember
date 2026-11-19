@@ -54,9 +54,18 @@ pub(in crate::connection) async fn config_rewrite(cx: &ExecCtx<'_>) -> Frame {
     }
 }
 
+/// The error frame for a failed broadcast.
+fn broadcast_error(e: String) -> Frame {
+    if e.starts_with("ERR ") {
+        Frame::Error(e)
+    } else {
+        Frame::Error(format!("ERR {e}"))
+    }
+}
+
 pub(in crate::connection) async fn bgsave(cx: &ExecCtx<'_>) -> Frame {
-    match cx.engine.broadcast(|| ShardRequest::Snapshot).await {
-        Ok(_) => {
+    match cx.engine.broadcast_ok(|| ShardRequest::Snapshot).await {
+        Ok(()) => {
             use std::time::{SystemTime, UNIX_EPOCH};
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -67,14 +76,14 @@ pub(in crate::connection) async fn bgsave(cx: &ExecCtx<'_>) -> Frame {
                 .store(ts, std::sync::atomic::Ordering::Relaxed);
             Frame::Simple("Background saving started".into())
         }
-        Err(e) => Frame::Error(format!("ERR {e}")),
+        Err(e) => broadcast_error(e),
     }
 }
 
 pub(in crate::connection) async fn bgrewriteaof(cx: &ExecCtx<'_>) -> Frame {
-    match cx.engine.broadcast(|| ShardRequest::RewriteAof).await {
-        Ok(_) => Frame::Simple("Background append only file rewriting started".into()),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    match cx.engine.broadcast_ok(|| ShardRequest::RewriteAof).await {
+        Ok(()) => Frame::Simple("Background append only file rewriting started".into()),
+        Err(e) => broadcast_error(e),
     }
 }
 
@@ -136,9 +145,9 @@ pub(in crate::connection) async fn flushdb(async_mode: bool, cx: &ExecCtx<'_>) -
     } else {
         || ShardRequest::FlushDb
     };
-    match cx.engine.broadcast(req).await {
-        Ok(_) => Frame::Simple("OK".into()),
-        Err(e) => Frame::Error(format!("ERR {e}")),
+    match cx.engine.broadcast_ok(req).await {
+        Ok(()) => Frame::Simple("OK".into()),
+        Err(e) => broadcast_error(e),
     }
 }
 

@@ -369,7 +369,10 @@ async fn run_shard(prepared: PreparedShard) {
                 // restart loses, so the shard stops as it does when
                 // recovery fails
                 Err(e) => {
-                    error!(shard_id, "failed to open the aof, so the shard is not starting: {e}");
+                    error!(
+                        shard_id,
+                        "failed to open the aof, so the shard is not starting: {e}"
+                    );
                     return;
                 }
             }
@@ -398,7 +401,10 @@ async fn run_shard(prepared: PreparedShard) {
             #[cfg(feature = "protobuf")]
             &schema_registry,
         ) {
-            error!(shard_id, "aof rewrite failed, so the shard is not starting: {e}");
+            error!(
+                shard_id,
+                "aof rewrite failed, so the shard is not starting: {e}"
+            );
             return;
         }
     }

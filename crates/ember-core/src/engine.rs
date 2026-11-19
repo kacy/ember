@@ -254,6 +254,23 @@ impl Engine {
         self.shards[idx].send(request).await
     }
 
+    /// Sends a request to every shard, like [`broadcast`](Self::broadcast),
+    /// and returns the first error a shard replied with. For requests such
+    /// as snapshots, whose replies only report success or failure.
+    pub async fn broadcast_ok<F>(&self, make_req: F) -> Result<(), String>
+    where
+        F: Fn() -> ShardRequest,
+    {
+        let responses = self.broadcast(make_req).await.map_err(|e| e.to_string())?;
+        match responses.into_iter().find_map(|r| match r {
+            ShardResponse::Err(e) => Some(e),
+            _ => None,
+        }) {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
     /// Sends a request to every shard and collects all responses.
     ///
     /// Dispatches to all shards first (so they start processing in

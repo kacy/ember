@@ -437,8 +437,8 @@ pub async fn run_threaded(
             let interval = Duration::from_secs(save_interval_secs);
             loop {
                 tokio::time::sleep(interval).await;
-                match engine_snap.broadcast(|| ShardRequest::Snapshot).await {
-                    Ok(_) => {
+                match engine_snap.broadcast_ok(|| ShardRequest::Snapshot).await {
+                    Ok(()) => {
                         let ts = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
