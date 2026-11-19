@@ -104,6 +104,11 @@ pub struct AclUser {
     pub key_patterns: Vec<String>,
     /// Fast path: skip key pattern matching.
     pub allkeys: bool,
+    /// Pub/sub channel glob patterns, from `&pattern` rules. Empty means
+    /// no channels, unless `allchannels`.
+    pub channel_patterns: Vec<String>,
+    /// Fast path: skip channel pattern matching.
+    pub allchannels: bool,
     /// Fast path: skip command/category checks.
     pub allcommands: bool,
 }
@@ -118,6 +123,9 @@ impl AclUser {
             command_rules: Vec::new(),
             key_patterns: Vec::new(),
             allkeys: false,
+            // as in Redis 7, a new user may use no channels until given some
+            channel_patterns: Vec::new(),
+            allchannels: false,
             allcommands: false,
         }
     }
@@ -134,6 +142,8 @@ impl AclUser {
             }],
             key_patterns: Vec::new(),
             allkeys: true,
+            channel_patterns: Vec::new(),
+            allchannels: true,
             allcommands: true,
         }
     }
@@ -262,6 +272,9 @@ fn sha256_hash(password: &str) -> [u8; 32] {
 /// - `~pattern` — add a key pattern
 /// - `allkeys` — allow access to all keys
 /// - `resetkeys` — clear all key patterns
+/// - `&pattern` — add a pub/sub channel pattern
+/// - `allchannels` / `&*` — allow every channel
+/// - `resetchannels` — clear all channel patterns
 /// - `reset` — reset the user to defaults
 pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
     match rule {
@@ -287,13 +300,21 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
             flags: ALL_CATEGORIES,
             allow: false,
         }),
-        "allkeys" => {
+        "allkeys" | "~*" => {
             user.allkeys = true;
             user.key_patterns.clear();
         }
         "resetkeys" => {
             user.allkeys = false;
             user.key_patterns.clear();
+        }
+        "allchannels" | "&*" => {
+            user.allchannels = true;
+            user.channel_patterns.clear();
+        }
+        "resetchannels" => {
+            user.allchannels = false;
+            user.channel_patterns.clear();
         }
         "reset" => {
             *user = AclUser::new();
@@ -352,6 +373,16 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
                 allow: rule.starts_with('+'),
             });
         }
+        _ if rule.starts_with('&') => {
+            let pattern = &rule[1..];
+            if pattern.is_empty() {
+                return Err("ERR empty channel pattern".into());
+            }
+            // `allchannels` already matches every channel
+            if !user.allchannels && !user.channel_patterns.iter().any(|p| p == pattern) {
+                user.channel_patterns.push(pattern.to_string());
+            }
+        }
         _ if rule.starts_with('~') => {
             let pattern = &rule[1..];
             if pattern.is_empty() {
@@ -377,8 +408,9 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
 /// Checks whether a user has permission to execute a command.
 ///
 /// Returns `None` if allowed, or `Some(Frame::Error(...))` if denied.
-/// The caller should check `allcommands && allkeys` before calling this
-/// function as a fast path — this function handles the detailed checks.
+/// The caller should check `allcommands && allkeys && allchannels` before
+/// calling this function as a fast path — this function handles the
+/// detailed checks.
 pub fn check_permission(
     user: &AclUser,
     cmd: &ember_protocol::Command,
@@ -406,7 +438,46 @@ pub fn check_permission(
         }
     }
 
-    None
+    check_channels(user, cmd)
+}
+
+/// Checks the channels a pub/sub command uses against the user's `&`
+/// patterns. As in Redis, a channel must match one of the patterns, and a
+/// pattern given to PSUBSCRIBE must be one of them exactly, since a broader
+/// pattern would reach channels the user may not read.
+fn check_channels(user: &AclUser, cmd: &ember_protocol::Command) -> Option<Frame> {
+    use ember_protocol::Command;
+    if user.allchannels {
+        return None;
+    }
+    let denied = |channel: &str| {
+        Some(Frame::Error(format!(
+            "NOPERM this user has no permissions to access the '{channel}' channel"
+        )))
+    };
+    let matches = |channel: &str| user.channel_patterns.iter().any(|p| glob_match(p, channel));
+    match cmd {
+        Command::Subscribe { channels } => channels
+            .iter()
+            .find(|c| !matches(c))
+            .and_then(|c| denied(c)),
+        Command::Publish { channel, .. } if !matches(channel) => denied(channel),
+        Command::PSubscribe { patterns } => patterns
+            .iter()
+            .find(|p| !user.channel_patterns.contains(p))
+            .and_then(|p| denied(p)),
+        _ => None,
+    }
+}
+
+/// Formats patterns with their rule prefix: `~` for keys, `&` for channels.
+/// `all` prints as the pattern `*`.
+fn format_patterns(prefix: char, all: bool, patterns: &[String]) -> Vec<String> {
+    if all {
+        vec![format!("{prefix}*")]
+    } else {
+        patterns.iter().map(|p| format!("{prefix}{p}")).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,16 +618,14 @@ fn format_user_line(name: &str, user: &AclUser) -> String {
     }
 
     parts.push(format_commands(user));
-
-    if user.allkeys {
-        parts.push("~*".into());
-    } else if user.key_patterns.is_empty() {
-        // no key patterns = no key access
-    } else {
-        for pat in &user.key_patterns {
-            parts.push(format!("~{pat}"));
-        }
+    parts.extend(format_patterns('~', user.allkeys, &user.key_patterns));
+    // a user without channels gets no channel rule, which ACL SETUSER reads
+    // back the same way, since new users start without channels
+    let channels = format_patterns('&', user.allchannels, &user.channel_patterns);
+    if channels.is_empty() {
+        parts.push("resetchannels".into());
     }
+    parts.extend(channels);
 
     parts.join(" ")
 }
@@ -575,6 +644,9 @@ fn format_user_detail(user: &AclUser) -> Frame {
     }
     if user.allkeys {
         flags.push(Frame::Bulk(bytes::Bytes::from_static(b"allkeys")));
+    }
+    if user.allchannels {
+        flags.push(Frame::Bulk(bytes::Bytes::from_static(b"allchannels")));
     }
     if user.allcommands {
         flags.push(Frame::Bulk(bytes::Bytes::from_static(b"allcommands")));
@@ -599,18 +671,12 @@ fn format_user_detail(user: &AclUser) -> Frame {
 
     // keys
     fields.push(Frame::Bulk(bytes::Bytes::from_static(b"keys")));
-    let keys_str = if user.allkeys {
-        "~*".to_string()
-    } else if user.key_patterns.is_empty() {
-        String::new()
-    } else {
-        user.key_patterns
-            .iter()
-            .map(|p| format!("~{p}"))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    fields.push(Frame::Bulk(bytes::Bytes::from(keys_str)));
+    let keys = format_patterns('~', user.allkeys, &user.key_patterns).join(" ");
+    fields.push(Frame::Bulk(bytes::Bytes::from(keys)));
+
+    fields.push(Frame::Bulk(bytes::Bytes::from_static(b"channels")));
+    let channels = format_patterns('&', user.allchannels, &user.channel_patterns).join(" ");
+    fields.push(Frame::Bulk(bytes::Bytes::from(channels)));
 
     Frame::Array(fields)
 }
@@ -1233,6 +1299,40 @@ mod tests {
         assert!(copy.may_run("get", cat::READ | cat::STRING | cat::FAST));
         assert!(!copy.may_run("keys", cat::READ | cat::KEYSPACE | cat::SLOW));
         assert_eq!(copy.key_patterns, ["app:*"]);
+    }
+
+    #[test]
+    fn channel_rules() {
+        let mut user = AclUser::new();
+        assert!(!user.allchannels && user.channel_patterns.is_empty());
+        apply_rule(&mut user, "&news.*").unwrap();
+        apply_rule(&mut user, "&news.*").unwrap();
+        assert_eq!(user.channel_patterns, ["news.*"]);
+        apply_rule(&mut user, "&*").unwrap();
+        assert!(user.allchannels);
+        apply_rule(&mut user, "resetchannels").unwrap();
+        assert!(!user.allchannels && user.channel_patterns.is_empty());
+        assert!(apply_rule(&mut user, "&").is_err());
+        assert!(AclUser::unrestricted().allchannels);
+    }
+
+    #[test]
+    fn channels_are_checked_for_publish_and_subscribe() {
+        use ember_protocol::Command;
+        let mut user = AclUser::unrestricted();
+        apply_rule(&mut user, "resetchannels").unwrap();
+        apply_rule(&mut user, "&news.*").unwrap();
+        let publish = |channel: &str| Command::Publish {
+            channel: channel.into(),
+            message: bytes::Bytes::from_static(b"m"),
+        };
+        assert!(check_channels(&user, &publish("news.sport")).is_none());
+        assert!(check_channels(&user, &publish("secret")).is_some());
+        let psubscribe = |pattern: &str| Command::PSubscribe {
+            patterns: vec![pattern.into()],
+        };
+        assert!(check_channels(&user, &psubscribe("news.*")).is_none());
+        assert!(check_channels(&user, &psubscribe("news.s*")).is_some());
     }
 
     #[test]
