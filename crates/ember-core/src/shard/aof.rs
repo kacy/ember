@@ -672,19 +672,30 @@ pub(super) fn to_aof_records(
                 expansion_add,
                 ..
             },
-            ShardResponse::VAddBatchResult { applied, .. },
-        ) => std::mem::take(applied)
-            .into_iter()
-            .map(|(element, vector)| AofRecord::VAdd {
-                key: key.clone(),
-                element,
-                vector,
-                metric,
-                quantization,
-                connectivity,
-                expansion_add,
-            })
-            .collect(),
+            ShardResponse::VAddBatchResult {
+                applied, removed, ..
+            },
+        ) => {
+            let removed = std::mem::take(removed)
+                .into_iter()
+                .map(|element| AofRecord::VRem {
+                    key: key.clone(),
+                    element,
+                });
+            std::mem::take(applied)
+                .into_iter()
+                .map(|(element, vector)| AofRecord::VAdd {
+                    key: key.clone(),
+                    element,
+                    vector,
+                    metric,
+                    quantization,
+                    connectivity,
+                    expansion_add,
+                })
+                .chain(removed)
+                .collect()
+        }
         #[cfg(feature = "vector")]
         (ShardRequest::VRem { key, element }, ShardResponse::Bool(true)) => {
             smallvec![AofRecord::VRem { key, element }]
@@ -1361,9 +1372,19 @@ mod tests {
                 ("b".into(), vec![3.0, 4.0]),
                 ("c".into(), vec![5.0, 6.0]),
             ],
+            removed: vec!["d".into()],
+            error: Some("index full".into()),
         };
-        let records = to_aof_records(req, &mut resp);
-        assert_eq!(records.len(), 3);
+        let mut records = to_aof_records(req, &mut resp);
+        assert_eq!(records.len(), 4);
+        // an existing element whose update failed is logged as removed
+        assert_eq!(
+            records.pop(),
+            Some(AofRecord::VRem {
+                key: "vecs".into(),
+                element: "d".into()
+            })
+        );
         for (i, record) in records.iter().enumerate() {
             match record {
                 AofRecord::VAdd {

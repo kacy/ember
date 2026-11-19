@@ -431,11 +431,15 @@ pub enum ShardResponse {
         vector: Vec<f32>,
         added: bool,
     },
-    /// VADD_BATCH result: count of newly added elements + applied entries for AOF.
+    /// VADD_BATCH result: the count of newly added elements, and for the
+    /// AOF the entries applied and the existing elements a failure removed.
+    /// `error` is set when some vectors couldn't be added.
     #[cfg(feature = "vector")]
     VAddBatchResult {
         added_count: usize,
         applied: Vec<(String, Vec<f32>)>,
+        removed: Vec<String>,
+        error: Option<String>,
     },
     /// VSIM result: nearest neighbors with distances.
     #[cfg(feature = "vector")]

@@ -151,6 +151,9 @@ pub struct SearchResult {
 pub struct BatchResult {
     /// Number of genuinely new elements added (not updates).
     pub added_count: usize,
+    /// Elements of the batch that couldn't be added. None of them is in the
+    /// set afterwards: an update that failed lost its old vector too.
+    pub failed: Vec<String>,
     /// If the batch was partially applied, the first error encountered.
     pub error: Option<VectorError>,
 }
@@ -298,11 +301,13 @@ impl VectorSet {
         }
 
         let is_new = if let Some(&existing_key) = self.elements.get(element) {
-            // remove old vector, then re-insert with same key
+            // remove old vector, then re-insert with same key. if that
+            // fails the old vector is gone, so the element goes too
             let _ = self.index.remove(existing_key);
-            self.index
-                .add(existing_key, vector)
-                .map_err(|e| VectorError::Index(e.to_string()))?;
+            if let Err(e) = self.index.add(existing_key, vector) {
+                self.remove(element);
+                return Err(VectorError::Index(e.to_string()));
+            }
             false
         } else {
             let key = self.next_key;
@@ -326,21 +331,25 @@ impl VectorSet {
     /// 1. **Sequential**: assign usearch keys, update element↔key maps, handle updates
     /// 2. **Parallel**: `std::thread::scope` — partition `(key, &[f32])` pairs across
     ///    threads, each calling `index.add()` concurrently (usearch `Index` is thread-safe)
-    /// 3. **Sequential**: update data_bytes, next_key, memory tracking
+    /// 3. **Sequential**: count the new elements, and remove the elements
+    ///    whose vectors failed to go in, listing them in [`BatchResult::failed`]
     ///
     /// Only parallelizes when batch_size >= 256 and available_parallelism >= 2.
     /// Below threshold, falls back to sequential loop.
     ///
-    /// All entries must be pre-validated (dim + finite check) by the caller.
+    /// All entries must be pre-validated (dim + finite check) by the caller,
+    /// and each element may appear only once.
     pub fn add_batch_parallel(
         &mut self,
         entries: &[(String, Vec<f32>)],
     ) -> Result<BatchResult, VectorError> {
+        let mut result = BatchResult {
+            added_count: 0,
+            failed: Vec::new(),
+            error: None,
+        };
         if entries.is_empty() {
-            return Ok(BatchResult {
-                added_count: 0,
-                error: None,
-            });
+            return Ok(result);
         }
 
         // ensure capacity for entire batch upfront
@@ -352,36 +361,29 @@ impl VectorSet {
         let use_parallel = entries.len() >= 256 && parallelism >= 2;
 
         if !use_parallel {
-            // sequential fallback
-            let mut added = 0usize;
+            // sequential fallback. a failed add leaves its element out
             for (element, vector) in entries {
                 match self.add_pre_validated(element, vector) {
-                    Ok(true) => added += 1,
+                    Ok(true) => result.added_count += 1,
                     Ok(false) => {}
                     Err(e) => {
-                        return Ok(BatchResult {
-                            added_count: added,
-                            error: Some(e),
-                        });
+                        result.failed.push(element.clone());
+                        result.error.get_or_insert(e);
                     }
                 }
             }
-            return Ok(BatchResult {
-                added_count: added,
-                error: None,
-            });
+            return Ok(result);
         }
 
         // --- phase 1: sequential map updates + key assignment ---
-        // collect (usearch_key, &[f32]) pairs for the parallel index phase
-        let mut index_jobs: Vec<(u64, &[f32])> = Vec::with_capacity(entries.len());
-        let mut added_count = 0usize;
+        // collect (usearch_key, &[f32], is_new) for the parallel index phase
+        let mut index_jobs: Vec<(u64, &[f32], bool)> = Vec::with_capacity(entries.len());
 
         for (element, vector) in entries {
             if let Some(&existing_key) = self.elements.get(element.as_str()) {
                 // update: remove old vector, reuse key
                 let _ = self.index.remove(existing_key);
-                index_jobs.push((existing_key, vector.as_slice()));
+                index_jobs.push((existing_key, vector.as_slice(), false));
             } else {
                 // new element: assign key, update maps
                 let key = self.next_key;
@@ -390,49 +392,63 @@ impl VectorSet {
                 let owned = element.clone();
                 self.elements.insert(owned.clone(), key);
                 self.names.insert(key, owned);
-                index_jobs.push((key, vector.as_slice()));
-                added_count += 1;
+                index_jobs.push((key, vector.as_slice(), true));
             }
         }
 
         // --- phase 2: parallel HNSW construction ---
+        // each thread returns the jobs it couldn't add and the first error
         let thread_count = (entries.len() / 128).min(parallelism).clamp(1, 8);
         let chunk_size = index_jobs.len().div_ceil(thread_count);
         let index_ref = &self.index;
 
-        let errors: Vec<Option<String>> = std::thread::scope(|s| {
+        let outcomes: Vec<(Vec<u64>, Option<String>)> = std::thread::scope(|s| {
             let handles: Vec<_> = index_jobs
                 .chunks(chunk_size)
                 .map(|chunk| {
                     s.spawn(move || {
-                        for &(key, vector) in chunk {
+                        let mut failed = Vec::new();
+                        let mut first_error = None;
+                        for &(key, vector, _) in chunk {
                             if let Err(e) = index_ref.add(key, vector) {
-                                return Some(e.to_string());
+                                failed.push(key);
+                                first_error.get_or_insert(e.to_string());
                             }
                         }
-                        None
+                        (failed, first_error)
                     })
                 })
                 .collect();
 
             handles
                 .into_iter()
-                .map(|h| h.join().unwrap_or(Some("thread panicked".into())))
+                .zip(index_jobs.chunks(chunk_size))
+                .map(|(h, chunk)| {
+                    h.join().unwrap_or_else(|_| {
+                        let keys = chunk.iter().map(|&(key, _, _)| key).collect();
+                        (keys, Some("thread panicked".into()))
+                    })
+                })
                 .collect()
         });
 
-        // check for errors from parallel phase
-        if let Some(msg) = errors.into_iter().flatten().next() {
-            return Ok(BatchResult {
-                added_count,
-                error: Some(VectorError::Index(msg)),
-            });
+        // --- phase 3: drop the elements whose vectors didn't make it in ---
+        let mut failed_keys = std::collections::HashSet::new();
+        for (keys, error) in outcomes {
+            failed_keys.extend(keys);
+            if let Some(msg) = error {
+                result.error.get_or_insert(VectorError::Index(msg));
+            }
         }
-
-        Ok(BatchResult {
-            added_count,
-            error: None,
-        })
+        for &(key, _, is_new) in &index_jobs {
+            if !failed_keys.contains(&key) {
+                result.added_count += usize::from(is_new);
+            } else if let Some(name) = self.names.get(&key).cloned() {
+                self.remove(&name);
+                result.failed.push(name);
+            }
+        }
+        Ok(result)
     }
 
     /// Removes an element from the vector set.
@@ -519,6 +535,11 @@ impl VectorSet {
             Ok(found) if found > 0 => Some(buffer),
             _ => None,
         }
+    }
+
+    /// Whether `element` is in the set.
+    pub fn contains(&self, element: &str) -> bool {
+        self.elements.contains_key(element)
     }
 
     /// Returns the number of elements in the vector set.
