@@ -180,7 +180,24 @@ pub struct GossipEngine {
     local_replicates: Option<NodeId>,
     /// Active PingReq relays waiting for an Ack from the target.
     relay_pending: HashMap<u64, RelayEntry>,
+    /// When the current one-second window of Join replies began, and how
+    /// many Joins were answered in it.
+    join_window: (Instant, u32),
 }
+
+/// Most PingReq relays waiting for an Ack at once. Each lasts one probe
+/// timeout; a burst of PingReqs past this is dropped.
+const MAX_RELAYS: usize = 1024;
+
+/// Most Joins answered per second. A Join gets several Welcome datagrams
+/// back, so a Join sent with a forged source address would otherwise turn
+/// this node into an amplifier against that address.
+const MAX_JOINS_PER_SEC: u32 = 16;
+
+/// Most bytes of updates piggybacked on one Ping or Ack. A UDP datagram
+/// holds at most 65,507 bytes, and a slot claim fragmented into many ranges
+/// takes up to 32 KiB.
+const MAX_PIGGYBACK_BYTES: usize = 40 * 1024;
 
 struct PendingUpdate {
     update: NodeUpdate,
@@ -247,6 +264,7 @@ impl GossipEngine {
             local_config_epoch: 0,
             local_replicates: None,
             relay_pending: HashMap::new(),
+            join_window: (Instant::now(), 0),
         }
     }
 
@@ -485,6 +503,10 @@ impl GossipEngine {
                     target
                 );
                 self.ensure_member(sender, from);
+                if self.relay_pending.len() >= MAX_RELAYS {
+                    debug!("dropping ping-req from {sender}: too many relays in flight");
+                    return vec![];
+                }
 
                 // forward a fresh Ping to the target on behalf of the requester
                 let relay_seq = self.next_seq;
@@ -549,6 +571,10 @@ impl GossipEngine {
                 sender,
                 sender_addr,
             } => {
+                if !self.take_join_slot() {
+                    debug!("dropping join from {sender}: too many joins this second");
+                    return vec![];
+                }
                 info!("node {} joining from {}", sender, sender_addr);
                 let sender_is_new = !self.members.contains_key(&sender);
                 self.ensure_member(sender, sender_addr);
@@ -876,9 +902,12 @@ impl GossipEngine {
                         continue;
                     }
                     if let Some(member) = self.members.get_mut(node) {
+                        // the address stays the one this node knows. any
+                        // node with the cluster secret can send this update,
+                        // and moving another node's address would let it
+                        // receive that node's election messages
                         if *incarnation > member.incarnation {
                             member.incarnation = *incarnation;
-                            member.addr = *addr;
                             if member.state != MemberStatus::Alive {
                                 member.state = MemberStatus::Alive;
                                 member.state_change = Instant::now();
@@ -949,8 +978,13 @@ impl GossipEngine {
                     // clone the slot list once before the mutable borrow so we
                     // can move it into the event after the borrow is released
                     let owned = slots.clone();
+                    // a claim from an older epoch than the last one seen is
+                    // a replay or out of date, and would undo newer changes
                     let should_emit = match self.members.get_mut(node) {
-                        Some(member) if *incarnation >= member.incarnation => {
+                        Some(member)
+                            if *incarnation >= member.incarnation
+                                && *config_epoch >= member.config_epoch =>
+                        {
                             member.slots = owned.clone();
                             member.config_epoch = *config_epoch;
                             true
@@ -1215,21 +1249,48 @@ impl GossipEngine {
         RETRANSMIT_MULT * (u32::BITS - size.leading_zeros())
     }
 
+    /// Whether another Join may be answered in the current second.
+    fn take_join_slot(&mut self) -> bool {
+        let (start, count) = &mut self.join_window;
+        if start.elapsed() >= Duration::from_secs(1) {
+            *start = Instant::now();
+            *count = 0;
+        }
+        if *count >= MAX_JOINS_PER_SEC {
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
     /// Picks the updates for one outgoing message, those sent least so far
-    /// first, and counts the send against each.
-    fn collect_updates(&mut self) -> Vec<NodeUpdate> {
+    /// first, and counts the send against each. They take at most `budget`
+    /// bytes; the rest wait for a later message.
+    fn collect_updates_within(&mut self, mut budget: usize) -> Vec<NodeUpdate> {
         self.pending_updates
             .sort_by_key(|p| std::cmp::Reverse(p.sends_left));
-        let count = self.pending_updates.len().min(self.config.max_piggyback);
-        let picked: Vec<NodeUpdate> = self.pending_updates[..count]
-            .iter_mut()
-            .map(|p| {
-                p.sends_left -= 1;
-                p.update.clone()
-            })
-            .collect();
+        let mut picked = Vec::new();
+        for pending in &mut self.pending_updates {
+            if picked.len() == self.config.max_piggyback {
+                break;
+            }
+            let len = pending.update.encoded_len();
+            if len > budget {
+                continue;
+            }
+            budget -= len;
+            pending.sends_left -= 1;
+            picked.push(pending.update.clone());
+        }
         self.pending_updates.retain(|p| p.sends_left > 0);
         picked
+    }
+
+    /// Like [`collect_updates_within`](Self::collect_updates_within), with
+    /// the whole piggyback budget.
+    #[cfg(test)]
+    fn collect_updates(&mut self) -> Vec<NodeUpdate> {
+        self.collect_updates_within(MAX_PIGGYBACK_BYTES)
     }
 
     /// The local node's slot claim, sent on every Ping and Ack so peers
@@ -1247,8 +1308,13 @@ impl GossipEngine {
     /// claim, and, when we believe `node` is dead, that verdict, so it can
     /// refute it with a higher incarnation once it is reachable again.
     fn updates_for(&mut self, node: NodeId) -> Vec<NodeUpdate> {
-        let mut updates = self.collect_updates();
-        updates.extend(self.local_slots_update());
+        // the local slot claim goes on every message, so it comes out of
+        // the budget first
+        let local = self.local_slots_update();
+        let budget =
+            MAX_PIGGYBACK_BYTES.saturating_sub(local.as_ref().map_or(0, NodeUpdate::encoded_len));
+        let mut updates = self.collect_updates_within(budget);
+        updates.extend(local);
         if let Some(member) = self.members.get(&node) {
             if member.state == MemberStatus::Dead {
                 updates.push(NodeUpdate::Dead {
@@ -1509,6 +1575,79 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GossipEvent::SlotsChanged(id, _, 5) if *id == b_id)));
+    }
+
+    #[tokio::test]
+    async fn ping_reqs_past_the_relay_cap_are_dropped() {
+        let mut a = engine(7000);
+        let ping_req = |seq| GossipMessage::PingReq {
+            seq,
+            sender: NodeId::new(),
+            target: NodeId::new(),
+            target_addr: test_addr(7009),
+        };
+        for seq in 0..MAX_RELAYS as u64 {
+            assert_eq!(a.handle_message(ping_req(seq), test_addr(7001)).len(), 1);
+        }
+        assert!(a.handle_message(ping_req(9999), test_addr(7001)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn joins_past_the_rate_limit_get_no_welcome() {
+        let mut a = engine(7000);
+        let join = || GossipMessage::Join {
+            sender: NodeId::new(),
+            sender_addr: test_addr(7001),
+        };
+        for _ in 0..MAX_JOINS_PER_SEC {
+            assert!(!a.handle_message(join(), test_addr(7001)).is_empty());
+        }
+        assert!(a.handle_message(join(), test_addr(7001)).is_empty());
+    }
+
+    #[tokio::test]
+    async fn piggybacked_updates_fit_the_byte_budget() {
+        let mut a = engine(7000);
+        // slot claims fragmented into every other slot, 32 KiB each
+        let ranges: Vec<SlotRange> = (0..8192).map(|i| SlotRange::new(i * 2, i * 2)).collect();
+        for _ in 0..4 {
+            a.queue_slots_update(NodeId::new(), 1, 1, ranges.clone());
+        }
+        let picked = a.collect_updates();
+        let bytes: usize = picked.iter().map(NodeUpdate::encoded_len).sum();
+        assert!(!picked.is_empty());
+        assert!(bytes <= MAX_PIGGYBACK_BYTES, "{bytes} bytes");
+    }
+
+    #[tokio::test]
+    async fn an_older_slot_claim_does_not_roll_back_a_newer_one() {
+        let mut a = engine(7000);
+        let b = NodeId::new();
+        a.add_seed(b, test_addr(7001));
+        let claim = |epoch, slots| NodeUpdate::SlotsChanged {
+            node: b,
+            incarnation: 1,
+            config_epoch: epoch,
+            slots,
+        };
+        a.apply_updates(&[claim(5, vec![SlotRange::new(0, 99)])]);
+        a.apply_updates(&[claim(4, vec![SlotRange::new(0, 9)])]);
+        assert_eq!(a.members[&b].slots, [SlotRange::new(0, 99)]);
+        assert_eq!(a.members[&b].config_epoch, 5);
+    }
+
+    #[tokio::test]
+    async fn an_alive_update_does_not_move_a_known_member() {
+        let mut a = engine(7000);
+        let b = NodeId::new();
+        a.add_seed(b, test_addr(7001));
+        a.apply_updates(&[NodeUpdate::Alive {
+            node: b,
+            addr: test_addr(9999),
+            incarnation: 5,
+        }]);
+        assert_eq!(a.members[&b].addr, test_addr(7001));
+        assert_eq!(a.members[&b].incarnation, 5);
     }
 
     #[tokio::test]
