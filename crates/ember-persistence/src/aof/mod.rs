@@ -93,6 +93,8 @@ impl AofWriter {
         } else {
             let codec = frame::write_header(&mut header, format::AOF_MAGIC, key.as_ref())?;
             file.write_all(&header)?;
+            file.sync_all()?;
+            sync_parent_dir(&path);
             (codec, false)
         };
         let written_len = file.metadata()?.len();
