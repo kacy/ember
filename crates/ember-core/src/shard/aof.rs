@@ -65,16 +65,16 @@ pub fn from_aof_record(record: &AofRecord) -> Option<ShardRequest> {
             key,
             value,
             timestamp_ms,
-        } => Some(match ember_persistence::aof::ms_until(*timestamp_ms) {
-            Some(ms) => ShardRequest::Set {
-                key: key.clone(),
-                value: value.clone(),
-                expire: Some(Duration::from_millis(ms)),
-                nx: false,
-                xx: false,
-            },
-            // already expired by the time it arrived
-            None => ShardRequest::Del { key: key.clone() },
+        } => Some(ShardRequest::Set {
+            key: key.clone(),
+            value: value.clone(),
+            // a time already past stores the key expired. AOF replay keeps
+            // it until the end, in case a later record extends its TTL
+            expire: Some(Duration::from_millis(
+                ember_persistence::aof::ms_until(*timestamp_ms).unwrap_or(0),
+            )),
+            nx: false,
+            xx: false,
         }),
         AofRecord::Del { key } => Some(ShardRequest::Del { key: key.clone() }),
         AofRecord::Expire { key, seconds } => Some(ShardRequest::Expire {

@@ -871,6 +871,24 @@ impl Keyspace {
         removed
     }
 
+    /// Removes every expired key. Used after AOF replay, which keeps
+    /// expired keys until it finishes.
+    pub(crate) fn remove_expired(&mut self) {
+        let expired: Vec<CompactString> = self
+            .expiring
+            .iter()
+            .filter(|key| {
+                self.entries
+                    .get(key.as_str())
+                    .is_some_and(Entry::is_expired)
+            })
+            .cloned()
+            .collect();
+        for key in expired {
+            self.remove_expired_entry(&key);
+        }
+    }
+
     /// Removes a key that is already known to be expired. Used by
     /// fused lookup paths that check expiry inline via `get_mut()` and
     /// need a second probe only on the rare expired path.

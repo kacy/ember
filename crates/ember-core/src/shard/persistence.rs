@@ -13,6 +13,7 @@ pub(super) fn recover(
     let (max_memory, eviction_policy) = keyspace.memory_config();
     keyspace.update_memory_config(None, EvictionPolicy::NoEviction);
 
+    let hold = crate::time::hold_expiry();
     let mut target = KeyspaceRecovery {
         keyspace: &mut *keyspace,
         #[cfg(feature = "protobuf")]
@@ -29,6 +30,8 @@ pub(super) fn recover(
     let result = recovery::recover_shard(&pcfg.data_dir, shard_id, &mut target);
 
     keyspace.update_memory_config(max_memory, eviction_policy);
+    drop(hold);
+    keyspace.remove_expired();
     let result = result?;
     if result.loaded_snapshot || result.replayed_aof {
         info!(
@@ -404,6 +407,43 @@ mod tests {
         assert_eq!(get_string(&mut ks, "a"), None);
         assert_eq!(get_string(&mut ks, "b"), Some(Bytes::from("2")));
         assert_eq!(get_string(&mut ks, "gone"), None);
+    }
+
+    #[test]
+    fn replay_keeps_keys_whose_first_ttl_passed_but_was_changed_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let expired = |key: &str| AofRecord::SetExpireAt {
+            key: key.into(),
+            value: Bytes::from("v"),
+            timestamp_ms: 1,
+        };
+        let later = ember_persistence::aof::unix_now_ms() + 60_000;
+        let records = [
+            expired("sliding"),
+            AofRecord::Pexpireat {
+                key: "sliding".into(),
+                timestamp_ms: later,
+            },
+            expired("persisted"),
+            AofRecord::Persist {
+                key: "persisted".into(),
+            },
+            expired("old"),
+            AofRecord::Rename {
+                key: "old".into(),
+                newkey: "renamed".into(),
+            },
+            AofRecord::Pexpireat {
+                key: "renamed".into(),
+                timestamp_ms: later,
+            },
+            expired("gone"),
+        ];
+        let (mut ks, _) = recover_from(dir.path(), &records, Keyspace::new());
+        for key in ["sliding", "persisted", "renamed"] {
+            assert_eq!(get_string(&mut ks, key), Some(Bytes::from("v")), "{key}");
+        }
+        assert_eq!(ks.len(), 3, "the expired keys are removed after replay");
     }
 
     #[test]
