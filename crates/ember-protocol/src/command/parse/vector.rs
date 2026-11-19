@@ -187,6 +187,15 @@ pub(super) fn parse_vadd(args: &[Frame]) -> Result<Command, ProtocolError> {
 /// When BINARY is specified, each vector is a single bulk string of `dim * 4`
 /// raw little-endian f32 bytes instead of `dim` separate text arguments.
 /// This eliminates string serialization overhead on both client and server.
+/// Whether `arg` is one of the option keywords that end a vector command.
+fn is_vector_flag(arg: &Frame) -> bool {
+    let mut kw = [0u8; MAX_KEYWORD_LEN];
+    matches!(
+        uppercase_arg(arg, &mut kw),
+        Ok("METRIC" | "QUANT" | "M" | "EF")
+    )
+}
+
 pub(super) fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError> {
     // minimum: key + DIM + n (even an empty batch needs the DIM declaration)
     if args.len() < 3 {
@@ -265,25 +274,27 @@ pub(super) fn parse_vadd_batch(args: &[Frame]) -> Result<Command, ProtocolError>
             }
         }
     } else {
-        // text mode: each entry is element_name followed by exactly `dim` floats.
-        // we detect the end of entries by checking whether enough args remain
-        // for a full entry (1 name + dim floats). this avoids misinterpreting
-        // element names like "metric" as flags.
+        // text mode: each entry is element_name followed by exactly `dim`
+        // floats. the options come last as keyword/value pairs. they are
+        // found from the end, since with a dimension of 1 an option such
+        // as `M 16` would also read as an element and its one float
         let entry_len = 1 + dim; // element name + dim floats
+        let mut flags_start = args.len();
+        while flags_start >= idx + 2 && is_vector_flag(&args[flags_start - 2]) {
+            flags_start -= 2;
+        }
+        // an element named like an option, such as "m", leaves a count of
+        // entry arguments that doesn't divide evenly: give the pairs back to
+        // the entries until it does
+        while !(flags_start - idx).is_multiple_of(entry_len) && flags_start < args.len() {
+            flags_start += 2;
+        }
 
-        while idx < args.len() {
-            // not enough remaining args for a full entry — must be flags
-            if idx + entry_len > args.len() {
-                break;
-            }
-
-            // peek: if the token after the element name isn't a valid float,
-            // we've reached the flags section
-            if dim > 0 {
-                let peek = extract_string(&args[idx + 1])?;
-                if peek.parse::<f32>().is_err() {
-                    break;
-                }
+        while idx < flags_start {
+            if idx + entry_len > flags_start {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "VADD_BATCH: each element needs exactly DIM floats".into(),
+                ));
             }
 
             let element = extract_string(&args[idx])?;

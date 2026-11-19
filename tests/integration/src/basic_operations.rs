@@ -846,3 +846,21 @@ async fn config_set_maxmemory_below_one_byte_per_shard_is_refused() {
     assert!(err.contains("per shard"), "{err}");
     c.ok(&["CONFIG", "SET", "maxmemory", "0"]).await;
 }
+
+#[tokio::test]
+async fn bitop_on_missing_keys_deletes_the_destination() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.ok(&["SET", "dest", "old"]).await;
+    assert_eq!(c.get_int(&["BITOP", "AND", "dest", "nope1", "nope2"]).await, 0);
+    assert_eq!(c.get_int(&["EXISTS", "dest"]).await, 0);
+}
+
+#[tokio::test]
+async fn pexpiretime_far_in_the_future_stays_positive() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.ok(&["SET", "k", "v"]).await;
+    c.get_int(&["PEXPIREAT", "k", "9223372036854775807"]).await;
+    assert!(c.get_int(&["PEXPIRETIME", "k"]).await > 0);
+}

@@ -1068,6 +1068,18 @@ mod tests {
     }
 
     #[test]
+    fn format_float_at_two_to_the_63() {
+        assert_eq!(
+            super::format_float(9223372036854775808.0),
+            "9223372036854775808"
+        );
+        assert_eq!(
+            super::format_float(-9223372036854775808.0),
+            "-9223372036854775808"
+        );
+    }
+
+    #[test]
     fn format_float_decimals() {
         assert_eq!(super::format_float(2.72), "2.72");
         assert_eq!(super::format_float(10.5), "10.5");

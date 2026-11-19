@@ -278,6 +278,12 @@ impl Keyspace {
             }
         }
 
+        // an empty result deletes dest, as in Redis, rather than storing ""
+        if result.is_empty() {
+            self.del(&dest);
+            return Ok(0);
+        }
+
         // store the result — set() handles memory accounting and version bumping.
         // it also implicitly removes any prior value at dest (including wrong-type keys).
         match self.set(dest, Bytes::from(result), None, false, false) {

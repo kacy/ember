@@ -96,8 +96,9 @@ impl Keyspace {
     ///
     /// Returns `-2` if the key doesn't exist, `-1` if it has no expiry.
     pub fn pexpiretime(&mut self, key: &str) -> i64 {
+        // a time past i64::MAX ms would wrap to a negative reply
         self.expiry_unix_ms(key)
-            .map_or_else(|code| code, |ms| ms as i64)
+            .map_or_else(|code| code, |ms| ms.min(i64::MAX as u64) as i64)
     }
 
     /// Sets the monotonic deadline of `key`. Returns `false` if the key
