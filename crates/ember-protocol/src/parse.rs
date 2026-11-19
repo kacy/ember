@@ -114,14 +114,24 @@ const MAX_INLINE_LEN: usize = 64 * 1024;
 /// starts with `POST` or `Host:` is an error, since it means an HTTP
 /// client is talking to this port.
 ///
+/// A RESP request must be an array of bulk strings, as in Redis, and is
+/// checked to be complete before anything is allocated for it.
+///
 /// Returns the same results as [`parse_frame`].
 pub fn parse_request(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> {
     let mut start = 0;
     loop {
+        // blank lines before a command are skipped but not consumed, so
+        // each call scans them again. cap them like an inline command
+        if start > MAX_INLINE_LEN {
+            return Err(inline_error("too many blank lines"));
+        }
         let rest = &buf[start..];
         match rest.first() {
             None => return Ok(None),
-            Some(b'*') => return Ok(parse_frame(rest)?.map(|(frame, n)| (frame, start + n))),
+            Some(b'*') => {
+                return Ok(parse_command_array(rest)?.map(|(frame, n)| (frame, start + n)))
+            }
             Some(_) => {}
         }
 
@@ -150,6 +160,83 @@ pub fn parse_request(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError
             return Ok(Some((frame, start)));
         }
     }
+}
+
+/// Longest length line in a request, such as `*3` or `$5`, before its
+/// `\r\n`. A longer one is malformed, and refusing it early keeps a
+/// client from making every read scan a growing line.
+const MAX_LENGTH_LINE: usize = 32;
+
+/// Parses a request sent as a RESP array of bulk strings. The first pass
+/// only finds where each argument ends, so a request that arrives a piece
+/// at a time costs no allocations until it is complete.
+fn parse_command_array(buf: &[u8]) -> Result<Option<(Frame, usize)>, ProtocolError> {
+    let mut pos = 0;
+    let Some(count) = length_line(buf, &mut pos, b'*')? else {
+        return Ok(None);
+    };
+    if count < 0 {
+        return Err(ProtocolError::InvalidFrameLength(count));
+    }
+    if count as usize > MAX_ARRAY_ELEMENTS {
+        return Err(ProtocolError::TooManyElements(count as usize));
+    }
+    let count = count as usize;
+
+    let args_start = pos;
+    for _ in 0..count {
+        let Some(len) = length_line(buf, &mut pos, b'$')? else {
+            return Ok(None);
+        };
+        if len < 0 {
+            return Err(ProtocolError::InvalidFrameLength(len));
+        }
+        if len > MAX_BULK_LEN {
+            return Err(ProtocolError::BulkStringTooLarge(len as usize));
+        }
+        let end = pos + len as usize;
+        if buf.len() < end + 2 {
+            return Ok(None);
+        }
+        if &buf[end..end + 2] != b"\r\n" {
+            return Err(ProtocolError::InvalidFrameLength(len));
+        }
+        pos = end + 2;
+    }
+
+    // the request is complete and well formed: build it
+    let mut args = Vec::with_capacity(count);
+    let mut at = args_start;
+    for _ in 0..count {
+        let len = length_line(buf, &mut at, b'$')?.expect("checked above") as usize;
+        args.push(Frame::Bulk(Bytes::copy_from_slice(&buf[at..at + len])));
+        at += len + 2;
+    }
+    Ok(Some((Frame::Array(args), pos)))
+}
+
+/// Reads a line such as `*3` or `$5` at `pos`, which must start with
+/// `prefix`, and moves `pos` past it. Returns `None` when the line isn't
+/// complete yet.
+fn length_line(buf: &[u8], pos: &mut usize, prefix: u8) -> Result<Option<i64>, ProtocolError> {
+    let rest = &buf[*pos..];
+    match rest.first() {
+        None => return Ok(None),
+        Some(&b) if b != prefix => return Err(ProtocolError::InvalidPrefix(b)),
+        Some(_) => {}
+    }
+    let window = &rest[..rest.len().min(MAX_LENGTH_LINE)];
+    let Some(cr) = window.windows(2).position(|w| w == b"\r\n") else {
+        if rest.len() >= MAX_LENGTH_LINE {
+            return Err(ProtocolError::InvalidCommandFrame(
+                "length line too long".into(),
+            ));
+        }
+        return Ok(None);
+    };
+    let n = parse_i64_bytes(&rest[1..cr])?;
+    *pos += cr + 2;
+    Ok(Some(n))
 }
 
 /// Splits an inline command line into arguments. See [`parse_request`].
@@ -766,5 +853,34 @@ mod tests {
             frame,
             Frame::Array(vec![Frame::Bulk(Bytes::from_static(b"PING"))])
         );
+    }
+
+    #[test]
+    fn requests_are_flat_arrays_of_bulk_strings() {
+        assert!(parse_request(b"*1\r\n*1\r\n$1\r\na\r\n").is_err());
+        assert!(parse_request(b"*1\r\n:5\r\n").is_err());
+        assert!(parse_request(b"*1\r\n%0\r\n").is_err());
+    }
+
+    #[test]
+    fn every_prefix_of_a_request_is_incomplete() {
+        let input = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        for cut in 1..input.len() {
+            assert_eq!(parse_request(&input[..cut]).unwrap(), None, "cut at {cut}");
+        }
+        assert!(parse_request(input).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_length_line_without_its_end_is_refused_early() {
+        let mut input = b"*1\r\n$".to_vec();
+        input.extend_from_slice(&[b'1'; MAX_LENGTH_LINE]);
+        assert!(parse_request(&input).is_err());
+    }
+
+    #[test]
+    fn endless_blank_lines_are_refused() {
+        assert_eq!(parse_request(b"\r\n\r\n").unwrap(), None);
+        assert!(parse_request(&b"\n".repeat(MAX_INLINE_LEN + 2)).is_err());
     }
 }
