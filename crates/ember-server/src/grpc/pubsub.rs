@@ -1,6 +1,5 @@
 //! Pub/sub command handlers for the gRPC service.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -12,6 +11,7 @@ use ember_protocol::Command;
 use super::proto::*;
 use super::strings::int_response;
 use super::{reply, EmberService};
+use crate::pubsub::Subscriber;
 
 pub(super) async fn publish(
     svc: &EmberService,
@@ -73,32 +73,24 @@ pub(super) async fn subscribe(
     }
 
     let (tx, rx) = tokio::sync::mpsc::channel(256);
-    let pubsub = Arc::clone(&svc.pubsub);
 
-    let mut channel_rxs = HashMap::new();
-    let mut pattern_rxs = HashMap::new();
+    let mut subs = Subscriber::new(Arc::clone(&svc.pubsub));
     for ch in &req.channels {
-        if !channel_rxs.contains_key(ch) {
-            channel_rxs.insert(ch.clone(), pubsub.subscribe(ch));
-        }
+        subs.subscribe(ch);
     }
     for pat in &req.patterns {
-        if !pattern_rxs.contains_key(pat) {
-            if let Some(rx) = pubsub.psubscribe(pat) {
-                pattern_rxs.insert(pat.clone(), rx);
-            }
-        }
+        subs.psubscribe(pat);
     }
 
     tokio::spawn(async move {
         loop {
             // a client that disconnects ends the stream even on a channel
-            // that never gets a message, so its subscriptions are released
+            // that never gets a message. dropping `subs` releases its
+            // subscriptions
             let msg = tokio::select! {
-                msg = crate::pubsub::recv_any(&mut channel_rxs, &mut pattern_rxs) => msg,
+                msg = subs.recv() => msg,
                 _ = tx.closed() => break,
             };
-            let Some(msg) = msg else { break };
             let event = SubscribeEvent {
                 kind: if msg.pattern.is_some() {
                     "pmessage"
@@ -113,14 +105,6 @@ pub(super) async fn subscribe(
             if tx.send(Ok(event)).await.is_err() {
                 break;
             }
-        }
-
-        // cleanup subscriptions
-        for (ch, rx) in channel_rxs {
-            pubsub.unsubscribe(&ch, rx);
-        }
-        for (pat, rx) in pattern_rxs {
-            pubsub.punsubscribe(&pat, rx);
         }
     });
 

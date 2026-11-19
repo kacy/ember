@@ -1,17 +1,18 @@
 //! Pub/sub message broker for channel-based messaging.
 //!
-//! Manages subscriptions and broadcasts messages to all matching
-//! subscribers. Supports both exact channel names and glob patterns.
-//! Thread-safe via DashMap for lock-free concurrent access.
+//! Each subscribing connection has one inbox. The manager maps every
+//! channel and pattern to the inboxes subscribed to it, and PUBLISH puts
+//! the message in each matching inbox, as Redis does. A connection waits on
+//! its inbox alone, however many channels it listens to.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
 use ember_core::glob_match;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 /// Maximum allowed byte length for a pub/sub pattern.
 ///
@@ -19,11 +20,9 @@ use tokio::sync::broadcast;
 /// force repeated glob-match work on every PUBLISH call.
 const MAX_PATTERN_LEN: usize = 512;
 
-/// Maximum number of buffered messages per subscription before
-/// slow consumers start missing messages. This is per-channel,
-/// not global — a subscriber that falls behind on one busy channel
-/// won't affect its other subscriptions.
-const CHANNEL_CAPACITY: usize = 256;
+/// Messages one subscriber's inbox holds. A subscriber that falls this far
+/// behind misses the messages published until it catches up.
+const INBOX_CAPACITY: usize = 1024;
 
 /// A message published to a channel.
 ///
@@ -41,18 +40,39 @@ pub struct PubMessage {
     pub pattern: Option<Arc<str>>,
 }
 
+/// Where PUBLISH puts a subscriber's messages.
+struct Inbox {
+    tx: mpsc::Sender<PubMessage>,
+    /// Messages dropped because the inbox was full, since the subscriber
+    /// last checked.
+    dropped: AtomicU64,
+}
+
+impl Inbox {
+    /// Puts `msg` in the inbox. Returns whether it went in.
+    fn deliver(&self, msg: PubMessage) -> bool {
+        match self.tx.try_send(msg) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
+    }
+}
+
+/// The inboxes subscribed to each channel or pattern, keyed by subscriber.
+type Subscribers = DashMap<String, HashMap<u64, Arc<Inbox>>>;
+
 /// Manages pub/sub state: channel subscriptions, pattern subscriptions,
 /// and message broadcasting.
 ///
 /// Shared across all connection handlers via `Arc<PubSubManager>`.
-/// Uses DashMap internally so all operations are lock-free.
 pub struct PubSubManager {
-    /// Exact channel subscriptions: channel name → broadcast sender.
-    channels: DashMap<String, broadcast::Sender<PubMessage>>,
-    /// Pattern subscriptions: pattern string → broadcast sender.
-    patterns: DashMap<String, broadcast::Sender<PubMessage>>,
-    /// Total number of active subscriptions (channels + patterns).
-    subscription_count: AtomicUsize,
+    channels: Subscribers,
+    patterns: Subscribers,
+    next_id: AtomicU64,
 }
 
 impl PubSubManager {
@@ -60,113 +80,46 @@ impl PubSubManager {
         Self {
             channels: DashMap::new(),
             patterns: DashMap::new(),
-            subscription_count: AtomicUsize::new(0),
+            next_id: AtomicU64::new(0),
         }
     }
 
-    /// Subscribe to an exact channel. Returns a receiver for messages
-    /// on that channel.
-    pub fn subscribe(&self, channel: &str) -> broadcast::Receiver<PubMessage> {
-        self.subscribe_to(&self.channels, channel)
-    }
-
-    /// Unsubscribe from an exact channel by handing back the receiver that
-    /// [`subscribe`](Self::subscribe) returned. The channel is removed once
-    /// no subscriber holds a receiver for it.
-    pub fn unsubscribe(&self, channel: &str, rx: broadcast::Receiver<PubMessage>) {
-        self.unsubscribe_from(&self.channels, channel, rx)
-    }
-
-    /// Subscribe to a glob pattern. Returns a receiver for messages
-    /// matching the pattern.
-    ///
-    /// Returns `None` if the pattern exceeds `MAX_PATTERN_LEN` bytes.
-    pub fn psubscribe(&self, pattern: &str) -> Option<broadcast::Receiver<PubMessage>> {
-        if pattern.len() > MAX_PATTERN_LEN {
-            return None;
-        }
-        Some(self.subscribe_to(&self.patterns, pattern))
-    }
-
-    /// Unsubscribe from a pattern by handing back the receiver that
-    /// [`psubscribe`](Self::psubscribe) returned.
-    pub fn punsubscribe(&self, pattern: &str, rx: broadcast::Receiver<PubMessage>) {
-        self.unsubscribe_from(&self.patterns, pattern, rx)
-    }
-
-    /// Subscribes to a key in the given map (channels or patterns).
-    fn subscribe_to(
-        &self,
-        map: &DashMap<String, broadcast::Sender<PubMessage>>,
-        key: &str,
-    ) -> broadcast::Receiver<PubMessage> {
-        let entry = map.entry(key.to_string()).or_insert_with(|| {
-            let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-            tx
-        });
-        self.subscription_count.fetch_add(1, Ordering::Relaxed);
-        entry.subscribe()
-    }
-
-    /// Drops `rx` and removes the key's sender once no receivers remain.
-    ///
-    /// Taking the receiver means only a real subscriber can unsubscribe, so
-    /// the count cannot drift. It also means the receiver is gone before the
-    /// check: counting it as "ours" instead would remove a channel that
-    /// other clients still listen on. `remove_if` checks and removes under
-    /// the map's lock, so a concurrent subscribe cannot slip in between.
-    fn unsubscribe_from(
-        &self,
-        map: &DashMap<String, broadcast::Sender<PubMessage>>,
-        key: &str,
-        rx: broadcast::Receiver<PubMessage>,
-    ) {
-        drop(rx);
-        self.subscription_count.fetch_sub(1, Ordering::Relaxed);
-        map.remove_if(key, |_, tx| tx.receiver_count() == 0);
-    }
-
-    /// Publish a message to a channel. Returns the total number of
-    /// subscribers that received the message (exact + pattern).
+    /// Publish a message to a channel. Returns the number of subscribers it
+    /// was delivered to, exact and pattern subscriptions both counted.
     pub fn publish(&self, channel: &str, data: Bytes) -> usize {
         let mut count = 0;
 
         // allocate the channel name once; all PubMessage clones share the Arc
         let channel_arc: Arc<str> = Arc::from(channel);
 
-        // send to exact channel subscribers
-        if let Some(tx) = self.channels.get(channel) {
+        if let Some(inboxes) = self.channels.get(channel) {
             let msg = PubMessage {
                 channel: Arc::clone(&channel_arc),
                 data: data.clone(),
                 pattern: None,
             };
-            // send returns the number of receivers that got the message
-            count += tx.send(msg).unwrap_or(0);
+            count += inboxes
+                .values()
+                .filter(|inbox| inbox.deliver(msg.clone()))
+                .count();
         }
 
-        // send to pattern subscribers
         for entry in self.patterns.iter() {
-            let pattern = entry.key();
-            if glob_match(pattern, channel) {
-                // allocate the pattern string once per matching entry
-                let pattern_arc: Arc<str> = Arc::from(pattern.as_str());
+            if glob_match(entry.key(), channel) {
                 let msg = PubMessage {
                     channel: Arc::clone(&channel_arc),
                     data: data.clone(),
-                    pattern: Some(pattern_arc),
+                    pattern: Some(Arc::from(entry.key().as_str())),
                 };
-                count += entry.value().send(msg).unwrap_or(0);
+                count += entry
+                    .value()
+                    .values()
+                    .filter(|inbox| inbox.deliver(msg.clone()))
+                    .count();
             }
         }
 
         count
-    }
-
-    /// Returns the total number of active subscriptions.
-    #[allow(dead_code)] // used in tests
-    pub fn total_subscriptions(&self) -> usize {
-        self.subscription_count.load(Ordering::Relaxed)
     }
 
     /// Returns active channel names, optionally filtered by a glob pattern.
@@ -188,11 +141,7 @@ impl PubSubManager {
         channels
             .iter()
             .map(|ch| {
-                let count = self
-                    .channels
-                    .get(ch)
-                    .map(|tx| tx.receiver_count())
-                    .unwrap_or(0);
+                let count = self.channels.get(ch).map_or(0, |inboxes| inboxes.len());
                 (ch.clone(), count)
             })
             .collect()
@@ -205,52 +154,128 @@ impl PubSubManager {
     }
 }
 
-/// Waits for the next message on any of the subscriptions.
-///
-/// A receiver that lagged skips the messages it missed, and the wait starts
-/// over, so every subscription is listened to again. A channel whose sender
-/// is gone is dropped from the subscriptions.
-pub async fn recv_any(
-    channel_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
-    pattern_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
-) -> Option<PubMessage> {
-    use futures::stream::{FuturesUnordered, StreamExt};
+fn add(map: &Subscribers, key: &str, id: u64, inbox: &Arc<Inbox>) {
+    map.entry(key.to_string())
+        .or_default()
+        .insert(id, Arc::clone(inbox));
+}
 
-    loop {
-        if channel_rxs.is_empty() && pattern_rxs.is_empty() {
-            // no subscriptions — sleep forever (will be cancelled by select)
-            return std::future::pending::<Option<PubMessage>>().await;
+/// Removes subscriber `id` from `key`, and `key` once nobody is left on it.
+fn remove(map: &Subscribers, key: &str, id: u64) {
+    if let Some(mut inboxes) = map.get_mut(key) {
+        inboxes.remove(&id);
+    }
+    // checks and removes under the map's lock, so a concurrent subscribe
+    // cannot slip in between
+    map.remove_if(key, |_, inboxes| inboxes.is_empty());
+}
+
+/// One subscriber's channels and patterns, and the inbox their messages
+/// arrive in. Dropping it unsubscribes from everything, so the
+/// subscriptions are released on every exit, including early returns on
+/// I/O errors.
+pub struct Subscriber {
+    pubsub: Arc<PubSubManager>,
+    id: u64,
+    inbox: Arc<Inbox>,
+    rx: mpsc::Receiver<PubMessage>,
+    channels: HashSet<String>,
+    patterns: HashSet<String>,
+}
+
+impl Subscriber {
+    pub fn new(pubsub: Arc<PubSubManager>) -> Self {
+        let (tx, rx) = mpsc::channel(INBOX_CAPACITY);
+        let id = pubsub.next_id.fetch_add(1, Ordering::Relaxed);
+        Self {
+            pubsub,
+            id,
+            inbox: Arc::new(Inbox {
+                tx,
+                dropped: AtomicU64::new(0),
+            }),
+            rx,
+            channels: HashSet::new(),
+            patterns: HashSet::new(),
         }
+    }
 
-        // the first receiver to resolve, with the subscription it belongs
-        // to: (is a pattern, name)
-        let (from, result) = {
-            let subscriptions = channel_rxs
-                .iter_mut()
-                .map(|(name, rx)| (false, name, rx))
-                .chain(pattern_rxs.iter_mut().map(|(name, rx)| (true, name, rx)));
-            let mut pending: FuturesUnordered<_> = subscriptions
-                .map(|(is_pattern, name, rx)| async move {
-                    ((is_pattern, name.clone()), rx.recv().await)
-                })
-                .collect();
-            pending.next().await?
-        };
+    /// Subscribes to a channel. Subscribing twice is a no-op, as in Redis.
+    pub fn subscribe(&mut self, channel: &str) {
+        if self.channels.insert(channel.to_string()) {
+            add(&self.pubsub.channels, channel, self.id, &self.inbox);
+        }
+    }
 
-        match result {
-            Ok(msg) => return Some(msg),
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                // the receiver moved past the gap; listen again
-                tracing::warn!("subscriber lagged, missed {n} messages");
+    /// Unsubscribes from a channel, if subscribed.
+    pub fn unsubscribe(&mut self, channel: &str) {
+        if self.channels.remove(channel) {
+            remove(&self.pubsub.channels, channel, self.id);
+        }
+    }
+
+    /// Subscribes to a glob pattern. Subscribing twice is a no-op. Returns
+    /// `false` if the pattern exceeds `MAX_PATTERN_LEN` bytes.
+    pub fn psubscribe(&mut self, pattern: &str) -> bool {
+        if pattern.len() > MAX_PATTERN_LEN {
+            return false;
+        }
+        if self.patterns.insert(pattern.to_string()) {
+            add(&self.pubsub.patterns, pattern, self.id, &self.inbox);
+        }
+        true
+    }
+
+    /// Unsubscribes from a pattern, if subscribed.
+    pub fn punsubscribe(&mut self, pattern: &str) {
+        if self.patterns.remove(pattern) {
+            remove(&self.pubsub.patterns, pattern, self.id);
+        }
+    }
+
+    pub fn channels(&self) -> &HashSet<String> {
+        &self.channels
+    }
+
+    pub fn patterns(&self) -> &HashSet<String> {
+        &self.patterns
+    }
+
+    /// Channels and patterns subscribed to.
+    pub fn count(&self) -> usize {
+        self.channels.len() + self.patterns.len()
+    }
+
+    /// Waits for the next message. A message that arrived for a channel or
+    /// pattern unsubscribed from since is skipped. Cancel safe.
+    pub async fn recv(&mut self) -> PubMessage {
+        loop {
+            // the subscriber holds a sender, so the inbox never closes
+            let Some(msg) = self.rx.recv().await else {
+                return std::future::pending().await;
+            };
+            let dropped = self.inbox.dropped.swap(0, Ordering::Relaxed);
+            if dropped > 0 {
+                tracing::warn!("subscriber fell behind and missed {dropped} messages");
             }
-            Err(broadcast::error::RecvError::Closed) => {
-                let (is_pattern, name) = from;
-                if is_pattern {
-                    pattern_rxs.remove(&name);
-                } else {
-                    channel_rxs.remove(&name);
-                }
+            let subscribed = match &msg.pattern {
+                Some(pattern) => self.patterns.contains(&**pattern),
+                None => self.channels.contains(&*msg.channel),
+            };
+            if subscribed {
+                return msg;
             }
+        }
+    }
+}
+
+impl Drop for Subscriber {
+    fn drop(&mut self) {
+        for channel in &self.channels {
+            remove(&self.pubsub.channels, channel, self.id);
+        }
+        for pattern in &self.patterns {
+            remove(&self.pubsub.patterns, pattern, self.id);
         }
     }
 }
@@ -259,159 +284,140 @@ pub async fn recv_any(
 mod tests {
     use super::*;
 
-    fn message(channel: &str) -> PubMessage {
-        PubMessage {
-            channel: channel.into(),
-            data: Bytes::from_static(b"m"),
-            pattern: None,
-        }
+    fn manager() -> Arc<PubSubManager> {
+        Arc::new(PubSubManager::new())
+    }
+
+    fn data(msg: &PubMessage) -> &[u8] {
+        &msg.data
     }
 
     #[tokio::test]
-    async fn recv_any_keeps_listening_after_a_lag() {
-        // one subscription lags while the other stays idle; the next
-        // message must still arrive
-        let (busy_tx, busy_rx) = broadcast::channel(1);
-        let (_idle_tx, idle_rx) = broadcast::channel::<PubMessage>(1);
-        let mut channels =
-            HashMap::from([("busy".to_owned(), busy_rx), ("idle".to_owned(), idle_rx)]);
-        let mut patterns = HashMap::new();
-        for _ in 0..3 {
-            busy_tx.send(message("busy")).unwrap();
-        }
-        let got = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            recv_any(&mut channels, &mut patterns),
-        )
-        .await
-        .expect("recv_any hung after a lag");
-        assert_eq!(got.unwrap().channel.as_ref(), "busy");
-    }
+    async fn subscribe_and_publish() {
+        let mgr = manager();
+        let mut sub = Subscriber::new(Arc::clone(&mgr));
+        sub.subscribe("test");
 
-    #[tokio::test]
-    async fn recv_any_drops_a_closed_channel() {
-        let (closed_tx, closed_rx) = broadcast::channel::<PubMessage>(1);
-        let (open_tx, open_rx) = broadcast::channel(1);
-        drop(closed_tx);
-        let mut channels = HashMap::from([
-            ("closed".to_owned(), closed_rx),
-            ("open".to_owned(), open_rx),
-        ]);
-        let mut patterns = HashMap::new();
-        open_tx.send(message("open")).unwrap();
-        let got = recv_any(&mut channels, &mut patterns).await.unwrap();
-        assert_eq!(got.channel.as_ref(), "open");
-        let _ = futures::FutureExt::now_or_never(recv_any(&mut channels, &mut patterns));
-        assert!(!channels.contains_key("closed"));
-    }
-
-    #[test]
-    fn subscribe_and_publish() {
-        let mgr = PubSubManager::new();
-        let mut rx = mgr.subscribe("test");
-        let count = mgr.publish("test", Bytes::from("hello"));
-        assert_eq!(count, 1);
-
-        let msg = rx.try_recv().unwrap();
-        assert_eq!(msg.channel.as_ref(), "test");
-        assert_eq!(msg.data, Bytes::from("hello"));
+        assert_eq!(mgr.publish("test", Bytes::from("hello")), 1);
+        let msg = sub.recv().await;
+        assert_eq!(&*msg.channel, "test");
+        assert_eq!(data(&msg), b"hello");
         assert!(msg.pattern.is_none());
     }
 
     #[test]
     fn publish_to_empty_channel() {
-        let mgr = PubSubManager::new();
-        let count = mgr.publish("nobody", Bytes::from("hello"));
-        assert_eq!(count, 0);
+        assert_eq!(manager().publish("nobody", Bytes::from("hello")), 0);
+    }
+
+    #[tokio::test]
+    async fn multiple_subscribers() {
+        let mgr = manager();
+        let mut a = Subscriber::new(Arc::clone(&mgr));
+        let mut b = Subscriber::new(Arc::clone(&mgr));
+        a.subscribe("ch");
+        b.subscribe("ch");
+
+        assert_eq!(mgr.publish("ch", Bytes::from("msg")), 2);
+        assert_eq!(data(&a.recv().await), b"msg");
+        assert_eq!(data(&b.recv().await), b"msg");
+        assert_eq!(mgr.numsub(&["ch".into()]), [("ch".into(), 2)]);
+    }
+
+    #[tokio::test]
+    async fn exact_and_pattern_both_receive() {
+        let mgr = manager();
+        let mut sub = Subscriber::new(Arc::clone(&mgr));
+        sub.subscribe("news.sports");
+        assert!(sub.psubscribe("news.*"));
+
+        // one subscriber, two subscriptions: one message each
+        assert_eq!(mgr.publish("news.sports", Bytes::from("goal")), 2);
+        let first = sub.recv().await;
+        let second = sub.recv().await;
+        assert!(first.pattern.is_none());
+        assert_eq!(second.pattern.as_deref(), Some("news.*"));
+        assert_eq!(&*second.channel, "news.sports");
     }
 
     #[test]
-    fn multiple_subscribers() {
-        let mgr = PubSubManager::new();
-        let mut rx1 = mgr.subscribe("ch");
-        let mut rx2 = mgr.subscribe("ch");
-
-        let count = mgr.publish("ch", Bytes::from("msg"));
-        assert_eq!(count, 2);
-
-        assert_eq!(rx1.try_recv().unwrap().data, Bytes::from("msg"));
-        assert_eq!(rx2.try_recv().unwrap().data, Bytes::from("msg"));
+    fn subscribing_twice_counts_once() {
+        let mgr = manager();
+        let mut sub = Subscriber::new(Arc::clone(&mgr));
+        sub.subscribe("ch");
+        sub.subscribe("ch");
+        assert!(sub.psubscribe("p*"));
+        assert!(sub.psubscribe("p*"));
+        assert_eq!(sub.count(), 2);
+        assert_eq!(mgr.publish("ch", Bytes::new()), 1);
     }
 
     #[test]
-    fn pattern_subscribe_and_publish() {
-        let mgr = PubSubManager::new();
-        let mut rx = mgr.psubscribe("news.*").unwrap();
+    fn unsubscribe_releases_the_channel() {
+        let mgr = manager();
+        let mut a = Subscriber::new(Arc::clone(&mgr));
+        let mut b = Subscriber::new(Arc::clone(&mgr));
+        a.subscribe("ch");
+        b.subscribe("ch");
 
-        let count = mgr.publish("news.sports", Bytes::from("goal!"));
-        assert_eq!(count, 1);
+        a.unsubscribe("ch");
+        assert_eq!(mgr.publish("ch", Bytes::new()), 1);
+        b.unsubscribe("ch");
+        assert_eq!(mgr.publish("ch", Bytes::new()), 0);
+        assert!(mgr.channel_names(None).is_empty());
+    }
 
-        let msg = rx.try_recv().unwrap();
-        assert_eq!(msg.channel.as_ref(), "news.sports");
-        assert_eq!(msg.pattern.as_deref(), Some("news.*"));
-
-        // shouldn't match
-        let count = mgr.publish("old.news", Bytes::from("nope"));
-        assert_eq!(count, 0);
+    #[tokio::test]
+    async fn a_message_queued_before_unsubscribing_is_skipped() {
+        let mgr = manager();
+        let mut sub = Subscriber::new(Arc::clone(&mgr));
+        sub.subscribe("old");
+        sub.subscribe("new");
+        mgr.publish("old", Bytes::from("stale"));
+        sub.unsubscribe("old");
+        mgr.publish("new", Bytes::from("fresh"));
+        assert_eq!(data(&sub.recv().await), b"fresh");
     }
 
     #[test]
-    fn exact_and_pattern_both_receive() {
-        let mgr = PubSubManager::new();
-        let mut rx_exact = mgr.subscribe("news.sports");
-        let mut rx_pattern = mgr.psubscribe("news.*").unwrap();
-
-        let count = mgr.publish("news.sports", Bytes::from("goal!"));
-        assert_eq!(count, 2);
-
-        assert!(rx_exact.try_recv().is_ok());
-        assert!(rx_pattern.try_recv().is_ok());
-    }
-
-    #[test]
-    fn unsubscribe_stops_delivery() {
-        let mgr = PubSubManager::new();
-        let rx = mgr.subscribe("ch");
-        mgr.unsubscribe("ch", rx);
-
-        let count = mgr.publish("ch", Bytes::from("msg"));
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn unsubscribe_keeps_the_channel_for_other_subscribers() {
-        let mgr = PubSubManager::new();
-        let rx_a = mgr.subscribe("ch");
-        let mut rx_b = mgr.subscribe("ch");
-        mgr.unsubscribe("ch", rx_a);
-
-        assert_eq!(mgr.publish("ch", Bytes::from("msg")), 1);
-        assert!(rx_b.try_recv().is_ok());
-    }
-
-    #[test]
-    fn subscription_counts() {
-        let mgr = PubSubManager::new();
-        assert_eq!(mgr.total_subscriptions(), 0);
-
-        let _rx1 = mgr.subscribe("a");
-        let _rx2 = mgr.subscribe("b");
-        let _rx3 = mgr.psubscribe("c.*").unwrap();
-        assert_eq!(mgr.total_subscriptions(), 3);
+    fn dropping_a_subscriber_releases_everything() {
+        let mgr = manager();
+        let mut sub = Subscriber::new(Arc::clone(&mgr));
+        sub.subscribe("a");
+        sub.subscribe("b");
+        assert!(sub.psubscribe("c.*"));
         assert_eq!(mgr.channel_names(None).len(), 2);
         assert_eq!(mgr.active_patterns(), 1);
+
+        drop(sub);
+        assert!(mgr.channel_names(None).is_empty());
+        assert_eq!(mgr.active_patterns(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_full_inbox_drops_messages_and_keeps_going() {
+        let mgr = manager();
+        let mut sub = Subscriber::new(Arc::clone(&mgr));
+        sub.subscribe("busy");
+        for _ in 0..INBOX_CAPACITY {
+            assert_eq!(mgr.publish("busy", Bytes::from("old")), 1);
+        }
+        // the inbox is full, so this one is dropped
+        assert_eq!(mgr.publish("busy", Bytes::from("lost")), 0);
+        for _ in 0..INBOX_CAPACITY {
+            assert_eq!(data(&sub.recv().await), b"old");
+        }
+        mgr.publish("busy", Bytes::from("new"));
+        assert_eq!(data(&sub.recv().await), b"new");
     }
 
     #[test]
     fn psubscribe_rejects_oversized_pattern() {
-        let mgr = PubSubManager::new();
+        let mut sub = Subscriber::new(manager());
         let long_pattern = "*".repeat(MAX_PATTERN_LEN + 1);
-        assert!(
-            mgr.psubscribe(&long_pattern).is_none(),
-            "oversized pattern should be rejected"
-        );
+        assert!(!sub.psubscribe(&long_pattern));
+        assert_eq!(sub.count(), 0);
         // a pattern right at the limit is allowed
-        let ok_pattern = "*".repeat(MAX_PATTERN_LEN);
-        assert!(mgr.psubscribe(&ok_pattern).is_some());
+        assert!(sub.psubscribe(&"*".repeat(MAX_PATTERN_LEN)));
     }
 }
