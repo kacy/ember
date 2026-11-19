@@ -21,7 +21,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- election and gossip fixes (#PR):
+- election and gossip fixes (#473):
   - a replica that wins an election takes the epoch it won in. it took the next local epoch, which could be older than the one the voters granted
   - CLUSTER FAILOVER returns an error when the promotion fails. it logged a warning, announced the promotion anyway and replied OK
   - failure reports that overlap start one election, not several at once
