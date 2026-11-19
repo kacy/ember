@@ -124,7 +124,11 @@ impl SlowLog {
             return;
         }
 
+        // a length of 0 keeps nothing, as in Redis
         let max_len = self.max_len.load(Ordering::Relaxed);
+        if max_len == 0 {
+            return;
+        }
         let mut inner = self.lock_or_clear();
 
         let id = inner.next_id;
@@ -210,6 +214,17 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].command, "SET slow value");
         assert_eq!(entries[0].id, 0);
+    }
+
+    #[test]
+    fn a_max_len_of_zero_keeps_nothing() {
+        let log = SlowLog::new(SlowLogConfig {
+            slower_than: Duration::ZERO,
+            max_len: 0,
+            enabled: true,
+        });
+        log.maybe_record(Duration::from_millis(5), "get");
+        assert_eq!(log.len(), 0);
     }
 
     #[test]

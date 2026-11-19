@@ -9,7 +9,7 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::{BufMut, BytesMut};
 use ember_core::{Engine, ShardResponse};
@@ -236,7 +236,14 @@ pub async fn handle<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut stream = WriteTimeout::new(stream, ctx.limits.idle_timeout);
+    // `timeout 0` keeps idle clients forever, but a client that stops
+    // reading its replies still gets cut off, or it would hold its
+    // connection and buffers forever
+    let write_timeout = match ctx.limits.idle_timeout {
+        Duration::MAX => Duration::from_secs(300),
+        idle => idle,
+    };
+    let mut stream = WriteTimeout::new(stream, write_timeout);
     // per-connection auth + ACL state.
     let mut session = Session::new(ctx);
     // set when a batch contained QUIT; the connection closes once the

@@ -430,8 +430,14 @@ fn resolve_cluster_secret(
 
 /// Parses a `host:port` pair into a `SocketAddr`. Exits with a message on failure.
 fn parse_bind_addr(host: &str, port: u16, label: &str) -> SocketAddr {
-    match format!("{host}:{port}").parse() {
-        Ok(a) => a,
+    // an IPv6 host such as `::` or `[::1]` can't go into a "host:port"
+    // string, so parse the address alone
+    match host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+    {
+        Ok(ip) => SocketAddr::new(ip, port),
         Err(e) => {
             if label.is_empty() {
                 exit_err(format!("invalid bind address '{host}:{port}': {e}"));

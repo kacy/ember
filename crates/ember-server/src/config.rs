@@ -430,6 +430,14 @@ impl EmberConfig {
             // a zero-permit semaphore would drop every client
             return Err("maxclients must be > 0".into());
         }
+        if self.engine.stats_poll_interval_secs == 0 {
+            // a zero interval panics in the stats poller's timer
+            return Err("stats-poll-interval-secs must be > 0".into());
+        }
+        if self.engine.replication_broadcast_capacity == 0 {
+            // a broadcast channel can't have zero capacity
+            return Err("replication-broadcast-capacity must be > 0".into());
+        }
 
         Ok(ConnectionLimits {
             buf_capacity: self.read_buffer_capacity,
@@ -757,6 +765,10 @@ impl ConfigRegistry {
     /// requirepass, TLS, persistence and cluster options, are kept as they
     /// are. Writes atomically through a temp file and a rename.
     pub fn rewrite(&self, config_path: &Path) -> Result<(), String> {
+        // one rewrite at a time: they share the temp file, and the last
+        // one written must hold the newest values
+        static REWRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _rewriting = REWRITE.lock().unwrap_or_else(|e| e.into_inner());
         let mut cfg = EmberConfig::from_file(config_path)
             .map_err(|e| format!("ERR CONFIG REWRITE failed: {e}"))?;
         {
@@ -1037,6 +1049,16 @@ mod tests {
         assert_eq!(limits.idle_timeout, Duration::from_secs(300));
         assert_eq!(limits.max_key_len, 512 * 1024);
         assert_eq!(limits.max_value_len, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn zero_stats_interval_and_broadcast_capacity_are_refused() {
+        let mut cfg = EmberConfig::default();
+        cfg.engine.stats_poll_interval_secs = 0;
+        assert!(cfg.connection_limits().is_err());
+        let mut cfg = EmberConfig::default();
+        cfg.engine.replication_broadcast_capacity = 0;
+        assert!(cfg.connection_limits().is_err());
     }
 
     #[test]

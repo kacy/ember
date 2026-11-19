@@ -837,3 +837,12 @@ async fn rename_into_a_waited_key_wakes_the_client() {
         Frame::Array(vec![Frame::Bulk("q".into()), Frame::Bulk("x".into())])
     );
 }
+
+#[tokio::test]
+async fn config_set_maxmemory_below_one_byte_per_shard_is_refused() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    let err = c.err(&["CONFIG", "SET", "maxmemory", "1"]).await;
+    assert!(err.contains("per shard"), "{err}");
+    c.ok(&["CONFIG", "SET", "maxmemory", "0"]).await;
+}

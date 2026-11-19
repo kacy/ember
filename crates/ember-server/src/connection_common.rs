@@ -267,6 +267,18 @@ pub async fn config_set(
     engine: &Engine,
     slow_log: &SlowLog,
 ) -> Frame {
+    // each shard enforces its share of maxmemory, and a share of 0 bytes
+    // would refuse every write
+    if param.eq_ignore_ascii_case("maxmemory") {
+        if let Ok(total) = crate::config::parse_memory_size(value) {
+            if total > 0 && crate::config::per_shard_memory(total, engine.shard_count()) == 0 {
+                return Frame::Error(format!(
+                    "ERR maxmemory {value} is less than one byte per shard ({} shards)",
+                    engine.shard_count()
+                ));
+            }
+        }
+    }
     if let Err(e) = ctx.config.set(param, value) {
         return Frame::Error(e);
     }
