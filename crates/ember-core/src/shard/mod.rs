@@ -652,6 +652,12 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             blocking::handle_blocking_pop(&key, waiter, false, reply, ctx);
             return;
         }
+        ShardRequest::DropBlockedWaiters => {
+            ctx.lpop_waiters.clear();
+            ctx.rpop_waiters.clear();
+            ctx.respond(reply, ShardResponse::Ok);
+            return;
+        }
         _ => {}
     }
 
