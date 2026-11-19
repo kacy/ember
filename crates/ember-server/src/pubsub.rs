@@ -4,6 +4,7 @@
 //! subscribers. Supports both exact channel names and glob patterns.
 //! Thread-safe via DashMap for lock-free concurrent access.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -204,9 +205,105 @@ impl PubSubManager {
     }
 }
 
+/// Waits for the next message on any of the subscriptions.
+///
+/// A receiver that lagged skips the messages it missed, and the wait starts
+/// over, so every subscription is listened to again. A channel whose sender
+/// is gone is dropped from the subscriptions.
+pub async fn recv_any(
+    channel_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
+    pattern_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
+) -> Option<PubMessage> {
+    use futures::stream::{FuturesUnordered, StreamExt};
+
+    loop {
+        if channel_rxs.is_empty() && pattern_rxs.is_empty() {
+            // no subscriptions — sleep forever (will be cancelled by select)
+            return std::future::pending::<Option<PubMessage>>().await;
+        }
+
+        // the first receiver to resolve, with the subscription it belongs
+        // to: (is a pattern, name)
+        let (from, result) = {
+            let subscriptions = channel_rxs
+                .iter_mut()
+                .map(|(name, rx)| (false, name, rx))
+                .chain(pattern_rxs.iter_mut().map(|(name, rx)| (true, name, rx)));
+            let mut pending: FuturesUnordered<_> = subscriptions
+                .map(|(is_pattern, name, rx)| async move {
+                    ((is_pattern, name.clone()), rx.recv().await)
+                })
+                .collect();
+            pending.next().await?
+        };
+
+        match result {
+            Ok(msg) => return Some(msg),
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                // the receiver moved past the gap; listen again
+                tracing::warn!("subscriber lagged, missed {n} messages");
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                let (is_pattern, name) = from;
+                if is_pattern {
+                    pattern_rxs.remove(&name);
+                } else {
+                    channel_rxs.remove(&name);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn message(channel: &str) -> PubMessage {
+        PubMessage {
+            channel: channel.into(),
+            data: Bytes::from_static(b"m"),
+            pattern: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn recv_any_keeps_listening_after_a_lag() {
+        // one subscription lags while the other stays idle; the next
+        // message must still arrive
+        let (busy_tx, busy_rx) = broadcast::channel(1);
+        let (_idle_tx, idle_rx) = broadcast::channel::<PubMessage>(1);
+        let mut channels =
+            HashMap::from([("busy".to_owned(), busy_rx), ("idle".to_owned(), idle_rx)]);
+        let mut patterns = HashMap::new();
+        for _ in 0..3 {
+            busy_tx.send(message("busy")).unwrap();
+        }
+        let got = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_any(&mut channels, &mut patterns),
+        )
+        .await
+        .expect("recv_any hung after a lag");
+        assert_eq!(got.unwrap().channel.as_ref(), "busy");
+    }
+
+    #[tokio::test]
+    async fn recv_any_drops_a_closed_channel() {
+        let (closed_tx, closed_rx) = broadcast::channel::<PubMessage>(1);
+        let (open_tx, open_rx) = broadcast::channel(1);
+        drop(closed_tx);
+        let mut channels = HashMap::from([
+            ("closed".to_owned(), closed_rx),
+            ("open".to_owned(), open_rx),
+        ]);
+        let mut patterns = HashMap::new();
+        open_tx.send(message("open")).unwrap();
+        let got = recv_any(&mut channels, &mut patterns).await.unwrap();
+        assert_eq!(got.channel.as_ref(), "open");
+        let _ = futures::FutureExt::now_or_never(recv_any(&mut channels, &mut patterns));
+        assert!(!channels.contains_key("closed"));
+    }
 
     #[test]
     fn subscribe_and_publish() {

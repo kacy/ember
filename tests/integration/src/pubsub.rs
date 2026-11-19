@@ -163,3 +163,16 @@ async fn keyspace_events_fire_for_single_commands() {
     };
     assert!(matches!(&frames[2], Frame::Bulk(b) if b == &b"k"[..]));
 }
+
+#[tokio::test]
+async fn subscribing_twice_to_a_pattern_counts_once() {
+    let server = TestServer::start();
+    let mut sub = server.connect().await;
+    let mut other = server.connect().await;
+    sub.cmd(&["PSUBSCRIBE", "news.*"]).await;
+    sub.cmd(&["PSUBSCRIBE", "news.*"]).await;
+    assert_eq!(other.get_int(&["PUBSUB", "NUMPAT"]).await, 1);
+
+    sub.cmd(&["PUNSUBSCRIBE", "news.*"]).await;
+    assert_eq!(other.get_int(&["PUBSUB", "NUMPAT"]).await, 0);
+}
