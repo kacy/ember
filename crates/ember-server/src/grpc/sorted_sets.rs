@@ -9,21 +9,37 @@ use super::proto::*;
 use super::strings::int_response;
 use super::{non_empty, parse_score_bound, reply, EmberService};
 
+/// Rejects NaN and infinite scores, as the RESP parser does.
+fn finite(score: f64) -> Result<f64, Status> {
+    if score.is_finite() {
+        Ok(score)
+    } else {
+        Err(Status::invalid_argument("score must be a finite number"))
+    }
+}
+
 pub(super) async fn z_add(
     svc: &EmberService,
     request: Request<ZAddRequest>,
 ) -> Result<Response<IntResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::ZAdd {
-            key: r.key,
-            flags: ZAddFlags {
-                nx: r.nx,
-                xx: r.xx,
-                gt: r.gt,
-                lt: r.lt,
-                ch: r.ch,
-            },
-            members: r.members.into_iter().map(|m| (m.score, m.member)).collect(),
+        .try_call(request, |r| {
+            let members = r
+                .members
+                .into_iter()
+                .map(|m| Ok((finite(m.score)?, m.member)))
+                .collect::<Result<_, Status>>()?;
+            Ok(Command::ZAdd {
+                key: r.key,
+                flags: ZAddFlags {
+                    nx: r.nx,
+                    xx: r.xx,
+                    gt: r.gt,
+                    lt: r.lt,
+                    ch: r.ch,
+                },
+                members,
+            })
         })
         .await?;
     int_response(frame)
@@ -144,10 +160,12 @@ pub(super) async fn z_incr_by(
     request: Request<ZIncrByRequest>,
 ) -> Result<Response<FloatResponse>, Status> {
     let frame = svc
-        .call(request, |r| Command::ZIncrBy {
-            key: r.key,
-            increment: r.delta,
-            member: r.member,
+        .try_call(request, |r| {
+            Ok(Command::ZIncrBy {
+                key: r.key,
+                increment: finite(r.delta)?,
+                member: r.member,
+            })
         })
         .await?;
     Ok(Response::new(FloatResponse {

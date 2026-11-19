@@ -336,8 +336,9 @@ pub(super) fn dispatch(
                 new_score,
                 member: member.clone(),
             },
-            Err(WriteError::WrongType) => ShardResponse::WrongType,
-            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(IncrFloatError::WrongType) => ShardResponse::WrongType,
+            Err(IncrFloatError::OutOfMemory) => ShardResponse::OutOfMemory,
+            Err(e) => ShardResponse::Err(e.to_string()),
         },
         ShardRequest::ZRangeByScore {
             key,

@@ -205,12 +205,22 @@ impl Keyspace {
     /// If the key doesn't exist, a new sorted set is created.
     ///
     /// Returns the new score.
-    pub fn zincrby(&mut self, key: &str, increment: f64, member: &str) -> Result<f64, WriteError> {
+    pub fn zincrby(
+        &mut self,
+        key: &str,
+        increment: f64,
+        member: &str,
+    ) -> Result<f64, IncrFloatError> {
         // worst case: member is new
         let increase = SortedSet::estimated_member_cost(member);
         self.edit_or_create(key, Value::as_zset_mut, empty_zset, increase, |zset| {
-            (zset.incr(member, increment), true)
-        })
+            // scores stay finite, so sums and sorts never meet NaN
+            let old = zset.score(member).unwrap_or(0.0);
+            if !(old + increment).is_finite() {
+                return (Err(IncrFloatError::NanOrInfinity), false);
+            }
+            (Ok(zset.incr(member, increment)), true)
+        })?
     }
 
     /// Returns members with scores in the given range, in ascending order.
@@ -369,11 +379,7 @@ impl Keyspace {
                 },
             }
         }
-        candidates.sort_by(|(am, as_), (bm, bs)| {
-            as_.partial_cmp(bs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| am.cmp(bm))
-        });
+        candidates.sort_by(|(am, as_), (bm, bs)| as_.total_cmp(bs).then_with(|| am.cmp(bm)));
         Ok(candidates)
     }
 
@@ -403,11 +409,7 @@ impl Keyspace {
             }
         }
         let mut result: Vec<(String, f64)> = totals.into_iter().collect();
-        result.sort_by(|(am, as_), (bm, bs)| {
-            as_.partial_cmp(bs)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| am.cmp(bm))
-        });
+        result.sort_by(|(am, as_), (bm, bs)| as_.total_cmp(bs).then_with(|| am.cmp(bm)));
         Ok(result)
     }
 
@@ -1032,6 +1034,44 @@ mod tests {
             .unwrap();
         let keys = vec!["a".to_owned(), "b".to_owned()];
         assert!(ks.zinter(&keys).unwrap().is_empty());
+    }
+
+    #[test]
+    fn zincrby_refuses_a_score_that_overflows() {
+        let mut ks = Keyspace::new();
+        ks.zadd("z", &[(f64::MAX, "m".into())], &ZAddFlags::default())
+            .unwrap();
+        assert_eq!(
+            ks.zincrby("z", f64::MAX, "m"),
+            Err(IncrFloatError::NanOrInfinity)
+        );
+        assert_eq!(ks.zscore("z", "m").unwrap(), Some(f64::MAX));
+    }
+
+    #[test]
+    fn zunion_and_zinter_sort_nan_sums_without_panicking() {
+        let mut ks = Keyspace::new();
+        // every third member sums to inf + -inf = NaN, among ordinary scores
+        let scores = |inf: f64| -> Vec<(f64, String)> {
+            (0..200)
+                .map(|i| {
+                    (
+                        if i % 3 == 0 {
+                            inf
+                        } else {
+                            f64::from(i * 7919 % 211)
+                        },
+                        format!("m{i}"),
+                    )
+                })
+                .collect()
+        };
+        let (pos, neg) = (scores(f64::INFINITY), scores(f64::NEG_INFINITY));
+        ks.zadd("a", &pos, &ZAddFlags::default()).unwrap();
+        ks.zadd("b", &neg, &ZAddFlags::default()).unwrap();
+        let keys = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(ks.zunion(&keys).unwrap().len(), 200);
+        assert_eq!(ks.zinter(&keys).unwrap().len(), 200);
     }
 
     #[test]

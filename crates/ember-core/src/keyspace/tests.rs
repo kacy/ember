@@ -1283,6 +1283,15 @@ fn sort_wrong_type() {
 }
 
 #[test]
+fn sort_refuses_nan() {
+    let mut ks = Keyspace::new();
+    let mut items: Vec<Bytes> = (0..40).map(|i| Bytes::from(i.to_string())).collect();
+    items.push(Bytes::from("NaN"));
+    let _ = ks.rpush("nums", &items);
+    assert!(ks.sort("nums", false, false, None).is_err());
+}
+
+#[test]
 fn smove_onto_the_same_set_changes_nothing() {
     let mut ks = Keyspace::new();
     ks.sadd("s", &["only".into()]).unwrap();
