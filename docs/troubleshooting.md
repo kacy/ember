@@ -10,7 +10,7 @@ common problems and how to fix them.
 
 ember turns on protected mode when the `default` user needs no password and the server is bound to a non-loopback address such as `0.0.0.0`. it then accepts RESP, gRPC and metrics connections from loopback clients only, so a server without a password is not exposed on a public interface by accident.
 
-fix: either give the `default` user a password, with `requirepass <password>` in your config or a rule in the ACL file, or explicitly bind to the loopback interface with `bind 127.0.0.1`.
+fix: either give the `default` user a password, with `requirepass <password>` in your config or a rule in the ACL file, or explicitly bind to the loopback interface with `bind 127.0.0.1`. in a container, where clients arrive through the container network, `protected-mode = "no"` (or `EMBER_PROTECTED_MODE=no`) turns the check off. the docker compose quickstart and the helm chart do this.
 
 ---
 

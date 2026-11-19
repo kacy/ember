@@ -3,6 +3,7 @@
 ## unreleased
 
 ### added
+- `protected-mode` setting (`--protected-mode`, `EMBER_PROTECTED_MODE`), `yes` by default, as in Redis. `no` turns protected mode off for a network that is already private, such as a container's. the docker compose quickstart and the helm chart (`ember.protectedMode`) set it to `no`: their clients, and the helm chart's probes, arrive over the container network, so with no password set the server refused them all (#479)
 - TLS and ACL username options for the Go, Python and TypeScript clients: `WithTLS` and `WithUsername`, `tls`/`root_certificates` and `username`, and `tls`/`rootCerts` and `username`. a server with `tls-port` serves gRPC over TLS only, which the clients couldn't connect to (#478)
 
 ### changed

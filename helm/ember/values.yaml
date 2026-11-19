@@ -23,6 +23,11 @@ ember:
   # use an existing Secret instead of creating one from requirepass above.
   # the Secret must contain a key named "requirepass".
   existingSecret: ""
+  # protected mode refuses clients from other addresses while no password
+  # is set. clients and the kubelet's probes reach the pod over the pod
+  # network, so it would refuse them all; the cluster network is the
+  # boundary here. set "yes" to turn it back on, along with a password.
+  protectedMode: "no"
 
 resources: {}
   # limits:

@@ -207,6 +207,14 @@ pub struct EmberConfig {
     #[serde(rename = "tls-auth-clients")]
     pub tls_auth_clients: String,
 
+    // -- protected mode --
+    /// `yes` refuses remote clients while the default user needs no
+    /// password and the server is bound to a public address. `no` turns
+    /// that off, for a network that is already private, such as a
+    /// container's.
+    #[serde(rename = "protected-mode")]
+    pub protected_mode: String,
+
     // -- notifications --
     #[serde(rename = "notify-keyspace-events")]
     pub notify_keyspace_events: String,
@@ -269,6 +277,7 @@ impl Default for EmberConfig {
             tls_key_file: String::new(),
             tls_ca_cert_file: String::new(),
             tls_auth_clients: "no".into(),
+            protected_mode: "yes".into(),
 
             notify_keyspace_events: String::new(),
 

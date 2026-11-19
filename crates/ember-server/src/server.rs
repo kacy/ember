@@ -58,6 +58,8 @@ pub struct ServerContext {
     pub commands_processed: AtomicU64,
     /// The address the server is bound to (for protected mode checks).
     pub bind_addr: SocketAddr,
+    /// Whether protected mode applies. See [`is_protected_mode_violation`].
+    pub protected_mode: bool,
     /// Runtime configuration registry for CONFIG GET/SET.
     pub config: Arc<ConfigRegistry>,
     /// Path to the config file loaded at startup (for CONFIG REWRITE).
@@ -302,6 +304,7 @@ pub async fn run_threaded(
     metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
     acl: crate::acl::SharedAclState,
+    protected_mode: bool,
     tls: Option<(SocketAddr, TlsConfig)>,
     cluster: Option<Arc<ClusterCoordinator>>,
     config_registry: Arc<ConfigRegistry>,
@@ -372,6 +375,7 @@ pub async fn run_threaded(
         connections_active: AtomicU64::new(0),
         commands_processed: AtomicU64::new(0),
         bind_addr: addr,
+        protected_mode,
         config: config_registry,
         config_path,
         cluster,
@@ -769,7 +773,8 @@ pub(crate) const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 /// Returns true if the connection should be rejected by protected mode.
 ///
-/// Protected mode activates when all three conditions hold:
+/// Protected mode is on unless `protected-mode no` is set, and activates
+/// when all three conditions hold:
 /// 1. The `default` user needs no password: it is on and `nopass`, from
 ///    `requirepass` being unset or from an ACL file or ACL SETUSER
 /// 2. The server is bound to a non-loopback address (e.g. 0.0.0.0)
@@ -779,7 +784,8 @@ pub(crate) const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 /// (address unknown) is treated as remote. Addresses are canonicalized
 /// first, so an IPv4-mapped `::ffff:127.0.0.1` counts as loopback.
 pub(crate) fn is_protected_mode_violation(ctx: &ServerContext, peer: Option<IpAddr>) -> bool {
-    if ctx.bind_addr.ip().to_canonical().is_loopback()
+    if !ctx.protected_mode
+        || ctx.bind_addr.ip().to_canonical().is_loopback()
         || peer.is_some_and(|ip| ip.to_canonical().is_loopback())
     {
         return false;
