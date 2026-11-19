@@ -24,6 +24,8 @@ spec:
               value: "0.0.0.0"
             - name: EMBER_PORT
               value: {{ .Values.ember.port | quote }}
+            - name: EMBER_PROTECTED_MODE
+              value: {{ .Values.ember.protectedMode | quote }}
             {{- if .Values.ember.metricsPort }}
             - name: EMBER_METRICS_PORT
               value: {{ .Values.ember.metricsPort | quote }}

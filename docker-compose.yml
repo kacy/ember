@@ -34,6 +34,12 @@ services:
       # uncomment to require a password on every connection.
       # EMBER_REQUIREPASS: "changeme"
 
+      # clients reach the container through docker's network, so without a
+      # password protected mode would refuse them all. the published port
+      # is the boundary here; set a password above before exposing it
+      # beyond this machine.
+      EMBER_PROTECTED_MODE: "no"
+
     healthcheck:
       test: ["CMD", "ember-server", "--healthcheck"]
       interval: 10s
@@ -59,3 +65,4 @@ services:
   #     EMBER_MAX_MEMORY: "256M"
   #     EMBER_EVICTION_POLICY: "allkeys-lru"
   #     EMBER_METRICS_PORT: "9100"
+  #     EMBER_PROTECTED_MODE: "no"

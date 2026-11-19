@@ -42,6 +42,7 @@ helm uninstall my-ember
 | `ember.appendfsync` | AOF fsync policy (`always`, `everysec`, `no`) | `everysec` |
 | `ember.requirepass` | client auth password; stored in a Secret and mounted as `EMBER_REQUIREPASS_FILE` (never a plaintext env var) | `""` (disabled) |
 | `ember.existingSecret` | use an existing Secret (with a `requirepass` key) instead of `ember.requirepass` | `""` |
+| `ember.protectedMode` | `yes` refuses clients from other addresses while no password is set. clients and probes arrive over the pod network, so turn it on only with a password | `"no"` |
 | `resources` | CPU/memory resource requests and limits | `{}` |
 | `serviceAccount.create` | create a service account | `true` |
 | `serviceAccount.name` | override service account name | `""` |
