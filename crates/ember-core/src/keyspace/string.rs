@@ -267,13 +267,15 @@ impl Keyspace {
     ///
     /// Returns `Ok(None)` if the key did not exist or had expired.
     /// Returns `Err(WrongType)` if the key holds a non-string value.
-    pub fn getset(&mut self, key: &str, value: Bytes) -> Result<Option<Bytes>, WrongType> {
+    pub fn getset(&mut self, key: &str, value: Bytes) -> Result<Option<Bytes>, WriteError> {
         if self.remove_if_expired(key) {
             // key was expired — treat as missing, fall through to set below
         } else {
             match self.entries.get(key) {
                 None => {}
-                Some(e) if !matches!(e.value, Value::String(_)) => return Err(WrongType),
+                Some(e) if !matches!(e.value, Value::String(_)) => {
+                    return Err(WriteError::WrongType)
+                }
                 _ => {}
             }
         }
@@ -281,14 +283,16 @@ impl Keyspace {
         let old = match self.entries.get(key) {
             Some(e) => match &e.value {
                 Value::String(b) => Some(b.clone()),
-                _ => return Err(WrongType),
+                _ => return Err(WriteError::WrongType),
             },
             None => None,
         };
 
         // Always set with no TTL — GETSET clears any existing expiry.
-        self.set(key.to_owned(), value, None, false, false);
-        Ok(old)
+        match self.set(key.to_owned(), value, None, false, false) {
+            SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
+            _ => Ok(old),
+        }
     }
 
     /// Sets multiple keys only if none of them already exist.
@@ -296,20 +300,30 @@ impl Keyspace {
     /// Checks all keys atomically before writing any. Returns `true` and
     /// writes all pairs if no key exists, `false` and writes nothing if any
     /// key is already present (including keys with a TTL that hasn't expired
-    /// yet).
-    pub fn msetnx(&mut self, pairs: &[(String, Bytes)]) -> bool {
+    /// yet). Returns `OutOfMemory`, writing nothing, if the pairs don't fit
+    /// together.
+    pub fn msetnx(&mut self, pairs: &[(String, Bytes)]) -> Result<bool, WriteError> {
         // first pass: check that no key exists
         for (key, _) in pairs {
             self.remove_if_expired(key);
             if self.entries.contains_key(key.as_str()) {
-                return false;
+                return Ok(false);
             }
+        }
+        // make room for every pair up front, so no set below can fail and
+        // leave the others written
+        let total = pairs
+            .iter()
+            .map(|(key, value)| memory::entry_size(key, &Value::String(value.clone())))
+            .sum();
+        if !self.enforce_memory_limit("", total) {
+            return Err(WriteError::OutOfMemory);
         }
         // second pass: write all pairs
         for (key, value) in pairs {
             self.set(key.clone(), value.clone(), None, false, false);
         }
-        true
+        Ok(true)
     }
 
     /// Returns the value of a key and optionally updates its expiry.
@@ -1161,6 +1175,34 @@ mod tests {
         assert!(ks.getset("z", Bytes::from("v")).is_err());
     }
 
+    fn full_keyspace() -> Keyspace {
+        Keyspace::with_config(ShardConfig {
+            max_memory: Some(1),
+            ..ShardConfig::default()
+        })
+    }
+
+    #[test]
+    fn getset_reports_out_of_memory() {
+        let mut ks = full_keyspace();
+        assert_eq!(
+            ks.getset("k", Bytes::from("v")),
+            Err(WriteError::OutOfMemory)
+        );
+        assert!(!ks.exists("k"));
+    }
+
+    #[test]
+    fn msetnx_out_of_memory_writes_nothing() {
+        let mut ks = full_keyspace();
+        let pairs = [
+            ("a".to_owned(), Bytes::from("1")),
+            ("b".to_owned(), Bytes::from("2")),
+        ];
+        assert_eq!(ks.msetnx(&pairs), Err(WriteError::OutOfMemory));
+        assert!(!ks.exists("a") && !ks.exists("b"));
+    }
+
     // --- msetnx ---
 
     #[test]
@@ -1170,7 +1212,7 @@ mod tests {
             ("a".to_owned(), Bytes::from("1")),
             ("b".to_owned(), Bytes::from("2")),
         ];
-        assert!(ks.msetnx(&pairs));
+        assert_eq!(ks.msetnx(&pairs), Ok(true));
         assert_eq!(ks.get("a").unwrap(), Some(Value::String(Bytes::from("1"))));
         assert_eq!(ks.get("b").unwrap(), Some(Value::String(Bytes::from("2"))));
     }
@@ -1183,7 +1225,7 @@ mod tests {
             ("a".to_owned(), Bytes::from("new")),
             ("b".to_owned(), Bytes::from("2")),
         ];
-        assert!(!ks.msetnx(&pairs));
+        assert_eq!(ks.msetnx(&pairs), Ok(false));
         // "a" unchanged, "b" not created
         assert_eq!(
             ks.get("a").unwrap(),
@@ -1195,6 +1237,6 @@ mod tests {
     #[test]
     fn msetnx_empty_pairs_returns_true() {
         let mut ks = Keyspace::new();
-        assert!(ks.msetnx(&[]));
+        assert_eq!(ks.msetnx(&[]), Ok(true));
     }
 }

@@ -390,7 +390,10 @@ fn a_write_too_large_for_the_limit_evicts_nothing() {
         ks.set("c".into(), huge, None, false, false),
         SetResult::OutOfMemory
     );
-    assert!(ks.exists("a") && ks.exists("b"), "keys were evicted for nothing");
+    assert!(
+        ks.exists("a") && ks.exists("b"),
+        "keys were evicted for nothing"
+    );
     assert!(ks.take_evicted().is_empty());
 }
 
