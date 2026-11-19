@@ -852,7 +852,10 @@ async fn bitop_on_missing_keys_deletes_the_destination() {
     let server = TestServer::start();
     let mut c = server.connect().await;
     c.ok(&["SET", "dest", "old"]).await;
-    assert_eq!(c.get_int(&["BITOP", "AND", "dest", "nope1", "nope2"]).await, 0);
+    assert_eq!(
+        c.get_int(&["BITOP", "AND", "dest", "nope1", "nope2"]).await,
+        0
+    );
     assert_eq!(c.get_int(&["EXISTS", "dest"]).await, 0);
 }
 
