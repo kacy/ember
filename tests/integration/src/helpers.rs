@@ -468,6 +468,22 @@ impl TestClient {
         }
     }
 
+    /// Waits up to two seconds for the server to close the connection,
+    /// skipping any frames it sends first. Returns whether it closed.
+    pub async fn closed(&mut self) -> bool {
+        let wait = async {
+            loop {
+                match self.stream.read_buf(&mut self.buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => self.buf.clear(),
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), wait)
+            .await
+            .is_ok()
+    }
+
     /// Reads the next frame from the connection without sending a command.
     /// Useful for pub/sub where the server pushes messages asynchronously.
     pub async fn read_frame(&mut self) -> Frame {

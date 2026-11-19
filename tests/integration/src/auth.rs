@@ -203,3 +203,36 @@ async fn a_transaction_in_the_same_batch_as_auth_is_queued() {
     assert!(matches!(c.cmd(&["EXEC"]).await, Frame::Array(r) if r.len() == 2));
     assert_eq!(c.get_bulk(&["GET", "k"]).await, Some("w".into()));
 }
+
+#[tokio::test]
+async fn deleting_a_user_disconnects_its_subscribers_and_monitors() {
+    let (server, mut admin) = server_with_reader().await;
+    admin
+        .ok(&["ACL", "SETUSER", "reader", "+subscribe", "+monitor"])
+        .await;
+    let mut subscriber = server.connect().await;
+    subscriber.ok(&["AUTH", "reader", "reader-pass"]).await;
+    subscriber.cmd(&["SUBSCRIBE", "news"]).await;
+    let mut monitor = server.connect().await;
+    monitor.ok(&["AUTH", "reader", "reader-pass"]).await;
+    monitor.ok(&["MONITOR"]).await;
+
+    admin.get_int(&["ACL", "DELUSER", "reader"]).await;
+    // the next message or monitored command finds the user gone
+    admin.get_int(&["PUBLISH", "news", "hello"]).await;
+    assert!(subscriber.closed().await, "subscriber still connected");
+    assert!(monitor.closed().await, "monitor still connected");
+}
+
+#[tokio::test]
+async fn a_read_only_user_from_minus_all_plus_read_can_read() {
+    let (server, mut admin) = server_with_reader().await;
+    admin
+        .ok(&["ACL", "SETUSER", "reader", "-@all", "+@read", "allkeys"])
+        .await;
+    let mut reader = server.connect().await;
+    reader.ok(&["AUTH", "reader", "reader-pass"]).await;
+    assert_eq!(reader.get_bulk(&["GET", "k"]).await, None);
+    let err = reader.err(&["SET", "k", "v"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+}

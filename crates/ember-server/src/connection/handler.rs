@@ -374,6 +374,7 @@ pub(super) async fn handle_monitor_mode<S>(
     stream: &mut S,
     buf: &mut BytesMut,
     ctx: &Arc<ServerContext>,
+    session: &mut Session,
     peer_addr: &str,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
@@ -386,6 +387,11 @@ where
     loop {
         tokio::select! {
             event = rx.recv() => {
+                // stop streaming to a user that was deleted, switched off
+                // or lost MONITOR
+                if !session.still_allowed(ctx, &Command::Monitor) {
+                    return Ok(());
+                }
                 match event {
                     Ok(event) => {
                         let line = format_monitor_event(&event);
@@ -440,7 +446,7 @@ pub(super) async fn handle_subscriber_mode<S>(
     out: &mut BytesMut,
     ctx: &Arc<ServerContext>,
     pubsub: &Arc<PubSubManager>,
-    session: &Session,
+    session: &mut Session,
     first: Frame,
 ) -> Result<SubscriberExit, Box<dyn std::error::Error>>
 where
@@ -457,6 +463,7 @@ where
 
     loop {
         // the client may have pipelined more commands behind the first one
+        session.refresh(ctx);
         let exit = run_buffered_frames(buf, out, ctx, session, &mut subs);
         if !out.is_empty() {
             stream.write_all(out).await?;
@@ -468,6 +475,12 @@ where
 
         tokio::select! {
             msg = recv_any_message(&mut subs.channels, &mut subs.patterns) => {
+                // stop delivering to a user that was deleted, switched off
+                // or lost SUBSCRIBE
+                let subscribe = Command::Subscribe { channels: Vec::new() };
+                if !session.still_allowed(ctx, &subscribe) {
+                    return Ok(SubscriberExit::Close);
+                }
                 if let Some(msg) = msg {
                     serialize_push_message(&msg, out);
                 }
