@@ -511,7 +511,7 @@ impl Command {
             | Command::VInfo { .. } => READ | SLOW,
 
             // protobuf
-            Command::ProtoRegister { .. } => WRITE | SERVER | SLOW,
+            Command::ProtoRegister { .. } => WRITE | ADMIN | DANGEROUS | SERVER | SLOW,
             Command::ProtoSet { .. }
             | Command::ProtoSetField { .. }
             | Command::ProtoDelField { .. } => WRITE | STRING | SLOW,
