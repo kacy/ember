@@ -406,6 +406,11 @@ pub struct KeyspaceStats {
 /// eviction overhead low even at millions of keys.
 const EVICTION_SAMPLE_SIZE: usize = 16;
 
+/// Most keys whose WATCH versions a shard tracks. Watching missing keys
+/// adds entries the keyspace doesn't bound, so past this the table starts
+/// over.
+const MAX_TRACKED_VERSIONS: usize = 1 << 20;
+
 /// The core key-value store.
 ///
 /// All operations are single-threaded per shard — no internal locking.
@@ -490,33 +495,41 @@ impl Keyspace {
         }
     }
 
-    /// Returns the current version of a key, or `None` if the key is
-    /// missing or expired. Used by WATCH/EXEC — cold path only.
+    /// Returns the current version of a key, for WATCH/EXEC. Cold path
+    /// only.
     ///
-    /// If the key hasn't been WATCHed yet, inserts the current
-    /// `next_version` so that future mutations will be detected.
-    pub fn key_version(&mut self, key: &str) -> Option<u64> {
-        let entry = self.entries.get(key)?;
-        if entry.is_expired() {
-            return None;
+    /// If the key isn't tracked yet, starts tracking it at the current
+    /// `next_version`, so later writes change it. Missing keys are tracked
+    /// too, so creating a watched key counts as a change.
+    pub fn key_version(&mut self, key: &str) -> u64 {
+        self.remove_if_expired(key);
+        if self.versions.len() >= MAX_TRACKED_VERSIONS && !self.versions.contains_key(key) {
+            // forgetting every version changes them all, so open WATCHes
+            // abort instead of missing a write
+            self.forget_versions();
         }
-        let ver = *self
+        *self
             .versions
             .entry(CompactString::from(key))
-            .or_insert(self.next_version);
-        Some(ver)
+            .or_insert(self.next_version)
     }
 
-    /// Removes version tracking for a key. Called on key deletion,
-    /// expiration, and eviction so the side table doesn't leak.
+    /// Stops tracking the version of a key that was removed. If the key
+    /// was tracked, a recreated key must not get its old version back, so
+    /// the counter moves on.
     fn remove_version(&mut self, key: &str) {
-        self.versions.remove(key);
+        if self.versions.remove(key).is_some() {
+            self.next_version += 1;
+        }
     }
 
-    /// Removes all version tracking entries. Called on UNWATCH/DISCARD
-    /// or FLUSHDB.
-    pub fn clear_versions(&mut self) {
-        self.versions.clear();
+    /// Stops tracking every version, for FLUSHDB. The counter moves on so
+    /// keys tracked again later don't get their old versions back.
+    fn forget_versions(&mut self) {
+        if !self.versions.is_empty() {
+            self.versions.clear();
+            self.next_version += 1;
+        }
     }
 
     /// Stops tracking the TTL of `key`, whose `entry` was just removed.
@@ -753,7 +766,7 @@ impl Keyspace {
         let old = std::mem::take(&mut self.entries);
         self.memory.reset();
         self.expiring.clear();
-        self.versions.clear();
+        self.forget_versions();
         old
     }
 
@@ -803,7 +816,7 @@ impl Keyspace {
         self.entries.clear();
         self.memory.reset();
         self.expiring.clear();
-        self.versions.clear();
+        self.forget_versions();
     }
 
     /// Returns `true` if the keyspace has no entries.

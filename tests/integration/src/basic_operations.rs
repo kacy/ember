@@ -766,3 +766,24 @@ async fn pipelined_multi_key_commands_see_earlier_writes() {
         "+OK\r\n+OK\r\n*2\r\n$1\r\n1\r\n$1\r\n2\r\n:2\r\n_\r\n+OK\r\n"
     );
 }
+
+#[tokio::test]
+async fn watch_sees_a_key_deleted_and_recreated() {
+    use ember_protocol::Frame;
+
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    let mut other = server.connect().await;
+    for setup in [&["SET", "k", "v"][..], &[]] {
+        if !setup.is_empty() {
+            c.ok(setup).await;
+        }
+        c.ok(&["WATCH", "k"]).await;
+        other.get_int(&["DEL", "k"]).await;
+        other.ok(&["SET", "k", "other"]).await;
+        other.get_int(&["DEL", "k"]).await;
+        c.ok(&["MULTI"]).await;
+        c.cmd(&["SET", "k", "mine"]).await;
+        assert_eq!(c.cmd(&["EXEC"]).await, Frame::Null, "setup {setup:?}");
+    }
+}
