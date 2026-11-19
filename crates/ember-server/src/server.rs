@@ -51,14 +51,11 @@ pub struct ServerContext {
     pub version: &'static str,
     pub shard_count: usize,
     pub max_connections: usize,
-    pub max_memory: Option<usize>,
     pub aof_enabled: bool,
     pub metrics_enabled: bool,
     pub connections_accepted: AtomicU64,
     pub connections_active: AtomicU64,
     pub commands_processed: AtomicU64,
-    /// Password required for AUTH. None means no authentication needed.
-    pub requirepass: Option<String>,
     /// The address the server is bound to (for protected mode checks).
     pub bind_addr: SocketAddr,
     /// Runtime configuration registry for CONFIG GET/SET.
@@ -304,7 +301,6 @@ pub async fn run_threaded(
     max_connections: Option<usize>,
     metrics: Option<(SocketAddr, metrics_exporter_prometheus::PrometheusHandle)>,
     slowlog_config: SlowLogConfig,
-    requirepass: Option<String>,
     acl: crate::acl::SharedAclState,
     tls: Option<(SocketAddr, TlsConfig)>,
     cluster: Option<Arc<ClusterCoordinator>>,
@@ -318,6 +314,9 @@ pub async fn run_threaded(
     if let Some(ref pcfg) = config.persistence {
         std::fs::create_dir_all(&pcfg.data_dir)?;
     }
+    // port 0 turns the plaintext listener off. `addr` still gives the bind
+    // address for protected mode
+    let plain_addr = (addr.port() != 0).then_some(addr);
 
     let aof_enabled = config
         .persistence
@@ -367,13 +366,11 @@ pub async fn run_threaded(
         version: env!("CARGO_PKG_VERSION"),
         shard_count,
         max_connections: max_conn,
-        max_memory,
         aof_enabled,
         metrics_enabled,
         connections_accepted: AtomicU64::new(0),
         connections_active: AtomicU64::new(0),
         commands_processed: AtomicU64::new(0),
-        requirepass,
         bind_addr: addr,
         config: config_registry,
         config_path,
@@ -537,7 +534,8 @@ pub async fn run_threaded(
                     };
 
                     rt.block_on(worker_main(
-                        id, prepared, addr, engine, ctx, slow_log, pubsub, semaphore, tls, shutdown,
+                        id, prepared, plain_addr, engine, ctx, slow_log, pubsub, semaphore, tls,
+                        shutdown,
                     ));
 
                     // give in-flight connection handlers time to finish
@@ -552,9 +550,14 @@ pub async fn run_threaded(
     // the shards recover on the worker threads started above
     wait_for_shards(&engine).await?;
 
-    info!(
-        "listening on {addr} with {shard_count} shards, thread-per-core (max {max_conn} connections)"
-    );
+    match plain_addr {
+        Some(addr) => info!(
+            "listening on {addr} with {shard_count} shards, thread-per-core (max {max_conn} connections)"
+        ),
+        None => info!(
+            "plaintext port disabled, serving TLS only with {shard_count} shards, thread-per-core (max {max_conn} connections)"
+        ),
+    }
 
     // await shutdown signal on the management runtime
     shutdown_signal().await;
@@ -582,7 +585,7 @@ pub async fn run_threaded(
 async fn worker_main(
     id: usize,
     prepared: ember_core::PreparedShard,
-    addr: SocketAddr,
+    addr: Option<SocketAddr>,
     engine: Engine,
     ctx: Arc<ServerContext>,
     slow_log: Arc<SlowLog>,
@@ -595,11 +598,13 @@ async fn worker_main(
     tokio::spawn(ember_core::run_prepared(prepared));
 
     // bind SO_REUSEPORT listener — the kernel distributes connections
-    // across all workers listening on the same port
-    let listener = match bind_reuse_port(addr) {
-        Ok(l) => l,
-        Err(e) => {
-            error!("worker {id}: failed to bind {addr}: {e}");
+    // across all workers listening on the same port. `port = 0` turns the
+    // plaintext listener off, leaving TLS only
+    let listener = match addr.map(bind_reuse_port) {
+        None => None,
+        Some(Ok(l)) => Some(l),
+        Some(Err(e)) => {
+            error!("worker {id}: failed to bind {addr:?}: {e}");
             return;
         }
     };
@@ -618,7 +623,13 @@ async fn worker_main(
     let shutdown_fut = shutdown.notified();
     tokio::pin!(shutdown_fut);
 
-    // helper to accept from TLS listener or pend forever if disabled
+    // helpers to accept from each listener, or pend forever if it's off
+    let plain_accept = || async {
+        match &listener {
+            Some(listener) => listener.accept().await,
+            None => std::future::pending().await,
+        }
+    };
     let tls_accept = || async {
         match &tls_listener {
             Some((listener, acceptor)) => {
@@ -635,11 +646,12 @@ async fn worker_main(
 
             _ = &mut shutdown_fut => break,
 
-            result = listener.accept() => {
+            result = plain_accept() => {
                 let (stream, peer) = match result {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("worker {id}: accept error: {e}");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 };
@@ -672,6 +684,7 @@ async fn worker_main(
                     Ok(v) => v,
                     Err(e) => {
                         warn!("worker {id}: TLS accept error: {e}");
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                         continue;
                     }
                 };
@@ -721,10 +734,16 @@ fn bind_reuse_port(addr: SocketAddr) -> std::io::Result<TcpListener> {
     TcpListener::from_std(std_listener)
 }
 
+/// How long a listener waits after a failed accept before trying again.
+/// Errors such as running out of file descriptors repeat at once, so
+/// retrying without a pause would spin a core.
+pub(crate) const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+
 /// Returns true if the connection should be rejected by protected mode.
 ///
 /// Protected mode activates when all three conditions hold:
-/// 1. No password is configured (requirepass is None)
+/// 1. The `default` user needs no password: it is on and `nopass`, from
+///    `requirepass` being unset or from an ACL file or ACL SETUSER
 /// 2. The server is bound to a non-loopback address (e.g. 0.0.0.0)
 /// 3. The connecting client is from a non-loopback address
 ///
@@ -732,7 +751,17 @@ fn bind_reuse_port(addr: SocketAddr) -> std::io::Result<TcpListener> {
 /// (address unknown) is treated as remote. Addresses are canonicalized
 /// first, so an IPv4-mapped `::ffff:127.0.0.1` counts as loopback.
 pub(crate) fn is_protected_mode_violation(ctx: &ServerContext, peer: Option<IpAddr>) -> bool {
-    protected_mode_rejects(ctx.requirepass.is_some(), ctx.bind_addr.ip(), peer)
+    if ctx.bind_addr.ip().to_canonical().is_loopback()
+        || peer.is_some_and(|ip| ip.to_canonical().is_loopback())
+    {
+        return false;
+    }
+    let default_is_open = ctx.acl.read().ok().is_some_and(|state| {
+        state
+            .get_user("default")
+            .is_some_and(|user| user.enabled && user.nopass)
+    });
+    protected_mode_rejects(!default_is_open, ctx.bind_addr.ip(), peer)
 }
 
 fn protected_mode_rejects(has_password: bool, bind: IpAddr, peer: Option<IpAddr>) -> bool {

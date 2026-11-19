@@ -517,6 +517,9 @@ async fn main() {
         };
         apply_args(&mut cfg, &args);
         let port = cfg.port;
+        if port == 0 {
+            exit_err("--healthcheck connects to the plaintext port, which port 0 turns off");
+        }
         let host = if cfg.bind == "0.0.0.0" || cfg.bind == "::" {
             "127.0.0.1".to_string()
         } else {
@@ -746,6 +749,18 @@ async fn main() {
         None
     };
 
+    // port 0 turns the plaintext listener off, which leaves nothing to
+    // serve without TLS. cluster nodes reach each other on the plaintext
+    // port and the cluster bus next to it
+    if cfg.port == 0 {
+        if tls_config.is_none() {
+            exit_err("port 0 turns off the plaintext listener, so tls-port must be set");
+        }
+        if cfg.cluster.enabled {
+            exit_err("cluster mode needs a plaintext port; port 0 is only for standalone servers");
+        }
+    }
+
     if cfg.cluster.bootstrap && !cfg.cluster.enabled {
         exit_err("error: cluster bootstrap requires cluster enabled");
     }
@@ -866,7 +881,6 @@ async fn main() {
     // build runtime config registry from resolved config
     let config_registry = Arc::new(cfg.to_registry());
 
-    let requirepass = cfg.requirepass();
     let acl = build_acl_state(&cfg);
 
     let config_path = args.config.clone();
@@ -878,7 +892,6 @@ async fn main() {
         Some(cfg.maxclients),
         metrics_handle,
         slowlog_config,
-        requirepass,
         acl,
         tls_config,
         cluster,
