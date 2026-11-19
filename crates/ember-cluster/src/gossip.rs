@@ -89,6 +89,24 @@ pub struct MemberState {
     pub config_epoch: u64,
 }
 
+impl MemberState {
+    /// A member just seen alive: a primary with no slots, until updates
+    /// about it arrive.
+    fn new(id: NodeId, addr: SocketAddr, incarnation: u64) -> Self {
+        Self {
+            id,
+            addr,
+            incarnation,
+            state: MemberStatus::Alive,
+            state_change: Instant::now(),
+            is_primary: true,
+            replicates: None,
+            slots: Vec::new(),
+            config_epoch: 0,
+        }
+    }
+}
+
 /// Health status of a member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberStatus {
@@ -394,22 +412,31 @@ impl GossipEngine {
         Some((addr, msg))
     }
 
-    /// Adds a seed node to bootstrap cluster discovery.
+    /// Adds a seed node to bootstrap cluster discovery. It counts as a
+    /// primary with no slots until gossip says otherwise, as in the
+    /// cluster state.
     pub fn add_seed(&mut self, id: NodeId, addr: SocketAddr) {
-        if id == self.local_id {
-            return;
+        self.ensure_member(id, addr);
+    }
+
+    /// Adds a node known from the saved cluster config, with the role,
+    /// slots and config epoch saved for it. A restarted node then describes
+    /// its peers correctly in the Welcome it sends to a joining node.
+    pub fn add_known_node(
+        &mut self,
+        id: NodeId,
+        addr: SocketAddr,
+        replicates: Option<NodeId>,
+        slots: Vec<SlotRange>,
+        config_epoch: u64,
+    ) {
+        self.ensure_member(id, addr);
+        if let Some(member) = self.members.get_mut(&id) {
+            member.is_primary = replicates.is_none();
+            member.replicates = replicates;
+            member.slots = slots;
+            member.config_epoch = config_epoch;
         }
-        self.members.entry(id).or_insert_with(|| MemberState {
-            id,
-            addr,
-            incarnation: 0,
-            state: MemberStatus::Alive,
-            state_change: Instant::now(),
-            is_primary: false,
-            replicates: None,
-            slots: Vec::new(),
-            config_epoch: 0,
-        });
     }
 
     /// Handles an incoming gossip message.
@@ -585,6 +612,10 @@ impl GossipEngine {
                     if member.id == self.local_id {
                         continue;
                     }
+                    if self.members.contains_key(&member.id) {
+                        self.update_known_member(&member);
+                        continue;
+                    }
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         self.members.entry(member.id)
                     {
@@ -729,21 +760,51 @@ impl GossipEngine {
         }
     }
 
+    /// Adds a member not seen before. Like the cluster state, it counts as
+    /// a primary with no slots until a role or slot update says otherwise;
+    /// counting it as a replica made this node describe primaries as
+    /// replicas to every node that joined through it.
     fn ensure_member(&mut self, id: NodeId, addr: SocketAddr) {
         if id == self.local_id {
             return;
         }
-        self.members.entry(id).or_insert_with(|| MemberState {
-            id,
-            addr,
-            incarnation: 0,
-            state: MemberStatus::Alive,
-            state_change: Instant::now(),
-            is_primary: false,
-            replicates: None,
-            slots: Vec::new(),
-            config_epoch: 0,
-        });
+        self.members
+            .entry(id)
+            .or_insert_with(|| MemberState::new(id, addr, 0));
+    }
+
+    /// Applies what a Welcome says about a member this node already knows,
+    /// where it is newer: a role from a later incarnation, and slots from a
+    /// later config epoch.
+    fn update_known_member(&mut self, info: &MemberInfo) {
+        let Some(member) = self.members.get_mut(&info.id) else {
+            return;
+        };
+        let mut events = Vec::new();
+        if info.incarnation > member.incarnation {
+            member.incarnation = info.incarnation;
+            if (member.is_primary, member.replicates) != (info.is_primary, info.replicates) {
+                member.is_primary = info.is_primary;
+                member.replicates = info.replicates;
+                events.push(GossipEvent::RoleChanged(
+                    info.id,
+                    info.is_primary,
+                    info.replicates,
+                ));
+            }
+        }
+        if info.config_epoch > member.config_epoch {
+            member.config_epoch = info.config_epoch;
+            member.slots = info.slots.clone();
+            events.push(GossipEvent::SlotsChanged(
+                info.id,
+                info.slots.clone(),
+                info.config_epoch,
+            ));
+        }
+        for event in events {
+            self.emit(event);
+        }
     }
 
     /// Records an event for the next [`take_events`](Self::take_events).
@@ -825,20 +886,8 @@ impl GossipEngine {
                             }
                         }
                     } else {
-                        self.members.insert(
-                            *node,
-                            MemberState {
-                                id: *node,
-                                addr: *addr,
-                                incarnation: *incarnation,
-                                state: MemberStatus::Alive,
-                                state_change: Instant::now(),
-                                is_primary: false,
-                                replicates: None,
-                                slots: Vec::new(),
-                                config_epoch: 0,
-                            },
-                        );
+                        self.members
+                            .insert(*node, MemberState::new(*node, *addr, *incarnation));
                         self.emit(GossipEvent::MemberJoined(*node, *addr, Vec::new(), 0));
                     }
                 }
@@ -1401,6 +1450,74 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert!(matches!(responses[0].1, GossipMessage::Welcome { .. }));
         assert_eq!(engine.alive_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_joiner_learns_peer_primaries_as_primaries() {
+        // a knows primary b only from a ping, and c joins through a
+        let mut a = engine(7000);
+        let mut c = engine(7002);
+        let b_id = NodeId::new();
+        a.handle_message(
+            GossipMessage::Ping {
+                seq: 1,
+                sender: b_id,
+                updates: vec![],
+            },
+            test_addr(7001),
+        );
+        let welcomes = a.handle_message(c.create_join_message(), test_addr(7002));
+        for (_, welcome) in welcomes {
+            c.handle_message(welcome, test_addr(7000));
+        }
+        assert!(c.members[&b_id].is_primary);
+        assert!(!c
+            .take_events()
+            .events
+            .iter()
+            .any(|e| matches!(e, GossipEvent::RoleChanged(id, false, _) if *id == b_id)));
+    }
+
+    #[tokio::test]
+    async fn a_welcome_updates_a_known_member_with_newer_role_and_slots() {
+        let mut c = engine(7002);
+        let (a_id, b_id, p_id) = (NodeId::new(), NodeId::new(), NodeId::new());
+        c.add_seed(b_id, test_addr(7001));
+        let b = MemberInfo {
+            id: b_id,
+            addr: test_addr(7001),
+            incarnation: 3,
+            is_primary: false,
+            replicates: Some(p_id),
+            config_epoch: 5,
+            slots: vec![SlotRange::new(0, 9)],
+        };
+        c.handle_message(
+            GossipMessage::Welcome {
+                sender: a_id,
+                members: vec![b],
+            },
+            test_addr(7000),
+        );
+        let member = &c.members[&b_id];
+        assert_eq!((member.is_primary, member.replicates), (false, Some(p_id)));
+        assert_eq!(member.config_epoch, 5);
+        let events = c.take_events().events;
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, GossipEvent::RoleChanged(id, false, Some(_)) if *id == b_id)));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, GossipEvent::SlotsChanged(id, _, 5) if *id == b_id)));
+    }
+
+    #[tokio::test]
+    async fn a_known_node_keeps_its_saved_role() {
+        let mut a = engine(7000);
+        let (b_id, p_id) = (NodeId::new(), NodeId::new());
+        a.add_known_node(b_id, test_addr(7001), Some(p_id), vec![], 2);
+        let member = &a.members[&b_id];
+        assert_eq!((member.is_primary, member.replicates), (false, Some(p_id)));
     }
 
     #[tokio::test]
