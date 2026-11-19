@@ -57,7 +57,7 @@ impl ClusterCoordinator {
         // sleep, or another replica may already have taken over its slots.
         let (epoch, voters, still_failed) = {
             let state = self.state.read().await;
-            let epoch = state.config_epoch + round;
+            let epoch = state.config_epoch.saturating_add(round);
             // every other primary votes, reachable or not. counting only
             // the ones this node can reach would let a replica cut off from
             // the cluster win with its own tiny view of it (split brain).

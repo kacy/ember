@@ -178,8 +178,13 @@ pub fn read_bytes(r: &mut impl Read) -> Result<Vec<u8>, FormatError> {
             format!("field length {len} exceeds maximum of {MAX_FIELD_LEN}"),
         )));
     }
-    let mut buf = vec![0u8; len];
-    read_exact(r, &mut buf)?;
+    // grow the buffer as data arrives, so a length prefix on a short input
+    // can't make us allocate up to MAX_FIELD_LEN for nothing
+    let mut buf = Vec::with_capacity(len.min(64 * 1024));
+    r.by_ref().take(len as u64).read_to_end(&mut buf)?;
+    if buf.len() < len {
+        return Err(FormatError::UnexpectedEof);
+    }
     Ok(buf)
 }
 
@@ -233,6 +238,10 @@ pub fn validate_collection_count(count: u32, label: &str) -> Result<(), FormatEr
 /// Matches the protocol-layer cap. Records exceeding this are rejected
 /// during deserialization to prevent OOM from corrupt files.
 pub const MAX_PERSISTED_VECTOR_DIMS: u32 = 65_536;
+
+/// Largest HNSW connectivity (M) or expansion (EF) a snapshot may hold, the
+/// same limit VADD applies.
+pub const MAX_PERSISTED_HNSW_PARAM: u32 = 1024;
 
 /// Maximum element count per vector set in persistence formats.
 /// Prevents corrupt count fields from causing unbounded loops.
@@ -349,6 +358,15 @@ mod tests {
     #[test]
     fn empty_input_returns_eof() {
         let err = read_u8(&mut Cursor::new(&[])).unwrap_err();
+        assert!(matches!(err, FormatError::UnexpectedEof));
+    }
+
+    #[test]
+    fn read_bytes_with_a_length_past_the_input_returns_eof() {
+        let mut buf = Vec::new();
+        write_u32(&mut buf, 400 * 1024 * 1024).unwrap();
+        buf.extend_from_slice(b"abc");
+        let err = read_bytes(&mut Cursor::new(&buf)).unwrap_err();
         assert!(matches!(err, FormatError::UnexpectedEof));
     }
 

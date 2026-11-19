@@ -326,6 +326,27 @@ impl Keyspace {
         Some((&entry.value, ttl_ms))
     }
 
+    /// Stores a value for RESTORE, within the memory limit. Returns
+    /// `false`, changing nothing, when the limit leaves no room for it even
+    /// after eviction.
+    pub fn restore_within_limit(
+        &mut self,
+        key: String,
+        value: Value,
+        ttl: Option<Duration>,
+    ) -> bool {
+        let old = self
+            .entries
+            .get(key.as_str())
+            .map_or(0, |e| e.entry_size(&key));
+        let increase = memory::entry_size(&key, &value).saturating_sub(old);
+        if !self.enforce_memory_limit(&key, increase) {
+            return false;
+        }
+        self.restore(key, value, ttl);
+        true
+    }
+
     /// Restores an entry during recovery, bypassing memory limits.
     ///
     /// `ttl` is the remaining time-to-live. If `None`, the key has no expiry.

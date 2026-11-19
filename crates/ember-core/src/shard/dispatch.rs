@@ -674,8 +674,11 @@ pub(super) fn dispatch(
                     } else {
                         Some(Duration::from_millis(*ttl_ms))
                     };
-                    ks.restore(key.clone(), value, ttl);
-                    ShardResponse::Ok
+                    if ks.restore_within_limit(key.clone(), value, ttl) {
+                        ShardResponse::Ok
+                    } else {
+                        ShardResponse::OutOfMemory
+                    }
                 }
             }
             Err(e) => ShardResponse::Err(format!("ERR DUMP payload corrupted: {e}")),
