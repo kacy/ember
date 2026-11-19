@@ -7,7 +7,7 @@
 - TLS and ACL username options for the Go, Python and TypeScript clients: `WithTLS` and `WithUsername`, `tls`/`root_certificates` and `username`, and `tls`/`rootCerts` and `username`. a server with `tls-port` serves gRPC over TLS only, which the clients couldn't connect to (#478)
 
 ### changed
-- keys go to local shards by their hash tag, as they go to cluster slots, so `{user:1}:a` and `{user:1}:b` share a shard and RENAME, COPY and the other multi-key commands work on them. they failed with "must hash to the same shard". a key with a tag may now map to another shard, so data written with tagged keys before this change isn't found after it (#PR)
+- keys go to local shards by their hash tag, as they go to cluster slots, so `{user:1}:a` and `{user:1}:b` share a shard and RENAME, COPY and the other multi-key commands work on them. they failed with "must hash to the same shard". a key with a tag may now map to another shard, so data written with tagged keys before this change isn't found after it (#482)
 - file layout version 6 for AOF and snapshot files. files from version 5 are no longer read (#469):
   - an encrypted file's key is derived from its header too: the file type, the version and the flags. an encrypted AOF relabeled as a snapshot, or a header with a changed version or flags, no longer decrypts
   - a snapshot's trailer, holding the entry count, the CRC and the shard ID, is stored in a frame sealed like an entry. in an encrypted snapshot a forged trailer could drop every entry, which wiped the shard on startup, and two edited bytes could load one shard's snapshot into another
