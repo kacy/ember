@@ -837,10 +837,10 @@ impl AofLog {
         self.check("write", result)
     }
 
-    /// Writes the queued records to the OS.
-    pub(super) fn flush(&mut self) {
+    /// Writes the queued records to the OS. Returns whether that worked.
+    pub(super) fn flush(&mut self) -> bool {
         let result = self.writer.flush();
-        self.check("write", result);
+        self.check("write", result)
     }
 
     /// Runs on the fsync tick: fsyncs under `appendfsync everysec`, and
