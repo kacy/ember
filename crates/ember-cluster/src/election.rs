@@ -10,10 +10,10 @@
 //!
 //! # Fairness
 //!
-//! Replicas that are more up-to-date (higher replication offset) are
-//! preferred by waiting less before broadcasting their request. This is
-//! achieved by the caller applying a stagger delay before calling
-//! `queue_vote_request`.
+//! Replicas that are more up to date (higher replication offset) are
+//! preferred by waiting less before asking for votes. Gossip carries each
+//! node's offset, and the caller delays its request by the replica's rank
+//! from [`crate::GossipEngine::replica_rank`].
 
 use std::collections::HashSet;
 
