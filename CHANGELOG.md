@@ -18,6 +18,11 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- VADD batch fixes (#PR):
+  - a batch for an existing vector set must match its dimension. a different one went to the index unchecked
+  - an element named more than once in a batch takes its last vector. the parallel path assigned it two index slots
+  - entries whose index insert fails are removed from the set. they stayed in the element maps with no vector in the index, and an update that failed lost its old vector while the element still showed as present
+  - a batch with failures replies with an error. it replied with a count, and the AOF and replicas received every entry, including the ones that failed. now they receive only the entries that went in, plus a removal for each update that failed
 - maxmemory and eviction fixes (#466):
   - under `allkeys-lru`, a write too large for the limit is refused before anything is evicted. it evicted every other key in the shard and then failed anyway
   - GETSET, MSETNX and PROTO field writes reply OOM when the value doesn't fit. they replied as if it was written and logged it to the AOF and replicas. MSETNX makes room for every pair up front, so it can't stop part way
