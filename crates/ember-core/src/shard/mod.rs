@@ -46,6 +46,7 @@
 mod aof;
 pub use aof::from_aof_record;
 mod blocking;
+pub use blocking::PopWaiter;
 mod dispatch;
 mod persistence;
 mod request;
@@ -422,8 +423,8 @@ async fn run_shard(prepared: PreparedShard) {
     let mut held_replies: Vec<HeldReply> = Vec::new();
 
     // waiter registries for blocking list operations (BLPOP/BRPOP)
-    let mut lpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
-    let mut rpop_waiters: HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>> = HashMap::new();
+    let mut lpop_waiters: HashMap<String, VecDeque<PopWaiter>> = HashMap::new();
+    let mut rpop_waiters: HashMap<String, VecDeque<PopWaiter>> = HashMap::new();
 
     // -- tickers --
     let mut expiry_tick = tokio::time::interval(expiry_interval);
@@ -507,9 +508,9 @@ struct ProcessCtx<'a> {
     /// Where replication records wait for the end of the burst.
     replication: &'a mut Option<aof::ReplicationLog>,
     /// Waiters for BLPOP — keyed by list name, FIFO order.
-    lpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
+    lpop_waiters: &'a mut HashMap<String, VecDeque<PopWaiter>>,
     /// Waiters for BRPOP — keyed by list name, FIFO order.
-    rpop_waiters: &'a mut HashMap<String, VecDeque<mpsc::Sender<(String, Bytes)>>>,
+    rpop_waiters: &'a mut HashMap<String, VecDeque<PopWaiter>>,
     #[cfg(feature = "protobuf")]
     schema_registry: &'a Option<crate::schema::SharedSchemaRegistry>,
 }
@@ -652,11 +653,11 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
         ctx.schema_registry,
     );
 
-    // a successful push, or an LMOVE, COPY or RESTORE into a key, may feed
-    // blocked clients. remember the key now,
-    // because the request is consumed below, but wake the waiters only after
-    // the push is logged: their pops must follow it in the AOF and in the
-    // replication stream.
+    // a successful push, or an LMOVE, COPY, RESTORE or RENAME into a key,
+    // may feed blocked clients. remember the key now, because the request
+    // is consumed below, but wake the waiters only after the push is
+    // logged: their pops must follow it in the AOF and in the replication
+    // stream.
     let pushed_key = match (&request, &response) {
         (
             ShardRequest::LPush { key, .. } | ShardRequest::RPush { key, .. },
@@ -674,7 +675,8 @@ fn process_single(mut request: ShardRequest, reply: ReplySender, ctx: &mut Proce
             },
             ShardResponse::Bool(true),
         )
-        | (ShardRequest::RestoreKey { key, .. }, ShardResponse::Ok) => Some(key.clone()),
+        | (ShardRequest::RestoreKey { key, .. }, ShardResponse::Ok)
+        | (ShardRequest::Rename { newkey: key, .. }, ShardResponse::Ok) => Some(key.clone()),
         _ => None,
     };
 

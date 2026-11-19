@@ -257,12 +257,12 @@ shard_request! {
         /// RPOP key count — pop up to `count` elements from the list tail, returning an array.
         RPopCount { key: String, count: usize },
         /// Blocking left-pop. If the list has elements, pops immediately and sends
-        /// the result on `waiter`. If empty, the shard registers the waiter to be
-        /// woken when an element is pushed. Uses an mpsc sender so multiple shards
-        /// can race to deliver the first result to a single receiver.
-        BLPop { key: String, waiter: mpsc::Sender<(String, Bytes)> },
+        /// the result to `waiter`. If empty, the shard registers the waiter to be
+        /// woken when an element is pushed. A client blocked on keys in several
+        /// shards sends each the same waiter, and takes one element in total.
+        BLPop { key: String, waiter: PopWaiter },
         /// Blocking right-pop. Same semantics as BLPop but pops from the tail.
-        BRPop { key: String, waiter: mpsc::Sender<(String, Bytes)> },
+        BRPop { key: String, waiter: PopWaiter },
         LSet { key: String, index: i64, value: Bytes },
         LTrim { key: String, start: i64, stop: i64 },
         LInsert { key: String, before: bool, pivot: Bytes, value: Bytes },

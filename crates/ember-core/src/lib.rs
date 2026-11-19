@@ -29,7 +29,7 @@ pub use keyspace::{
 pub use keyspace::{VAddResult, VectorWriteError};
 pub use shard::{from_aof_record, run_prepared};
 pub use shard::{
-    PreparedShard, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest,
+    PopWaiter, PreparedShard, ReplicationEvent, ShardHandle, ShardPersistenceConfig, ShardRequest,
     ShardResponse,
 };
 pub use types::Value;

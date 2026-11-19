@@ -787,3 +787,53 @@ async fn watch_sees_a_key_deleted_and_recreated() {
         assert_eq!(c.cmd(&["EXEC"]).await, Frame::Null, "setup {setup:?}");
     }
 }
+
+#[tokio::test]
+async fn blpop_on_another_type_is_wrongtype() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.cmd(&["SET", "s", "v"]).await;
+    // an empty key before it doesn't hide the error
+    let resp = c.cmd(&["BLPOP", "empty", "s", "1"]).await;
+    assert!(
+        matches!(&resp, Frame::Error(e) if e.starts_with("WRONGTYPE")),
+        "{resp:?}"
+    );
+    // a list with an element before it is popped first, as in Redis
+    c.cmd(&["RPUSH", "q", "x"]).await;
+    let resp = c.cmd(&["BRPOP", "q", "s", "1"]).await;
+    assert_eq!(
+        resp,
+        Frame::Array(vec![Frame::Bulk("q".into()), Frame::Bulk("x".into())])
+    );
+}
+
+#[tokio::test]
+async fn rename_into_a_waited_key_wakes_the_client() {
+    let server = TestServer::start();
+    let mut blocked = server.connect().await;
+    let mut c = server.connect().await;
+    let waiting = tokio::spawn(async move { blocked.cmd(&["BLPOP", "q", "5"]).await });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // RENAME needs both keys in one shard, and standalone mode ignores
+    // hash tags, so try sources until one shares a shard with q
+    let mut renamed = false;
+    for i in 0..256 {
+        let src = format!("src{i}");
+        c.cmd(&["RPUSH", &src, "x"]).await;
+        if c.cmd(&["RENAME", &src, "q"]).await == Frame::Simple("OK".into()) {
+            renamed = true;
+            break;
+        }
+    }
+    assert!(renamed, "no source key shares a shard with q");
+    let resp = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+        .await
+        .expect("BLPOP was not woken")
+        .unwrap();
+    assert_eq!(
+        resp,
+        Frame::Array(vec![Frame::Bulk("q".into()), Frame::Bulk("x".into())])
+    );
+}
