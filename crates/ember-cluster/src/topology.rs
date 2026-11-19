@@ -546,6 +546,24 @@ impl ClusterState {
 
         if result.changed {
             self.rebuild_slot_lists();
+            // only a primary claims slots, so a node known as a replica
+            // whose claim won was promoted. its role update may be lost: a
+            // newer update about it, such as an Alive refuting suspicion,
+            // can arrive first and make the role update look stale
+            let promoted = self
+                .nodes
+                .get(&node)
+                .is_some_and(|n| n.role == NodeRole::Replica && !n.slots.is_empty());
+            if promoted {
+                let old_primary = self.nodes.get(&node).and_then(|n| n.replicates);
+                if let Some(claimant) = self.nodes.get_mut(&node) {
+                    claimant.role = NodeRole::Primary;
+                    claimant.replicates = None;
+                }
+                if let Some(old) = old_primary.and_then(|id| self.nodes.get_mut(&id)) {
+                    old.replicas.retain(|&id| id != node);
+                }
+            }
         }
         result
     }
@@ -1339,5 +1357,31 @@ mod tests {
         let result = state.apply_slot_claim(other, &[], 4);
         assert!(!result.changed);
         assert_eq!(state.slot_map.owner(0), Some(other));
+    }
+
+    #[test]
+    fn a_replica_whose_slot_claim_wins_becomes_a_primary() {
+        let local = NodeId::new();
+        let primary = NodeId::new();
+        let replica = NodeId::new();
+        let mut state = ClusterState::single_node(ClusterNode::new_primary(
+            local,
+            "127.0.0.1:7000".parse().unwrap(),
+        ));
+        state.add_node(ClusterNode::new_primary(
+            primary,
+            "127.0.0.1:7001".parse().unwrap(),
+        ));
+        state.add_node(ClusterNode::new_replica(
+            replica,
+            "127.0.0.1:7002".parse().unwrap(),
+            primary,
+        ));
+        state.apply_slot_claim(primary, &[SlotRange::new(0, 9)], 2);
+
+        // the replica's promotion arrives as a claim at a newer epoch only
+        state.apply_slot_claim(replica, &[SlotRange::new(0, 9)], 3);
+        let node = &state.nodes[&replica];
+        assert_eq!((node.role, node.replicates), (NodeRole::Primary, None));
     }
 }
