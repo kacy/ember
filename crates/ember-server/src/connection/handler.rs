@@ -42,9 +42,13 @@ pub(super) async fn handle_frame_with_tx(
     let cmd_name = super::peek_command_name(&frame);
 
     // the transaction commands below don't go through dispatch, so check
-    // the user's permissions here
+    // the user's permissions here. As in Redis, a rejected command inside
+    // MULTI makes EXEC abort.
     if cmd_name.is_some() {
         if let Some(err) = session.check_frame(&frame) {
+            if let TransactionState::Queuing { error, .. } = tx_state {
+                *error = true;
+            }
             return err;
         }
     }
@@ -161,11 +165,6 @@ pub(super) async fn handle_frame_with_tx(
                     watched_keys.clear();
                     drop(q);
                     Frame::Simple("OK".into())
-                }
-                Some("UNWATCH") => {
-                    // inside MULTI, UNWATCH is a no-op (Redis compat)
-                    queue.push(frame);
-                    Frame::Simple("QUEUED".into())
                 }
                 _ if *bytes + request_size(&frame) > ctx.limits.max_command_memory => {
                     *error = true;

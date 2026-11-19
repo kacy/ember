@@ -727,3 +727,22 @@ async fn a_transaction_larger_than_a_command_may_be_is_discarded() {
     assert!(c.err(&["EXEC"]).await.starts_with("EXECABORT"));
     assert_eq!(c.get_int(&["DBSIZE"]).await, 0);
 }
+
+#[tokio::test]
+async fn unwatch_inside_multi_is_checked_like_other_commands() {
+    use ember_protocol::Frame;
+
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.ok(&["MULTI"]).await;
+    assert_eq!(c.cmd(&["UNWATCH"]).await, Frame::Simple("QUEUED".into()));
+    assert_eq!(
+        c.cmd(&["EXEC"]).await,
+        Frame::Array(vec![Frame::Simple("OK".into())])
+    );
+
+    // extra arguments used to be queued unchecked, whatever their size
+    c.ok(&["MULTI"]).await;
+    c.err(&["UNWATCH", &"x".repeat(1024)]).await;
+    assert!(c.err(&["EXEC"]).await.starts_with("EXECABORT"));
+}
