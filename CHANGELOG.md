@@ -21,6 +21,15 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- replication fixes (#475):
+  - the primary stops streaming to a replica that has stopped acknowledging. heartbeats kept a dead replica's connection open, so WAIT and INFO replication went on counting it
+  - a replica that fails to apply a write from the primary, with an error, OOM or WRONGTYPE, doesn't acknowledge it and resyncs. it acknowledged the write as applied and carried on with different data
+  - WAIT counts a replica only once it has acknowledged every shard. after a primary restart, a replica still loading its full sync counted as caught up
+  - protobuf schemas reach replicas: a full sync sends the schemas first, and a replica registers the schemas the stream carries. replicas had none, so every PROTO command failed on them
+  - the replica frees the buffer for the largest shard snapshot once the full sync is in
+  - ASKING covers only the next command, whether that command succeeds, fails to parse, is refused, or is AUTH or part of a transaction. a command that failed kept the flag for the one after it
+  - EXEC during a failover pause refuses the whole transaction instead of running it with its writes refused one by one
+  - MIGRATE reports a failed delete on the source after copying the key, and never sends a TTL of 0 for a key about to expire, which RESTORE would have kept forever
 - cluster command fixes (#474):
   - a replica sends reads of slots owned by another primary to that primary with MOVED. it served them from its own data, which only holds its primary's slots, and so answered as if the keys didn't exist
   - CLUSTER FORGET removes the node's slots and stops gossip from probing it. the slots stayed assigned to the forgotten node

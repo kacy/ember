@@ -41,6 +41,17 @@ pub(super) async fn handle_frame_with_tx(
     // peek at the command name without consuming the frame
     let cmd_name = super::peek_command_name(&frame);
 
+    // the commands handled here, and every command queued inside MULTI,
+    // use up ASKING like any other: it covers only the next command
+    let handled_here = matches!(tx_state, TransactionState::Queuing { .. })
+        || matches!(
+            cmd_name,
+            Some("MULTI" | "EXEC" | "DISCARD" | "WATCH" | "UNWATCH")
+        );
+    if handled_here {
+        *asking = false;
+    }
+
     // the transaction commands below don't go through dispatch, so check
     // the user's permissions here. As in Redis, a rejected command inside
     // MULTI makes EXEC abort.
@@ -124,6 +135,14 @@ pub(super) async fn handle_frame_with_tx(
                         drop(q);
                         Frame::Error(
                             "EXECABORT Transaction discarded because of previous errors.".into(),
+                        )
+                    } else if ctx.cluster.as_ref().is_some_and(|c| c.is_writes_paused()) {
+                        // a failover pause refuses the whole transaction,
+                        // rather than only the writes inside it
+                        *tx_state = TransactionState::None;
+                        watched_keys.clear();
+                        Frame::Error(
+                            "READONLY Failover in progress; writes are temporarily paused.".into(),
                         )
                     } else {
                         // check watched keys before executing

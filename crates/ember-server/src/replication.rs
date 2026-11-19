@@ -75,8 +75,9 @@ use tracing::{debug, error, info, warn};
 
 // -- protocol constants --
 
-/// Version 3 authenticates both sides and adds heartbeats.
-const REPL_VERSION: u8 = 3;
+/// Version 3 authenticates both sides and adds heartbeats. Version 4 sends
+/// the protobuf schemas at the start of a full sync.
+const REPL_VERSION: u8 = 4;
 const STATUS_OK: u8 = 0;
 const STATUS_SHARD_MISMATCH: u8 = 1;
 const STATUS_AUTH_FAILED: u8 = 2;
@@ -88,6 +89,9 @@ const MSG_RECORD: u8 = 4;
 const MSG_RESYNC: u8 = 5;
 const MSG_ACK: u8 = 6;
 const MSG_PING: u8 = 7;
+/// A protobuf schema, sent before the snapshots of a full sync:
+/// `[name_len: u32][name][descriptor_len: u32][descriptor]`.
+const MSG_SCHEMA: u8 = 8;
 
 /// Each side signs the other's nonce after a label for its own role, so
 /// the answer one side gives can't be passed off as the other's.
@@ -136,9 +140,10 @@ const MAX_BATCH: usize = 4096;
 /// shards' current offsets from [`Engine::replication_offsets`].
 #[derive(Debug)]
 pub struct ReplicaTracker {
-    /// Acknowledged offset of each shard, per replica. Keyed by an id
-    /// assigned when the replica connects.
-    acked: Mutex<HashMap<u64, Vec<u64>>>,
+    /// Acknowledged offset of each shard, per replica, or `None` before the
+    /// first acknowledgement. Keyed by an id assigned when the replica
+    /// connects.
+    acked: Mutex<HashMap<u64, Vec<Option<u64>>>>,
     next_id: AtomicU64,
     /// Full syncs started since the server started.
     full_syncs: AtomicU64,
@@ -158,7 +163,7 @@ impl ReplicaTracker {
     pub fn register(&self, shards: usize) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut map) = self.acked.lock() {
-            map.insert(id, vec![0; shards]);
+            map.insert(id, vec![None; shards]);
         }
         id
     }
@@ -175,7 +180,7 @@ impl ReplicaTracker {
     pub fn update(&self, replica_id: u64, shard: usize, offset: u64) {
         if let Ok(mut map) = self.acked.lock() {
             if let Some(acked) = map.get_mut(&replica_id).and_then(|a| a.get_mut(shard)) {
-                *acked = (*acked).max(offset);
+                *acked = Some(acked.map_or(offset, |a| a.max(offset)));
             }
         }
     }
@@ -186,7 +191,12 @@ impl ReplicaTracker {
             .lock()
             .map(|map| {
                 map.values()
-                    .filter(|acked| acked.iter().zip(target).all(|(a, t)| a >= t))
+                    .filter(|acked| {
+                        acked
+                            .iter()
+                            .zip(target)
+                            .all(|(a, t)| a.is_some_and(|a| a >= *t))
+                    })
                     .count()
             })
             .unwrap_or(0)
@@ -218,7 +228,7 @@ impl ReplicaTracker {
                         acked
                             .iter()
                             .zip(current)
-                            .map(|(a, c)| c.saturating_sub(*a))
+                            .map(|(a, c)| c.saturating_sub(a.unwrap_or(0)))
                             .sum()
                     })
                     .collect()
@@ -543,10 +553,24 @@ impl ReplicationServer {
         // full sync under write load
         let (queue_tx, mut queue) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
-        let forwarder = tokio::spawn(forward_events(rx, queue_tx, Arc::clone(&queued)));
+        // aborted on every return, including an error during the full sync
+        let forwarder = AbortOnDrop(tokio::spawn(forward_events(
+            rx,
+            queue_tx,
+            Arc::clone(&queued),
+        )));
 
         // --- full sync ---
         self.tracker.full_sync_started();
+        // the schemas go first: the snapshots hold PROTO values of their
+        // types, and later PROTO commands need them on the replica too
+        for (name, descriptor) in self.schemas() {
+            write_u8(&mut stream, MSG_SCHEMA).await?;
+            write_u32_le(&mut stream, name.len() as u32).await?;
+            stream.write_all(name.as_bytes()).await?;
+            write_u32_le(&mut stream, descriptor.len() as u32).await?;
+            stream.write_all(&descriptor).await?;
+        }
         for shard_idx in 0..self.engine.shard_count() {
             let resp = self
                 .engine
@@ -598,7 +622,7 @@ impl ReplicationServer {
         let tracker = Arc::clone(&self.tracker);
         let mut ack_reader = read_half;
 
-        let ack_task = tokio::spawn(async move {
+        let mut ack_task = AbortOnDrop(tokio::spawn(async move {
             loop {
                 match read_u8(&mut ack_reader).await {
                     Ok(MSG_ACK) => {
@@ -616,17 +640,38 @@ impl ReplicationServer {
                     Err(_) => break,
                 }
             }
-        });
+        }));
 
         // --- incremental stream ---
-        let result = stream_records(&mut writer, &mut queue, &queued).await;
+        // the ACK reader ends when the replica goes quiet for REPL_TIMEOUT
+        // or disconnects. stop streaming then too: heartbeats alone would
+        // keep a dead replica's connection open
+        let result = tokio::select! {
+            result = stream_records(&mut writer, &mut queue, &queued) => result,
+            _ = &mut ack_task.0 => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the replica stopped acknowledging",
+            )),
+        };
 
-        // clean up regardless of result
-        forwarder.abort();
-        ack_task.abort();
+        drop(forwarder);
         self.tracker.remove(replica_id);
 
         result
+    }
+
+    /// The protobuf schemas registered on this primary.
+    fn schemas(&self) -> Vec<(String, Bytes)> {
+        #[cfg(feature = "protobuf")]
+        if let Some(registry) = self.engine.schema_registry() {
+            if let Ok(registry) = registry.read() {
+                return registry
+                    .iter_schemas()
+                    .map(|(name, descriptor)| (name.to_owned(), descriptor.clone()))
+                    .collect();
+            }
+        }
+        Vec::new()
     }
 
     /// Checks the replica's version and shard count, and that both sides
@@ -849,9 +894,24 @@ impl ReplicationClient {
         // receive per-shard snapshots and the offset each one covers
         let mut batch = Batch::new(usize::from(primary_shards));
         let mut snapshot_offsets = vec![0u64; usize::from(primary_shards)];
+        // the snapshot buffer holds the largest shard's snapshot, so it is
+        // freed once the full sync is in, not kept for the whole stream
         let mut snap_buf = Vec::new();
-        for _ in 0..primary_shards {
-            expect_tag(&mut stream, MSG_SHARD_SYNC, "MSG_SHARD_SYNC").await?;
+        let mut tag = read_u8(&mut stream).await?;
+        while tag == MSG_SCHEMA {
+            self.load_schema(&mut stream, &mut snap_buf).await?;
+            tag = read_u8(&mut stream).await?;
+        }
+        for i in 0..primary_shards {
+            if i > 0 {
+                tag = read_u8(&mut stream).await?;
+            }
+            if tag != MSG_SHARD_SYNC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected MSG_SHARD_SYNC ({MSG_SHARD_SYNC}), got {tag}"),
+                ));
+            }
             let shard_id = read_u16_le(&mut stream).await?;
             let snap_len = read_u32_le(&mut stream).await?;
             read_body(&mut stream, snap_len, &mut snap_buf).await?;
@@ -864,7 +924,8 @@ impl ReplicationClient {
                 *slot = offset;
             }
         }
-        batch.apply(&self.engine).await;
+        drop(snap_buf);
+        batch.apply(&self.engine).await?;
         let mut acks = Vec::new();
         for (shard, offset) in snapshot_offsets.iter().enumerate() {
             acks.push(MSG_ACK);
@@ -926,7 +987,7 @@ impl ReplicationClient {
             // this replica
             if stream.buffer().is_empty() || batch.is_full() {
                 let mut acks = Vec::new();
-                for (shard, offset) in batch.apply(&self.engine).await {
+                for (shard, offset) in batch.apply(&self.engine).await? {
                     acks.push(MSG_ACK);
                     acks.extend_from_slice(&shard.to_le_bytes());
                     acks.extend_from_slice(&offset.to_le_bytes());
@@ -993,6 +1054,30 @@ impl ReplicationClient {
         Ok((primary_id, primary_shards))
     }
 
+    /// Reads one MSG_SCHEMA body and registers the schema, unless it is
+    /// already registered. `buf` is scratch space.
+    async fn load_schema(
+        &self,
+        stream: &mut (impl AsyncRead + Unpin),
+        buf: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let name_len = read_u32_le(stream).await?;
+        read_body(stream, name_len, buf).await?;
+        let name = String::from_utf8(std::mem::take(buf))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "schema name isn't UTF-8"))?;
+        let descriptor_len = read_u32_le(stream).await?;
+        read_body(stream, descriptor_len, buf).await?;
+        #[cfg(feature = "protobuf")]
+        if let Some(registry) = self.engine.schema_registry() {
+            if let Ok(mut registry) = registry.write() {
+                registry.restore(name, Bytes::copy_from_slice(buf));
+            }
+        }
+        #[cfg(not(feature = "protobuf"))]
+        let _ = name;
+        Ok(())
+    }
+
     /// Loads a snapshot blob into the given shard.
     ///
     /// Each entry goes in through RESTORE, which replaces the key with the
@@ -1030,10 +1115,20 @@ impl ReplicationClient {
             };
             batch.push(shard_id, Some(request), None);
             if batch.is_full() {
-                batch.apply(&self.engine).await;
+                batch.apply(&self.engine).await?;
             }
         }
         Ok(())
+    }
+}
+
+/// Aborts the task when dropped, so it doesn't outlive the connection it
+/// serves.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -1077,31 +1172,53 @@ impl Batch {
 
     /// Sends the requests to their shards and waits until all are applied.
     /// Returns the `(shard, offset)` pairs this covers.
-    async fn apply(&mut self, engine: &Engine) -> Vec<(u16, u64)> {
+    ///
+    /// The primary only streams writes that succeeded there, so one that
+    /// fails here means this copy differs from the primary's. That's an
+    /// error: the offsets aren't acknowledged, and the caller drops the
+    /// connection, which starts a full resync.
+    async fn apply(&mut self, engine: &Engine) -> io::Result<Vec<(u16, u64)>> {
         let mut replies = Vec::with_capacity(self.len);
         for (shard, requests) in self.requests.iter_mut().enumerate() {
             if requests.is_empty() {
                 continue;
             }
-            match engine
+            let batch = engine
                 .dispatch_batch_to_shard(shard, std::mem::take(requests))
                 .await
-            {
-                Ok(batch) => replies.extend(batch),
-                Err(e) => warn!("replication apply failed: {e:?}"),
-            }
+                .map_err(|e| io::Error::other(format!("replication apply failed: {e:?}")))?;
+            replies.extend(batch);
         }
         self.len = 0;
         for reply in replies {
-            if reply.await.is_err() {
-                warn!("replication apply failed: shard dropped the request");
+            match reply.await {
+                Ok(ShardResponse::Err(e)) => {
+                    return Err(io::Error::other(format!("replication apply failed: {e}")))
+                }
+                Ok(ShardResponse::OutOfMemory) => {
+                    return Err(io::Error::other(
+                        "replication apply failed: out of memory; raise maxmemory on the replica",
+                    ))
+                }
+                Ok(ShardResponse::WrongType) => {
+                    return Err(io::Error::other(
+                        "replication apply failed: a key holds another type than on the primary",
+                    ))
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    return Err(io::Error::other(
+                        "replication apply failed: shard dropped the request",
+                    ))
+                }
             }
         }
-        self.acks
+        Ok(self
+            .acks
             .iter_mut()
             .enumerate()
             .filter_map(|(shard, ack)| Some((shard as u16, ack.take()?)))
-            .collect()
+            .collect())
     }
 }
 
@@ -1285,5 +1402,32 @@ mod tests {
         assert_eq!(tracker.count_caught_up(&[3, 2]), 1);
         tracker.remove(a);
         assert_eq!(tracker.count_caught_up(&[3, 2]), 0);
+    }
+
+    #[test]
+    fn a_replica_counts_for_wait_only_after_acknowledging() {
+        // after a primary restart every offset is 0, and a replica still
+        // loading its full sync must not count yet
+        let tracker = ReplicaTracker::new();
+        let replica = tracker.register(2);
+        assert_eq!(tracker.count_caught_up(&[0, 0]), 0);
+        tracker.update(replica, 0, 0);
+        assert_eq!(tracker.count_caught_up(&[0, 0]), 0);
+        tracker.update(replica, 1, 0);
+        assert_eq!(tracker.count_caught_up(&[0, 0]), 1);
+    }
+
+    #[tokio::test]
+    async fn a_write_that_fails_on_the_replica_is_not_acknowledged() {
+        let engine = Engine::new(1);
+        engine.route("k", set("k", "v")).await.unwrap();
+        let mut batch = Batch::new(1);
+        // a list push onto the string fails with WRONGTYPE
+        let push = ShardRequest::LPush {
+            key: "k".into(),
+            values: vec![Bytes::from_static(b"x")],
+        };
+        batch.push(0, Some(push), Some(7));
+        assert!(batch.apply(&engine).await.is_err());
     }
 }
