@@ -208,7 +208,7 @@ tls-cert-file = /etc/ember/server.crt
 tls-key-file  = /etc/ember/server.key
 ```
 
-the plain RESP port and the TLS port operate independently. you can run both simultaneously during a migration, or disable the plain port entirely once clients are updated.
+the plain RESP port and the TLS port operate independently. you can run both during a migration, then turn the plain port off with `port = 0` once clients use TLS. a server with `port = 0` needs `tls-port`, and cluster mode still needs the plain port. `--healthcheck` uses the plain port, so check a TLS-only server through the `/health` endpoint on the metrics port instead.
 
 when TLS is configured, the gRPC port (6380 by default) uses the same certificate, key and client certificate settings, and no longer accepts plaintext. gRPC clients must connect with TLS and negotiate HTTP/2 (ALPN `h2`), which standard gRPC libraries do. the TLS port and the gRPC port must differ.
 
@@ -245,7 +245,7 @@ the same users and permissions apply to gRPC. a gRPC client sends the password i
 
 **protected mode**
 
-when `requirepass` is not set and ember is bound to a public interface, protected mode will reject external connections. this is a safety net, not a substitute for proper authentication. do not rely on it in production.
+when the `default` user needs no password and ember is bound to a public interface, protected mode rejects external connections, including to the metrics port. this is a safety net, not a substitute for proper authentication. do not rely on it in production.
 
 **bind address**
 

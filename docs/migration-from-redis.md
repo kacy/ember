@@ -441,7 +441,7 @@ collections with more than 64 elements are freed in the background via `UNLINK`-
 
 ### protected mode
 
-ember runs in protected mode when `requirepass` is empty and `bind` is a non-loopback address. it then refuses RESP and gRPC connections from anywhere except localhost. to accept remote clients, set `requirepass`. binding to `127.0.0.1` also turns protected mode off, but only local clients can reach that address.
+ember runs in protected mode when the `default` user needs no password and `bind` is a non-loopback address. it then refuses RESP, gRPC and metrics connections from anywhere except localhost. to accept remote clients, give the `default` user a password with `requirepass` or the ACL file. binding to `127.0.0.1` also turns protected mode off, but only local clients can reach that address.
 
 ### no multi-database support
 

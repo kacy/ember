@@ -8,9 +8,9 @@ common problems and how to fix them.
 
 **"DENIED: protected mode is enabled"**
 
-ember turns on protected mode when no password is set and the server is bound to a non-loopback address such as `0.0.0.0`. it then accepts RESP and gRPC connections from loopback clients only, so a server without a password is not exposed on a public interface by accident.
+ember turns on protected mode when the `default` user needs no password and the server is bound to a non-loopback address such as `0.0.0.0`. it then accepts RESP, gRPC and metrics connections from loopback clients only, so a server without a password is not exposed on a public interface by accident.
 
-fix: either set a password with `requirepass <password>` in your config, or explicitly bind to the loopback interface with `bind 127.0.0.1`.
+fix: either give the `default` user a password, with `requirepass <password>` in your config or a rule in the ACL file, or explicitly bind to the loopback interface with `bind 127.0.0.1`.
 
 ---
 
