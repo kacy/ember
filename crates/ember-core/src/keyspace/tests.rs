@@ -346,6 +346,22 @@ fn memory_matches_the_entries_after_collection_writes() {
 }
 
 #[test]
+fn a_key_expired_on_access_is_reported() {
+    let mut ks = Keyspace::new();
+    ks.set(
+        "k".into(),
+        Bytes::from("v"),
+        Some(std::time::Duration::from_millis(5)),
+        false,
+        false,
+    );
+    thread::sleep(std::time::Duration::from_millis(20));
+    assert!(ks.get("k").unwrap().is_none());
+    assert_eq!(ks.take_expired(), ["k"]);
+    assert!(ks.take_expired().is_empty());
+}
+
+#[test]
 fn lru_eviction_makes_room() {
     let config = ShardConfig {
         max_memory: Some(one_entry_limit()),

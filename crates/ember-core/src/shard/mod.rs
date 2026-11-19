@@ -352,6 +352,9 @@ async fn run_shard(prepared: PreparedShard) {
         }
     }
 
+    // keys that expired while the data loaded aren't news to anyone
+    keyspace.take_expired();
+
     // -- AOF writer --
     let mut aof_writer: Option<AofWriter> = match &persistence {
         Some(pcfg) if pcfg.append_only => {
@@ -457,6 +460,8 @@ async fn run_shard(prepared: PreparedShard) {
                         if let Some(ref mut replication) = replication {
                             replication.flush();
                         }
+                        // keys that expired as commands found them
+                        send_expired(&mut keyspace, expired_tx.as_ref());
                         for held in held_replies.drain(..) {
                             let response = if held.logged && !flushed {
                                 ShardResponse::Err(AOF_WRITE_FAILED.into())
@@ -470,14 +475,8 @@ async fn run_shard(prepared: PreparedShard) {
                 }
             }
             _ = expiry_tick.tick() => {
-                let expired_keys = expiry::run_expiration_cycle(&mut keyspace);
-                if let Some(ref tx) = expired_tx {
-                    if !expired_keys.is_empty() && tx.receiver_count() > 0 {
-                        for key in &expired_keys {
-                            let _ = tx.send(key.clone());
-                        }
-                    }
-                }
+                expiry::run_expiration_cycle(&mut keyspace);
+                send_expired(&mut keyspace, expired_tx.as_ref());
                 blocking::prune_waiters(&mut lpop_waiters);
                 blocking::prune_waiters(&mut rpop_waiters);
             }
@@ -558,6 +557,17 @@ fn process_message(msg: ShardMessage, ctx: &mut ProcessCtx<'_>) {
 enum ReplySender {
     Oneshot(oneshot::Sender<ShardResponse>),
     Reusable(mpsc::Sender<ShardResponse>),
+}
+
+/// Sends the keys that expired since the last call to keyspace
+/// notifications, if anyone listens, and forgets them either way.
+fn send_expired(keyspace: &mut Keyspace, tx: Option<&broadcast::Sender<String>>) {
+    let expired = keyspace.take_expired();
+    if let Some(tx) = tx.filter(|tx| tx.receiver_count() > 0) {
+        for key in expired {
+            let _ = tx.send(key);
+        }
+    }
 }
 
 /// A reply held until the end of a burst, when the AOF is flushed.
