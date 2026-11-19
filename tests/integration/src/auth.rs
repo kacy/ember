@@ -208,7 +208,14 @@ async fn a_transaction_in_the_same_batch_as_auth_is_queued() {
 async fn deleting_a_user_disconnects_its_subscribers_and_monitors() {
     let (server, mut admin) = server_with_reader().await;
     admin
-        .ok(&["ACL", "SETUSER", "reader", "+subscribe", "+monitor"])
+        .ok(&[
+            "ACL",
+            "SETUSER",
+            "reader",
+            "+subscribe",
+            "+monitor",
+            "&news",
+        ])
         .await;
     let mut subscriber = server.connect().await;
     subscriber.ok(&["AUTH", "reader", "reader-pass"]).await;
@@ -235,4 +242,48 @@ async fn a_read_only_user_from_minus_all_plus_read_can_read() {
     assert_eq!(reader.get_bulk(&["GET", "k"]).await, None);
     let err = reader.err(&["SET", "k", "v"]).await;
     assert!(err.starts_with("NOPERM"), "{err}");
+}
+
+#[tokio::test]
+async fn channel_rules_limit_pub_sub() {
+    let (server, mut admin) = server_with_reader().await;
+    admin
+        .ok(&[
+            "ACL",
+            "SETUSER",
+            "reader",
+            "+publish",
+            "+subscribe",
+            "+psubscribe",
+            "&news.*",
+        ])
+        .await;
+    let mut reader = server.connect().await;
+    reader.ok(&["AUTH", "reader", "reader-pass"]).await;
+
+    let err = reader.err(&["PUBLISH", "secret", "x"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+    assert_eq!(reader.get_int(&["PUBLISH", "news.sport", "x"]).await, 0);
+    // a pattern must be one of the user's patterns, not just overlap them
+    let err = reader.err(&["PSUBSCRIBE", "*"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+    let err = reader.err(&["SUBSCRIBE", "secret"]).await;
+    assert!(err.starts_with("NOPERM"), "{err}");
+}
+
+#[tokio::test]
+async fn losing_a_channel_disconnects_its_subscriber() {
+    let (server, mut admin) = server_with_reader().await;
+    admin
+        .ok(&["ACL", "SETUSER", "reader", "+subscribe", "&news"])
+        .await;
+    let mut subscriber = server.connect().await;
+    subscriber.ok(&["AUTH", "reader", "reader-pass"]).await;
+    subscriber.cmd(&["SUBSCRIBE", "news"]).await;
+
+    admin
+        .ok(&["ACL", "SETUSER", "reader", "resetchannels"])
+        .await;
+    admin.get_int(&["PUBLISH", "news", "hello"]).await;
+    assert!(subscriber.closed().await, "subscriber still connected");
 }
