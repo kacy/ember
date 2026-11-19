@@ -9,8 +9,15 @@
 //! ```text
 //! [header][shard_id: 2B]
 //! [one frame per entry]
-//! [an empty frame][entry_count: 4B][crc32 of the entry frame bodies: 4B]
+//! [an empty frame][trailer frame]
 //! ```
+//!
+//! The trailer frame's body is sealed like an entry's, so in an encrypted
+//! snapshot it can't be forged or moved:
+//! ```text
+//! [entry_count: 4B][crc32 of the entry frame bodies: 4B][shard_id: 2B]
+//! ```
+//! It repeats the shard ID, which the header holds in plaintext.
 //!
 //! Each entry:
 //! ```text
@@ -387,11 +394,15 @@ pub fn deserialize_snap_value(data: &[u8]) -> Result<SnapValue, FormatError> {
     parse_snap_value(&mut cursor)
 }
 
+/// Length of the trailer fields: entry count, CRC and shard ID.
+const TRAILER_LEN: usize = 10;
+
 /// Writes a snapshot to any output: to a file through [`SnapshotWriter`],
 /// or to memory for a replica.
 struct Encoder<W: Write> {
     out: W,
     codec: Codec,
+    shard_id: u16,
     /// Running CRC over the entry frame bodies, for the trailer.
     hasher: crc32fast::Hasher,
     count: u32,
@@ -407,6 +418,7 @@ impl<W: Write> Encoder<W> {
         Ok(Self {
             out,
             codec,
+            shard_id,
             hasher: crc32fast::Hasher::new(),
             count: 0,
             frame: Vec::new(),
@@ -429,10 +441,13 @@ impl<W: Write> Encoder<W> {
     /// Writes the trailer and returns the output and the snapshot's CRC.
     fn finish(mut self) -> Result<(W, u32), FormatError> {
         let crc = self.hasher.finalize();
+        let mut fields = Vec::with_capacity(TRAILER_LEN);
+        fields.extend_from_slice(&self.count.to_le_bytes());
+        fields.extend_from_slice(&crc.to_le_bytes());
+        fields.extend_from_slice(&self.shard_id.to_le_bytes());
         let mut trailer = Vec::new();
         frame::write_frame(&mut trailer, &[])?;
-        trailer.extend_from_slice(&self.count.to_le_bytes());
-        trailer.extend_from_slice(&crc.to_le_bytes());
+        frame::write_frame(&mut trailer, &self.codec.seal(&fields)?)?;
         self.out.write_all(&trailer)?;
         Ok((self.out, crc))
     }
@@ -473,8 +488,23 @@ impl<R: io::Read> Decoder<R> {
             // a snapshot is renamed into place only once it is complete
             Frame::End | Frame::Torn => Err(FormatError::UnexpectedEof),
             Frame::Body(body) if body.is_empty() => {
-                let count = format::read_u32(&mut self.input)?;
-                let stored = format::read_u32(&mut self.input)?;
+                let Frame::Body(sealed) = frame::read_frame(&mut self.input)? else {
+                    return Err(FormatError::UnexpectedEof);
+                };
+                let fields = self.codec.open(sealed)?;
+                if fields.len() != TRAILER_LEN {
+                    return Err(FormatError::InvalidData(
+                        "snapshot trailer has the wrong length".into(),
+                    ));
+                }
+                let mut r = fields.as_slice();
+                let count = format::read_u32(&mut r)?;
+                let stored = format::read_u32(&mut r)?;
+                if format::read_u16(&mut r)? != self.shard_id {
+                    return Err(FormatError::InvalidData(
+                        "snapshot header and trailer name different shards".into(),
+                    ));
+                }
                 if count != self.count {
                     return Err(FormatError::InvalidData(format!(
                         "snapshot holds {} entries but its trailer says {count}",
@@ -921,9 +951,10 @@ mod tests {
         }
 
         // truncate the file mid-way through the second entry, which ends
-        // where the 20-byte trailer starts
+        // where the 34-byte trailer starts: an empty frame and a frame
+        // holding 10 bytes
         let data = fs::read(&path)?;
-        let truncated = &data[..data.len() - 25];
+        let truncated = &data[..data.len() - 39];
         fs::write(&path, truncated)?;
 
         let mut reader = SnapshotReader::open(&path)?;
@@ -1082,6 +1113,64 @@ mod tests {
             }
             assert_eq!(entries, got);
             reader.verify_footer()?;
+            Ok(())
+        }
+
+        /// Writes an encrypted snapshot of two entries for `shard_id` and
+        /// returns its bytes.
+        fn two_entry_snapshot(
+            path: &Path,
+            shard_id: u16,
+        ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let mut writer = SnapshotWriter::create_encrypted(path, shard_id, test_key())?;
+            for key in ["a", "b"] {
+                writer.write_entry(&SnapEntry {
+                    key: key.into(),
+                    value: SnapValue::String(Bytes::from("v")),
+                    expires_at_ms: 0,
+                })?;
+            }
+            writer.finish()?;
+            Ok(fs::read(path)?)
+        }
+
+        /// Reads every entry and the trailer of the snapshot at `path`.
+        fn read_all(path: &Path) -> std::result::Result<(), FormatError> {
+            let mut reader = SnapshotReader::open_encrypted(path, test_key())?;
+            while reader.read_entry()?.is_some() {}
+            reader.verify_footer().map(drop)
+        }
+
+        /// Length of an encrypted snapshot's header and shard ID.
+        const HEADER_LEN: usize = 6 + crate::encryption::SALT_SIZE + 2;
+
+        #[test]
+        fn a_forged_trailer_cannot_empty_an_encrypted_snapshot() -> Result {
+            let dir = temp_dir();
+            let path = dir.path().join("forged.snap");
+            let data = two_entry_snapshot(&path, 0)?;
+
+            // the entries dropped, and a plaintext trailer for zero entries
+            let mut forged = data[..HEADER_LEN].to_vec();
+            frame::write_frame(&mut forged, &[])?;
+            let mut fields = Vec::new();
+            fields.extend_from_slice(&0u32.to_le_bytes());
+            fields.extend_from_slice(&crc32fast::Hasher::new().finalize().to_le_bytes());
+            fields.extend_from_slice(&0u16.to_le_bytes());
+            frame::write_frame(&mut forged, &fields)?;
+            fs::write(&path, forged)?;
+            assert!(read_all(&path).is_err());
+            Ok(())
+        }
+
+        #[test]
+        fn an_encrypted_snapshot_moved_to_another_shard_is_refused() -> Result {
+            let dir = temp_dir();
+            let path = dir.path().join("moved.snap");
+            let mut data = two_entry_snapshot(&path, 0)?;
+            data[HEADER_LEN - 2..HEADER_LEN].copy_from_slice(&1u16.to_le_bytes());
+            fs::write(&path, data)?;
+            assert!(read_all(&path).is_err());
             Ok(())
         }
 
