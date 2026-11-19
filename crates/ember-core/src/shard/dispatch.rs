@@ -937,7 +937,8 @@ pub(super) fn dispatch(
         | ShardRequest::FlushDbAsync
         | ShardRequest::UpdateMemoryConfig { .. }
         | ShardRequest::BLPop { .. }
-        | ShardRequest::BRPop { .. } => ShardResponse::Ok,
+        | ShardRequest::BRPop { .. }
+        | ShardRequest::DropBlockedWaiters => ShardResponse::Ok,
     }
 }
 

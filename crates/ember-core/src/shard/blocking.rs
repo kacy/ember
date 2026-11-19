@@ -386,6 +386,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropped_waiters_leave_pushes_in_the_list() {
+        let handle = test_shard();
+        let (waiter, rx) = PopWaiter::new();
+        let _ = handle
+            .dispatch(ShardRequest::BLPop {
+                key: "q".into(),
+                waiter,
+            })
+            .await;
+        handle.send(ShardRequest::DropBlockedWaiters).await.unwrap();
+        handle
+            .send(ShardRequest::LPush {
+                key: "q".into(),
+                values: vec![Bytes::from("kept")],
+            })
+            .await
+            .unwrap();
+        let len = handle
+            .send(ShardRequest::LLen { key: "q".into() })
+            .await
+            .unwrap();
+        assert!(matches!(len, ShardResponse::Len(1)), "{len:?}");
+        assert!(rx.is_empty());
+    }
+
+    #[tokio::test]
     async fn blpop_on_another_type_replies_wrongtype() {
         let handle = test_shard();
         handle

@@ -491,6 +491,14 @@ impl ClusterCoordinator {
 
         self.save_config().await;
 
+        // the lists now change only through the primary's stream, so no
+        // client may stay blocked to pop from them here
+        if let Some(engine) = self.engine.get() {
+            let _ = engine
+                .broadcast(|| ember_core::ShardRequest::DropBlockedWaiters)
+                .await;
+        }
+
         // connect to the primary's replication port and start streaming
         self.start_replication_client(primary_id).await;
 

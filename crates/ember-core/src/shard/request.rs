@@ -159,6 +159,11 @@ shard_request! {
         GetKeysInSlot { slot: u16, count: usize },
         /// Dumps a key's value as serialized bytes for MIGRATE.
         DumpKey { key: String },
+        /// Forgets the clients blocked in BLPOP and BRPOP, for a node that
+        /// is becoming a replica: its lists now change only through the
+        /// primary's stream, and a pop for a blocked client would make them
+        /// differ from the primary's. The clients' timeouts end their waits.
+        DropBlockedWaiters,
 
         // --- vector (read) ---
         /// Searches for nearest neighbors in a vector set.
