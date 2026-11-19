@@ -1385,3 +1385,65 @@ async fn proto_find_count_pagination() {
         assert!(all_found.contains(&format!("profile:{i}")));
     }
 }
+
+/// Schemas reach a replica: those registered before it attaches arrive
+/// with the full sync, later ones through the stream.
+#[tokio::test]
+async fn schemas_reach_a_replica() {
+    use std::time::{Duration, Instant};
+
+    let opts = || ServerOptions {
+        protobuf: true,
+        cluster_enabled: true,
+        ..Default::default()
+    };
+    let primary = TestServer::start_with(ServerOptions {
+        cluster_bootstrap: true,
+        ..opts()
+    });
+    let replica = TestServer::start_with(opts());
+    let mut c0 = primary.connect().await;
+    let mut c1 = replica.connect().await;
+    c0.cmd_raw(&[
+        b"PROTO.REGISTER",
+        b"before",
+        &make_descriptor("a", "A", "x"),
+    ])
+    .await;
+
+    let primary_id = c0.get_bulk(&["CLUSTER", "MYID"]).await.unwrap();
+    c0.ok(&["CLUSTER", "MEET", "127.0.0.1", &replica.port.to_string()])
+        .await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(
+        c1.cmd(&["CLUSTER", "REPLICATE", &primary_id]).await,
+        Frame::Simple(_)
+    ) {
+        assert!(
+            Instant::now() <= deadline,
+            "replica never learned the primary"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    c0.cmd_raw(&[b"PROTO.REGISTER", b"after", &make_descriptor("b", "B", "y")])
+        .await;
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let mut names = match c1.cmd(&["PROTO.SCHEMAS"]).await {
+            Frame::Array(items) => items,
+            other => panic!("expected array, got {other:?}"),
+        };
+        names.sort_by_key(|f| format!("{f:?}"));
+        if names
+            == [
+                Frame::Bulk(Bytes::from("after")),
+                Frame::Bulk(Bytes::from("before")),
+            ]
+        {
+            break;
+        }
+        assert!(Instant::now() <= deadline, "replica has schemas {names:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}

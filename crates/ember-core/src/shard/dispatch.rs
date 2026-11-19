@@ -838,10 +838,18 @@ pub(super) fn dispatch(
             Ok(name) => ShardResponse::ProtoTypeName(name),
             Err(_) => ShardResponse::WrongType,
         },
-        // ProtoRegisterAof is a no-op for the keyspace — the AOF record
-        // is written by the to_aof_record path after dispatch returns Ok.
+        // the primary registered the schema before sending this, which
+        // only logs it. a replica, or a replay, registers it here; a schema
+        // already registered is left as it is
         #[cfg(feature = "protobuf")]
-        ShardRequest::ProtoRegisterAof { .. } => ShardResponse::Ok,
+        ShardRequest::ProtoRegisterAof { name, descriptor } => {
+            if let Some(registry) = schema_registry {
+                if let Ok(mut registry) = registry.write() {
+                    registry.restore(name.clone(), descriptor.clone());
+                }
+            }
+            ShardResponse::Ok
+        }
         #[cfg(feature = "protobuf")]
         ShardRequest::ProtoSetField {
             key,

@@ -75,8 +75,9 @@ use tracing::{debug, error, info, warn};
 
 // -- protocol constants --
 
-/// Version 3 authenticates both sides and adds heartbeats.
-const REPL_VERSION: u8 = 3;
+/// Version 3 authenticates both sides and adds heartbeats. Version 4 sends
+/// the protobuf schemas at the start of a full sync.
+const REPL_VERSION: u8 = 4;
 const STATUS_OK: u8 = 0;
 const STATUS_SHARD_MISMATCH: u8 = 1;
 const STATUS_AUTH_FAILED: u8 = 2;
@@ -88,6 +89,9 @@ const MSG_RECORD: u8 = 4;
 const MSG_RESYNC: u8 = 5;
 const MSG_ACK: u8 = 6;
 const MSG_PING: u8 = 7;
+/// A protobuf schema, sent before the snapshots of a full sync:
+/// `[name_len: u32][name][descriptor_len: u32][descriptor]`.
+const MSG_SCHEMA: u8 = 8;
 
 /// Each side signs the other's nonce after a label for its own role, so
 /// the answer one side gives can't be passed off as the other's.
@@ -558,6 +562,15 @@ impl ReplicationServer {
 
         // --- full sync ---
         self.tracker.full_sync_started();
+        // the schemas go first: the snapshots hold PROTO values of their
+        // types, and later PROTO commands need them on the replica too
+        for (name, descriptor) in self.schemas() {
+            write_u8(&mut stream, MSG_SCHEMA).await?;
+            write_u32_le(&mut stream, name.len() as u32).await?;
+            stream.write_all(name.as_bytes()).await?;
+            write_u32_le(&mut stream, descriptor.len() as u32).await?;
+            stream.write_all(&descriptor).await?;
+        }
         for shard_idx in 0..self.engine.shard_count() {
             let resp = self
                 .engine
@@ -645,6 +658,20 @@ impl ReplicationServer {
         self.tracker.remove(replica_id);
 
         result
+    }
+
+    /// The protobuf schemas registered on this primary.
+    fn schemas(&self) -> Vec<(String, Bytes)> {
+        #[cfg(feature = "protobuf")]
+        if let Some(registry) = self.engine.schema_registry() {
+            if let Ok(registry) = registry.read() {
+                return registry
+                    .iter_schemas()
+                    .map(|(name, descriptor)| (name.to_owned(), descriptor.clone()))
+                    .collect();
+            }
+        }
+        Vec::new()
     }
 
     /// Checks the replica's version and shard count, and that both sides
@@ -870,8 +897,21 @@ impl ReplicationClient {
         // the snapshot buffer holds the largest shard's snapshot, so it is
         // freed once the full sync is in, not kept for the whole stream
         let mut snap_buf = Vec::new();
-        for _ in 0..primary_shards {
-            expect_tag(&mut stream, MSG_SHARD_SYNC, "MSG_SHARD_SYNC").await?;
+        let mut tag = read_u8(&mut stream).await?;
+        while tag == MSG_SCHEMA {
+            self.load_schema(&mut stream, &mut snap_buf).await?;
+            tag = read_u8(&mut stream).await?;
+        }
+        for i in 0..primary_shards {
+            if i > 0 {
+                tag = read_u8(&mut stream).await?;
+            }
+            if tag != MSG_SHARD_SYNC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("expected MSG_SHARD_SYNC ({MSG_SHARD_SYNC}), got {tag}"),
+                ));
+            }
             let shard_id = read_u16_le(&mut stream).await?;
             let snap_len = read_u32_le(&mut stream).await?;
             read_body(&mut stream, snap_len, &mut snap_buf).await?;
@@ -1012,6 +1052,30 @@ impl ReplicationClient {
             ));
         }
         Ok((primary_id, primary_shards))
+    }
+
+    /// Reads one MSG_SCHEMA body and registers the schema, unless it is
+    /// already registered. `buf` is scratch space.
+    async fn load_schema(
+        &self,
+        stream: &mut (impl AsyncRead + Unpin),
+        buf: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let name_len = read_u32_le(stream).await?;
+        read_body(stream, name_len, buf).await?;
+        let name = String::from_utf8(std::mem::take(buf))
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "schema name isn't UTF-8"))?;
+        let descriptor_len = read_u32_le(stream).await?;
+        read_body(stream, descriptor_len, buf).await?;
+        #[cfg(feature = "protobuf")]
+        if let Some(registry) = self.engine.schema_registry() {
+            if let Ok(mut registry) = registry.write() {
+                registry.restore(name, Bytes::copy_from_slice(buf));
+            }
+        }
+        #[cfg(not(feature = "protobuf"))]
+        let _ = name;
+        Ok(())
     }
 
     /// Loads a snapshot blob into the given shard.
