@@ -70,7 +70,7 @@ fn crc16(data: &[u8]) -> u16 {
 /// - `foo{}{bar}` → hashes `foo{}{bar}` (empty tag, no match)
 /// - `foo{bar` → hashes `foo{bar` (no closing brace)
 /// - `foobar` → hashes `foobar` (no tag)
-fn extract_hash_tag(key: &[u8]) -> &[u8] {
+pub fn extract_hash_tag(key: &[u8]) -> &[u8] {
     // Find first '{'
     let Some(open) = key.iter().position(|&b| b == b'{') else {
         return key;
