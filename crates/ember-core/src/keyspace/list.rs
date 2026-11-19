@@ -157,6 +157,14 @@ impl Keyspace {
     /// doesn't exist, the index is out of range, or the key holds the
     /// wrong type.
     pub fn lset(&mut self, key: &str, index: i64, value: Bytes) -> Result<(), LsetError> {
+        // a longer element needs room for the difference
+        let old_len = self
+            .lindex(key, index)
+            .map_err(|_| LsetError::WrongType)?
+            .map_or(0, |old| old.len());
+        if !self.enforce_memory_limit(key, value.len().saturating_sub(old_len)) {
+            return Err(LsetError::OutOfMemory);
+        }
         let set = self
             .edit(key, Value::as_list_mut, |list| {
                 let done = resolve_index(index, list.len()).is_some_and(|i| list.set(i, value));
@@ -374,25 +382,52 @@ impl Keyspace {
             _ => {}
         }
 
-        if source != destination {
-            self.remove_if_expired(destination);
-            if let Some(e) = self.entries.get(destination) {
-                if !matches!(e.value, Value::List(_)) {
-                    return Err(WriteError::WrongType);
+        // a rotation within one list moves the element in place, so the
+        // key and its TTL stay even when the list holds one element
+        if source == destination {
+            let moved = self.edit(source, Value::as_list_mut, |list| {
+                let value = if src_left {
+                    list.pop_front()
+                } else {
+                    list.pop_back()
+                };
+                if let Some(ref value) = value {
+                    if dst_left {
+                        list.push_front(value.clone());
+                    } else {
+                        list.push_back(value.clone());
+                    }
                 }
-            }
+                let moved = value.is_some();
+                (value, moved)
+            })?;
+            return Ok(moved.flatten());
+        }
+
+        self.remove_if_expired(destination);
+        let dest_is_new = match self.entries.get(destination) {
+            None => true,
+            Some(e) if matches!(e.value, Value::List(_)) => false,
+            Some(_) => return Err(WriteError::WrongType),
+        };
+
+        // the element only moves, so the write can add at most a new
+        // destination key. make room for it before popping, keeping both
+        // keys from eviction, so the push below always fits
+        let increase = if dest_is_new {
+            memory::entry_size(destination, &empty_list())
+        } else {
+            0
+        };
+        if !self.enforce_memory_limit_for(&[source, destination], increase) {
+            return Err(WriteError::OutOfMemory);
         }
 
         let popped = self.list_pop(source, src_left).map_err(WriteError::from)?;
         let Some(value) = popped else {
             return Ok(None);
         };
-        if let Err(e) = self.list_push(destination, std::slice::from_ref(&value), dst_left) {
-            // put the element back so a failed move changes nothing. the pop
-            // just freed at least the memory this push needs.
-            let _ = self.list_push(source, std::slice::from_ref(&value), src_left);
-            return Err(e);
-        }
+        self.list_push(destination, std::slice::from_ref(&value), dst_left)?;
         Ok(Some(value))
     }
 

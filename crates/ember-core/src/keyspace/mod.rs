@@ -166,6 +166,8 @@ pub enum LsetError {
     NoSuchKey,
     /// Index is beyond list bounds.
     IndexOutOfRange,
+    /// Memory limit reached and eviction couldn't free enough space.
+    OutOfMemory,
 }
 
 impl std::fmt::Display for LsetError {
@@ -174,6 +176,7 @@ impl std::fmt::Display for LsetError {
             LsetError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
             LsetError::NoSuchKey => write!(f, "ERR no such key"),
             LsetError::IndexOutOfRange => write!(f, "ERR index out of range"),
+            LsetError::OutOfMemory => write!(f, "{OOM_MSG}"),
         }
     }
 }
@@ -613,26 +616,33 @@ impl Keyspace {
         }
     }
 
-    /// Estimates the memory cost of a collection write and enforces the
-    /// limit. `base_overhead` is the fixed cost of a new collection
-    /// (e.g. VECDEQUE_BASE_OVERHEAD). Returns `Ok(())` on success.
-    fn reserve_memory(
-        &mut self,
-        is_new: bool,
-        key: &str,
-        base_overhead: usize,
-        element_increase: usize,
-    ) -> Result<(), WriteError> {
-        let estimated_increase = if is_new {
-            memory::ENTRY_OVERHEAD + key.len() + base_overhead + element_increase
-        } else {
-            element_increase
-        };
-        if self.enforce_memory_limit(key, estimated_increase) {
-            Ok(())
-        } else {
-            Err(WriteError::OutOfMemory)
+    /// Replaces `key` with the result of a STORE command, or deletes it for
+    /// an empty result. Checks the memory limit before touching the old
+    /// value, so on `OutOfMemory` the key keeps it.
+    fn store_result(&mut self, key: &str, value: Option<Value>) -> Result<(), WriteError> {
+        self.remove_if_expired(key);
+        if let Some(ref value) = value {
+            let old_size = self.entries.get(key).map_or(0, |e| e.entry_size(key));
+            let new_size = memory::entry_size(key, value);
+            if !self.enforce_memory_limit(key, new_size.saturating_sub(old_size)) {
+                return Err(WriteError::OutOfMemory);
+            }
         }
+        if let Some(old) = self.entries.swap_remove(key) {
+            self.memory.remove(key, &old.value);
+            self.untrack_expiry(key, &old);
+            self.defer_drop(old.value);
+        }
+        match value {
+            Some(value) => {
+                self.memory.add(key, &value);
+                self.entries
+                    .insert(CompactString::from(key), Entry::new(value, None));
+                self.bump_version(key);
+            }
+            None => self.remove_version(key),
+        }
+        Ok(())
     }
 
     /// Inserts a new key with an empty collection value. Used by
@@ -664,7 +674,7 @@ impl Keyspace {
     /// are fewer) and removes the one with the oldest `last_access` time.
     /// `protect` is never chosen, because the caller is about to write to
     /// it. Returns `false` if no other key exists.
-    fn try_evict(&mut self, protect: &str) -> bool {
+    fn try_evict(&mut self, protect: &[&str]) -> bool {
         let len = self.entries.len();
         let victim = if len <= EVICTION_SAMPLE_SIZE {
             self.least_recently_used(0..len, protect)
@@ -696,13 +706,13 @@ impl Keyspace {
     fn least_recently_used(
         &self,
         positions: impl Iterator<Item = usize>,
-        protect: &str,
+        protect: &[&str],
     ) -> Option<usize> {
         positions
             .filter(|&i| {
                 self.entries
                     .get_index(i)
-                    .is_some_and(|(key, _)| key.as_str() != protect)
+                    .is_some_and(|(key, _)| !protect.contains(&key.as_str()))
             })
             .min_by_key(|&i| self.entries[i].last_access_secs)
     }
@@ -719,44 +729,54 @@ impl Keyspace {
     /// and fragmentation that our per-entry estimates can't account for,
     /// preventing the OS from OOM-killing us before eviction triggers.
     fn enforce_memory_limit(&mut self, protect: &str, estimated_increase: usize) -> bool {
-        if let Some(max) = self.config.max_memory {
-            let limit = memory::effective_limit(max);
+        self.enforce_memory_limit_for(&[protect], estimated_increase)
+    }
+
+    /// Like [`enforce_memory_limit`](Self::enforce_memory_limit), but
+    /// eviction skips every key in `protect`. For writes that read or
+    /// change more than one key.
+    fn enforce_memory_limit_for(&mut self, protect: &[&str], estimated_increase: usize) -> bool {
+        let Some(max) = self.config.max_memory else {
+            return true;
+        };
+        let limit = memory::effective_limit(max);
+        if self.memory.used_bytes() + estimated_increase <= limit {
+            return true;
+        }
+        let evict = self.config.eviction_policy == EvictionPolicy::AllKeysLru;
+        // eviction can free everything but the protected keys, so check
+        // first that the write fits beside them. otherwise a write too
+        // large for the limit would evict every other key and fail anyway
+        let protected: usize = protect
+            .iter()
+            .enumerate()
+            .filter(|&(i, key)| !protect[..i].contains(key))
+            .filter_map(|(_, &key)| self.entries.get(key).map(|e| e.entry_size(key)))
+            .sum();
+        if evict && protected + estimated_increase <= limit {
             while self.memory.used_bytes() + estimated_increase > limit {
-                match self.config.eviction_policy {
-                    EvictionPolicy::NoEviction => {
-                        self.oom_rejections += 1;
-                        // log first rejection, then every 1000th to avoid flooding
-                        if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000) {
-                            warn!(
-                                used_bytes = self.memory.used_bytes(),
-                                limit,
-                                requested = estimated_increase,
-                                total_rejections = self.oom_rejections,
-                                "OOM: write rejected (policy: noeviction)"
-                            );
-                        }
-                        return false;
-                    }
-                    EvictionPolicy::AllKeysLru => {
-                        if !self.try_evict(protect) {
-                            self.oom_rejections += 1;
-                            if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000)
-                            {
-                                warn!(
-                                    used_bytes = self.memory.used_bytes(),
-                                    limit,
-                                    requested = estimated_increase,
-                                    total_rejections = self.oom_rejections,
-                                    "OOM: write rejected (eviction exhausted)"
-                                );
-                            }
-                            return false;
-                        }
-                    }
+                if !self.try_evict(protect) {
+                    break;
                 }
             }
+            if self.memory.used_bytes() + estimated_increase <= limit {
+                return true;
+            }
         }
-        true
+
+        self.oom_rejections += 1;
+        // log the first rejection, then every 1000th to avoid flooding
+        if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000) {
+            warn!(
+                used_bytes = self.memory.used_bytes(),
+                limit,
+                requested = estimated_increase,
+                total_rejections = self.oom_rejections,
+                policy = ?self.config.eviction_policy,
+                "OOM: write rejected"
+            );
+        }
+        false
     }
 
     /// Replaces the entries map with an empty one and resets memory

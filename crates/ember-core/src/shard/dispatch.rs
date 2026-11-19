@@ -232,6 +232,7 @@ pub(super) fn dispatch(
                 LsetError::WrongType => ShardResponse::WrongType,
                 LsetError::NoSuchKey => ShardResponse::Err("ERR no such key".into()),
                 LsetError::IndexOutOfRange => ShardResponse::Err("ERR index out of range".into()),
+                LsetError::OutOfMemory => ShardResponse::OutOfMemory,
             },
         },
         ShardRequest::LTrim { key, start, stop } => match ks.ltrim(key, *start, *stop) {
@@ -550,12 +551,13 @@ pub(super) fn dispatch(
         }
         ShardRequest::GetSet { key, value } => match ks.getset(key, value.clone()) {
             Ok(old) => ShardResponse::Value(old.map(Value::String)),
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
-        ShardRequest::MSetNx { pairs } => {
-            let result = ks.msetnx(pairs);
-            ShardResponse::Bool(result)
-        }
+        ShardRequest::MSetNx { pairs } => match ks.msetnx(pairs) {
+            Ok(set) => ShardResponse::Bool(set),
+            Err(_) => ShardResponse::OutOfMemory,
+        },
         ShardRequest::ZDiff { keys } => match ks.zdiff(keys) {
             Ok(pairs) => ShardResponse::ScoredArray(pairs),
             Err(_) => ShardResponse::WrongType,
@@ -570,15 +572,18 @@ pub(super) fn dispatch(
         },
         ShardRequest::ZDiffStore { dest, keys } => match ks.zdiffstore(dest, keys) {
             Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::ZInterStore { dest, keys } => match ks.zinterstore(dest, keys) {
             Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::ZUnionStore { dest, keys } => match ks.zunionstore(dest, keys) {
             Ok((count, members)) => ShardResponse::ZStoreResult { count, members },
-            Err(_) => ShardResponse::WrongType,
+            Err(WriteError::WrongType) => ShardResponse::WrongType,
+            Err(WriteError::OutOfMemory) => ShardResponse::OutOfMemory,
         },
         ShardRequest::ZRandMember {
             key,
@@ -973,7 +978,11 @@ where
         expire,
     } = resp
     {
-        ks.proto_set(key.to_owned(), type_name.clone(), data.clone(), expire);
+        if ks.proto_set(key.to_owned(), type_name.clone(), data.clone(), expire)
+            == SetResult::OutOfMemory
+        {
+            return ShardResponse::OutOfMemory;
+        }
     }
 
     resp

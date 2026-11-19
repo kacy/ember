@@ -422,7 +422,7 @@ impl Keyspace {
         &mut self,
         dest: &str,
         keys: &[String],
-    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+    ) -> Result<(usize, Vec<(f64, String)>), WriteError> {
         let members = self.zdiff(keys)?;
         self.zstore_result(dest, members)
     }
@@ -436,7 +436,7 @@ impl Keyspace {
         &mut self,
         dest: &str,
         keys: &[String],
-    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+    ) -> Result<(usize, Vec<(f64, String)>), WriteError> {
         let members = self.zinter(keys)?;
         self.zstore_result(dest, members)
     }
@@ -450,7 +450,7 @@ impl Keyspace {
         &mut self,
         dest: &str,
         keys: &[String],
-    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
+    ) -> Result<(usize, Vec<(f64, String)>), WriteError> {
         let members = self.zunion(keys)?;
         self.zstore_result(dest, members)
     }
@@ -462,17 +462,10 @@ impl Keyspace {
         &mut self,
         dest: &str,
         members: Vec<(String, f64)>,
-    ) -> Result<(usize, Vec<(f64, String)>), WrongType> {
-        // remove any existing entry at dest (any type)
-        self.remove_if_expired(dest);
-        if let Some(old) = self.entries.swap_remove(dest) {
-            self.memory.remove(dest, &old.value);
-            self.untrack_expiry(dest, &old);
-            self.defer_drop(old.value);
-        }
-
+    ) -> Result<(usize, Vec<(f64, String)>), WriteError> {
         let count = members.len();
         if count == 0 {
+            self.store_result(dest, None)?;
             return Ok((0, vec![]));
         }
 
@@ -481,12 +474,7 @@ impl Keyspace {
         for (member, score) in &members {
             ss.add_with_flags(member, *score, &flags);
         }
-
-        let value = Value::SortedSet(Box::new(ss));
-        self.memory.add(dest, &value);
-        let entry = Entry::new(value, None);
-        self.entries.insert(CompactString::from(dest), entry);
-        self.bump_version(dest);
+        self.store_result(dest, Some(Value::SortedSet(Box::new(ss))))?;
 
         // return as (score, member) to match the ZAdd AOF record convention
         let stored: Vec<(f64, String)> = members.into_iter().map(|(m, s)| (s, m)).collect();

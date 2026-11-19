@@ -268,31 +268,14 @@ impl Keyspace {
         dest: &str,
         members: Vec<String>,
     ) -> Result<(usize, Vec<String>), WriteError> {
-        // delete destination first
-        self.remove_if_expired(dest);
-        if let Some(old) = self.entries.swap_remove(dest) {
-            self.memory.remove(dest, &old.value);
-            self.untrack_expiry(dest, &old);
-            self.defer_drop(old.value);
-        }
-
         let count = members.len();
         if count == 0 {
+            self.store_result(dest, None)?;
             return Ok((0, vec![]));
         }
-
-        let member_bytes: usize = members
-            .iter()
-            .map(|m| m.len() + memory::HASHSET_MEMBER_OVERHEAD)
-            .sum();
-        self.reserve_memory(true, dest, memory::HASHSET_BASE_OVERHEAD, member_bytes)?;
-
         let stored = members.clone();
         let value = Value::Set(Box::new(members.into_iter().collect()));
-        self.memory.add(dest, &value);
-        let entry = Entry::new(value, None);
-        self.entries.insert(CompactString::from(dest), entry);
-        self.bump_version(dest);
+        self.store_result(dest, Some(value))?;
 
         Ok((count, stored))
     }
@@ -405,6 +388,18 @@ impl Keyspace {
             return Ok(present == Some(true));
         }
 
+        // the member only moves, so the write can add at most a new
+        // destination key. make room for it before removing, keeping both
+        // keys from eviction, so the add below always fits
+        let increase = if self.entries.contains_key(destination) {
+            0
+        } else {
+            memory::entry_size(destination, &empty_set())
+        };
+        if !self.enforce_memory_limit_for(&[source, destination], increase) {
+            return Err(WriteError::OutOfMemory);
+        }
+
         let removed = self.edit(source, Value::as_set_mut, |set| {
             let removed = set.remove(member);
             (removed, removed)
@@ -412,15 +407,7 @@ impl Keyspace {
         if removed != Some(true) {
             return Ok(false);
         }
-
-        // add to destination (creates the set if needed). on failure, put
-        // the member back so a failed move changes nothing; the removal just
-        // freed the memory this needs.
-        if let Err(e) = self.sadd(destination, &[member.to_string()]) {
-            let _ = self.sadd(source, &[member.to_string()]);
-            return Err(e);
-        }
-
+        self.sadd(destination, &[member.to_string()])?;
         Ok(true)
     }
 

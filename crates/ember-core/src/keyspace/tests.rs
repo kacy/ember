@@ -371,6 +371,133 @@ fn lru_eviction_makes_room() {
 }
 
 #[test]
+fn a_write_too_large_for_the_limit_evicts_nothing() {
+    let config = ShardConfig {
+        max_memory: Some(one_entry_limit() * 4),
+        eviction_policy: EvictionPolicy::AllKeysLru,
+        ..ShardConfig::default()
+    };
+    let mut ks = Keyspace::with_config(config);
+    for key in ["a", "b"] {
+        assert_eq!(
+            ks.set(key.into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
+    }
+
+    let huge = Bytes::from(vec![0u8; one_entry_limit() * 8]);
+    assert_eq!(
+        ks.set("c".into(), huge, None, false, false),
+        SetResult::OutOfMemory
+    );
+    assert!(
+        ks.exists("a") && ks.exists("b"),
+        "keys were evicted for nothing"
+    );
+    assert!(ks.take_evicted().is_empty());
+}
+
+/// A keyspace under LRU eviction that has room for the keys it holds now
+/// and `room` more bytes.
+fn lru_capped(ks: &mut Keyspace, room: usize) {
+    cap_memory(ks, room);
+    let max = ks.config.max_memory;
+    ks.update_memory_config(max, EvictionPolicy::AllKeysLru);
+}
+
+#[test]
+fn lmove_and_copy_never_evict_their_source() {
+    let mut ks = Keyspace::new();
+    ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+        .unwrap();
+    ks.set("str".into(), Bytes::from("v"), None, false, false);
+    lru_capped(&mut ks, 0);
+
+    // a new destination needs room, and only the source could make it
+    assert_eq!(
+        ks.lmove("list", "dest", true, true),
+        Err(WriteError::OutOfMemory)
+    );
+    assert_eq!(ks.llen("list"), Ok(2));
+    assert!(ks.take_evicted().is_empty());
+
+    // the copy makes room by evicting the list, not the string it reads
+    assert_eq!(ks.copy("str", "copy", false), Ok(true));
+    assert!(ks.exists("str"));
+    assert_eq!(ks.take_evicted(), ["list"]);
+}
+
+#[test]
+fn growing_writes_check_memory_before_allocating() {
+    let mut ks = Keyspace::new();
+    ks.rpush("list", &[Bytes::from("a")]).unwrap();
+    cap_memory(&mut ks, 100);
+    let big = Bytes::from(vec![b'x'; 10_000]);
+    assert_eq!(ks.lset("list", 0, big), Err(LsetError::OutOfMemory));
+    assert_eq!(
+        ks.setrange("s", 1_000_000, b"x"),
+        Err(WriteError::OutOfMemory)
+    );
+    assert_eq!(ks.setbit("b", 8_000_000, 1), Err(WriteError::OutOfMemory));
+    assert!(!ks.exists("s") && !ks.exists("b"));
+    assert_memory_matches(&ks);
+}
+
+#[test]
+fn setrange_with_an_empty_value_changes_nothing() {
+    let mut ks = Keyspace::new();
+    assert_eq!(ks.setrange("missing", 1_000_000, b""), Ok(0));
+    assert!(!ks.exists("missing"));
+    ks.set("k".into(), Bytes::from("abc"), None, false, false);
+    assert_eq!(ks.setrange("k", 10, b""), Ok(3));
+    assert_eq!(
+        ks.get("k").unwrap(),
+        Some(Value::String(Bytes::from("abc")))
+    );
+}
+
+#[test]
+fn lmove_rotating_a_one_element_list_keeps_its_ttl() {
+    let mut ks = Keyspace::new();
+    ks.rpush("list", &[Bytes::from("only")]).unwrap();
+    assert!(ks.expire("list", 100));
+    assert_eq!(
+        ks.lmove("list", "list", true, false),
+        Ok(Some(Bytes::from("only")))
+    );
+    assert!(matches!(ks.ttl("list"), TtlResult::Seconds(_)));
+}
+
+/// Caps `ks` at its current usage plus `room` bytes, without eviction.
+fn cap_memory(ks: &mut Keyspace, room: usize) {
+    let used = ks.stats().used_bytes;
+    let max = (used + room) * 100 / memory::MEMORY_SAFETY_MARGIN_PERCENT + 1;
+    ks.update_memory_config(Some(max), EvictionPolicy::NoEviction);
+}
+
+#[test]
+fn a_store_result_too_large_keeps_the_old_destination() {
+    let mut ks = Keyspace::new();
+    let members: Vec<String> = (0..1000).map(|i| format!("member-{i}")).collect();
+    ks.sadd("src", &members).unwrap();
+    ks.sadd("dest", &["old".to_owned()]).unwrap();
+    let scored: Vec<(f64, String)> = members.iter().map(|m| (1.0, m.clone())).collect();
+    ks.zadd("zsrc", &scored, &ZAddFlags::default()).unwrap();
+    ks.zadd("zdest", &[(1.0, "old".into())], &ZAddFlags::default())
+        .unwrap();
+    cap_memory(&mut ks, 100);
+
+    let keys = ["src".to_owned()];
+    assert_eq!(ks.sunionstore("dest", &keys), Err(WriteError::OutOfMemory));
+    assert!(ks.sismember("dest", "old").unwrap());
+
+    let keys = ["zsrc".to_owned()];
+    assert_eq!(ks.zunionstore("zdest", &keys), Err(WriteError::OutOfMemory));
+    assert_eq!(ks.zscore("zdest", "old").unwrap(), Some(1.0));
+    assert_memory_matches(&ks);
+}
+
+#[test]
 fn safety_margin_rejects_near_raw_limit() {
     // the effective limit equals one small entry, so a second entry is
     // rejected even though the raw limit has headroom left
