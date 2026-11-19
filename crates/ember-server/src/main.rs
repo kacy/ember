@@ -136,6 +136,12 @@ struct Args {
     #[arg(long, env = "EMBER_TLS_AUTH_CLIENTS")]
     tls_auth_clients: Option<String>,
 
+    /// refuse remote clients while no password is set and the server is
+    /// bound to a public address. accepts: yes, no. turn it off only where
+    /// the network itself is private, such as inside a container
+    #[arg(long, env = "EMBER_PROTECTED_MODE")]
+    protected_mode: Option<String>,
+
     // -- encryption at rest --
     /// path to a 32-byte key file for encrypting AOF and snapshot files.
     /// accepts 32 raw bytes or 64 hex characters. when set, new persistence
@@ -273,6 +279,9 @@ fn apply_args(cfg: &mut config::EmberConfig, args: &Args) {
     }
     if let Some(ref v) = args.tls_ca_cert_file {
         cfg.tls_ca_cert_file = v.clone();
+    }
+    if let Some(ref v) = args.protected_mode {
+        cfg.protected_mode = v.clone();
     }
     if let Some(ref v) = args.tls_auth_clients {
         cfg.tls_auth_clients = v.clone();
@@ -882,6 +891,11 @@ async fn main() {
     let config_registry = Arc::new(cfg.to_registry());
 
     let acl = build_acl_state(&cfg);
+    let protected_mode = match cfg.protected_mode.to_lowercase().as_str() {
+        "yes" | "true" | "1" => true,
+        "no" | "false" | "0" => false,
+        _ => exit_err("protected-mode must be 'yes' or 'no'"),
+    };
 
     let config_path = args.config.clone();
 
@@ -893,6 +907,7 @@ async fn main() {
         metrics_handle,
         slowlog_config,
         acl,
+        protected_mode,
         tls_config,
         cluster,
         config_registry,
