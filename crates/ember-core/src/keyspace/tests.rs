@@ -371,6 +371,30 @@ fn lru_eviction_makes_room() {
 }
 
 #[test]
+fn a_write_too_large_for_the_limit_evicts_nothing() {
+    let config = ShardConfig {
+        max_memory: Some(one_entry_limit() * 4),
+        eviction_policy: EvictionPolicy::AllKeysLru,
+        ..ShardConfig::default()
+    };
+    let mut ks = Keyspace::with_config(config);
+    for key in ["a", "b"] {
+        assert_eq!(
+            ks.set(key.into(), Bytes::from("val"), None, false, false),
+            SetResult::Ok
+        );
+    }
+
+    let huge = Bytes::from(vec![0u8; one_entry_limit() * 8]);
+    assert_eq!(
+        ks.set("c".into(), huge, None, false, false),
+        SetResult::OutOfMemory
+    );
+    assert!(ks.exists("a") && ks.exists("b"), "keys were evicted for nothing");
+    assert!(ks.take_evicted().is_empty());
+}
+
+#[test]
 fn safety_margin_rejects_near_raw_limit() {
     // the effective limit equals one small entry, so a second entry is
     // rejected even though the raw limit has headroom left

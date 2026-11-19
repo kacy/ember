@@ -719,44 +719,45 @@ impl Keyspace {
     /// and fragmentation that our per-entry estimates can't account for,
     /// preventing the OS from OOM-killing us before eviction triggers.
     fn enforce_memory_limit(&mut self, protect: &str, estimated_increase: usize) -> bool {
-        if let Some(max) = self.config.max_memory {
-            let limit = memory::effective_limit(max);
+        let Some(max) = self.config.max_memory else {
+            return true;
+        };
+        let limit = memory::effective_limit(max);
+        if self.memory.used_bytes() + estimated_increase <= limit {
+            return true;
+        }
+        let evict = self.config.eviction_policy == EvictionPolicy::AllKeysLru;
+        // eviction can free everything but the protected key, so check
+        // first that the write fits beside it. otherwise a write too large
+        // for the limit would evict every other key and fail anyway
+        let protected = self
+            .entries
+            .get(protect)
+            .map_or(0, |entry| memory::entry_size(protect, &entry.value));
+        if evict && protected + estimated_increase <= limit {
             while self.memory.used_bytes() + estimated_increase > limit {
-                match self.config.eviction_policy {
-                    EvictionPolicy::NoEviction => {
-                        self.oom_rejections += 1;
-                        // log first rejection, then every 1000th to avoid flooding
-                        if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000) {
-                            warn!(
-                                used_bytes = self.memory.used_bytes(),
-                                limit,
-                                requested = estimated_increase,
-                                total_rejections = self.oom_rejections,
-                                "OOM: write rejected (policy: noeviction)"
-                            );
-                        }
-                        return false;
-                    }
-                    EvictionPolicy::AllKeysLru => {
-                        if !self.try_evict(protect) {
-                            self.oom_rejections += 1;
-                            if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000)
-                            {
-                                warn!(
-                                    used_bytes = self.memory.used_bytes(),
-                                    limit,
-                                    requested = estimated_increase,
-                                    total_rejections = self.oom_rejections,
-                                    "OOM: write rejected (eviction exhausted)"
-                                );
-                            }
-                            return false;
-                        }
-                    }
+                if !self.try_evict(protect) {
+                    break;
                 }
             }
+            if self.memory.used_bytes() + estimated_increase <= limit {
+                return true;
+            }
         }
-        true
+
+        self.oom_rejections += 1;
+        // log the first rejection, then every 1000th to avoid flooding
+        if self.oom_rejections == 1 || self.oom_rejections.is_multiple_of(1000) {
+            warn!(
+                used_bytes = self.memory.used_bytes(),
+                limit,
+                requested = estimated_increase,
+                total_rejections = self.oom_rejections,
+                policy = ?self.config.eviction_policy,
+                "OOM: write rejected"
+            );
+        }
+        false
     }
 
     /// Replaces the entries map with an empty one and resets memory
