@@ -220,14 +220,13 @@ pub fn read_frame(r: &mut impl Read) -> Result<Frame, FormatError> {
             "frame length failed its check".into(),
         ));
     }
-    if len as usize > format::MAX_FIELD_LEN {
-        return Err(FormatError::InvalidData(format!(
-            "frame length {len} exceeds the maximum"
-        )));
-    }
 
-    let mut body = vec![0u8; len as usize];
-    if read_up_to(r, &mut body)? < body.len() {
+    // write_frame accepts any u32 length, so reading must too, or a large
+    // record would make the file unreadable. the buffer grows as bytes
+    // arrive, so a torn frame with a huge length doesn't allocate it all
+    let mut body = Vec::with_capacity((len as usize).min(64 * 1024));
+    r.by_ref().take(u64::from(len)).read_to_end(&mut body)?;
+    if body.len() < len as usize {
         return Ok(Frame::Torn);
     }
     let mut crc = [0u8; 4];
@@ -332,6 +331,18 @@ mod tests {
         let second = frames(&[b"first"]).len();
         data[second + 3] = 0x7f;
         assert!(read_all(&data).is_err());
+    }
+
+    #[test]
+    fn a_frame_longer_than_a_field_is_read_not_refused() {
+        // a header for a frame past MAX_FIELD_LEN, cut short: it reads as
+        // a torn tail, without allocating the whole length
+        let len = format::MAX_FIELD_LEN as u32 + 1;
+        let mut data = frames(&[b"first"]);
+        data.extend_from_slice(&len.to_le_bytes());
+        data.extend_from_slice(&(!len).to_le_bytes());
+        data.extend_from_slice(b"partial body");
+        assert_eq!(read_all(&data).unwrap(), [body(b"first"), Frame::Torn]);
     }
 
     #[test]
