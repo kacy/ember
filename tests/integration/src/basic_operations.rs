@@ -746,3 +746,23 @@ async fn unwatch_inside_multi_is_checked_like_other_commands() {
     c.err(&["UNWATCH", &"x".repeat(1024)]).await;
     assert!(c.err(&["EXEC"]).await.starts_with("EXECABORT"));
 }
+
+#[tokio::test]
+async fn pipelined_multi_key_commands_see_earlier_writes() {
+    let server = TestServer::start();
+    let request = [
+        resp(&["SET", "a", "1"]),
+        resp(&["SET", "b", "2"]),
+        resp(&["MGET", "a", "b"]),
+        resp(&["DEL", "a", "b"]),
+        resp(&["GET", "a"]),
+        resp(&["QUIT"]),
+    ]
+    .concat();
+    let reply = send_and_read_to_close(&server, &request).await;
+    let reply = String::from_utf8_lossy(&reply);
+    assert_eq!(
+        reply,
+        "+OK\r\n+OK\r\n*2\r\n$1\r\n1\r\n$1\r\n2\r\n:2\r\n_\r\n+OK\r\n"
+    );
+}

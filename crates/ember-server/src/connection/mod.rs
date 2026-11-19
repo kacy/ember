@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use bytes::{BufMut, BytesMut};
 use ember_core::{Engine, ShardResponse};
-use ember_protocol::{parse_request, Frame};
+use ember_protocol::{parse_request, Command, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -193,9 +193,10 @@ pub(super) enum ResponseTag {
 
 /// Result of preparing a pipelined command before the batch dispatch phase.
 ///
-/// `Immediate` commands (errors, PING, multi-key, broadcast) are resolved
-/// during preparation. `Routed` commands carry the shard index and request
-/// so the caller can group them by shard for batch dispatch.
+/// `Immediate` commands (errors, fixed replies) are resolved during
+/// preparation. `Routed` commands carry the shard index and request so the
+/// caller can group them by shard for batch dispatch. `Execute` commands
+/// (multi-key, broadcast, server) run through `execute`.
 pub(super) enum PreparedDispatch {
     /// Already resolved — no shard send needed.
     Immediate(PendingResponse),
@@ -205,6 +206,8 @@ pub(super) enum PreparedDispatch {
         start: Option<Instant>,
         cmd_name: &'static str,
     },
+    /// Runs through `execute`, after every command before it has finished.
+    Execute { cmd: Command, was_asking: bool },
 }
 
 /// A command routed to a shard during the batch-dispatch prepare phase.
@@ -454,16 +457,22 @@ where
                     &engine,
                     ctx,
                     slow_log,
-                    pubsub,
                     &mut asking,
                     &peer_addr_str,
-                    client_id,
                     &session,
                 )
                 .await;
                 match prepared {
                     PreparedDispatch::Immediate(pr) => {
                         let response = response::resolve_response(pr, ctx, slow_log, pubsub).await;
+                        ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
+                        response.serialize(&mut out);
+                    }
+                    PreparedDispatch::Execute { cmd, was_asking } => {
+                        let response = execute::execute(
+                            cmd, &engine, ctx, slow_log, pubsub, was_asking, client_id,
+                        )
+                        .await;
                         ctx.commands_processed.fetch_add(1, Ordering::Relaxed);
                         response.serialize(&mut out);
                     }
@@ -515,6 +524,9 @@ where
                 let mut shard_buckets: Vec<Vec<ShardBucketEntry>> =
                     (0..shard_count).map(|_| Vec::new()).collect();
 
+                // replies before this index are all resolved
+                let mut resolved = 0;
+
                 // phase 1: prepare
                 for frame in frames.drain(..) {
                     let idx = result.len();
@@ -523,10 +535,8 @@ where
                         &engine,
                         ctx,
                         slow_log,
-                        pubsub,
                         &mut asking,
                         &peer_addr_str,
-                        client_id,
                         &session,
                     )
                     .await;
@@ -543,45 +553,34 @@ where
                             result.push(PendingResponse::Immediate(Frame::Null));
                             shard_buckets[route.shard_idx].push((idx, route, start, cmd_name));
                         }
+                        PreparedDispatch::Execute { cmd, was_asking } => {
+                            // this command doesn't go through the batches, so
+                            // the ones before it must finish first, or it
+                            // would run before their writes
+                            send_batches(&engine, &mut shard_buckets, &mut result).await;
+                            for pending in &mut result[resolved..] {
+                                if matches!(pending, PendingResponse::Pending { .. }) {
+                                    let p = std::mem::replace(
+                                        pending,
+                                        PendingResponse::Immediate(Frame::Null),
+                                    );
+                                    let frame =
+                                        response::resolve_response(p, ctx, slow_log, pubsub).await;
+                                    *pending = PendingResponse::Immediate(frame);
+                                }
+                            }
+                            let response = execute::execute(
+                                cmd, &engine, ctx, slow_log, pubsub, was_asking, client_id,
+                            )
+                            .await;
+                            result.push(PendingResponse::Immediate(response));
+                            resolved = result.len();
+                        }
                     }
                 }
 
                 // phase 2: batch dispatch — one channel send per shard
-                for (shard_idx, bucket) in shard_buckets.into_iter().enumerate() {
-                    if bucket.is_empty() {
-                        continue;
-                    }
-                    let mut indices = Vec::with_capacity(bucket.len());
-                    let mut requests = Vec::with_capacity(bucket.len());
-                    let mut meta = Vec::with_capacity(bucket.len());
-                    for (i, route, start, cmd_name) in bucket {
-                        indices.push(i);
-                        requests.push(route.request);
-                        meta.push((route.tag, route.notify, start, cmd_name));
-                    }
-                    match engine.dispatch_batch_to_shard(shard_idx, requests).await {
-                        Ok(receivers) => {
-                            for ((rx, (tag, notify, start, cmd_name)), i) in
-                                receivers.into_iter().zip(meta).zip(indices)
-                            {
-                                result[i] = PendingResponse::Pending {
-                                    rx,
-                                    tag,
-                                    start,
-                                    cmd_name,
-                                    notify,
-                                };
-                            }
-                        }
-                        Err(e) => {
-                            let err_msg = format!("ERR {e}");
-                            for i in indices {
-                                result[i] =
-                                    PendingResponse::Immediate(Frame::Error(err_msg.clone()));
-                            }
-                        }
-                    }
-                }
+                send_batches(&engine, &mut shard_buckets, &mut result).await;
 
                 // phase 3: collect in original order. write replies out as
                 // they build up, so a long pipeline of large values does not
@@ -698,6 +697,51 @@ where
                 }
             })
             .await;
+        }
+    }
+}
+
+/// Sends each shard its bucket of pipelined requests as one batch and
+/// stores the reply receivers at each request's index in `result`. Leaves
+/// the buckets empty.
+async fn send_batches(
+    engine: &Engine,
+    shard_buckets: &mut [Vec<ShardBucketEntry>],
+    result: &mut [PendingResponse],
+) {
+    for (shard_idx, bucket) in shard_buckets.iter_mut().enumerate() {
+        if bucket.is_empty() {
+            continue;
+        }
+        let bucket = std::mem::take(bucket);
+        let mut indices = Vec::with_capacity(bucket.len());
+        let mut requests = Vec::with_capacity(bucket.len());
+        let mut meta = Vec::with_capacity(bucket.len());
+        for (i, route, start, cmd_name) in bucket {
+            indices.push(i);
+            requests.push(route.request);
+            meta.push((route.tag, route.notify, start, cmd_name));
+        }
+        match engine.dispatch_batch_to_shard(shard_idx, requests).await {
+            Ok(receivers) => {
+                for ((rx, (tag, notify, start, cmd_name)), i) in
+                    receivers.into_iter().zip(meta).zip(indices)
+                {
+                    result[i] = PendingResponse::Pending {
+                        rx,
+                        tag,
+                        start,
+                        cmd_name,
+                        notify,
+                    };
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("ERR {e}");
+                for i in indices {
+                    result[i] = PendingResponse::Immediate(Frame::Error(err_msg.clone()));
+                }
+            }
         }
     }
 }

@@ -137,18 +137,16 @@ pub(crate) async fn run_command(
 /// shard request. That comes back as `PreparedDispatch::Routed`, and the
 /// caller groups routed commands by shard for batch dispatch.
 ///
-/// Every other command (broadcast, multi-key, cluster, pub/sub, errors) runs
-/// through `execute` right away and comes back as `Immediate`.
-#[allow(clippy::too_many_arguments)]
+/// Errors and fixed replies come back as `Immediate`. Every other command
+/// (broadcast, multi-key, cluster, pub/sub) comes back as `Execute`, for
+/// the caller to run through `execute` once the commands before it are done.
 pub(super) async fn prepare_command(
     frame: Frame,
     engine: &Engine,
     ctx: &Arc<ServerContext>,
     slow_log: &Arc<SlowLog>,
-    pubsub: &Arc<PubSubManager>,
     asking: &mut bool,
     peer_addr: &str,
-    client_id: u64,
     session: &Session,
 ) -> PreparedDispatch {
     // broadcast to MONITOR subscribers (one atomic load when nobody's listening)
@@ -228,13 +226,7 @@ pub(super) async fn prepare_command(
             cmd_name,
         },
         Routing::Reply(frame) => PreparedDispatch::Immediate(PendingResponse::Immediate(frame)),
-        // everything else runs through the full execute() path
-        Routing::Other(cmd) => {
-            let response =
-                super::execute::execute(cmd, engine, ctx, slow_log, pubsub, was_asking, client_id)
-                    .await;
-            PreparedDispatch::Immediate(PendingResponse::Immediate(response))
-        }
+        Routing::Other(cmd) => PreparedDispatch::Execute { cmd, was_asking },
     }
 }
 
