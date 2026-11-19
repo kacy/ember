@@ -955,24 +955,18 @@ async fn run_cluster_reshard(
     // parse nodes to find source, target, and their addresses
     let node_map = parse_nodes_output(&nodes_output);
 
-    let source = match node_map.iter().find(|n| n.id.starts_with(from_id)) {
-        Some(n) => n.clone(),
-        None => {
-            eprintln!(
-                "{}",
-                format!("source node '{from_id}' not found in cluster").red()
-            );
+    let source = match find_node(&node_map, from_id) {
+        Ok(n) => n.clone(),
+        Err(e) => {
+            eprintln!("{}", format!("source node: {e}").red());
             return ExitCode::FAILURE;
         }
     };
 
-    let target = match node_map.iter().find(|n| n.id.starts_with(to_id)) {
-        Some(n) => n.clone(),
-        None => {
-            eprintln!(
-                "{}",
-                format!("target node '{to_id}' not found in cluster").red()
-            );
+    let target = match find_node(&node_map, to_id) {
+        Ok(n) => n.clone(),
+        Err(e) => {
+            eprintln!("{}", format!("target node: {e}").red());
             return ExitCode::FAILURE;
         }
     };
@@ -1080,6 +1074,10 @@ async fn run_cluster_reshard(
                 )
                 .red()
             );
+            // no key has moved yet, so the target can stop importing
+            let _ = target_conn
+                .send(&["CLUSTER", "SETSLOT", &slot.to_string(), "STABLE"])
+                .await;
             break;
         }
 
@@ -1104,7 +1102,19 @@ async fn run_cluster_reshard(
                 }
             };
 
-            let keys = frame_to_string_list(&keys_frame);
+            // an error here must not read as an empty slot, or the slot
+            // would be handed over with its keys left behind
+            let keys = match frame_to_string_list(&keys_frame) {
+                Ok(keys) => keys,
+                Err(e) => {
+                    eprintln!(
+                        "{}",
+                        format!("GETKEYSINSLOT failed for slot {slot}: {e}").red()
+                    );
+                    stuck = true;
+                    break;
+                }
+            };
             if keys.is_empty() {
                 break;
             }
@@ -1153,10 +1163,21 @@ async fn run_cluster_reshard(
 
         // 4. SETSLOT NODE on both source and target (and the node we're connected to)
         let slot_s = slot.to_string();
-        for c in [&mut source_conn, &mut target_conn, &mut conn] {
-            let _ = c
+        let mut assigned = true;
+        for c in [&mut target_conn, &mut source_conn, &mut conn] {
+            let r = c
                 .send(&["CLUSTER", "SETSLOT", &slot_s, "NODE", &target.id])
                 .await;
+            if !matches!(&r, Ok(f) if is_ok(f)) {
+                eprintln!(
+                    "{}",
+                    format!("SETSLOT NODE failed for slot {slot}: {}", result_msg(&r)).red()
+                );
+                assigned = false;
+            }
+        }
+        if !assigned {
+            break;
         }
 
         moved += 1;
@@ -1420,19 +1441,38 @@ fn parse_nodes_output(output: &str) -> Vec<NodeInfo> {
 }
 
 /// Extracts a list of strings from a Frame::Array response.
-fn frame_to_string_list(frame: &ember_protocol::types::Frame) -> Vec<String> {
+/// Reads a reply that lists strings. An error reply, or any other kind of
+/// reply, is an error rather than an empty list.
+fn frame_to_string_list(frame: &ember_protocol::types::Frame) -> Result<Vec<String>, String> {
+    use ember_protocol::types::Frame;
     match frame {
-        ember_protocol::types::Frame::Array(items) => items
+        Frame::Array(items) => items
             .iter()
-            .filter_map(|f| match f {
-                ember_protocol::types::Frame::Bulk(b) => {
-                    Some(String::from_utf8_lossy(b).into_owned())
-                }
-                ember_protocol::types::Frame::Simple(s) => Some(s.clone()),
-                _ => None,
+            .map(|f| match f {
+                Frame::Bulk(b) => Ok(String::from_utf8_lossy(b).into_owned()),
+                Frame::Simple(s) => Ok(s.clone()),
+                other => Err(format!("unexpected element {other:?}")),
             })
             .collect(),
-        _ => Vec::new(),
+        Frame::Error(e) => Err(e.clone()),
+        other => Err(format!("unexpected reply {other:?}")),
+    }
+}
+
+/// Finds the node whose id is `id` or starts with it. A prefix that more
+/// than one node shares is an error, so a short id can't pick the wrong
+/// node.
+fn find_node<'a>(nodes: &'a [NodeInfo], id: &str) -> Result<&'a NodeInfo, String> {
+    if let Some(node) = nodes.iter().find(|n| n.id == id) {
+        return Ok(node);
+    }
+    let mut matches = nodes.iter().filter(|n| n.id.starts_with(id));
+    match (matches.next(), matches.next()) {
+        (Some(node), None) => Ok(node),
+        (None, _) => Err(format!("'{id}' not found in cluster")),
+        (Some(_), Some(_)) => Err(format!(
+            "'{id}' matches more than one node; give more of the id"
+        )),
     }
 }
 
@@ -1462,9 +1502,10 @@ fn truncate_id(s: &str, max_len: usize) -> &str {
 
 /// Parses a "host:port" string into (host, port).
 fn parse_host_port(addr: &str) -> Result<(String, u16), String> {
-    // handle IPv6 addresses like [::1]:6379
-    if let Some(bracket_end) = addr.find("]:") {
-        let host = &addr[..bracket_end + 1];
+    // handle IPv6 addresses like [::1]:6379. the brackets belong to the
+    // address syntax, not the host, which goes on to connect calls
+    if let (Some(rest), Some(bracket_end)) = (addr.strip_prefix('['), addr.find("]:")) {
+        let host = &rest[..bracket_end - 1];
         let port_str = &addr[bracket_end + 2..];
         let port: u16 = port_str
             .parse()
@@ -1925,19 +1966,27 @@ ddd444eee555 127.0.0.1:7003@17003 slave bbb222ccc333 0 0 2 connected\n";
             Frame::Bulk(bytes::Bytes::from("key1")),
             Frame::Bulk(bytes::Bytes::from("key2")),
         ]);
-        assert_eq!(frame_to_string_list(&frame), vec!["key1", "key2"]);
+        assert_eq!(frame_to_string_list(&frame).unwrap(), vec!["key1", "key2"]);
     }
 
     #[test]
     fn frame_to_string_list_empty_array() {
         use ember_protocol::types::Frame;
-        assert!(frame_to_string_list(&Frame::Array(vec![])).is_empty());
+        assert!(frame_to_string_list(&Frame::Array(vec![]))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn frame_to_string_list_non_array() {
         use ember_protocol::types::Frame;
-        assert!(frame_to_string_list(&Frame::Simple("OK".into())).is_empty());
+        assert!(frame_to_string_list(&Frame::Simple("OK".into())).is_err());
+        assert!(frame_to_string_list(&Frame::Error("ERR slot".into())).is_err());
+    }
+
+    #[test]
+    fn parse_host_port_strips_ipv6_brackets() {
+        assert_eq!(parse_host_port("[::1]:6379").unwrap(), ("::1".into(), 6379));
     }
 
     #[test]
