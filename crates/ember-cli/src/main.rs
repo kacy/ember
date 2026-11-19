@@ -88,9 +88,11 @@ enum Mode {
 impl Args {
     /// Builds a `TlsClientConfig` from the CLI flags.
     ///
-    /// Returns `None` when `--tls` is not set.
+    /// `--tls-ca-cert` and `--tls-insecure` turn TLS on too: connecting in
+    /// plaintext when asked to check the server's certificate would send
+    /// the password unprotected. Returns `None` when no TLS flag is set.
     fn tls_config(&self) -> Option<TlsClientConfig> {
-        if !self.tls {
+        if !(self.tls || self.tls_ca_cert.is_some() || self.tls_insecure) {
             return None;
         }
         Some(TlsClientConfig {
