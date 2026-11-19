@@ -18,6 +18,11 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- crash fixes (#461):
+  - SORT, ZINTER, ZUNION and their STORE forms sort with a total order. a NaN score, such as `inf + -inf` from two sets, made Rust's sort panic and abort the server. SORT refuses NaN elements
+  - ZINCRBY refuses a result that isn't finite, so scores can't overflow to infinity. gRPC ZAdd and ZIncrBy refuse NaN and infinite scores, as RESP does
+  - `WAIT n 0` blocks until enough replicas catch up, as in Redis. it returned at once. a timeout too large to add to the clock also waits without a limit instead of risking an overflow panic
+  - PROTO.SETFIELD and PROTO.DELFIELD refuse paths that go through a repeated or map field
 - gossip hardening (#460):
   - with a cluster secret, each gossip message is signed with the time it was sent, and nodes drop messages more than 30 seconds off their own clock, so a recorded message can't be replayed later. nodes need clocks that agree within that
   - a Welcome reply is split across as many datagrams as it needs. a large cluster could build one bigger than a UDP datagram holds, and the joining node never received the member list

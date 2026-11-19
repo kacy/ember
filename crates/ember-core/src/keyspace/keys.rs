@@ -128,32 +128,23 @@ impl Keyspace {
                 items.reverse();
             }
         } else {
-            // numeric sort — parse all elements as f64
-            let mut parse_err = false;
-            items.sort_by(|a, b| {
-                let a_str = std::str::from_utf8(a).unwrap_or("");
-                let b_str = std::str::from_utf8(b).unwrap_or("");
-                let a_val = a_str.parse::<f64>().unwrap_or_else(|_| {
-                    parse_err = true;
-                    0.0
-                });
-                let b_val = b_str.parse::<f64>().unwrap_or_else(|_| {
-                    parse_err = true;
-                    0.0
-                });
-                if desc {
-                    b_val
-                        .partial_cmp(&a_val)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                } else {
-                    a_val
-                        .partial_cmp(&b_val)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }
-            });
-            if parse_err {
-                return Err("ERR One or more scores can't be converted into double");
+            // numeric sort: parse every element first, so the comparison
+            // is a total order and NaN can't reach it
+            let mut keyed = Vec::with_capacity(items.len());
+            for item in items {
+                let score = std::str::from_utf8(&item)
+                    .ok()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|v| !v.is_nan())
+                    .ok_or("ERR One or more scores can't be converted into double")?;
+                keyed.push((score, item));
             }
+            if desc {
+                keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
+            } else {
+                keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
+            items = keyed.into_iter().map(|(_, item)| item).collect();
         }
 
         // apply limit

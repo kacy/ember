@@ -555,7 +555,11 @@ fn resolve_field_path_mut<'a>(
             .get_field_by_name(segment)
             .ok_or_else(|| SchemaError::FieldNotFound(segment.to_string()))?;
 
-        if !matches!(field_desc.kind(), Kind::Message(_)) {
+        // a repeated or map field holds a list or map, not one message
+        if !matches!(field_desc.kind(), Kind::Message(_))
+            || field_desc.is_list()
+            || field_desc.is_map()
+        {
             return Err(SchemaError::FieldNotFound(format!(
                 "'{segment}' is not a message field, cannot traverse further"
             )));
@@ -961,7 +965,8 @@ mod tests {
         assert_eq!(frame, Frame::Integer(1));
     }
 
-    /// Builds a descriptor with a nested message: Outer { Inner inner = 1; }
+    /// Builds a descriptor with a nested message:
+    /// Outer { Inner inner = 1; repeated Inner items = 2; }
     /// where Inner { string value = 1; }
     fn make_nested_descriptor() -> Bytes {
         use prost_reflect::prost_types::{
@@ -986,14 +991,24 @@ mod tests {
                     },
                     DescriptorProto {
                         name: Some("Outer".into()),
-                        field: vec![FieldDescriptorProto {
-                            name: Some("inner".into()),
-                            number: Some(1),
-                            r#type: Some(11), // TYPE_MESSAGE
-                            label: Some(1),
-                            type_name: Some(".test.Inner".into()),
-                            ..Default::default()
-                        }],
+                        field: vec![
+                            FieldDescriptorProto {
+                                name: Some("inner".into()),
+                                number: Some(1),
+                                r#type: Some(11), // TYPE_MESSAGE
+                                label: Some(1),
+                                type_name: Some(".test.Inner".into()),
+                                ..Default::default()
+                            },
+                            FieldDescriptorProto {
+                                name: Some("items".into()),
+                                number: Some(2),
+                                r#type: Some(11), // TYPE_MESSAGE
+                                label: Some(3),   // LABEL_REPEATED
+                                type_name: Some(".test.Inner".into()),
+                                ..Default::default()
+                            },
+                        ],
                         ..Default::default()
                     },
                 ],
@@ -1383,6 +1398,18 @@ mod tests {
             .get_field("test.Outer", &new_data, "inner.value")
             .unwrap();
         assert_eq!(frame, Frame::Bulk(Bytes::from("auto")));
+    }
+
+    #[test]
+    fn paths_through_repeated_fields_are_refused() {
+        let mut registry = SchemaRegistry::new();
+        registry
+            .register("nested".into(), make_nested_descriptor())
+            .unwrap();
+        for path in ["items.value", "items.value.deeper"] {
+            assert!(registry.set_field("test.Outer", &[], path, "x").is_err());
+            assert!(registry.clear_field("test.Outer", &[], path).is_err());
+        }
     }
 
     /// Builds a descriptor with a single uint64 field.
