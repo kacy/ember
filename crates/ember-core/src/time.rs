@@ -5,8 +5,10 @@
 //!
 //! All internal expiry values are stored as monotonic milliseconds since
 //! process start. Use `monotonic_to_unix_ms` to convert to wall-clock Unix
-//! timestamps for commands like EXPIRETIME and PEXPIRETIME.
+//! timestamps for commands like EXPIRETIME and PEXPIRETIME. The conversion
+//! follows the wall clock when it is stepped.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,39 +37,49 @@ pub fn now_secs() -> u32 {
     start.elapsed().as_secs() as u32
 }
 
-/// Anchors the monotonic clock to wall time once and caches it for all
-/// subsequent conversions. Both `monotonic_to_unix_ms` and
-/// `unix_ms_to_monotonic_ms` share this anchor so the two operations are
-/// perfectly invertible.
-struct ClockAnchor {
-    /// Unix epoch ms at the moment we captured the anchor.
-    unix_ms_at_capture: u64,
-    /// Monotonic ms at the moment we captured the anchor.
-    mono_ms_at_capture: u64,
+/// How far the wall clock may move against the monotonic clock before the
+/// offset between them is measured again. Below this the cached offset is
+/// kept, so converting a time one way and back gives the same value.
+const MAX_CLOCK_DRIFT_MS: i64 = 1000;
+
+/// Unix ms minus monotonic ms, as last measured. `i64::MIN` until the first
+/// measurement.
+static WALL_OFFSET_MS: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// The offset that turns monotonic ms into Unix ms.
+///
+/// The two clocks drift apart when the wall clock is stepped, as by NTP, or
+/// when a paused VM resumes. Measuring the offset once at startup carried
+/// that drift into every EXPIREAT and EXPIRETIME for the life of the
+/// process, so each call measures it again and keeps the new value once it
+/// is more than [`MAX_CLOCK_DRIFT_MS`] from the cached one.
+fn wall_offset_ms() -> i64 {
+    let unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64;
+    let measured = unix_ms - now_ms() as i64;
+    let cached = WALL_OFFSET_MS.load(Ordering::Relaxed);
+    let offset = next_offset(cached, measured);
+    if offset != cached {
+        WALL_OFFSET_MS.store(offset, Ordering::Relaxed);
+    }
+    offset
 }
 
-fn clock_anchor() -> &'static ClockAnchor {
-    static ANCHOR: OnceLock<ClockAnchor> = OnceLock::new();
-    ANCHOR.get_or_init(|| {
-        let unix_ms_at_capture = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(u64::MAX as u128) as u64;
-        let mono_ms_at_capture = now_ms();
-        ClockAnchor {
-            unix_ms_at_capture,
-            mono_ms_at_capture,
-        }
-    })
+/// The offset to use, given the `cached` one and one just `measured`: the
+/// cached one unless there is none yet or the clocks drifted too far.
+fn next_offset(cached: i64, measured: i64) -> i64 {
+    if cached != i64::MIN && (measured - cached).abs() <= MAX_CLOCK_DRIFT_MS {
+        cached
+    } else {
+        measured
+    }
 }
 
 /// Converts a monotonic expiry timestamp (ms since process start) to a Unix
 /// epoch timestamp in milliseconds.
-///
-/// The conversion anchors the monotonic clock to wall time on first call using
-/// a single `SystemTime::now()` sample. Subsequent calls use only the fast
-/// monotonic clock and arithmetic — no system call.
 ///
 /// Returns `None` if `expires_at_ms` is `NO_EXPIRY`.
 #[inline]
@@ -75,10 +87,8 @@ pub fn monotonic_to_unix_ms(expires_at_ms: u64) -> Option<u64> {
     if expires_at_ms == NO_EXPIRY {
         return None;
     }
-    let anchor = clock_anchor();
-    // unix_ms = unix_at_capture + (mono_expiry - mono_at_capture)
-    let offset = expires_at_ms.saturating_sub(anchor.mono_ms_at_capture);
-    Some(anchor.unix_ms_at_capture.saturating_add(offset))
+    let unix = i128::from(expires_at_ms) + i128::from(wall_offset_ms());
+    Some(unix.clamp(0, i128::from(u64::MAX)) as u64)
 }
 
 /// Converts a Unix epoch timestamp in milliseconds to a monotonic expiry
@@ -86,18 +96,15 @@ pub fn monotonic_to_unix_ms(expires_at_ms: u64) -> Option<u64> {
 ///
 /// The inverse of `monotonic_to_unix_ms`. Used by EXPIREAT and PEXPIREAT
 /// to convert an absolute wall-clock timestamp into the internal monotonic
-/// representation. Both functions share the same clock anchor so the
-/// conversion is coherent.
+/// representation.
 ///
 /// A timestamp in the past results in a value less than or equal to
 /// `now_ms()`, which means the key will be treated as already expired on
-/// the next access.
+/// the next access. The result is at least 1, since 0 means no expiry.
 #[inline]
 pub fn unix_ms_to_monotonic_ms(unix_ms: u64) -> u64 {
-    let anchor = clock_anchor();
-    // mono_expiry = mono_at_capture + (unix_ms - unix_at_capture)
-    let offset = unix_ms.saturating_sub(anchor.unix_ms_at_capture);
-    anchor.mono_ms_at_capture.saturating_add(offset)
+    let mono = i128::from(unix_ms) - i128::from(wall_offset_ms());
+    mono.clamp(1, i128::from(u64::MAX)) as u64
 }
 
 /// Sentinel value meaning "no expiry".
@@ -164,5 +171,27 @@ fn remaining(expires_at_ms: u64, divisor: u64) -> Option<u64> {
     } else {
         let now = now_ms();
         Some(expires_at_ms.saturating_sub(now) / divisor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_offset_follows_a_stepped_wall_clock() {
+        assert_eq!(next_offset(i64::MIN, 5_000), 5_000);
+        // small jitter keeps the cached offset, so conversions round-trip
+        assert_eq!(next_offset(5_000, 5_400), 5_000);
+        // a step past the limit, as after NTP or a paused VM, is taken
+        assert_eq!(next_offset(5_000, 65_000), 65_000);
+        assert_eq!(next_offset(5_000, -55_000), -55_000);
+    }
+
+    #[test]
+    fn unix_times_round_trip_through_monotonic_time() {
+        let unix_ms = 4_000_000_000_000;
+        let mono = unix_ms_to_monotonic_ms(unix_ms);
+        assert_eq!(monotonic_to_unix_ms(mono), Some(unix_ms));
     }
 }

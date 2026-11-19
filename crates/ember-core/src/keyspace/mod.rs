@@ -429,6 +429,10 @@ pub struct Keyspace {
     evicted_total: u64,
     /// Keys evicted since the shard last called [`Keyspace::take_evicted`].
     evicted: Vec<String>,
+    /// Keys removed because they expired, whether found on access or by the
+    /// background sweep, since the last [`take_expired`](Self::take_expired).
+    /// The shard sends them to keyspace notifications.
+    expired: Vec<String>,
     /// Cumulative count of write rejections due to memory limits.
     oom_rejections: u64,
     /// Cumulative count of successful key lookups.
@@ -470,6 +474,7 @@ impl Keyspace {
             expired_total: 0,
             evicted_total: 0,
             evicted: Vec::new(),
+            expired: Vec::new(),
             oom_rejections: 0,
             keyspace_hits: 0,
             keyspace_misses: 0,
@@ -694,6 +699,12 @@ impl Keyspace {
         true
     }
 
+    /// Returns the keys that expired since the last call, found on access
+    /// or by the background sweep.
+    pub(crate) fn take_expired(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.expired)
+    }
+
     /// Returns the keys evicted since the last call. The shard logs them as
     /// deletes so the AOF and replicas drop them too.
     pub(crate) fn take_evicted(&mut self) -> Vec<String> {
@@ -862,9 +873,9 @@ impl Keyspace {
     /// Samples up to `count` random keys that have a TTL and removes any
     /// that have expired.
     ///
-    /// Expired key names are appended to `out` so the caller can emit
-    /// keyspace notifications. Returns the number of keys removed.
-    pub(crate) fn expire_sample(&mut self, count: usize, out: &mut Vec<String>) -> usize {
+    /// Returns the number of keys removed. Their names are kept for
+    /// [`take_expired`](Self::take_expired).
+    pub(crate) fn expire_sample(&mut self, count: usize) -> usize {
         let len = self.expiring.len();
         if len == 0 {
             return 0;
@@ -883,7 +894,6 @@ impl Keyspace {
         let mut removed = 0;
         for key in expired {
             if self.remove_if_expired(&key) {
-                out.push(key);
                 removed += 1;
             }
         }
@@ -913,6 +923,7 @@ impl Keyspace {
     /// need a second probe only on the rare expired path.
     fn remove_expired_entry(&mut self, key: &str) {
         if let Some(entry) = self.entries.swap_remove(key) {
+            self.expired.push(key.to_owned());
             self.memory.remove(key, &entry.value);
             self.untrack_expiry(key, &entry);
             self.expired_total += 1;

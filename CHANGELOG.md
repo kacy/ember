@@ -27,6 +27,10 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- expiry and MIGRATE fixes (#484):
+  - a key found expired when a command reads it emits a keyspace `expired` event, as one found by the background sweep does. only the sweep's keys produced events
+  - EXPIREAT and EXPIRETIME follow the wall clock when it is stepped, as by NTP or after a paused VM resumes. the offset between the wall clock and the monotonic clock was measured once at startup, so every later EXPIREAT and EXPIRETIME carried the drift since then
+  - MIGRATE deletes the key on the source only if it hasn't changed since it was copied, and copies it again if it has. a write that passed its slot check just before the transfer began could land between the copy and the delete and be lost
 - config and command edge cases (#481):
   - `stats-poll-interval-secs = 0` and `replication-broadcast-capacity = 0` are refused at startup. both panicked
   - `--host ::` and `--host ::1` bind to IPv6. an IPv6 address failed to parse

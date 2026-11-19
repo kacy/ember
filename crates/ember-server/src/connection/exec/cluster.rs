@@ -252,25 +252,109 @@ async fn cluster_target(
 
 /// Copies the key to the target with RESTORE, then, unless COPY was given,
 /// deletes it locally, so later commands for it are sent there with ASK.
+///
+/// A write that passed its slot check just before the transfer began can
+/// still land between the copy and the delete. The delete therefore only
+/// goes ahead if the key is unchanged since it was dumped; otherwise the
+/// key is copied again, replacing the stale copy on the target.
 async fn transfer_key(
     req: &MigrateRequest,
     target: std::net::SocketAddr,
     cx: &ExecCtx<'_>,
 ) -> Frame {
+    /// Copies before giving up on a key that keeps changing.
+    const MAX_ATTEMPTS: usize = 5;
+
     let key = &req.key;
     let idx = cx.engine.shard_for_key(key);
-    let dump_req = ShardRequest::DumpKey { key: key.clone() };
-    let (data, ttl_ms) = match cx.engine.send_to_shard(idx, dump_req).await {
-        Ok(ShardResponse::KeyDump { data, ttl_ms }) => (data, ttl_ms),
-        Ok(ShardResponse::Value(None)) => return Frame::Simple("NOKEY".into()),
-        Ok(_) => return Frame::Error("ERR internal error".into()),
-        Err(e) => return Frame::Error(format!("ERR {e}")),
-    };
+    for attempt in 0..MAX_ATTEMPTS {
+        let dump_req = ShardRequest::DumpKey { key: key.clone() };
+        let dump = match cx.engine.send_to_shard(idx, dump_req).await {
+            Ok(ShardResponse::KeyDump {
+                data,
+                ttl_ms,
+                version,
+            }) => Some((data, ttl_ms, version)),
+            Ok(ShardResponse::Value(None)) => None,
+            Ok(_) => return Frame::Error("ERR internal error".into()),
+            Err(e) => return Frame::Error(format!("ERR {e}")),
+        };
 
-    // the target is importing the slot, so it serves the key only after
-    // ASKING. a target with a password needs AUTH first, which MIGRATE
-    // takes as an option, as in Redis.
-    let bulk = |s: &str| Frame::Bulk(Bytes::copy_from_slice(s.as_bytes()));
+        // a key deleted here after an earlier copy must go from the target
+        // too; one that was never there needs nothing
+        let Some((data, ttl_ms, version)) = dump else {
+            if attempt == 0 {
+                return Frame::Simple("NOKEY".into());
+            }
+            let del = Frame::Array(vec![bulk("DEL"), bulk(key)]);
+            return match send_to_target(req, target, del).await {
+                Ok(()) => Frame::Simple("OK".into()),
+                Err(e) => e,
+            };
+        };
+
+        // the target is importing the slot, so it serves the key only after
+        // ASKING. a later attempt replaces the stale copy the first left
+        let mut restore = vec![
+            bulk("RESTORE"),
+            bulk(key),
+            bulk(&ttl_ms.max(0).to_string()),
+            Frame::Bulk(Bytes::from(data)),
+        ];
+        if req.replace || attempt > 0 {
+            restore.push(bulk("REPLACE"));
+        }
+        if let Err(e) = send_to_target(req, target, Frame::Array(restore)).await {
+            return e;
+        }
+        if req.copy {
+            return Frame::Simple("OK".into());
+        }
+
+        // if the delete fails, both nodes hold the key, and the client must
+        // hear of it
+        let del = ShardRequest::DelIfVersion {
+            key: key.clone(),
+            version,
+        };
+        match cx.engine.send_to_shard(idx, del).await {
+            Ok(ShardResponse::Bool(true)) => {
+                if let Some(c) = &cx.ctx.cluster {
+                    c.mark_key_migrated(ember_cluster::key_slot(key.as_bytes()))
+                        .await;
+                }
+                return Frame::Simple("OK".into());
+            }
+            // changed since the dump: copy it again
+            Ok(ShardResponse::Bool(false)) => {}
+            Ok(ShardResponse::Err(e)) => return copied_not_deleted(&e),
+            Ok(other) => return copied_not_deleted(&format!("{other:?}")),
+            Err(e) => return copied_not_deleted(&e.to_string()),
+        }
+    }
+    Frame::Error(format!(
+        "ERR the key changed during each of {MAX_ATTEMPTS} attempts to move it; it is still here"
+    ))
+}
+
+fn bulk(s: &str) -> Frame {
+    Frame::Bulk(Bytes::copy_from_slice(s.as_bytes()))
+}
+
+fn copied_not_deleted(e: &str) -> Frame {
+    Frame::Error(format!(
+        "ERR the key was copied to the target but not deleted here: {e}"
+    ))
+}
+
+/// Sends `command` to the MIGRATE target after ASKING, and AUTH when the
+/// request carries credentials, as in Redis. Returns the reply to send the
+/// client on failure.
+async fn send_to_target(
+    req: &MigrateRequest,
+    target: std::net::SocketAddr,
+    command: Frame,
+) -> Result<(), Frame> {
     let mut commands = Vec::new();
     if let Some(auth) = &req.auth {
         let mut parts = vec![bulk("AUTH")];
@@ -279,51 +363,22 @@ async fn transfer_key(
         commands.push(Frame::Array(parts));
     }
     commands.push(Frame::Array(vec![bulk("ASKING")]));
-    let mut restore = vec![
-        bulk("RESTORE"),
-        bulk(key),
-        bulk(&ttl_ms.max(0).to_string()),
-        Frame::Bulk(Bytes::from(data)),
-    ];
-    if req.replace {
-        restore.push(bulk("REPLACE"));
-    }
-    commands.push(Frame::Array(restore));
+    commands.push(command);
 
     let timeout = Duration::from_millis(req.timeout_ms.max(1000));
     let replies = match tokio::time::timeout(timeout, send_commands(target, &commands)).await {
         Ok(Ok(replies)) => replies,
-        Ok(Err(e)) => return Frame::Error(format!("IOERR error talking to the target: {e}")),
-        Err(_) => return Frame::Error("IOERR timeout talking to the target".into()),
+        Ok(Err(e)) => {
+            return Err(Frame::Error(format!(
+                "IOERR error talking to the target: {e}"
+            )))
+        }
+        Err(_) => return Err(Frame::Error("IOERR timeout talking to the target".into())),
     };
-    if let Some(Frame::Error(e)) = replies.iter().find(|r| matches!(r, Frame::Error(_))) {
-        return Frame::Error(format!("ERR target error: {e}"));
+    match replies.iter().find(|r| matches!(r, Frame::Error(_))) {
+        Some(Frame::Error(e)) => Err(Frame::Error(format!("ERR target error: {e}"))),
+        _ => Ok(()),
     }
-
-    if !req.copy {
-        // the key is still marked in flight, so no write lands between the
-        // RESTORE and this delete. if the delete fails, both nodes hold the
-        // key, and the client must hear of it
-        let failed = match cx
-            .engine
-            .send_to_shard(idx, ShardRequest::Del { key: key.clone() })
-            .await
-        {
-            Ok(ShardResponse::Err(e)) => Some(e),
-            Err(e) => Some(e.to_string()),
-            Ok(_) => None,
-        };
-        if let Some(e) = failed {
-            return Frame::Error(format!(
-                "ERR the key was copied to the target but not deleted here: {e}"
-            ));
-        }
-        if let Some(c) = &cx.ctx.cluster {
-            c.mark_key_migrated(ember_cluster::key_slot(key.as_bytes()))
-                .await;
-        }
-    }
-    Frame::Simple("OK".into())
 }
 
 /// Largest reply data MIGRATE reads from the target. The replies to AUTH,

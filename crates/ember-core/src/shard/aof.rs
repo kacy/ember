@@ -293,6 +293,7 @@ pub(super) fn to_aof_records(
             }],
         },
         (ShardRequest::Del { key }, ShardResponse::Bool(true))
+        | (ShardRequest::DelIfVersion { key, .. }, ShardResponse::Bool(true))
         | (ShardRequest::Unlink { key }, ShardResponse::Bool(true)) => {
             smallvec![AofRecord::Del { key }]
         }
