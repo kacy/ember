@@ -630,8 +630,14 @@ where
                 }
                 if is_monitor_frame(&frame) {
                     stream.write_all(b"+OK\r\n").await?;
-                    handler::handle_monitor_mode(&mut stream, &mut buf, ctx, &peer_addr_str)
-                        .await?;
+                    handler::handle_monitor_mode(
+                        &mut stream,
+                        &mut buf,
+                        ctx,
+                        &mut session,
+                        &peer_addr_str,
+                    )
+                    .await?;
                     return Ok(());
                 } else if is_subscribe_frame(&frame) {
                     let exit = handler::handle_subscriber_mode(
@@ -640,7 +646,7 @@ where
                         &mut out,
                         ctx,
                         pubsub,
-                        &session,
+                        &mut session,
                         frame,
                     )
                     .await?;

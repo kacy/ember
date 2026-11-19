@@ -225,11 +225,26 @@ impl Session {
 
     /// Returns the error to send if this session's user may not run `cmd`.
     pub fn check(&self, cmd: &Command) -> Option<Frame> {
-        let user = self.user.as_ref()?;
+        let Some(user) = self.user.as_ref() else {
+            // without a user, only what is allowed before AUTH may run
+            return match cmd {
+                Command::Ping(_) | Command::Echo(_) | Command::Quit | Command::Auth { .. } => None,
+                _ => Some(Frame::Error("NOAUTH Authentication required.".into())),
+            };
+        };
         if user.allcommands && user.allkeys {
             return None;
         }
         crate::acl::check_permission(user, cmd, cmd.command_name(), cmd.acl_categories())
+    }
+
+    /// Reloads the user if the ACL users changed, then returns whether it
+    /// may still run `cmd`. MONITOR and subscriber mode call this while
+    /// they stream, and close the connection once it returns false, as
+    /// Redis does for clients of a user that was changed or deleted.
+    pub fn still_allowed(&mut self, ctx: &ServerContext, cmd: &Command) -> bool {
+        self.refresh(ctx);
+        self.check(cmd).is_none()
     }
 
     /// Parses `frame` and checks it with [`check`](Self::check). Used before

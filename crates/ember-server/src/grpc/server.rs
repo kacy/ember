@@ -160,7 +160,7 @@ pub(super) async fn pipeline(
     svc: &EmberService,
     request: Request<Streaming<PipelineRequest>>,
 ) -> Result<Response<ReceiverStream<Result<PipelineResponse, Status>>>, Status> {
-    let session = session_of(&request);
+    let mut session = session_of(&request);
     let mut stream = request.into_inner();
     let engine = svc.engine.clone();
     let ctx = Arc::clone(&svc.ctx);
@@ -173,6 +173,9 @@ pub(super) async fn pipeline(
         let svc = EmberService::new(engine, ctx, slow_log, pubsub);
         while let Ok(Some(req)) = stream.message().await {
             let id = req.id;
+            // a stream can outlive a change to its user, so each command
+            // sees the user as it is now
+            session.refresh(&svc.ctx);
             let result = handle_pipeline_command(&svc, &session, req).await;
             let resp = match result {
                 Ok(pr) => pr,
