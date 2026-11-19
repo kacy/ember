@@ -26,7 +26,7 @@ use std::io::{self, Read};
 use crate::format::{self, FormatError};
 
 /// The file layout version. Files in any other layout are refused.
-pub const VERSION: u8 = 5;
+pub const VERSION: u8 = 6;
 
 /// Header flag: frame bodies are encrypted.
 const FLAG_ENCRYPTED: u8 = 1;
@@ -64,8 +64,17 @@ impl Codec {
         }
     }
 
-    /// Encodes the next record or entry as a frame body.
+    /// Encodes the next record or entry as a frame body. Fails, without
+    /// using up the position, when the body would be too long for a frame,
+    /// so the frames after it keep their positions.
     pub fn seal<'a>(&mut self, plain: &'a [u8]) -> Result<Cow<'a, [u8]>, FormatError> {
+        const MAX_SEAL_OVERHEAD: usize = 64;
+        if plain.len() > u32::MAX as usize - MAX_SEAL_OVERHEAD {
+            return Err(FormatError::InvalidData(format!(
+                "record of {} bytes is too long for a frame",
+                plain.len()
+            )));
+        }
         match self {
             Codec::Plain => Ok(Cow::Borrowed(plain)),
             #[cfg(feature = "encryption")]
@@ -114,6 +123,14 @@ impl Codec {
     }
 }
 
+/// The header fields before the salt, which an encrypted file's key is
+/// bound to.
+#[cfg(feature = "encryption")]
+fn bound_header(magic: &[u8; 4], version: u8, flags: u8) -> [u8; 6] {
+    let [a, b, c, d] = *magic;
+    [a, b, c, d, version, flags]
+}
+
 /// Writes a header for a new file and returns the codec for its frames.
 /// With a key, the file is encrypted under a fresh salt.
 pub fn write_header(
@@ -131,7 +148,8 @@ pub fn write_header(
         #[cfg(feature = "encryption")]
         Some(key) => {
             out.push(FLAG_ENCRYPTED);
-            Ok(Codec::encrypted(key.write_new_file_salt(out)?))
+            let header = bound_header(magic, VERSION, FLAG_ENCRYPTED);
+            Ok(Codec::encrypted(key.write_new_file_salt(out, &header)?))
         }
         #[cfg(not(feature = "encryption"))]
         Some(never) => match *never {},
@@ -167,7 +185,10 @@ pub fn read_header(
         (false, Some(_)) => Err(FormatError::NotEncrypted),
         (true, None) => Err(FormatError::EncryptionRequired),
         #[cfg(feature = "encryption")]
-        (true, Some(key)) => Ok(Codec::encrypted(key.read_file_cipher(r)?)),
+        (true, Some(key)) => {
+            let header = bound_header(&found, version, flags);
+            Ok(Codec::encrypted(key.read_file_cipher(r, &header)?))
+        }
         #[cfg(not(feature = "encryption"))]
         (true, Some(never)) => match *never {},
     }
@@ -403,6 +424,23 @@ mod tests {
         let mut other = read_header(&mut out.as_slice(), b"TEST", Some(&wrong)).unwrap();
         assert!(matches!(
             other.open(sealed),
+            Err(FormatError::DecryptionFailed)
+        ));
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn a_changed_header_makes_the_frames_unreadable() {
+        let key = Key::from_bytes([7; 32]);
+        let mut out = Vec::new();
+        let mut codec = write_header(&mut out, b"EAOF", Some(&key)).unwrap();
+        let sealed = codec.seal(b"record").unwrap().into_owned();
+
+        // the same file relabeled as another type
+        out[..4].copy_from_slice(b"ESNP");
+        let mut relabeled = read_header(&mut out.as_slice(), b"ESNP", Some(&key)).unwrap();
+        assert!(matches!(
+            relabeled.open(sealed),
             Err(FormatError::DecryptionFailed)
         ));
     }

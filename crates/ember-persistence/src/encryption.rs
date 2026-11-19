@@ -131,30 +131,37 @@ impl EncryptionKey {
     }
 
     /// Returns the cipher for a file with this salt. Its key is derived
-    /// from the master key and the salt with HKDF-SHA256.
-    pub fn file_cipher(&self, salt: &[u8; SALT_SIZE]) -> FileCipher {
+    /// from the master key and the salt with HKDF-SHA256. `header` is the
+    /// file's header before the salt, the file type, version and flags,
+    /// so a file whose header was changed decrypts to nothing.
+    pub fn file_cipher(&self, salt: &[u8; SALT_SIZE], header: &[u8]) -> FileCipher {
         let mut subkey = Zeroizing::new([0u8; 32]);
         Hkdf::<Sha256>::new(Some(salt), &self.bytes)
-            .expand(b"ember file key", subkey.as_mut())
+            .expand_multi_info(&[b"ember file key", header], subkey.as_mut())
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         FileCipher::new(&subkey)
     }
 
     /// Picks a salt for a new file, writes it to `w` and returns the file's
-    /// cipher.
-    pub fn write_new_file_salt(&self, w: &mut impl Write) -> io::Result<FileCipher> {
+    /// cipher. `header` is as for [`file_cipher`](Self::file_cipher).
+    pub fn write_new_file_salt(&self, w: &mut impl Write, header: &[u8]) -> io::Result<FileCipher> {
         let mut salt = [0u8; SALT_SIZE];
         OsRng.fill_bytes(&mut salt);
         w.write_all(&salt)?;
-        Ok(self.file_cipher(&salt))
+        Ok(self.file_cipher(&salt, header))
     }
 
     /// Reads a file's salt from `r`, which must be positioned at it, and
-    /// returns the file's cipher.
-    pub fn read_file_cipher(&self, r: &mut impl Read) -> Result<FileCipher, FormatError> {
+    /// returns the file's cipher. `header` is as for
+    /// [`file_cipher`](Self::file_cipher).
+    pub fn read_file_cipher(
+        &self,
+        r: &mut impl Read,
+        header: &[u8],
+    ) -> Result<FileCipher, FormatError> {
         let mut salt = [0u8; SALT_SIZE];
         format::read_exact(r, &mut salt)?;
-        Ok(self.file_cipher(&salt))
+        Ok(self.file_cipher(&salt, header))
     }
 }
 
@@ -220,14 +227,14 @@ mod tests {
     const SALT: [u8; SALT_SIZE] = [7; SALT_SIZE];
 
     fn cipher(key: &EncryptionKey) -> FileCipher {
-        key.file_cipher(&SALT)
+        key.file_cipher(&SALT, b"")
     }
 
     #[test]
     fn each_salt_gets_its_own_key() {
         let key = test_key();
-        let (nonce, ciphertext) = key.file_cipher(&SALT).encrypt(0, b"data").unwrap();
-        let other = key.file_cipher(&[8; SALT_SIZE]);
+        let (nonce, ciphertext) = key.file_cipher(&SALT, b"").encrypt(0, b"data").unwrap();
+        let other = key.file_cipher(&[8; SALT_SIZE], b"");
         assert!(matches!(
             other.decrypt(0, &nonce, &ciphertext),
             Err(FormatError::DecryptionFailed)
@@ -239,11 +246,11 @@ mod tests {
         let key = test_key();
         let mut file = Vec::new();
         let (nonce, ciphertext) = key
-            .write_new_file_salt(&mut file)
+            .write_new_file_salt(&mut file, b"")
             .unwrap()
             .encrypt(0, b"data")
             .unwrap();
-        let cipher = key.read_file_cipher(&mut file.as_slice()).unwrap();
+        let cipher = key.read_file_cipher(&mut file.as_slice(), b"").unwrap();
         assert_eq!(cipher.decrypt(0, &nonce, &ciphertext).unwrap(), b"data");
     }
 
