@@ -18,7 +18,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- ACL fixes (#PR):
+- ACL fixes (#468):
   - command rules apply in the order given, and the last rule that matches a command decides, as in Redis. `-@all +@read` refused every read command, because a denied category always beat an allowed one. ACL LIST and GETUSER print the rules in order
   - ACL SETUSER and `--aclfile` accept `#<sha256>` and `!<sha256>` password rules, so ACL LIST output loads back
   - ACL DELUSER with `default` among the names deletes nobody. it deleted the names before `default` and then failed
