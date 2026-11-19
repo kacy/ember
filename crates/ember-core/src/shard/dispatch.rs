@@ -162,6 +162,9 @@ pub(super) fn dispatch(
         }
         ShardRequest::ObjectEncoding { key } => ShardResponse::EncodingName(ks.encoding(key)),
         ShardRequest::Del { key } => ShardResponse::Bool(ks.del(key)),
+        ShardRequest::DelIfVersion { key, version } => {
+            ShardResponse::Bool(ks.key_version(key) == *version && ks.del(key))
+        }
         ShardRequest::Unlink { key } => ShardResponse::Bool(ks.unlink(key)),
         ShardRequest::Exists { key } => ShardResponse::Bool(ks.exists(key)),
         ShardRequest::RandomKey => match ks.random_key() {
@@ -655,8 +658,14 @@ pub(super) fn dispatch(
         ShardRequest::DumpKey { key } => match ks.dump(key) {
             Some((value, ttl_ms)) => {
                 let snap = persistence::value_to_snap(value);
-                match snapshot::serialize_snap_value(&snap) {
-                    Ok(data) => ShardResponse::KeyDump { data, ttl_ms },
+                let data = snapshot::serialize_snap_value(&snap);
+                let version = ks.key_version(key);
+                match data {
+                    Ok(data) => ShardResponse::KeyDump {
+                        data,
+                        ttl_ms,
+                        version,
+                    },
                     Err(e) => ShardResponse::Err(format!("ERR snapshot serialization failed: {e}")),
                 }
             }

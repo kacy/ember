@@ -1358,7 +1358,7 @@ mod tests {
             },
         );
         match resp {
-            ShardResponse::KeyDump { data, ttl_ms } => {
+            ShardResponse::KeyDump { data, ttl_ms, .. } => {
                 assert!(!data.is_empty());
                 assert!(ttl_ms > 0);
                 // verify the data round-trips
@@ -1374,6 +1374,38 @@ mod tests {
         let mut ks = Keyspace::new();
         let resp = test_dispatch(&mut ks, ShardRequest::DumpKey { key: "nope".into() });
         assert!(matches!(resp, ShardResponse::Value(None)));
+    }
+
+    #[test]
+    fn del_if_version_keeps_a_key_changed_since_its_dump() {
+        let mut ks = Keyspace::new();
+        ks.set("k".into(), Bytes::from("v1"), None, false, false);
+        let ShardResponse::KeyDump { version, .. } =
+            test_dispatch(&mut ks, ShardRequest::DumpKey { key: "k".into() })
+        else {
+            panic!("expected KeyDump");
+        };
+        ks.set("k".into(), Bytes::from("v2"), None, false, false);
+        let del = |version| ShardRequest::DelIfVersion {
+            key: "k".into(),
+            version,
+        };
+        assert!(matches!(
+            test_dispatch(&mut ks, del(version)),
+            ShardResponse::Bool(false)
+        ));
+        assert!(ks.exists("k"));
+
+        let ShardResponse::KeyDump { version, .. } =
+            test_dispatch(&mut ks, ShardRequest::DumpKey { key: "k".into() })
+        else {
+            panic!("expected KeyDump");
+        };
+        assert!(matches!(
+            test_dispatch(&mut ks, del(version)),
+            ShardResponse::Bool(true)
+        ));
+        assert!(!ks.exists("k"));
     }
 
     #[test]
@@ -1489,7 +1521,7 @@ mod tests {
             },
         );
         let (data, _ttl) = match resp {
-            ShardResponse::KeyDump { data, ttl_ms } => (data, ttl_ms),
+            ShardResponse::KeyDump { data, ttl_ms, .. } => (data, ttl_ms),
             other => panic!("expected KeyDump, got {other:?}"),
         };
 

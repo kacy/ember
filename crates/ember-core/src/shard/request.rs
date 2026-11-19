@@ -221,6 +221,10 @@ shard_request! {
         /// Copies the value at source to destination within this shard.
         Copy { source: String, destination: String, replace: bool },
         Del { key: String },
+        /// Deletes the key only if its WATCH version is still `version`,
+        /// for MIGRATE, which must not delete a key that changed after it
+        /// was copied. Replies `Bool(true)` when deleted.
+        DelIfVersion { key: String, version: u64 },
         /// Like DEL but defers value deallocation to the background drop thread.
         Unlink { key: String },
         Expire { key: String, seconds: u64 },
@@ -411,8 +415,13 @@ pub enum ShardResponse {
         /// (score, member) pairs stored in dest.
         members: Vec<(f64, String)>,
     },
-    /// Serialized key dump with remaining TTL (for MIGRATE/DUMP).
-    KeyDump { data: Vec<u8>, ttl_ms: i64 },
+    /// Serialized key dump with remaining TTL (for MIGRATE/DUMP), and the
+    /// key's WATCH version at the time.
+    KeyDump {
+        data: Vec<u8>,
+        ttl_ms: i64,
+        version: u64,
+    },
     /// In-memory snapshot of the full shard state (for replication).
     ///
     /// `offset` is the shard's replication offset when the snapshot was
