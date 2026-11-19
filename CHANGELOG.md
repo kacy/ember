@@ -18,6 +18,13 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- ACL fixes (#PR):
+  - command rules apply in the order given, and the last rule that matches a command decides, as in Redis. `-@all +@read` refused every read command, because a denied category always beat an allowed one. ACL LIST and GETUSER print the rules in order
+  - ACL SETUSER and `--aclfile` accept `#<sha256>` and `!<sha256>` password rules, so ACL LIST output loads back
+  - ACL DELUSER with `default` among the names deletes nobody. it deleted the names before `default` and then failed
+  - a session without a user may only run AUTH, PING, ECHO and QUIT. the permission check let it run anything
+  - a deleted or disabled user, or one that lost the command, is disconnected from MONITOR and subscriber mode at the next event, and a gRPC pipeline stream checks the current user for each command. they kept running with the old permissions
+  - PROTO.REGISTER is in the `@admin` and `@dangerous` categories, so `-@admin` or `-@dangerous` keeps users from changing server-wide schemas
 - VADD batch fixes (#467):
   - a batch for an existing vector set must match its dimension. a different one went to the index unchecked
   - an element named more than once in a batch takes its last vector. the parallel path assigned it two index slots
