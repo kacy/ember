@@ -111,7 +111,7 @@ impl Keyspace {
             field_path,
             field_value,
         } = opts;
-        let mut keys = Vec::with_capacity(count);
+        let mut keys = Vec::with_capacity(count.min(self.entries.len()));
         let mut position = 0u64;
         let target_count = if count == 0 { 10 } else { count };
 

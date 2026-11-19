@@ -78,7 +78,7 @@ impl Keyspace {
         // the cursor is a position in the set, so a scan step costs
         // O(count) instead of walking every earlier member again
         let target = if count == 0 { 10 } else { count };
-        let mut result = Vec::with_capacity(target);
+        let mut result = Vec::with_capacity(target.min(set.len()));
         let mut pos = usize::try_from(cursor).unwrap_or(usize::MAX);
         while pos < set.len() && result.len() < target {
             let member = &set[pos];

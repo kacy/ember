@@ -218,7 +218,7 @@ impl Keyspace {
         };
 
         let target = if count == 0 { 10 } else { count };
-        let mut result = Vec::with_capacity(target);
+        let mut result = Vec::with_capacity(target.min(hash.len()));
         let mut pos = 0u64;
         let mut done = true;
 

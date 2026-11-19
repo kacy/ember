@@ -239,6 +239,21 @@ fn one_entry_limit() -> usize {
 }
 
 #[test]
+fn restore_within_limit_refuses_what_does_not_fit() {
+    let config = ShardConfig {
+        max_memory: Some(one_entry_limit()),
+        eviction_policy: EvictionPolicy::NoEviction,
+        ..ShardConfig::default()
+    };
+    let mut ks = Keyspace::with_config(config);
+    assert!(ks.restore_within_limit("a".into(), Value::String(Bytes::from("val")), None));
+    assert!(!ks.restore_within_limit("b".into(), Value::String(Bytes::from("val")), None));
+    assert!(!ks.exists("b"));
+    // replacing a key only needs room for the difference
+    assert!(ks.restore_within_limit("a".into(), Value::String(Bytes::from("new")), None));
+}
+
+#[test]
 fn noeviction_returns_oom_when_full() {
     let config = ShardConfig {
         max_memory: Some(one_entry_limit()),
