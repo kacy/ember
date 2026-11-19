@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Longest name CLIENT SETNAME accepts.
+const MAX_CLIENT_NAME_LEN: usize = 1024;
+
 pub(super) fn parse_ping(args: &[Frame]) -> Result<Command, ProtocolError> {
     match args.len() {
         0 => Ok(Command::Ping(None)),
@@ -264,6 +267,17 @@ pub(super) fn parse_client(args: &[Frame]) -> Result<Command, ProtocolError> {
                 return Err(wrong_arity("CLIENT SETNAME"));
             }
             let name = extract_string(&args[1])?;
+            // CLIENT LIST prints the name inside a space-separated line, so
+            // a space or newline in it would add fields or lines. refuse
+            // them as Redis does, and cap the length
+            if name.len() > MAX_CLIENT_NAME_LEN || name.bytes().any(|b| !(b'!'..=b'~').contains(&b))
+            {
+                return Err(ProtocolError::InvalidCommandFrame(
+                    "Client names cannot contain spaces, newlines or special characters, \
+                     and are at most 1024 bytes"
+                        .into(),
+                ));
+            }
             Ok(Command::ClientSetName { name })
         }
         other => Err(ProtocolError::InvalidCommandFrame(format!(

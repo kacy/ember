@@ -3952,3 +3952,18 @@ fn score_bound_rejects_nan() {
         assert!(matches!(err, ProtocolError::InvalidCommandFrame(_)));
     }
 }
+
+#[test]
+fn client_setname_refuses_names_that_break_client_list() {
+    for name in ["a b", "a\nb", "a\rb", "\u{e9}"] {
+        assert!(
+            Command::from_frame(cmd(&["CLIENT", "SETNAME", name])).is_err(),
+            "{name:?}"
+        );
+    }
+    // an empty name clears the name, as in Redis
+    assert!(Command::from_frame(cmd(&["CLIENT", "SETNAME", ""])).is_ok());
+    let long = "a".repeat(1025);
+    assert!(Command::from_frame(cmd(&["CLIENT", "SETNAME", &long])).is_err());
+    assert!(Command::from_frame(cmd(&["CLIENT", "SETNAME", "app-1:worker"])).is_ok());
+}

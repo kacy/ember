@@ -248,6 +248,13 @@ impl ClusterCoordinator {
         }
     }
 
+    /// Whether `addr` is the client address of a node in the cluster.
+    /// MIGRATE only sends keys, and the credentials given to it, to these.
+    pub async fn is_node_addr(&self, addr: std::net::SocketAddr) -> bool {
+        let state = self.state.read().await;
+        state.nodes.values().any(|node| node.addr == addr)
+    }
+
     // -- cluster command handlers --
 
     // -- slot migration (SETSLOT) commands --
