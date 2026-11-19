@@ -29,14 +29,24 @@ impl ClusterCoordinator {
     /// is still a replica. Each round uses a higher epoch, since a primary
     /// votes at most once per epoch.
     pub(super) async fn start_election(self: &Arc<Self>, failed_primary: NodeId) {
+        use std::sync::atomic::Ordering;
+        if self.electing.swap(true, Ordering::AcqRel) {
+            debug!("election: one is already running; ignoring the failure of {failed_primary}");
+            return;
+        }
+        let mut finished = false;
         for round in 1..=ELECTION_ROUNDS {
             if !self.election_round(failed_primary, round).await || !self.is_replica().await {
-                return;
+                finished = true;
+                break;
             }
         }
-        warn!(
-            "election: gave up on failed primary {failed_primary} after {ELECTION_ROUNDS} rounds"
-        );
+        if !finished {
+            warn!(
+                "election: gave up on failed primary {failed_primary} after {ELECTION_ROUNDS} rounds"
+            );
+        }
+        self.electing.store(false, Ordering::Release);
     }
 
     /// Runs one election round. Applies a brief stagger delay, broadcasts a
@@ -258,7 +268,9 @@ impl ClusterCoordinator {
                 "election: quorum reached for epoch {}; promoting self",
                 epoch
             );
-            let _ = self.cluster_failover(true, false).await;
+            if let Err(e) = self.promote_self(Some(epoch)).await {
+                warn!("election: won epoch {epoch} but could not promote: {e}");
+            }
         }
     }
 
@@ -294,13 +306,9 @@ impl ClusterCoordinator {
             // TAKEOVER: immediate local promotion, no primary coordination.
             // The replica asserts itself as primary and gossips the change;
             // the rest of the cluster learns via gossip convergence.
-            {
-                let mut state = self.state.write().await;
-                if let Err(e) = state.promote_replica(self.local_id) {
-                    return Frame::Error(format!("ERR {e}"));
-                }
+            if let Err(e) = self.promote_self(None).await {
+                return Frame::Error(format!("ERR {e}"));
             }
-            self.finish_promotion().await;
             info!(local_id = %self.local_id, %primary_id, "TAKEOVER: promoted to primary");
             return Frame::Simple("OK".into());
         }
@@ -314,18 +322,28 @@ impl ClusterCoordinator {
             tokio::time::sleep(std::time::Duration::from_millis(FAILOVER_GRACE_MS)).await;
         }
 
-        {
-            let mut state = self.state.write().await;
-            if let Err(e) = state.promote_replica(self.local_id) {
-                warn!(%e, "promote_replica failed");
-            }
+        if let Err(e) = self.promote_self(None).await {
+            return Frame::Error(format!("ERR {e}"));
         }
-
-        self.finish_promotion().await;
 
         let mode = if force { "FORCE" } else { "default" };
         info!(local_id = %self.local_id, %primary_id, mode, "promoted to primary");
         Frame::Simple("OK".into())
+    }
+
+    /// Promotes this replica in the local state, then finishes the
+    /// promotion. `epoch` is the epoch an election was won in; `None`, for
+    /// CLUSTER FAILOVER, takes the next epoch.
+    async fn promote_self(&self, epoch: Option<u64>) -> Result<(), String> {
+        {
+            let mut state = self.state.write().await;
+            match epoch {
+                Some(epoch) => state.promote_replica_at(self.local_id, epoch)?,
+                None => state.promote_replica(self.local_id)?,
+            }
+        }
+        self.finish_promotion().await;
+        Ok(())
     }
 
     /// Completes a promotion that has already updated the local state:
