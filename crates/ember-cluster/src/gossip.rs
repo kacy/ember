@@ -430,6 +430,12 @@ impl GossipEngine {
         Some((addr, msg))
     }
 
+    /// Stops tracking a member: a CLUSTER MEET placeholder replaced by the
+    /// node's real id, or a node removed with CLUSTER FORGET.
+    pub fn remove_member(&mut self, id: NodeId) {
+        self.members.remove(&id);
+    }
+
     /// Adds a seed node to bootstrap cluster discovery. It counts as a
     /// primary with no slots until gossip says otherwise, as in the
     /// cluster state.
