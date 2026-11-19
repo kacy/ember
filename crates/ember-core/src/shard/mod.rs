@@ -365,9 +365,12 @@ async fn run_shard(prepared: PreparedShard) {
             let result = AofWriter::open(path);
             match result {
                 Ok(w) => Some(w),
+                // running on without the AOF would accept writes that a
+                // restart loses, so the shard stops as it does when
+                // recovery fails
                 Err(e) => {
-                    warn!(shard_id, "failed to open AOF writer: {e}");
-                    None
+                    error!(shard_id, "failed to open the aof, so the shard is not starting: {e}");
+                    return;
                 }
             }
         }
@@ -395,8 +398,8 @@ async fn run_shard(prepared: PreparedShard) {
             #[cfg(feature = "protobuf")]
             &schema_registry,
         ) {
-            error!(shard_id, "aof rewrite failed, not writing to it: {e}");
-            aof_writer = None;
+            error!(shard_id, "aof rewrite failed, so the shard is not starting: {e}");
+            return;
         }
     }
 
