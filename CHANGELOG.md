@@ -27,7 +27,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- a node that CLUSTER REPLICATE turns into a replica forgets its clients blocked in BLPOP and BRPOP, whose waits then end at their timeouts. a push streamed from the new primary could pop an element for one of them, so the replica's list no longer matched the primary's (#PR)
+- a node that CLUSTER REPLICATE turns into a replica forgets its clients blocked in BLPOP and BRPOP, whose waits then end at their timeouts. a push streamed from the new primary could pop an element for one of them, so the replica's list no longer matched the primary's (#485)
 - expiry and MIGRATE fixes (#484):
   - a key found expired when a command reads it emits a keyspace `expired` event, as one found by the background sweep does. only the sweep's keys produced events
   - EXPIREAT and EXPIRETIME follow the wall clock when it is stepped, as by NTP or after a paused VM resumes. the offset between the wall clock and the monotonic clock was measured once at startup, so every later EXPIREAT and EXPIRETIME carried the drift since then
