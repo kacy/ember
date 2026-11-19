@@ -7,6 +7,8 @@
 //!
 //! Use a separate [`Client`] for regular commands while subscribed.
 
+use std::collections::{HashSet, VecDeque};
+
 use bytes::Bytes;
 use ember_protocol::types::Frame;
 
@@ -51,11 +53,21 @@ pub struct Message {
 /// ```
 pub struct Subscriber {
     inner: Client,
+    /// Messages that arrived while waiting for a confirmation, returned by
+    /// [`recv`](Self::recv) before anything else.
+    pending: VecDeque<Message>,
+    /// The channels subscribed to, so UNSUBSCRIBE without names knows how
+    /// many confirmations to expect.
+    channels: HashSet<Bytes>,
 }
 
 impl Subscriber {
     pub(crate) fn new(inner: Client) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            pending: VecDeque::new(),
+            channels: HashSet::new(),
+        }
     }
 
     /// Blocks until the next message arrives on any subscribed channel.
@@ -63,56 +75,101 @@ impl Subscriber {
     /// Subscription confirmation frames (`subscribe`/`psubscribe`) are
     /// skipped silently — only actual message frames are returned.
     pub async fn recv(&mut self) -> Result<Message, ClientError> {
+        if let Some(msg) = self.pending.pop_front() {
+            return Ok(msg);
+        }
         loop {
-            let frame = self.inner.read_message().await?;
-            if let Some(msg) = try_parse_message(frame)? {
-                return Ok(msg);
+            match parse_push(self.inner.read_message().await?)? {
+                Push::Message(msg) => return Ok(msg),
+                Push::Confirmation { .. } => {}
             }
-            // confirmation frame (subscribe/unsubscribe/psubscribe/punsubscribe)
-            // — loop back and wait for the next frame
         }
     }
 
     /// Subscribes to additional channels without leaving sub mode.
     pub async fn subscribe(&mut self, channels: &[&str]) -> Result<(), ClientError> {
-        let mut parts = Vec::with_capacity(1 + channels.len());
-        parts.push(Frame::Bulk(Bytes::from_static(b"SUBSCRIBE")));
-        for ch in channels {
-            parts.push(Frame::Bulk(Bytes::copy_from_slice(ch.as_bytes())));
-        }
-        self.inner.write_frame(Frame::Array(parts)).await?;
-        // drain the confirmation frames (one per channel)
-        for _ in 0..channels.len() {
-            self.inner.read_response().await?;
-        }
-        Ok(())
+        self.send_and_confirm("SUBSCRIBE", channels, channels.len())
+            .await
     }
 
-    /// Unsubscribes from the given channels.
+    /// Subscribes to additional glob patterns without leaving sub mode.
+    pub async fn psubscribe(&mut self, patterns: &[&str]) -> Result<(), ClientError> {
+        self.send_and_confirm("PSUBSCRIBE", patterns, patterns.len())
+            .await
+    }
+
+    /// Unsubscribes from the given channels, or from every channel when
+    /// `channels` is empty.
     ///
     /// When all subscriptions have been removed the inner [`Client`] is
     /// returned so the connection can be reused for regular commands.
     pub async fn unsubscribe(mut self, channels: &[&str]) -> Result<Client, ClientError> {
-        let mut parts = Vec::with_capacity(1 + channels.len());
-        parts.push(Frame::Bulk(Bytes::from_static(b"UNSUBSCRIBE")));
-        for ch in channels {
-            parts.push(Frame::Bulk(Bytes::copy_from_slice(ch.as_bytes())));
+        // without names the server confirms each channel, or sends one
+        // confirmation when there are none
+        let expected = if channels.is_empty() {
+            self.channels.len().max(1)
+        } else {
+            channels.len()
+        };
+        self.send_and_confirm("UNSUBSCRIBE", channels, expected)
+            .await?;
+        Ok(self.inner)
+    }
+
+    /// Sends `command` with `names` and reads replies until `expected`
+    /// confirmations have arrived. Messages that arrive in between are kept
+    /// for [`recv`](Self::recv), so none is lost or taken for a
+    /// confirmation.
+    async fn send_and_confirm(
+        &mut self,
+        command: &'static str,
+        names: &[&str],
+        expected: usize,
+    ) -> Result<(), ClientError> {
+        let mut parts = Vec::with_capacity(1 + names.len());
+        parts.push(Frame::Bulk(Bytes::from_static(command.as_bytes())));
+        for name in names {
+            parts.push(Frame::Bulk(Bytes::copy_from_slice(name.as_bytes())));
         }
         self.inner.write_frame(Frame::Array(parts)).await?;
-        // drain the unsubscribe confirmation frames
-        for _ in 0..channels.len() {
-            self.inner.read_response().await?;
+
+        let mut confirmed = 0;
+        while confirmed < expected {
+            match parse_push(self.inner.read_message().await?)? {
+                Push::Message(msg) => self.pending.push_back(msg),
+                Push::Confirmation { kind, name } => {
+                    match (kind.as_ref(), name) {
+                        (b"subscribe", Some(name)) => {
+                            self.channels.insert(name);
+                        }
+                        (b"unsubscribe", Some(name)) => {
+                            self.channels.remove(&name);
+                        }
+                        _ => {}
+                    }
+                    confirmed += 1;
+                }
+            }
         }
-        Ok(self.inner)
+        Ok(())
     }
 }
 
-/// Tries to parse a push frame into a [`Message`].
-///
-/// Returns `Ok(Some(_))` for `message` and `pmessage` frames.
-/// Returns `Ok(None)` for subscription management frames.
-/// Returns `Err` for unexpected or malformed frames.
-fn try_parse_message(frame: Frame) -> Result<Option<Message>, ClientError> {
+/// A frame pushed to a subscribed connection.
+enum Push {
+    Message(Message),
+    /// A reply to SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE or PUNSUBSCRIBE: its
+    /// kind and the channel or pattern it is about, if any.
+    Confirmation {
+        kind: Bytes,
+        name: Option<Bytes>,
+    },
+}
+
+/// Sorts a pushed frame into a message (`message` or `pmessage`) or a
+/// subscription confirmation. Returns `Err` for unexpected or malformed
+/// frames.
+fn parse_push(frame: Frame) -> Result<Push, ClientError> {
     let elems = match frame {
         Frame::Array(e) => e,
         Frame::Error(e) => return Err(ClientError::Server(e)),
@@ -149,7 +206,7 @@ fn try_parse_message(frame: Frame) -> Result<Option<Message>, ClientError> {
             }
             let channel = bulk_bytes(elems[1].clone())?;
             let data = bulk_bytes(elems[2].clone())?;
-            Ok(Some(Message {
+            Ok(Push::Message(Message {
                 channel,
                 data,
                 pattern: None,
@@ -164,14 +221,20 @@ fn try_parse_message(frame: Frame) -> Result<Option<Message>, ClientError> {
             let pattern = bulk_bytes(elems[1].clone())?;
             let channel = bulk_bytes(elems[2].clone())?;
             let data = bulk_bytes(elems[3].clone())?;
-            Ok(Some(Message {
+            Ok(Push::Message(Message {
                 channel,
                 data,
                 pattern: Some(pattern),
             }))
         }
         // subscribe / unsubscribe / psubscribe / punsubscribe confirmations
-        _ => Ok(None),
+        _ => {
+            let name = match &elems[1] {
+                Frame::Bulk(b) => Some(b.clone()),
+                _ => None,
+            };
+            Ok(Push::Confirmation { kind, name })
+        }
     }
 }
 

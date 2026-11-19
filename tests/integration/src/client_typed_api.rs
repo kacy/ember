@@ -579,3 +579,24 @@ async fn a_malformed_reply_breaks_the_connection() {
         Err(ClientError::Disconnected)
     ));
 }
+
+#[tokio::test]
+async fn a_message_during_subscribe_is_kept_and_unsubscribe_all_returns_the_client() {
+    let (server, mut publisher) = connect().await;
+    let conn = Client::connect("127.0.0.1", server.port).await.unwrap();
+    let mut sub = conn.subscribe(&["a"]).await.unwrap();
+
+    // the message reaches the subscriber's socket before the confirmation
+    // of the next SUBSCRIBE
+    assert_eq!(publisher.publish("a", "first").await.unwrap(), 1);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    sub.subscribe(&["b"]).await.unwrap();
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), sub.recv())
+        .await
+        .expect("the message was lost")
+        .unwrap();
+    assert_eq!(&msg.data[..], b"first");
+
+    let mut client = sub.unsubscribe(&[]).await.unwrap();
+    client.ping().await.unwrap();
+}
