@@ -190,6 +190,29 @@ impl ClusterCoordinator {
                 },
                 /// Another node took slots from this one with a newer epoch.
                 AnnounceLocalSlots,
+                /// Another node took this primary's last slots, as when it
+                /// rejoins after a failover replaced it. It becomes a
+                /// replica of that node, as in Redis Cluster.
+                FollowNewOwner(NodeId),
+            }
+
+            /// What to do after `owner` took slots from this node: follow
+            /// it if this primary has none left, or else announce the
+            /// slots it still has.
+            fn after_losing_slots(
+                state: &ClusterState,
+                local: NodeId,
+                owner: NodeId,
+            ) -> PostAction {
+                let local_is_primary = state
+                    .nodes
+                    .get(&local)
+                    .is_some_and(|n| n.role == NodeRole::Primary);
+                if local_is_primary && state.slot_map.slots_for_node(local).is_empty() {
+                    PostAction::FollowNewOwner(owner)
+                } else {
+                    PostAction::AnnounceLocalSlots
+                }
             }
 
             while let Some(event) = event_rx.recv().await {
@@ -239,7 +262,8 @@ impl ClusterCoordinator {
                                 node.config_epoch = epoch;
                                 state.add_node(node);
                                 if state.apply_slot_claim(id, &slots, epoch).local_lost {
-                                    post_action = PostAction::AnnounceLocalSlots;
+                                    post_action =
+                                        after_losing_slots(&state, coordinator.local_id, id);
                                 }
                                 state.update_health();
 
@@ -300,7 +324,8 @@ impl ClusterCoordinator {
                                         "cluster: node {} took slots from this node at epoch {}",
                                         id, epoch
                                     );
-                                    post_action = PostAction::AnnounceLocalSlots;
+                                    post_action =
+                                        after_losing_slots(&state, coordinator.local_id, id);
                                 }
                                 state.update_health();
                                 result.changed
@@ -388,6 +413,12 @@ impl ClusterCoordinator {
                             )
                         };
                         coordinator.broadcast_local_slots(slots, epoch).await;
+                    }
+                    PostAction::FollowNewOwner(owner) => {
+                        info!(
+                            "cluster: node {owner} took this primary's last slots, replicating it"
+                        );
+                        coordinator.cluster_replicate(&owner.to_string()).await;
                     }
                 }
 

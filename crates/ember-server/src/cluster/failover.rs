@@ -62,11 +62,8 @@ impl ClusterCoordinator {
             // the ones this node can reach would let a replica cut off from
             // the cluster win with its own tiny view of it (split brain).
             let voters: HashSet<NodeId> = state
-                .nodes
-                .values()
-                .filter(|n| {
-                    n.role == NodeRole::Primary && n.id != failed_primary && !n.flags.handshake
-                })
+                .voting_primaries()
+                .filter(|n| n.id != failed_primary)
                 .map(|n| n.id)
                 .collect();
             let still_failed = state
@@ -177,18 +174,23 @@ impl ClusterCoordinator {
         }
         {
             let mut state = self.state.write().await;
-            let is_primary = state
-                .nodes
-                .get(&self.local_id)
-                .is_some_and(|n| n.role == NodeRole::Primary);
-            let primary_failing = state
+            // as in Redis Cluster, only a primary serving slots votes, only
+            // for a known replica of the failed primary, and only once that
+            // primary is marked failed, not merely suspected
+            let is_voter = state.voting_primaries().any(|n| n.id == self.local_id);
+            let primary_failed = state
                 .nodes
                 .get(&failed_primary)
-                .is_some_and(|primary| primary.flags.fail || primary.flags.pfail);
-            let known_primary = state.nodes.get(&candidate).and_then(|c| c.replicates);
-            if !(is_primary && primary_failing && known_primary.is_none_or(|p| p == failed_primary))
-            {
-                debug!("election: not voting for {candidate}; its primary looks healthy from here");
+                .is_some_and(|primary| primary.flags.fail);
+            let replicates_failed = state
+                .nodes
+                .get(&candidate)
+                .is_some_and(|c| c.replicates == Some(failed_primary));
+            if !(is_voter && primary_failed && replicates_failed) {
+                debug!(
+                    "election: not voting for {candidate}; this node doesn't vote, or the \
+                     candidate isn't a replica of {failed_primary}, which isn't marked failed"
+                );
                 return;
             }
             // a request far ahead of every epoch seen here would use up the

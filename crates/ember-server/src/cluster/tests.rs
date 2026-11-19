@@ -603,13 +603,26 @@ async fn writes_paused_blocks_and_resumes() {
 
 // -- automatic failover --
 
-/// Adds a primary to `coord`'s view, marked failed or healthy.
+/// Adds a primary to `coord`'s view, marked failed or healthy. It gets a
+/// slot of its own, since only primaries serving slots vote and count
+/// toward a quorum.
 async fn add_primary(coord: &ClusterCoordinator, failed: bool) -> NodeId {
     let id = NodeId::new();
     let mut state = coord.state.write().await;
     let mut node = ClusterNode::new_primary(id, "127.0.0.1:7000".parse().unwrap());
     node.flags.fail = failed;
     state.add_node(node);
+    let slot = 16383 - state.nodes.len() as u16;
+    state.slot_map.assign(slot, id);
+    state.rebuild_slot_lists();
+    id
+}
+
+/// Adds a replica of `primary` to `coord`'s view.
+async fn add_replica(coord: &ClusterCoordinator, primary: NodeId) -> NodeId {
+    let id = NodeId::new();
+    let node = ClusterNode::new_replica(id, "127.0.0.1:7100".parse().unwrap(), primary);
+    coord.state.write().await.add_node(node);
     id
 }
 
@@ -659,7 +672,8 @@ async fn a_primary_votes_for_one_replica_of_a_failed_primary() {
     // second must not win too, or both would serve the slots
     let (coord, _rx) = test_coordinator_bootstrapped();
     let failed = add_primary(&coord, true).await;
-    let (first, second) = (NodeId::new(), NodeId::new());
+    let first = add_replica(&coord, failed).await;
+    let second = add_replica(&coord, failed).await;
 
     coord.handle_vote_request(first, failed, 1).await;
     assert_eq!(coord.state.read().await.last_vote_epoch, 1);
@@ -672,7 +686,8 @@ async fn a_primary_votes_for_one_replica_of_a_failed_primary() {
 
     // another failed primary is a separate failover
     let other = add_primary(&coord, true).await;
-    coord.handle_vote_request(NodeId::new(), other, 4).await;
+    let replica = add_replica(&coord, other).await;
+    coord.handle_vote_request(replica, other, 4).await;
     assert_eq!(coord.state.read().await.last_vote_epoch, 4);
 }
 
@@ -680,8 +695,8 @@ async fn a_primary_votes_for_one_replica_of_a_failed_primary() {
 async fn primary_grants_vote_once_per_epoch() {
     // A primary should grant a vote for a given epoch exactly once.
     let (coord, _rx) = test_coordinator_bootstrapped();
-    let candidate = NodeId::new();
     let failed = add_primary(&coord, true).await;
+    let candidate = add_replica(&coord, failed).await;
 
     // first request for epoch 5 should be granted (gossip queue entry added)
     coord.handle_vote_request(candidate, failed, 5).await;
@@ -705,19 +720,82 @@ async fn primary_grants_vote_once_per_epoch() {
 async fn primary_does_not_vote_far_past_the_current_epoch() {
     let (coord, _rx) = test_coordinator_bootstrapped();
     let failed = add_primary(&coord, true).await;
+    let candidate = add_replica(&coord, failed).await;
 
     coord
-        .handle_vote_request(NodeId::new(), failed, 1 + MAX_VOTE_EPOCH_AHEAD + 1)
+        .handle_vote_request(candidate, failed, 1 + MAX_VOTE_EPOCH_AHEAD + 1)
         .await;
     assert_eq!(coord.state.read().await.last_vote_epoch, 0);
+}
+
+#[tokio::test]
+async fn only_known_replicas_of_a_failed_primary_get_votes() {
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    let failed = add_primary(&coord, true).await;
+    let other = add_primary(&coord, false).await;
+
+    // an unknown node, and a replica of another primary
+    coord.handle_vote_request(NodeId::new(), failed, 1).await;
+    let wrong = add_replica(&coord, other).await;
+    coord.handle_vote_request(wrong, failed, 2).await;
+    assert_eq!(coord.state.read().await.last_vote_epoch, 0);
+
+    // a suspected primary isn't failed yet
+    let suspect = add_primary(&coord, false).await;
+    coord
+        .state
+        .write()
+        .await
+        .nodes
+        .get_mut(&suspect)
+        .unwrap()
+        .flags
+        .pfail = true;
+    let candidate = add_replica(&coord, suspect).await;
+    coord.handle_vote_request(candidate, suspect, 3).await;
+    assert_eq!(coord.state.read().await.last_vote_epoch, 0);
+}
+
+#[tokio::test]
+async fn a_replaced_primary_without_slots_does_not_count_toward_the_quorum() {
+    // three primaries, then one fails and its replica takes its slots
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    let failed = add_primary(&coord, true).await;
+    let other = add_primary(&coord, false).await;
+    let replica = add_replica(&coord, failed).await;
+
+    // as a peer sees it: the replica becomes a primary and claims the
+    // failed primary's slots at a newer epoch, while nothing tells this
+    // node that the failed primary was demoted
+    {
+        let mut state = coord.state.write().await;
+        let slots = state.slot_map.slots_for_node(failed);
+        let node = state.nodes.get_mut(&replica).unwrap();
+        node.role = NodeRole::Primary;
+        node.replicates = None;
+        state.apply_slot_claim(replica, &slots, 10);
+    }
+
+    // 3 slot-owning primaries remain. losing one more still leaves 2 of 3
+    coord
+        .state
+        .write()
+        .await
+        .nodes
+        .get_mut(&other)
+        .unwrap()
+        .flags
+        .pfail = true;
+    assert!(takes_writes(&coord).await);
 }
 
 #[tokio::test]
 async fn primary_does_not_vote_to_replace_a_healthy_primary() {
     let (coord, _rx) = test_coordinator_bootstrapped();
     let healthy = add_primary(&coord, false).await;
+    let candidate = add_replica(&coord, healthy).await;
 
-    coord.handle_vote_request(NodeId::new(), healthy, 4).await;
+    coord.handle_vote_request(candidate, healthy, 4).await;
     assert_eq!(
         coord.state.read().await.last_vote_epoch,
         0,

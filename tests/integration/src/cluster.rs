@@ -801,8 +801,9 @@ async fn a_primary_cut_off_from_the_majority_rejects_writes() {
 // -- automatic failover --
 
 /// End-to-end automatic failover: a 4-node cluster where one primary owns
-/// all slots, a replica follows it, and two slotless primaries vote. With
-/// the failed primary there are 3 primaries, so the quorum is 2 votes.
+/// almost all slots, a replica follows it, and two primaries with one slot
+/// each vote. As in Redis Cluster, only primaries serving slots vote. With
+/// the failed primary there are 3 of them, so the quorum is 2 votes.
 /// Killing the primary must promote the replica and restore write
 /// availability.
 ///
@@ -867,9 +868,44 @@ async fn cluster_automatic_failover_promotes_replica() {
         }
     }
 
+    // move one slot to each voter, so they count among the primaries that
+    // vote
+    for (client, slot) in [(&mut cv, "16383"), (&mut cv2, "16382")] {
+        c0.ok(&["CLUSTER", "DELSLOTS", slot]).await;
+        // the voter takes the slot once gossip tells it the primary let go
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match client.cmd(&["CLUSTER", "ADDSLOTS", slot]).await {
+                Frame::Simple(_) => break,
+                reply => assert!(
+                    Instant::now() <= deadline,
+                    "the voter never got slot {slot}: {reply:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    // wait until the replica sees the voters' slots: otherwise it would
+    // take them too when it replaces the primary
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let ranges = match c2.cmd(&["CLUSTER", "SLOTS"]).await {
+            Frame::Array(ranges) => ranges.len(),
+            _ => 0,
+        };
+        if ranges >= 3 {
+            break;
+        }
+        assert!(
+            Instant::now() <= deadline,
+            "the replica never saw the voters' slots"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
     // wait until gossip has fully converged from the replica's point of
-    // view: it must know all 4 nodes and the primary's ownership of all
-    // 16384 slots. killing the primary earlier leaves the replica without
+    // view: it must know all 4 nodes and the ownership of all 16384 slots. killing the primary earlier leaves the replica without
     // a slot table to inherit and without the voter as a failure-detection
     // relay, so no election would ever start.
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -907,9 +943,9 @@ async fn cluster_automatic_failover_promotes_replica() {
     drop(c0);
     primary.kill();
 
-    // the replica must detect the failure, win the election (the slotless
-    // voter grants the quorum vote), promote itself, and take over all
-    // slots. wait for ROLE to report master as well as for cluster_state:ok:
+    // the replica must detect the failure, win the election (the voters
+    // grant the quorum's votes), promote itself, and take over the
+    // primary's slots. wait for ROLE to report master as well as for cluster_state:ok:
     // the state still reads ok right after the kill, before anyone has
     // noticed the failure, and a replica rightly refuses writes.
     let deadline = Instant::now() + Duration::from_secs(60);

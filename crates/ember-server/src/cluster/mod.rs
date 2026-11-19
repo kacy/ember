@@ -203,9 +203,18 @@ impl ClusterCoordinator {
         gossip.set_incarnation(incarnation);
 
         // seed gossip with known peers so it can reconnect
+        // with the roles and slots saved for them, so this node doesn't
+        // describe its peers as primaries without slots until gossip
+        // catches up
         for node in state.nodes.values() {
             if node.id != local_id {
-                gossip.add_seed(node.id, node.cluster_bus_addr);
+                gossip.add_known_node(
+                    node.id,
+                    node.cluster_bus_addr,
+                    node.replicates,
+                    state.slot_map.slots_for_node(node.id),
+                    node.config_epoch,
+                );
             }
         }
 
