@@ -179,11 +179,11 @@ pub(in crate::connection) fn slowlog_reset(cx: &ExecCtx<'_>) -> Frame {
 
 /// Implements the WAIT command: blocks until `needed` replicas have
 /// acknowledged all writes at or before the current primary offset,
-/// or until `timeout_ms` milliseconds elapse.
+/// or until `timeout_ms` milliseconds elapse. A timeout of 0 waits
+/// without a limit.
 ///
 /// Returns the count of replicas that acknowledged in time as a
-/// RESP integer. When there are no replicas or no writes, returns
-/// immediately without sleeping.
+/// RESP integer. With no replicas connected, returns 0 at once.
 pub(in crate::connection) async fn handle_wait(
     ctx: &Arc<ServerContext>,
     engine: &Engine,
@@ -204,21 +204,30 @@ pub(in crate::connection) async fn handle_wait(
     // the shards' offsets, so reaching them means those writes arrived
     let target = engine.replication_offsets();
 
-    // fast path: already satisfied or no timeout needed
     let count = tracker.count_caught_up(&target);
-    if count >= needed || timeout_ms == 0 {
+    if count >= needed {
         return Frame::Integer(count as i64);
     }
 
     // poll until enough replicas have caught up or the deadline passes
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    let deadline = wait_deadline(tokio::time::Instant::now(), timeout_ms);
     loop {
         tokio::time::sleep(Duration::from_millis(25)).await;
         let c = tracker.count_caught_up(&target);
-        if c >= needed || tokio::time::Instant::now() >= deadline {
+        if c >= needed || deadline.is_some_and(|d| tokio::time::Instant::now() >= d) {
             return Frame::Integer(c as i64);
         }
     }
+}
+
+/// Returns when a WAIT started at `now` gives up, or `None` to wait until
+/// enough replicas catch up. As in Redis, a timeout of 0 never expires, and
+/// so does a timeout too large to add to `now`.
+fn wait_deadline(now: tokio::time::Instant, timeout_ms: u64) -> Option<tokio::time::Instant> {
+    if timeout_ms == 0 {
+        return None;
+    }
+    now.checked_add(std::time::Duration::from_millis(timeout_ms))
 }
 
 /// Renders the INFO response with multiple sections.
@@ -412,4 +421,22 @@ async fn render_info(
     }
 
     Frame::Bulk(Bytes::from(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wait_deadline;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn wait_deadline_handles_zero_and_huge_timeouts() {
+        let now = tokio::time::Instant::now();
+        assert_eq!(wait_deadline(now, 0), None);
+        // on Linux this still fits; on other platforms it overflows to None
+        assert!(wait_deadline(now, u64::MAX).is_none_or(|d| d > now));
+        assert_eq!(
+            wait_deadline(now, 1500),
+            Some(now + Duration::from_millis(1500))
+        );
+    }
 }
