@@ -18,6 +18,10 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- ordering and lost-write fixes (#463):
+  - in a pipeline, multi-key and server commands such as DEL, MGET, MSET and WAIT run after the commands before them. they ran while single-key commands were still being grouped by shard, so `SET k v` then `DEL k` in one pipeline deleted nothing and left the key set
+  - WATCH notices a key that was deleted and created again, a FLUSHDB, and a watched key that didn't exist and was then created. EXEC committed in those cases
+  - AOF replay keeps keys whose first TTL has passed until every record has applied, and removes the keys that are still expired at the end. a key written with a TTL and later given a new one with EXPIRE, PERSIST or RENAME was deleted on restart
 - memory and overflow limits (#462):
   - AOF, snapshot and RESTORE payloads read each length-prefixed field as its data arrives. a 5-byte RESTORE payload could make the server allocate and zero 512 MiB first
   - RESTORE respects `maxmemory` and replies OOM when the value doesn't fit. snapshot and RESTORE payloads with sorted set scores that aren't finite, or HNSW parameters above VADD's limit of 1024, are refused

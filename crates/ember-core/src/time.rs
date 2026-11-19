@@ -103,10 +103,35 @@ pub fn unix_ms_to_monotonic_ms(unix_ms: u64) -> u64 {
 /// Sentinel value meaning "no expiry".
 pub const NO_EXPIRY: u64 = 0;
 
-/// Returns true if the given expiry timestamp has passed.
+/// Returns true if the given expiry timestamp has passed. Nothing counts
+/// as expired on a thread that holds [`hold_expiry`].
 #[inline]
 pub fn is_expired(expires_at_ms: u64) -> bool {
-    expires_at_ms != NO_EXPIRY && now_ms() >= expires_at_ms
+    expires_at_ms != NO_EXPIRY && now_ms() >= expires_at_ms && !HOLD_EXPIRY.get()
+}
+
+thread_local! {
+    static HOLD_EXPIRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Stops keys from expiring on this thread until the guard drops.
+///
+/// AOF replay holds it. Each record replays at the current time, not the
+/// time it was written, so a key whose first TTL has passed would be
+/// deleted before the later records that extended or removed that TTL
+/// could apply.
+pub(crate) fn hold_expiry() -> HoldExpiry {
+    HOLD_EXPIRY.set(true);
+    HoldExpiry
+}
+
+/// Guard returned by [`hold_expiry`].
+pub(crate) struct HoldExpiry;
+
+impl Drop for HoldExpiry {
+    fn drop(&mut self) {
+        HOLD_EXPIRY.set(false);
+    }
 }
 
 /// Converts a Duration to an absolute expiry timestamp.

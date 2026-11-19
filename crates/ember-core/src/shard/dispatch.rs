@@ -394,7 +394,7 @@ pub(super) fn dispatch(
         }
         ShardRequest::DbSize => ShardResponse::KeyCount(ks.len()),
         ShardRequest::Stats => ShardResponse::Stats(ks.stats()),
-        ShardRequest::KeyVersion { ref key } => ShardResponse::Version(ks.key_version(key)),
+        ShardRequest::KeyVersion { ref key } => ShardResponse::Version(Some(ks.key_version(key))),
         ShardRequest::FlushDb => {
             ks.clear();
             ShardResponse::Ok

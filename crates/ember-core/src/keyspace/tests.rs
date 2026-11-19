@@ -1042,9 +1042,12 @@ fn get_keys_in_slot_respects_count_limit() {
 // Subsequent mutations only bump the version if the key is tracked.
 
 #[test]
-fn key_version_returns_none_for_missing() {
+fn key_version_changes_when_a_watched_missing_key_is_created() {
     let mut ks = Keyspace::new();
-    assert_eq!(ks.key_version("nope"), None);
+    let v1 = ks.key_version("k");
+    ks.set("k".into(), Bytes::from("v"), None, false, false);
+    ks.del("k");
+    assert_ne!(ks.key_version("k"), v1);
 }
 
 #[test]
@@ -1052,28 +1055,49 @@ fn key_version_changes_on_set() {
     let mut ks = Keyspace::new();
     ks.set("k".into(), Bytes::from("v1"), None, false, false);
     // first call registers the key in the version table (like WATCH)
-    let v1 = ks.key_version("k").expect("key should exist");
+    let v1 = ks.key_version("k");
     ks.set("k".into(), Bytes::from("v2"), None, false, false);
-    let v2 = ks.key_version("k").expect("key should exist");
+    let v2 = ks.key_version("k");
     assert!(v2 > v1, "version should increase on overwrite");
 }
 
 #[test]
-fn key_version_none_after_del() {
+fn key_version_changes_when_a_key_is_deleted_and_recreated() {
     let mut ks = Keyspace::new();
     ks.set("k".into(), Bytes::from("v"), None, false, false);
-    assert!(ks.key_version("k").is_some());
+    let v1 = ks.key_version("k");
     ks.del("k");
-    assert_eq!(ks.key_version("k"), None);
+    ks.set("k".into(), Bytes::from("new"), None, false, false);
+    assert_ne!(ks.key_version("k"), v1);
+}
+
+#[test]
+fn key_version_changes_when_the_keyspace_is_flushed_and_refilled() {
+    let mut ks = Keyspace::new();
+    ks.set("k".into(), Bytes::from("v"), None, false, false);
+    let v1 = ks.key_version("k");
+    ks.clear();
+    ks.set("k".into(), Bytes::from("v"), None, false, false);
+    assert_ne!(ks.key_version("k"), v1);
+}
+
+#[test]
+fn key_version_changes_when_a_key_expires() {
+    let mut ks = Keyspace::new();
+    ks.set("k".into(), Bytes::from("v"), None, false, false);
+    ks.pexpire("k", 1);
+    let v1 = ks.key_version("k");
+    std::thread::sleep(Duration::from_millis(5));
+    assert_ne!(ks.key_version("k"), v1);
 }
 
 #[test]
 fn key_version_changes_on_list_push() {
     let mut ks = Keyspace::new();
     ks.lpush("list", &[Bytes::from("a")]).unwrap();
-    let v1 = ks.key_version("list").expect("list should exist");
+    let v1 = ks.key_version("list");
     ks.rpush("list", &[Bytes::from("b")]).unwrap();
-    let v2 = ks.key_version("list").expect("list should exist");
+    let v2 = ks.key_version("list");
     assert!(v2 > v1, "version should increase on rpush");
 }
 
@@ -1081,9 +1105,9 @@ fn key_version_changes_on_list_push() {
 fn key_version_changes_on_hash_set() {
     let mut ks = Keyspace::new();
     ks.hset("h", &[("f1".into(), Bytes::from("v1"))]).unwrap();
-    let v1 = ks.key_version("h").expect("hash should exist");
+    let v1 = ks.key_version("h");
     ks.hset("h", &[("f2".into(), Bytes::from("v2"))]).unwrap();
-    let v2 = ks.key_version("h").expect("hash should exist");
+    let v2 = ks.key_version("h");
     assert!(v2 > v1, "version should increase on hset");
 }
 
@@ -1091,9 +1115,9 @@ fn key_version_changes_on_hash_set() {
 fn key_version_changes_on_expire() {
     let mut ks = Keyspace::new();
     ks.set("k".into(), Bytes::from("v"), None, false, false);
-    let v1 = ks.key_version("k").expect("key should exist");
+    let v1 = ks.key_version("k");
     ks.expire("k", 100);
-    let v2 = ks.key_version("k").expect("key should exist");
+    let v2 = ks.key_version("k");
     assert!(v2 > v1, "version should increase on expire");
 }
 
@@ -1105,9 +1129,9 @@ fn key_version_stable_without_watch() {
     ks.set("a".into(), Bytes::from("1"), None, false, false);
     ks.set("a".into(), Bytes::from("2"), None, false, false);
     // first call to key_version returns a snapshot
-    let v1 = ks.key_version("a").unwrap();
+    let v1 = ks.key_version("a");
     // no mutation between calls — version is stable
-    let v2 = ks.key_version("a").unwrap();
+    let v2 = ks.key_version("a");
     assert_eq!(v1, v2, "version should be stable without mutations");
 }
 

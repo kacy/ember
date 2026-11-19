@@ -708,6 +708,12 @@ async fn main() {
             exit_err("tls-auth-clients requires tls-ca-cert-file");
         }
 
+        // both listeners set SO_REUSEPORT, so a shared port would bind
+        // without error and split connections between plain and TLS
+        if cfg.port == tls_port {
+            exit_err(format!("tls-port and port are both {tls_port}; move one"));
+        }
+
         #[cfg(feature = "grpc")]
         if cfg.grpc_port == tls_port {
             exit_err(format!(

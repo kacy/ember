@@ -1,10 +1,11 @@
 //! Test helpers for spawning an ember-server and sending commands.
 
+use std::collections::BTreeSet;
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
@@ -519,9 +520,19 @@ fn allocate_ports(count: u16) -> u16 {
 }
 
 /// Finds a free TCP port by binding to port 0.
+///
+/// The OS can return the same port from two separate binds, so ports already
+/// handed out in this process are skipped. Otherwise a server could get the
+/// same port for two listeners.
 fn find_free_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
+    static HANDED_OUT: Mutex<BTreeSet<u16>> = Mutex::new(BTreeSet::new());
+    loop {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        if HANDED_OUT.lock().unwrap().insert(port) {
+            return port;
+        }
+    }
 }
 
 /// Locates a binary in the cargo target directory.
