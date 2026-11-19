@@ -98,10 +98,14 @@ impl ClusterCoordinator {
 
         let repl_addr = std::net::SocketAddr::new(addr.ip(), repl_port);
         info!(%primary_id, %repl_addr, "starting replication client");
+        // an offset from another primary's stream means nothing for this one
+        self.repl_offset
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         let task = crate::replication::ReplicationClient::start(
             Arc::clone(engine),
             repl_addr,
             self.secret.clone(),
+            Arc::clone(&self.repl_offset),
         );
         // a second REPLICATE replaces the first; two streams would mix data
         if let Some(previous) = self.replication_task.lock().await.replace(task) {

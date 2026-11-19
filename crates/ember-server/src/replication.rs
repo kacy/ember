@@ -824,6 +824,9 @@ pub struct ReplicationClient {
     primary_addr: SocketAddr,
     /// Proves this replica may pull the primary's data.
     secret: Option<Arc<ClusterSecret>>,
+    /// The offsets this replica has applied and acknowledged, summed over
+    /// the shards.
+    applied: Arc<AtomicU64>,
 }
 
 impl ReplicationClient {
@@ -837,11 +840,13 @@ impl ReplicationClient {
         engine: Arc<Engine>,
         primary_addr: SocketAddr,
         secret: Option<Arc<ClusterSecret>>,
+        applied: Arc<AtomicU64>,
     ) -> tokio::task::JoinHandle<()> {
         let client = Self {
             engine,
             primary_addr,
             secret,
+            applied,
         };
         tokio::spawn(async move {
             client.run().await;
@@ -926,6 +931,7 @@ impl ReplicationClient {
         }
         drop(snap_buf);
         batch.apply(&self.engine).await?;
+        let mut applied = snapshot_offsets.clone();
         let mut acks = Vec::new();
         for (shard, offset) in snapshot_offsets.iter().enumerate() {
             acks.push(MSG_ACK);
@@ -933,6 +939,7 @@ impl ReplicationClient {
             acks.extend_from_slice(&offset.to_le_bytes());
         }
         stream.write_all(&acks).await?;
+        self.applied.store(applied.iter().sum(), Ordering::Relaxed);
 
         info!("full sync applied, starting incremental replay");
 
@@ -991,8 +998,12 @@ impl ReplicationClient {
                     acks.push(MSG_ACK);
                     acks.extend_from_slice(&shard.to_le_bytes());
                     acks.extend_from_slice(&offset.to_le_bytes());
+                    if let Some(slot) = applied.get_mut(usize::from(shard)) {
+                        *slot = offset;
+                    }
                 }
                 stream.write_all(&acks).await?;
+                self.applied.store(applied.iter().sum(), Ordering::Relaxed);
             }
         }
     }
@@ -1277,6 +1288,7 @@ mod tests {
             engine: Arc::new(Engine::new(1)),
             primary_addr: "127.0.0.1:1".parse().unwrap(),
             secret,
+            applied: Arc::default(),
         }
     }
 
@@ -1310,6 +1322,8 @@ mod tests {
         let result = sync_once(&replica, primary).await;
         assert!(matches!(result, Err(e) if e.kind() == io::ErrorKind::TimedOut));
         assert_eq!(get(&replica.engine, "greeting").await.unwrap(), "hello");
+        // the snapshot's offset is advertised for failover elections
+        assert!(replica.applied.load(Ordering::Relaxed) > 0);
     }
 
     #[tokio::test]

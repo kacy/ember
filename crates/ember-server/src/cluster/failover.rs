@@ -2,9 +2,14 @@
 
 use super::*;
 
-/// Stagger delay before broadcasting a vote request so replicas with more
-/// data wait less (replaced with a fixed value until offset tracking lands).
-const ELECTION_STAGGER_MS: u64 = 500;
+/// Delay before a replica asks for votes, as in Redis Cluster. Each other
+/// replica of the failed primary with more data adds `ELECTION_RANK_MS`, so
+/// the replica with the most data usually asks first and wins, and up to
+/// `ELECTION_JITTER_MS` more keeps equally ranked replicas from asking at
+/// the same moment.
+const ELECTION_DELAY_MS: u64 = 500;
+const ELECTION_RANK_MS: u64 = 1000;
+const ELECTION_JITTER_MS: u64 = 500;
 
 /// Timeout for an in-progress election; clears state if quorum not reached.
 const ELECTION_TIMEOUT_SECS: u64 = 5;
@@ -49,19 +54,21 @@ impl ClusterCoordinator {
         self.electing.store(false, Ordering::Release);
     }
 
-    /// Runs one election round. Applies a brief stagger delay, broadcasts a
-    /// `VoteRequest` via gossip, and waits up to 5 seconds for a quorum of
-    /// primaries to respond with `VoteGranted`. Returns `true` if the round
-    /// timed out and another may follow.
+    /// Runs one election round. Waits a delay set by this replica's rank,
+    /// sends a `VoteRequest` to every voter, and waits up to 5 seconds for a
+    /// quorum of primaries to respond with `VoteGranted`. Returns `true` if
+    /// the round timed out and another may follow.
     pub(super) async fn election_round(
         self: &Arc<Self>,
         failed_primary: NodeId,
         round: u64,
     ) -> bool {
-        // fixed 500 ms stagger; a production implementation should compute
-        // (max_offset - my_offset) * scale so the most up-to-date replica wins.
-        // this requires a shared offset oracle (e.g., gossip-advertised offset).
-        tokio::time::sleep(std::time::Duration::from_millis(ELECTION_STAGGER_MS)).await;
+        let offset = self.repl_offset.load(std::sync::atomic::Ordering::Relaxed);
+        let rank = self.gossip.lock().await.replica_rank(failed_primary) as u64;
+        let delay =
+            ELECTION_DELAY_MS + rank * ELECTION_RANK_MS + rand::random_range(0..ELECTION_JITTER_MS);
+        debug!("election: rank {rank} among the replicas of {failed_primary}; waiting {delay} ms");
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 
         // Re-read cluster state — the primary may have recovered during our
         // sleep, or another replica may already have taken over its slots.
@@ -113,7 +120,7 @@ impl ClusterCoordinator {
             let gossip = self.gossip.lock().await;
             voters
                 .iter()
-                .filter_map(|&voter| gossip.vote_request(voter, failed_primary, epoch, 0))
+                .filter_map(|&voter| gossip.vote_request(voter, failed_primary, epoch, offset))
                 .collect()
         };
 

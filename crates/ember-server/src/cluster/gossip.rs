@@ -120,6 +120,9 @@ impl ClusterCoordinator {
                         // is released: the event consumer takes this lock too
                         let (outgoing, events) = {
                             let mut gossip = coordinator.gossip.lock().await;
+                            gossip.set_repl_offset(
+                                coordinator.repl_offset.load(std::sync::atomic::Ordering::Relaxed),
+                            );
                             (gossip.tick(), gossip.take_events())
                         };
                         events.send().await;

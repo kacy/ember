@@ -80,6 +80,10 @@ pub struct ClusterCoordinator {
     /// set while this node runs election rounds, so failure reports that
     /// overlap don't start a second, concurrent election
     electing: std::sync::atomic::AtomicBool,
+    /// the replication offset this replica has applied, summed over the
+    /// shards. gossip advertises it so replicas of a failed primary can
+    /// rank themselves in an election.
+    repl_offset: Arc<std::sync::atomic::AtomicU64>,
     /// the replica this node last voted for to replace each failed
     /// primary, and when. it votes for one replica per failed primary at a
     /// time, so two replicas of the same primary can't both win.
@@ -166,6 +170,7 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             electing: std::sync::atomic::AtomicBool::new(false),
+            repl_offset: Arc::default(),
             failover_votes: Mutex::new(HashMap::new()),
             save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
@@ -240,6 +245,7 @@ impl ClusterCoordinator {
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
             electing: std::sync::atomic::AtomicBool::new(false),
+            repl_offset: Arc::default(),
             failover_votes: Mutex::new(HashMap::new()),
             save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),

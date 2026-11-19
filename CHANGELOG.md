@@ -8,6 +8,7 @@
 - TLS and ACL username options for the Go, Python and TypeScript clients: `WithTLS` and `WithUsername`, `tls`/`root_certificates` and `username`, and `tls`/`rootCerts` and `username`. a server with `tls-port` serves gRPC over TLS only, which the clients couldn't connect to (#478)
 
 ### changed
+- failover elections rank a failed primary's replicas by how much of its data they hold, as in Redis Cluster. gossip pings and acks carry each node's replication offset, and a replica waits 500 ms plus one second per replica of the same primary that is further ahead before it asks for votes, plus up to 500 ms of jitter. every replica waited the same 500 ms, so the one with the least data could win and lose the writes the others had. the gossip message format changed, so nodes running an earlier version can't join the cluster (#486)
 - keys go to local shards by their hash tag, as they go to cluster slots, so `{user:1}:a` and `{user:1}:b` share a shard and RENAME, COPY and the other multi-key commands work on them. they failed with "must hash to the same shard". a key with a tag may now map to another shard, so data written with tagged keys before this change isn't found after it (#482)
 - file layout version 6 for AOF and snapshot files. files from version 5 are no longer read (#469):
   - an encrypted file's key is derived from its header too: the file type, the version and the flags. an encrypted AOF relabeled as a snapshot, or a header with a changed version or flags, no longer decrypts

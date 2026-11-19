@@ -50,6 +50,9 @@ pub enum GossipMessage {
     Ping {
         seq: u64,
         sender: NodeId,
+        /// The sender's replication offset, which ranks replicas in a
+        /// failover election.
+        repl_offset: u64,
         /// Piggybacked state updates.
         updates: Vec<NodeUpdate>,
     },
@@ -66,6 +69,9 @@ pub enum GossipMessage {
     Ack {
         seq: u64,
         sender: NodeId,
+        /// The sender's replication offset, which ranks replicas in a
+        /// failover election.
+        repl_offset: u64,
         /// Piggybacked state updates.
         updates: Vec<NodeUpdate>,
     },
@@ -245,11 +251,13 @@ impl GossipMessage {
             GossipMessage::Ping {
                 seq,
                 sender,
+                repl_offset,
                 updates,
             } => {
                 buf.put_u8(MSG_PING);
                 buf.put_u64_le(*seq);
                 encode_node_id(buf, sender);
+                buf.put_u64_le(*repl_offset);
                 encode_updates(buf, updates);
             }
             GossipMessage::PingReq {
@@ -267,11 +275,13 @@ impl GossipMessage {
             GossipMessage::Ack {
                 seq,
                 sender,
+                repl_offset,
                 updates,
             } => {
                 buf.put_u8(MSG_ACK);
                 buf.put_u64_le(*seq);
                 encode_node_id(buf, sender);
+                buf.put_u64_le(*repl_offset);
                 encode_updates(buf, updates);
             }
             GossipMessage::Join {
@@ -321,10 +331,12 @@ impl GossipMessage {
             MSG_PING => {
                 let seq = safe_get_u64_le(&mut buf)?;
                 let sender = decode_node_id(&mut buf)?;
+                let repl_offset = safe_get_u64_le(&mut buf)?;
                 let updates = decode_updates(&mut buf)?;
                 Ok(GossipMessage::Ping {
                     seq,
                     sender,
+                    repl_offset,
                     updates,
                 })
             }
@@ -343,10 +355,12 @@ impl GossipMessage {
             MSG_ACK => {
                 let seq = safe_get_u64_le(&mut buf)?;
                 let sender = decode_node_id(&mut buf)?;
+                let repl_offset = safe_get_u64_le(&mut buf)?;
                 let updates = decode_updates(&mut buf)?;
                 Ok(GossipMessage::Ack {
                     seq,
                     sender,
+                    repl_offset,
                     updates,
                 })
             }
@@ -832,6 +846,7 @@ mod tests {
     fn ping_roundtrip() {
         let msg = GossipMessage::Ping {
             seq: 42,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![],
         };
@@ -846,6 +861,7 @@ mod tests {
         let node2 = NodeId::new();
         let msg = GossipMessage::Ping {
             seq: 100,
+            repl_offset: 0,
             sender: node1,
             updates: vec![
                 NodeUpdate::Alive {
@@ -881,6 +897,7 @@ mod tests {
     fn ack_roundtrip() {
         let msg = GossipMessage::Ack {
             seq: 42,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![NodeUpdate::Dead {
                 node: NodeId::new(),
@@ -952,6 +969,7 @@ mod tests {
         // replica variant
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: node,
             updates: vec![NodeUpdate::RoleChanged {
                 node,
@@ -967,6 +985,7 @@ mod tests {
         // primary variant (no replicates field)
         let msg2 = GossipMessage::Ping {
             seq: 2,
+            repl_offset: 0,
             sender: node,
             updates: vec![NodeUpdate::RoleChanged {
                 node,
@@ -1006,6 +1025,7 @@ mod tests {
         ];
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: node,
             updates,
         };
@@ -1019,6 +1039,7 @@ mod tests {
         let node = NodeId::new();
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: node,
             updates: vec![NodeUpdate::SlotsChanged {
                 node,
@@ -1037,6 +1058,7 @@ mod tests {
         let node = NodeId::new();
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: node,
             updates: vec![NodeUpdate::SlotsChanged {
                 node,
@@ -1090,6 +1112,7 @@ mod tests {
         let candidate = NodeId::new();
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: candidate,
             updates: vec![NodeUpdate::VoteRequest {
                 candidate,
@@ -1109,6 +1132,7 @@ mod tests {
         let candidate = NodeId::new();
         let msg = GossipMessage::Ack {
             seq: 2,
+            repl_offset: 0,
             sender: primary,
             updates: vec![NodeUpdate::VoteGranted {
                 from: primary,
@@ -1147,6 +1171,7 @@ mod tests {
         let secret = ClusterSecret::from_password("cluster-pass");
         let msg = GossipMessage::Ping {
             seq: 42,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![],
         };
@@ -1162,6 +1187,7 @@ mod tests {
         let s2 = ClusterSecret::from_password("secret-b");
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![],
         };
@@ -1183,6 +1209,7 @@ mod tests {
         let secret = ClusterSecret::from_password("test");
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![],
         };

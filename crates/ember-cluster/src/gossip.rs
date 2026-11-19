@@ -87,6 +87,8 @@ pub struct MemberState {
     pub slots: Vec<SlotRange>,
     /// The config epoch of the member's latest slot claim.
     pub config_epoch: u64,
+    /// The replication offset the member last sent in a Ping or Ack.
+    pub repl_offset: u64,
 }
 
 impl MemberState {
@@ -103,6 +105,7 @@ impl MemberState {
             replicates: None,
             slots: Vec::new(),
             config_epoch: 0,
+            repl_offset: 0,
         }
     }
 }
@@ -178,6 +181,8 @@ pub struct GossipEngine {
     /// The primary the local node replicates, if it is a replica. Sent in
     /// Welcome replies so a joining node learns this node's role.
     local_replicates: Option<NodeId>,
+    /// The local node's replication offset, sent in every Ping and Ack.
+    local_repl_offset: u64,
     /// Active PingReq relays waiting for an Ack from the target.
     relay_pending: HashMap<u64, RelayEntry>,
     /// When the current one-second window of Join replies began, and how
@@ -263,6 +268,7 @@ impl GossipEngine {
             local_slots: Vec::new(),
             local_config_epoch: 0,
             local_replicates: None,
+            local_repl_offset: 0,
             relay_pending: HashMap::new(),
             join_window: (Instant::now(), 0),
         }
@@ -478,11 +484,13 @@ impl GossipEngine {
             GossipMessage::Ping {
                 seq,
                 sender,
+                repl_offset,
                 updates,
             } => {
                 trace!("received ping seq={} from {}", seq, sender);
                 self.apply_updates(&updates);
                 self.ensure_member(sender, from);
+                self.record_repl_offset(sender, repl_offset);
 
                 // Reply with ACK
                 let response_updates = self.updates_for(sender);
@@ -491,6 +499,7 @@ impl GossipEngine {
                     GossipMessage::Ack {
                         seq,
                         sender: self.local_id,
+                        repl_offset: self.local_repl_offset,
                         updates: response_updates,
                     },
                 )]
@@ -532,6 +541,7 @@ impl GossipEngine {
                     GossipMessage::Ping {
                         seq: relay_seq,
                         sender: self.local_id,
+                        repl_offset: self.local_repl_offset,
                         updates: vec![],
                     },
                 )]
@@ -540,11 +550,13 @@ impl GossipEngine {
             GossipMessage::Ack {
                 seq,
                 sender,
+                repl_offset,
                 updates,
             } => {
                 trace!("received ack seq={} from {}", seq, sender);
                 self.apply_updates(&updates);
                 self.ensure_member(sender, from);
+                self.record_repl_offset(sender, repl_offset);
 
                 let mut outgoing = Vec::new();
 
@@ -565,6 +577,7 @@ impl GossipEngine {
                         GossipMessage::Ack {
                             seq: relay.original_seq,
                             sender: self.local_id,
+                            repl_offset: self.local_repl_offset,
                             updates: vec![],
                         },
                     ));
@@ -662,6 +675,7 @@ impl GossipEngine {
                             replicates: member.replicates,
                             slots: slots.clone(),
                             config_epoch: member.config_epoch,
+                            repl_offset: 0,
                         });
                         self.emit(GossipEvent::MemberJoined(
                             member.id,
@@ -768,6 +782,7 @@ impl GossipEngine {
         let msg = GossipMessage::Ping {
             seq,
             sender: self.local_id,
+            repl_offset: self.local_repl_offset,
             updates,
         };
 
@@ -796,6 +811,31 @@ impl GossipEngine {
     /// a primary with no slots until a role or slot update says otherwise;
     /// counting it as a replica made this node describe primaries as
     /// replicas to every node that joined through it.
+    /// Sets the local replication offset sent in Pings and Acks.
+    pub fn set_repl_offset(&mut self, offset: u64) {
+        self.local_repl_offset = offset;
+    }
+
+    fn record_repl_offset(&mut self, id: NodeId, offset: u64) {
+        if let Some(member) = self.members.get_mut(&id) {
+            member.repl_offset = offset;
+        }
+    }
+
+    /// This node's rank among the replicas of `primary`: how many of the
+    /// others last reported a higher replication offset, with ties going to
+    /// the lower node id. In a failover election, the replica with the most
+    /// data has rank 0 and asks for votes first.
+    pub fn replica_rank(&self, primary: NodeId) -> usize {
+        let key = |offset: u64, id: NodeId| (std::cmp::Reverse(offset), id.0);
+        let ours = key(self.local_repl_offset, self.local_id);
+        self.members
+            .values()
+            .filter(|m| m.replicates == Some(primary) && m.state != MemberStatus::Dead)
+            .filter(|m| key(m.repl_offset, m.id) < ours)
+            .count()
+    }
+
     fn ensure_member(&mut self, id: NodeId, addr: SocketAddr) {
         if id == self.local_id {
             return;
@@ -1389,6 +1429,7 @@ mod tests {
         let sender = NodeId::new();
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender,
             updates: vec![],
         };
@@ -1403,6 +1444,61 @@ mod tests {
     fn engine(port: u16) -> GossipEngine {
         let (tx, _rx) = mpsc::channel(64);
         GossipEngine::new(NodeId::new(), test_addr(port), GossipConfig::default(), tx)
+    }
+
+    #[tokio::test]
+    async fn replica_rank_follows_reported_offsets() {
+        let mut engine = engine(7000);
+        let primary = NodeId::new();
+        for (port, repl_offset) in [(7001, 500), (7002, 100)] {
+            let sender = NodeId::new();
+            let ping = GossipMessage::Ping {
+                seq: 1,
+                sender,
+                repl_offset,
+                updates: vec![],
+            };
+            engine.handle_message(ping, test_addr(port));
+            engine.members.get_mut(&sender).unwrap().replicates = Some(primary);
+        }
+
+        engine.set_repl_offset(600);
+        assert_eq!(engine.replica_rank(primary), 0);
+        engine.set_repl_offset(300);
+        assert_eq!(engine.replica_rank(primary), 1);
+        engine.set_repl_offset(50);
+        assert_eq!(engine.replica_rank(primary), 2);
+        // replicas of another primary don't count
+        assert_eq!(engine.replica_rank(NodeId::new()), 0);
+    }
+
+    #[tokio::test]
+    async fn ping_and_ack_carry_the_local_offset() {
+        let mut engine = engine(7000);
+        engine.set_repl_offset(42);
+        engine.add_seed(NodeId::new(), test_addr(7001));
+        let pings = engine.tick();
+        assert!(matches!(
+            pings[0].1,
+            GossipMessage::Ping {
+                repl_offset: 42,
+                ..
+            }
+        ));
+        let ping = GossipMessage::Ping {
+            seq: 9,
+            sender: NodeId::new(),
+            repl_offset: 0,
+            updates: vec![],
+        };
+        let acks = engine.handle_message(ping, test_addr(7002));
+        assert!(matches!(
+            acks[0].1,
+            GossipMessage::Ack {
+                repl_offset: 42,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -1451,6 +1547,7 @@ mod tests {
         a.set_local_slots(vec![SlotRange::new(0, 99)], 3);
         let ping = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![],
         };
@@ -1533,6 +1630,7 @@ mod tests {
         a.handle_message(
             GossipMessage::Ping {
                 seq: 1,
+                repl_offset: 0,
                 sender: b_id,
                 updates: vec![],
             },
@@ -1729,6 +1827,7 @@ mod tests {
 
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: remote,
             updates,
         };
@@ -1764,12 +1863,14 @@ mod tests {
                 replicates: None,
                 slots: vec![SlotRange::new(0, 5460)],
                 config_epoch: 0,
+                repl_offset: 0,
             },
         );
 
         // send slots update with stale incarnation (lower)
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: remote,
             updates: vec![NodeUpdate::SlotsChanged {
                 node: remote,
@@ -1875,6 +1976,7 @@ mod tests {
         engine.set_incarnation(10);
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![NodeUpdate::Dead {
                 node: local,
@@ -2024,6 +2126,7 @@ mod tests {
         let target_sender = NodeId::new();
         let ack = GossipMessage::Ack {
             seq: relay_seq,
+            repl_offset: 0,
             sender: target_sender,
             updates: vec![],
         };
@@ -2112,6 +2215,7 @@ mod tests {
         // send a role change: remote becomes a replica of primary
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: remote,
             updates: vec![NodeUpdate::RoleChanged {
                 node: remote,
@@ -2162,12 +2266,14 @@ mod tests {
                 replicates: None,
                 slots: vec![],
                 config_epoch: 0,
+                repl_offset: 0,
             },
         );
 
         // send role change with old incarnation
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: remote,
             updates: vec![NodeUpdate::RoleChanged {
                 node: remote,
@@ -2209,6 +2315,7 @@ mod tests {
         // a jump larger than MAX_INCARNATION_JUMP should be rejected
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: remote,
             updates: vec![NodeUpdate::Alive {
                 node: remote,
@@ -2238,6 +2345,7 @@ mod tests {
         // a jump within the limit should be accepted
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: remote,
             updates: vec![NodeUpdate::Alive {
                 node: remote,
@@ -2264,6 +2372,7 @@ mod tests {
 
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![NodeUpdate::Dead {
                 node: remote,
@@ -2284,6 +2393,7 @@ mod tests {
 
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: NodeId::new(),
             updates: vec![NodeUpdate::Suspect {
                 node: local,
@@ -2352,6 +2462,7 @@ mod tests {
         let voter = NodeId::new();
         let msg = GossipMessage::Ping {
             seq: 1,
+            repl_offset: 0,
             sender: voter,
             updates: vec![grant(voter)],
         };
