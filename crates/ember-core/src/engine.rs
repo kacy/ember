@@ -390,13 +390,17 @@ impl Engine {
 /// FNV-1a is simple, fast for short keys, and completely deterministic
 /// (no per-process randomization). Shard routing is trusted internal
 /// logic so DoS-resistant hashing is unnecessary here.
+///
+/// Only a key's hash tag is hashed, as for cluster slots, so `{user:1}:a`
+/// and `{user:1}:b` share a shard and multi-key commands such as RENAME
+/// work on them.
 fn shard_index(key: &str, shard_count: usize) -> usize {
     // FNV-1a 64-bit
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 
     let mut hash = FNV_OFFSET;
-    for byte in key.as_bytes() {
+    for byte in ember_protocol::slots::extract_hash_tag(key.as_bytes()) {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(FNV_PRIME);
     }
@@ -431,6 +435,15 @@ mod tests {
     fn single_shard_always_zero() {
         assert_eq!(shard_index("anything", 1), 0);
         assert_eq!(shard_index("other", 1), 0);
+    }
+
+    #[test]
+    fn keys_with_the_same_hash_tag_share_a_shard() {
+        for shards in [2, 7, 32] {
+            let shard = shard_index("{user:1}:name", shards);
+            assert_eq!(shard_index("{user:1}:email", shards), shard);
+            assert_eq!(shard_index("x{user:1}", shards), shard);
+        }
     }
 
     #[tokio::test]

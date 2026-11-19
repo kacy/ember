@@ -867,3 +867,13 @@ async fn pexpiretime_far_in_the_future_stays_positive() {
     c.get_int(&["PEXPIREAT", "k", "9223372036854775807"]).await;
     assert!(c.get_int(&["PEXPIRETIME", "k"]).await > 0);
 }
+
+#[tokio::test]
+async fn keys_with_the_same_hash_tag_can_be_renamed_and_copied() {
+    let server = TestServer::start();
+    let mut c = server.connect().await;
+    c.ok(&["SET", "{user:1}:a", "v"]).await;
+    c.ok(&["RENAME", "{user:1}:a", "{user:1}:b"]).await;
+    assert_eq!(c.get_int(&["COPY", "{user:1}:b", "{user:1}:c"]).await, 1);
+    assert_eq!(c.get_bulk(&["GET", "{user:1}:c"]).await, Some("v".into()));
+}
