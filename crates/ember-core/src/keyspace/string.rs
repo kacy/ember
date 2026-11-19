@@ -490,9 +490,17 @@ impl Keyspace {
             None => (Bytes::new(), None),
         };
 
+        // an empty value changes nothing and creates no key, as in Redis
+        if value.is_empty() {
+            return Ok(existing.len());
+        }
+
         // build the new string: existing prefix + zero-padding + overlay
         let needed = offset.saturating_add(value.len());
         let new_len = existing.len().max(needed);
+        if !self.reserve_string_growth(key, existing.len(), new_len) {
+            return Err(WriteError::OutOfMemory);
+        }
         let mut buf = Vec::with_capacity(new_len);
 
         // copy existing data up to the offset (or all of it if offset is beyond)
@@ -517,6 +525,23 @@ impl Keyspace {
             SetResult::Ok | SetResult::Blocked => Ok(result_len),
             SetResult::OutOfMemory => Err(WriteError::OutOfMemory),
         }
+    }
+
+    /// Makes room for the string at `key` to grow from `old_len` to
+    /// `new_len` bytes, before the caller allocates it. Returns `false`
+    /// when it doesn't fit.
+    pub(super) fn reserve_string_growth(
+        &mut self,
+        key: &str,
+        old_len: usize,
+        new_len: usize,
+    ) -> bool {
+        let new_key = if self.entries.contains_key(key) {
+            0
+        } else {
+            memory::entry_size(key, &Value::String(Bytes::new()))
+        };
+        self.enforce_memory_limit(key, new_len.saturating_sub(old_len) + new_key)
     }
 }
 

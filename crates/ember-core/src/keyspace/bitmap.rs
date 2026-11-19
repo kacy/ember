@@ -68,6 +68,9 @@ impl Keyspace {
 
         // build the new buffer: existing data + zero-padding if needed
         let new_len = existing.len().max(byte_idx + 1);
+        if !self.reserve_string_growth(key, existing.len(), new_len) {
+            return Err(WriteError::OutOfMemory);
+        }
         let mut buf = existing.to_vec();
         buf.resize(new_len, 0);
 

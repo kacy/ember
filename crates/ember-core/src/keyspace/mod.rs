@@ -166,6 +166,8 @@ pub enum LsetError {
     NoSuchKey,
     /// Index is beyond list bounds.
     IndexOutOfRange,
+    /// Memory limit reached and eviction couldn't free enough space.
+    OutOfMemory,
 }
 
 impl std::fmt::Display for LsetError {
@@ -174,6 +176,7 @@ impl std::fmt::Display for LsetError {
             LsetError::WrongType => write!(f, "{WRONGTYPE_MSG}"),
             LsetError::NoSuchKey => write!(f, "ERR no such key"),
             LsetError::IndexOutOfRange => write!(f, "ERR index out of range"),
+            LsetError::OutOfMemory => write!(f, "{OOM_MSG}"),
         }
     }
 }

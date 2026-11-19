@@ -428,6 +428,35 @@ fn lmove_and_copy_never_evict_their_source() {
 }
 
 #[test]
+fn growing_writes_check_memory_before_allocating() {
+    let mut ks = Keyspace::new();
+    ks.rpush("list", &[Bytes::from("a")]).unwrap();
+    cap_memory(&mut ks, 100);
+    let big = Bytes::from(vec![b'x'; 10_000]);
+    assert_eq!(ks.lset("list", 0, big), Err(LsetError::OutOfMemory));
+    assert_eq!(
+        ks.setrange("s", 1_000_000, b"x"),
+        Err(WriteError::OutOfMemory)
+    );
+    assert_eq!(ks.setbit("b", 8_000_000, 1), Err(WriteError::OutOfMemory));
+    assert!(!ks.exists("s") && !ks.exists("b"));
+    assert_memory_matches(&ks);
+}
+
+#[test]
+fn setrange_with_an_empty_value_changes_nothing() {
+    let mut ks = Keyspace::new();
+    assert_eq!(ks.setrange("missing", 1_000_000, b""), Ok(0));
+    assert!(!ks.exists("missing"));
+    ks.set("k".into(), Bytes::from("abc"), None, false, false);
+    assert_eq!(ks.setrange("k", 10, b""), Ok(3));
+    assert_eq!(
+        ks.get("k").unwrap(),
+        Some(Value::String(Bytes::from("abc")))
+    );
+}
+
+#[test]
 fn lmove_rotating_a_one_element_list_keeps_its_ttl() {
     let mut ks = Keyspace::new();
     ks.rpush("list", &[Bytes::from("only")]).unwrap();

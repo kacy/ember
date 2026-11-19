@@ -157,6 +157,14 @@ impl Keyspace {
     /// doesn't exist, the index is out of range, or the key holds the
     /// wrong type.
     pub fn lset(&mut self, key: &str, index: i64, value: Bytes) -> Result<(), LsetError> {
+        // a longer element needs room for the difference
+        let old_len = self
+            .lindex(key, index)
+            .map_err(|_| LsetError::WrongType)?
+            .map_or(0, |old| old.len());
+        if !self.enforce_memory_limit(key, value.len().saturating_sub(old_len)) {
+            return Err(LsetError::OutOfMemory);
+        }
         let set = self
             .edit(key, Value::as_list_mut, |list| {
                 let done = resolve_index(index, list.len()).is_some_and(|i| list.set(i, value));

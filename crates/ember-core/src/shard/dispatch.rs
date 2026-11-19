@@ -232,6 +232,7 @@ pub(super) fn dispatch(
                 LsetError::WrongType => ShardResponse::WrongType,
                 LsetError::NoSuchKey => ShardResponse::Err("ERR no such key".into()),
                 LsetError::IndexOutOfRange => ShardResponse::Err("ERR index out of range".into()),
+                LsetError::OutOfMemory => ShardResponse::OutOfMemory,
             },
         },
         ShardRequest::LTrim { key, start, stop } => match ks.ltrim(key, *start, *stop) {
