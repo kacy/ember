@@ -65,16 +65,21 @@ pub(super) fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
                 return Err(wrong_arity("CLUSTER ADDSLOTSRANGE"));
             }
             let mut ranges = Vec::new();
+            // the ranges expand to one entry per slot, so more slots than
+            // exist means a range repeats
+            let mut total = 0usize;
             for pair in args[1..].chunks(2) {
-                let s = parse_u64(&pair[0], "CLUSTER ADDSLOTSRANGE")?;
-                let start = u16::try_from(s)
-                    .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot".into()))?;
-                let e = parse_u64(&pair[1], "CLUSTER ADDSLOTSRANGE")?;
-                let end = u16::try_from(e)
-                    .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot".into()))?;
-                if start > end || end >= 16384 {
+                let start = parse_slot(&pair[0])?;
+                let end = parse_slot(&pair[1])?;
+                if start > end {
                     return Err(ProtocolError::InvalidCommandFrame(
-                        "invalid slot range: start must be <= end and both must be 0-16383".into(),
+                        "invalid slot range: start must be <= end".into(),
+                    ));
+                }
+                total += usize::from(end - start) + 1;
+                if total > usize::from(SLOT_COUNT) {
+                    return Err(ProtocolError::InvalidCommandFrame(
+                        "slot ranges overlap".into(),
                     ));
                 }
                 ranges.push((start, end));
@@ -124,18 +129,14 @@ pub(super) fn parse_cluster(args: &[Frame]) -> Result<Command, ProtocolError> {
             if args.len() != 2 {
                 return Err(wrong_arity("CLUSTER COUNTKEYSINSLOT"));
             }
-            let n = parse_u64(&args[1], "CLUSTER COUNTKEYSINSLOT")?;
-            let slot = u16::try_from(n)
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+            let slot = parse_slot(&args[1])?;
             Ok(Command::ClusterCountKeysInSlot { slot })
         }
         "GETKEYSINSLOT" => {
             if args.len() != 3 {
                 return Err(wrong_arity("CLUSTER GETKEYSINSLOT"));
             }
-            let n = parse_u64(&args[1], "CLUSTER GETKEYSINSLOT")?;
-            let slot = u16::try_from(n)
-                .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
+            let slot = parse_slot(&args[1])?;
             let c = parse_u64(&args[2], "CLUSTER GETKEYSINSLOT")?;
             let count = u32::try_from(c)
                 .map_err(|_| ProtocolError::InvalidCommandFrame("invalid count".into()))?;
@@ -154,20 +155,21 @@ pub(super) fn parse_asking(args: &[Frame]) -> Result<Command, ProtocolError> {
     Ok(Command::Asking)
 }
 
+const SLOT_COUNT: u16 = 16384;
+
+/// Parses a hash slot number, 0 to 16383.
+fn parse_slot(arg: &Frame) -> Result<u16, ProtocolError> {
+    let n = parse_u64(arg, "CLUSTER")?;
+    u16::try_from(n)
+        .ok()
+        .filter(|&slot| slot < SLOT_COUNT)
+        .ok_or_else(|| {
+            ProtocolError::InvalidCommandFrame(format!("invalid slot {n}: must be 0-16383"))
+        })
+}
+
 pub(super) fn parse_slot_list(args: &[Frame]) -> Result<Vec<u16>, ProtocolError> {
-    let mut slots = Vec::with_capacity(args.len());
-    for arg in args {
-        let n = parse_u64(arg, "CLUSTER")?;
-        let slot = u16::try_from(n)
-            .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
-        if slot >= 16384 {
-            return Err(ProtocolError::InvalidCommandFrame(format!(
-                "invalid slot {slot}: must be 0-16383"
-            )));
-        }
-        slots.push(slot);
-    }
-    Ok(slots)
+    args.iter().map(parse_slot).collect()
 }
 
 pub(super) fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolError> {
@@ -175,14 +177,7 @@ pub(super) fn parse_cluster_setslot(args: &[Frame]) -> Result<Command, ProtocolE
         return Err(wrong_arity("CLUSTER SETSLOT"));
     }
 
-    let n = parse_u64(&args[0], "CLUSTER SETSLOT")?;
-    let slot = u16::try_from(n)
-        .map_err(|_| ProtocolError::InvalidCommandFrame("invalid slot number".into()))?;
-    if slot >= 16384 {
-        return Err(ProtocolError::InvalidCommandFrame(format!(
-            "invalid slot {slot}: must be 0-16383"
-        )));
-    }
+    let slot = parse_slot(&args[0])?;
 
     if args.len() < 2 {
         return Err(wrong_arity("CLUSTER SETSLOT"));

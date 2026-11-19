@@ -1952,6 +1952,25 @@ fn cluster_addslotsrange_invalid_range() {
 }
 
 #[test]
+fn cluster_addslotsrange_refuses_more_slots_than_exist() {
+    let all = ["CLUSTER", "ADDSLOTSRANGE", "0", "16383"];
+    assert!(Command::from_frame(cmd(&all)).is_ok());
+    let twice = ["CLUSTER", "ADDSLOTSRANGE", "0", "16383", "0", "0"];
+    assert!(Command::from_frame(cmd(&twice)).is_err());
+}
+
+#[test]
+fn cluster_slot_arguments_must_be_below_16384() {
+    for args in [
+        &["CLUSTER", "COUNTKEYSINSLOT", "16384"][..],
+        &["CLUSTER", "GETKEYSINSLOT", "16384", "10"],
+        &["CLUSTER", "ADDSLOTSRANGE", "0", "16384"],
+    ] {
+        assert!(Command::from_frame(cmd(args)).is_err(), "{args:?}");
+    }
+}
+
+#[test]
 fn cluster_addslotsrange_wrong_arity() {
     // odd number of slot args
     let err = Command::from_frame(cmd(&["CLUSTER", "ADDSLOTSRANGE", "0"])).unwrap_err();
