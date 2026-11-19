@@ -575,6 +575,15 @@ fn decode_socket_addr(buf: &mut &[u8]) -> io::Result<SocketAddr> {
     }
 }
 
+impl NodeUpdate {
+    /// Bytes the update takes in a message.
+    pub fn encoded_len(&self) -> usize {
+        let mut buf = BytesMut::new();
+        encode_update(&mut buf, self);
+        buf.len()
+    }
+}
+
 fn encode_updates(buf: &mut BytesMut, updates: &[NodeUpdate]) {
     encode_slice(buf, updates, encode_update);
 }

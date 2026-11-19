@@ -499,6 +499,14 @@ impl ClusterState {
         // a claim comes from gossip, so keep a forged epoch from reaching
         // u64::MAX, where the next local increment would overflow
         let config_epoch = config_epoch.min(MAX_CONFIG_EPOCH);
+        // a claim older than the claimant's last one is out of date
+        if self
+            .nodes
+            .get(&node)
+            .is_some_and(|claimant| config_epoch < claimant.config_epoch)
+        {
+            return SlotClaimResult::default();
+        }
         self.config_epoch = self.config_epoch.max(config_epoch);
         if let Some(claimant) = self.nodes.get_mut(&node) {
             claimant.config_epoch = config_epoch;
@@ -569,6 +577,15 @@ impl ClusterState {
     ///
     /// Returns an error if the target is not a replica with a configured primary.
     pub fn promote_replica(&mut self, replica_id: NodeId) -> Result<(), String> {
+        let epoch = self.config_epoch.saturating_add(1);
+        self.promote_replica_at(replica_id, epoch)
+    }
+
+    /// Like [`promote_replica`](Self::promote_replica), at `epoch`: the
+    /// epoch an election was won in. The promotion takes that epoch, or a
+    /// newer one if this node has seen a newer epoch since, so the slots
+    /// are claimed at least at the epoch the voters granted.
+    pub fn promote_replica_at(&mut self, replica_id: NodeId, epoch: u64) -> Result<(), String> {
         // locate the replica and find its current primary
         let primary_id = {
             let replica = self
@@ -591,9 +608,11 @@ impl ClusterState {
         }
         let new_primary_slots = self.slot_map.slots_for_node(replica_id);
 
-        // bump epoch before touching node state so both nodes land on the same epoch
-        self.config_epoch = self.config_epoch.saturating_add(1);
-        let new_epoch = self.config_epoch;
+        // set the epoch before touching node state so both nodes land on it
+        let new_epoch = epoch
+            .min(MAX_CONFIG_EPOCH)
+            .max(self.config_epoch.saturating_add(1));
+        self.config_epoch = new_epoch;
 
         // demote the old primary: clear its slots and make it a replica of the winner
         if let Some(old_primary) = self.nodes.get_mut(&primary_id) {
@@ -1284,5 +1303,41 @@ mod tests {
         let missing = NodeId::new();
         let err = state.promote_replica(missing).unwrap_err();
         assert!(err.contains("not found"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn promotion_takes_the_epoch_the_election_was_won_in() {
+        let primary = NodeId::new();
+        let replica = NodeId::new();
+        let mut state = ClusterState::single_node(ClusterNode::new_primary(
+            primary,
+            "127.0.0.1:7000".parse().unwrap(),
+        ));
+        state.add_node(ClusterNode::new_replica(
+            replica,
+            "127.0.0.1:7001".parse().unwrap(),
+            primary,
+        ));
+        state.promote_replica_at(replica, 9).unwrap();
+        assert_eq!(state.config_epoch, 9);
+        assert_eq!(state.nodes[&replica].config_epoch, 9);
+    }
+
+    #[test]
+    fn a_claim_older_than_the_claimants_last_is_ignored() {
+        let local = NodeId::new();
+        let other = NodeId::new();
+        let mut state = ClusterState::single_node(ClusterNode::new_primary(
+            local,
+            "127.0.0.1:7000".parse().unwrap(),
+        ));
+        state.add_node(ClusterNode::new_primary(
+            other,
+            "127.0.0.1:7001".parse().unwrap(),
+        ));
+        state.apply_slot_claim(other, &[SlotRange::new(0, 9)], 5);
+        let result = state.apply_slot_claim(other, &[], 4);
+        assert!(!result.changed);
+        assert_eq!(state.slot_map.owner(0), Some(other));
     }
 }

@@ -77,6 +77,9 @@ pub struct ClusterCoordinator {
     writes_paused: std::sync::atomic::AtomicBool,
     /// in-progress automatic failover election (we are the candidate).
     election: Mutex<Option<ElectionAttempt>>,
+    /// set while this node runs election rounds, so failure reports that
+    /// overlap don't start a second, concurrent election
+    electing: std::sync::atomic::AtomicBool,
     /// the replica this node last voted for to replace each failed
     /// primary, and when. it votes for one replica per failed primary at a
     /// time, so two replicas of the same primary can't both win.
@@ -162,6 +165,7 @@ impl ClusterCoordinator {
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            electing: std::sync::atomic::AtomicBool::new(false),
             failover_votes: Mutex::new(HashMap::new()),
             save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
@@ -235,6 +239,7 @@ impl ClusterCoordinator {
             engine: std::sync::OnceLock::new(),
             writes_paused: std::sync::atomic::AtomicBool::new(false),
             election: Mutex::new(None),
+            electing: std::sync::atomic::AtomicBool::new(false),
             failover_votes: Mutex::new(HashMap::new()),
             save_lock: Mutex::new(()),
             replication_task: Mutex::new(None),
