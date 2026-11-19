@@ -12,6 +12,11 @@ use uuid::Uuid;
 use crate::slots::{SlotMap, SlotRange, SLOT_COUNT};
 use crate::ClusterError;
 
+/// Largest config epoch accepted from another node. Epochs rise by one per
+/// failover or slot move, so a real cluster stays far below this, and the
+/// local increments can't overflow.
+pub const MAX_CONFIG_EPOCH: u64 = u64::MAX / 2;
+
 /// Error returned when parsing a `nodes.conf` file fails.
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigParseError {
@@ -474,6 +479,9 @@ impl ClusterState {
         slots: &[SlotRange],
         config_epoch: u64,
     ) -> SlotClaimResult {
+        // a claim comes from gossip, so keep a forged epoch from reaching
+        // u64::MAX, where the next local increment would overflow
+        let config_epoch = config_epoch.min(MAX_CONFIG_EPOCH);
         self.config_epoch = self.config_epoch.max(config_epoch);
         if let Some(claimant) = self.nodes.get_mut(&node) {
             claimant.config_epoch = config_epoch;
@@ -521,7 +529,7 @@ impl ClusterState {
     /// seen, so its next slot claim beats the previous owner's. Used when it
     /// takes a slot without an election, as Redis does for SETSLOT NODE.
     pub fn bump_local_epoch(&mut self) -> u64 {
-        self.config_epoch += 1;
+        self.config_epoch = self.config_epoch.saturating_add(1);
         let epoch = self.config_epoch;
         if let Some(local) = self.nodes.get_mut(&self.local_id) {
             local.config_epoch = epoch;
@@ -574,7 +582,7 @@ impl ClusterState {
         let new_primary_slots = self.slot_map.slots_for_node(replica_id);
 
         // bump epoch before touching node state so both nodes land on the same epoch
-        self.config_epoch += 1;
+        self.config_epoch = self.config_epoch.saturating_add(1);
         let new_epoch = self.config_epoch;
 
         // demote the old primary: clear its slots and make it a replica of the winner
@@ -1080,6 +1088,14 @@ mod tests {
         assert_eq!(state.slot_map.owner(10), Some(state.local_id));
         assert_eq!(state.config_epoch, 5);
         assert_eq!(state.nodes[&other].slots, [SlotRange::new(0, 9)]);
+    }
+
+    #[test]
+    fn a_huge_claimed_epoch_leaves_room_to_increment() {
+        let (mut state, other) = claim_state();
+        state.apply_slot_claim(other, &[SlotRange::new(0, 9)], u64::MAX);
+        assert_eq!(state.config_epoch, MAX_CONFIG_EPOCH);
+        assert_eq!(state.bump_local_epoch(), MAX_CONFIG_EPOCH + 1);
     }
 
     #[test]
