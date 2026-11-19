@@ -21,7 +21,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- cluster role and quorum fixes (#PR):
+- cluster role and quorum fixes (#472):
   - gossip counts a newly seen node as a primary until it hears otherwise, as the cluster state does, and a restarted node seeds its peers with the roles and slots saved for them. a node described every primary it had only heard of as a replica in the Welcome it sent to a joining node, which then demoted that primary in its own view
   - a Welcome updates a member the joiner already knows when it carries a newer role or newer slots
   - only primaries that serve slots count toward the write quorum and vote in failover elections, as in Redis Cluster. a primary replaced in a failover still counted, so after one failover in a three-primary cluster, losing another primary left the cluster down for good
