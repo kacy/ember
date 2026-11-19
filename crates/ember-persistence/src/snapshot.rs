@@ -88,6 +88,11 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
             let mut members = Vec::with_capacity(format::capped_capacity(count));
             for _ in 0..count {
                 let score = format::read_f64(r)?;
+                if !score.is_finite() {
+                    return Err(FormatError::InvalidData(format!(
+                        "sorted set score {score} is not finite"
+                    )));
+                }
                 let member = read_snap_string(r, "member")?;
                 members.push((score, member));
             }
@@ -130,6 +135,13 @@ fn parse_snap_value(r: &mut impl io::Read) -> Result<SnapValue, FormatError> {
             }
             let connectivity = format::read_u32(r)?;
             let expansion_add = format::read_u32(r)?;
+            if connectivity.max(expansion_add) > format::MAX_PERSISTED_HNSW_PARAM {
+                return Err(FormatError::InvalidData(format!(
+                    "vector connectivity {connectivity} or expansion {expansion_add} \
+                     exceeds max {}",
+                    format::MAX_PERSISTED_HNSW_PARAM
+                )));
+            }
             let dim = format::read_u32(r)?;
             if dim > format::MAX_PERSISTED_VECTOR_DIMS {
                 return Err(FormatError::InvalidData(format!(
@@ -1230,6 +1242,30 @@ mod tests {
         let data = serialize_snap_value(&original).unwrap();
         let decoded = deserialize_snap_value(&data).unwrap();
         assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn snap_value_refuses_scores_that_are_not_finite() {
+        for score in [f64::NAN, f64::INFINITY] {
+            let value = SnapValue::SortedSet(vec![(score, "m".into())]);
+            let data = serialize_snap_value(&value).unwrap();
+            assert!(deserialize_snap_value(&data).is_err());
+        }
+    }
+
+    #[cfg(feature = "vector")]
+    #[test]
+    fn snap_value_refuses_huge_hnsw_parameters() {
+        let value = SnapValue::Vector {
+            metric: 0,
+            quantization: 0,
+            connectivity: u32::MAX,
+            expansion_add: 64,
+            dim: 2,
+            elements: vec![("a".into(), vec![1.0, 2.0])],
+        };
+        let data = serialize_snap_value(&value).unwrap();
+        assert!(deserialize_snap_value(&data).is_err());
     }
 
     #[test]
