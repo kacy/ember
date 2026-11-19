@@ -21,7 +21,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- pub/sub fixes (#PR):
+- pub/sub fixes (#477):
   - a subscriber whose receiver lags on one channel keeps listening to it. it stopped listening to that channel and, with its other channels quiet, never received another message
   - PSUBSCRIBE to a pattern the connection already has is a no-op, as in Redis. a repeated PSUBSCRIBE replaced the subscription without releasing the first, so PUBSUB NUMPAT never dropped back
   - gRPC Subscribe waits for messages instead of checking every millisecond, and ends when the client disconnects. on a quiet channel the stream and its subscriptions stayed behind forever
