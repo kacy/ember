@@ -25,7 +25,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- a node that sees a replica win a slot claim at a newer epoch now records it as a primary. the role update a promoted replica sends could arrive after a newer update about the same node, such as one refuting a suspicion, and was then dropped as stale, leaving peers listing the new primary as a replica (#PR)
+- a node that sees a replica win a slot claim at a newer epoch now records it as a primary. the role update a promoted replica sends could arrive after a newer update about the same node, such as one refuting a suspicion, and was then dropped as stale, leaving peers listing the new primary as a replica (#480)
 - CLI, Rust client and SDK fixes (#478):
   - `ember-cli cluster reshard` stops when GETKEYSINSLOT or SETSLOT NODE fails. a GETKEYSINSLOT error read as an empty slot, so the slot was handed over with its keys left behind. a slot whose MIGRATING step fails goes back to STABLE on the target, a node id prefix must match exactly one node, and IPv6 addresses such as `[::1]:6379` lose their brackets before connecting
   - `ember-cli benchmark` no longer hangs when a client fails to connect or authenticate, or when there are fewer requests than clients. `--clients 0` and `--keyspace 0` are refused instead of panicking, prepopulate writes every key in the range with `-P` above 1, and a wrong password is reported
