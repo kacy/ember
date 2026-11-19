@@ -26,7 +26,7 @@ pub struct BenchmarkArgs {
     pub requests: u64,
 
     /// Number of concurrent client connections.
-    #[arg(short = 'c', long, default_value_t = 50)]
+    #[arg(short = 'c', long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..))]
     pub clients: u32,
 
     /// Number of commands to pipeline per batch.
@@ -42,7 +42,7 @@ pub struct BenchmarkArgs {
     pub tests: String,
 
     /// Number of unique keys to use.
-    #[arg(long, default_value_t = 100_000)]
+    #[arg(long, default_value_t = 100_000, value_parser = clap::value_parser!(u64).range(1..))]
     pub keyspace: u64,
 
     /// Quiet mode: only print the summary line for each test.
@@ -259,7 +259,12 @@ async fn run_workload(
 
     // the coordinator (main task) is a barrier participant so wall_start
     // is measured only after all clients have connected and are ready.
-    let barrier = Arc::new(Barrier::new(clients + 1));
+    // only clients with requests to send take part, since the others never
+    // start, or the barrier would wait for them forever
+    let workers = (0..clients)
+        .filter(|&i| per_client + u64::from((i as u64) < remainder) > 0)
+        .count();
+    let barrier = Arc::new(Barrier::new(workers + 1));
 
     let mut handles = Vec::with_capacity(clients);
 
@@ -277,20 +282,27 @@ async fn run_workload(
         let tls = tls.cloned();
 
         let handle = tokio::spawn(async move {
-            let mut conn = match BenchConnection::connect(&host, port, tls.as_ref()).await {
-                Ok(c) => c,
+            let setup = async {
+                let mut conn = BenchConnection::connect(&host, port, tls.as_ref())
+                    .await
+                    .map_err(|e| format!("connection failed: {e}"))?;
+                if let Some(ref pw) = password {
+                    conn.authenticate(pw)
+                        .await
+                        .map_err(|e| format!("auth failed: {e}"))?;
+                }
+                Ok::<_, String>(conn)
+            };
+            // a failed setup still reaches the barrier, so the other
+            // clients and the coordinator aren't left waiting for it
+            let mut conn = match setup.await {
+                Ok(conn) => conn,
                 Err(e) => {
-                    eprintln!("{}", format!("connection failed: {e}").red());
+                    eprintln!("{}", e.red());
+                    barrier.wait().await;
                     return Err(());
                 }
             };
-
-            if let Some(ref pw) = password {
-                if let Err(e) = conn.authenticate(pw).await {
-                    eprintln!("{}", format!("auth failed: {e}").red());
-                    return Err(());
-                }
-            }
 
             // collect per-batch latencies
             let mut latencies = Vec::with_capacity((count as usize / pipeline) + 1);
@@ -501,17 +513,24 @@ async fn prepopulate(
             }
 
             let mut sent: u64 = 0;
+            let mut ser_buf = BytesMut::new();
             while sent < count {
+                // one SET per key in the batch, so every key in the range
+                // gets a value
                 let batch = pipeline.min((count - sent) as usize);
-                let key = format!("key:{:012}", start + sent);
-                let frame = Frame::Array(vec![
-                    Frame::Bulk(Bytes::from_static(b"SET")),
-                    Frame::Bulk(Bytes::from(key)),
-                    Frame::Bulk(Bytes::from(value.clone())),
-                ]);
-                conn.set_command(&frame);
+                let cmds: Vec<Bytes> = (0..batch as u64)
+                    .map(|i| {
+                        Frame::Array(vec![
+                            Frame::Bulk(Bytes::from_static(b"SET")),
+                            Frame::Bulk(Bytes::from(format!("key:{:012}", start + sent + i))),
+                            Frame::Bulk(Bytes::from(value.clone())),
+                        ])
+                        .serialize(&mut ser_buf);
+                        ser_buf.split().freeze()
+                    })
+                    .collect();
 
-                if let Err(e) = conn.send_pipeline(batch).await {
+                if let Err(e) = conn.send_many(&cmds).await {
                     eprintln!("{}", format!("prepopulate error: {e}").red());
                     return Err(());
                 }

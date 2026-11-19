@@ -143,14 +143,9 @@ fn load_root_certs(ca_cert_path: Option<&str>) -> io::Result<rustls::RootCertSto
     } else {
         // load the platform's native root certificates
         let native_certs = rustls_native_certs::load_native_certs();
-        for cert in native_certs.certs {
-            roots.add(cert).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("invalid native CA certificate: {e}"),
-                )
-            })?;
-        }
+        // an operating system's store can hold old certificates rustls
+        // can't parse. skip those instead of failing on the first one
+        roots.add_parsable_certificates(native_certs.certs);
     }
 
     Ok(roots)

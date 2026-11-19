@@ -6,10 +6,12 @@ package ember
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 
 	pb "github.com/kacy/ember-go/proto/ember/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
@@ -22,7 +24,9 @@ type Client struct {
 }
 
 type clientOptions struct {
+	username string
 	password string
+	tls      *tls.Config
 }
 
 // Option configures the client.
@@ -35,6 +39,23 @@ func WithPassword(password string) Option {
 	}
 }
 
+// WithUsername sets the ACL user to authenticate as. Without it the
+// password is checked against the default user.
+func WithUsername(username string) Option {
+	return func(o *clientOptions) {
+		o.username = username
+	}
+}
+
+// WithTLS connects over TLS with the given configuration. A server with
+// tls-port set serves gRPC over TLS only. A nil RootCAs uses the system's
+// certificate authorities.
+func WithTLS(cfg *tls.Config) Option {
+	return func(o *clientOptions) {
+		o.tls = cfg
+	}
+}
+
 // Dial connects to an ember server at the given address.
 func Dial(addr string, opts ...Option) (*Client, error) {
 	var o clientOptions
@@ -42,9 +63,11 @@ func Dial(addr string, opts ...Option) (*Client, error) {
 		opt(&o)
 	}
 
-	conn, err := grpc.NewClient(addr,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	creds := insecure.NewCredentials()
+	if o.tls != nil {
+		creds = credentials.NewTLS(o.tls)
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, fmt.Errorf("ember: dial %s: %w", addr, err)
 	}
@@ -65,6 +88,9 @@ func (c *Client) Close() error {
 func (c *Client) ctx(parent context.Context) context.Context {
 	if c.opts.password == "" {
 		return parent
+	}
+	if c.opts.username != "" {
+		parent = metadata.AppendToOutgoingContext(parent, "username", c.opts.username)
 	}
 	return metadata.AppendToOutgoingContext(parent, "authorization", c.opts.password)
 }

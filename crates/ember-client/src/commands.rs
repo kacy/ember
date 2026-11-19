@@ -1274,34 +1274,18 @@ impl Client {
     ///
     /// The connection is consumed and a [`Subscriber`] is returned. Use a
     /// separate [`Client`] for regular commands while subscribed.
-    pub async fn subscribe(mut self, channels: &[&str]) -> Result<Subscriber, ClientError> {
-        let mut parts = Vec::with_capacity(1 + channels.len());
-        parts.push(Frame::Bulk(Bytes::from_static(b"SUBSCRIBE")));
-        for ch in channels {
-            parts.push(Frame::Bulk(Bytes::copy_from_slice(ch.as_bytes())));
-        }
-        self.write_frame(Frame::Array(parts)).await?;
-        // drain confirmation frames (one per channel)
-        for _ in 0..channels.len() {
-            self.read_response().await?;
-        }
-        Ok(Subscriber::new(self))
+    pub async fn subscribe(self, channels: &[&str]) -> Result<Subscriber, ClientError> {
+        let mut subscriber = Subscriber::new(self);
+        subscriber.subscribe(channels).await?;
+        Ok(subscriber)
     }
 
     /// Same as [`subscribe`](Client::subscribe) but subscribes to glob
     /// patterns with `PSUBSCRIBE`.
-    pub async fn psubscribe(mut self, patterns: &[&str]) -> Result<Subscriber, ClientError> {
-        let mut parts = Vec::with_capacity(1 + patterns.len());
-        parts.push(Frame::Bulk(Bytes::from_static(b"PSUBSCRIBE")));
-        for p in patterns {
-            parts.push(Frame::Bulk(Bytes::copy_from_slice(p.as_bytes())));
-        }
-        self.write_frame(Frame::Array(parts)).await?;
-        // drain confirmation frames (one per pattern)
-        for _ in 0..patterns.len() {
-            self.read_response().await?;
-        }
-        Ok(Subscriber::new(self))
+    pub async fn psubscribe(self, patterns: &[&str]) -> Result<Subscriber, ClientError> {
+        let mut subscriber = Subscriber::new(self);
+        subscriber.psubscribe(patterns).await?;
+        Ok(subscriber)
     }
 
     // --- expiry commands ---

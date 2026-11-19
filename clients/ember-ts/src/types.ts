@@ -4,6 +4,21 @@
 export interface ClientOptions {
   /** authentication password, sent as the `authorization` metadata header. */
   password?: string;
+  /**
+   * the ACL user the password belongs to, sent as the `username` metadata
+   * header. without it the password is checked against the default user.
+   */
+  username?: string;
+  /**
+   * connect over TLS. a server with `tls-port` set serves gRPC over TLS
+   * only.
+   */
+  tls?: boolean;
+  /**
+   * PEM CA certificates to trust, instead of the system's. setting them
+   * turns TLS on.
+   */
+  rootCerts?: Buffer;
 }
 
 /**

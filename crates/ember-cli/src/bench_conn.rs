@@ -65,10 +65,14 @@ impl BenchConnection {
             .await
             .map_err(|e| format!("flush: {e}"))?;
 
-        self.read_one_response()
+        match self
+            .read_one_response()
             .await
-            .map_err(|e| format!("read: {e}"))?;
-        Ok(())
+            .map_err(|e| format!("read: {e}"))?
+        {
+            Frame::Error(e) => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// Sets the pre-serialized command to pipeline.
@@ -150,13 +154,14 @@ impl BenchConnection {
     }
 
     /// Reads and discards a single RESP3 response.
-    async fn read_one_response(&mut self) -> Result<(), std::io::Error> {
+    /// Reads one reply and returns it.
+    async fn read_one_response(&mut self) -> Result<Frame, std::io::Error> {
         loop {
             if !self.read_buf.is_empty() {
                 match parse_frame(&self.read_buf) {
-                    Ok(Some((_frame, consumed))) => {
+                    Ok(Some((frame, consumed))) => {
                         let _ = self.read_buf.split_to(consumed);
-                        return Ok(());
+                        return Ok(frame);
                     }
                     Ok(None) => {
                         // incomplete, need more data

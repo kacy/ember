@@ -101,12 +101,8 @@ pub fn run_repl(host: &str, port: u16, password: Option<&str>, tls: Option<&TlsC
                     continue;
                 }
 
-                // don't save AUTH commands to history — they contain passwords
-                if !trimmed
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|w| w.eq_ignore_ascii_case("auth"))
-                {
+                // don't save commands with passwords to history
+                if !has_secret(trimmed) {
                     let _ = rl.add_history_entry(trimmed);
                 }
 
@@ -562,9 +558,47 @@ fn highlight_quotes(s: &str) -> String {
 
 impl Validator for EmberHelper {}
 
+/// Whether a command line may hold a password: AUTH, HELLO or MIGRATE with
+/// AUTH, ACL SETUSER, or CONFIG SET of a password setting. Words are
+/// compared without the quotes the REPL accepts around them.
+fn has_secret(line: &str) -> bool {
+    let words: Vec<String> = line
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c| c == '"' || c == '\'')
+                .to_ascii_lowercase()
+        })
+        .collect();
+    let word = |i: usize| words.get(i).map_or("", String::as_str);
+    match word(0) {
+        "auth" => true,
+        "acl" => word(1) == "setuser",
+        "hello" | "migrate" => words.iter().any(|w| w == "auth" || w == "auth2"),
+        "config" => word(1) == "set" && word(2).contains("pass"),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_with_passwords_stay_out_of_history() {
+        for line in [
+            "AUTH secret",
+            "\"auth\" secret",
+            "ACL SETUSER alice on >pw",
+            "MIGRATE host 6379 k 0 5000 AUTH pw",
+            "HELLO 3 AUTH user pw",
+            "CONFIG SET requirepass pw",
+        ] {
+            assert!(has_secret(line), "{line}");
+        }
+        for line in ["GET k", "ACL LIST", "CONFIG SET maxmemory 1gb"] {
+            assert!(!has_secret(line), "{line}");
+        }
+    }
 
     #[test]
     fn tokenize_simple() {

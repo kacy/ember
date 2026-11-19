@@ -52,6 +52,21 @@ pass a password to the client constructor. it's sent as gRPC metadata on every r
 client = EmberClient("localhost:6380", password="secret")
 ```
 
+to log in as an ACL user, add `username`:
+
+```python
+client = EmberClient("localhost:6380", username="alice", password="secret")
+```
+
+## tls
+
+a server with `tls-port` set serves gRPC over TLS only. pass `tls=True` to trust the system's certificate authorities, or `root_certificates` with PEM bytes to trust your own CA:
+
+```python
+with open("ca.crt", "rb") as f:
+    client = EmberClient("localhost:6380", root_certificates=f.read())
+```
+
 ## API reference
 
 ### strings

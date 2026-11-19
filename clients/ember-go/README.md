@@ -44,7 +44,15 @@ use `WithPassword` to authenticate on every request:
 client, err := ember.Dial("localhost:6380", ember.WithPassword("secret"))
 ```
 
-the password is sent as gRPC metadata (`authorization` header) with each RPC call.
+the password is sent as gRPC metadata (`authorization` header) with each RPC call. to log in as an ACL user, add `ember.WithUsername("alice")`.
+
+## tls
+
+a server with `tls-port` set serves gRPC over TLS only. use `WithTLS` with a `*tls.Config`. a nil `RootCAs` trusts the system's certificate authorities:
+
+```go
+client, err := ember.Dial("localhost:6380", ember.WithTLS(&tls.Config{}))
+```
 
 ## API reference
 

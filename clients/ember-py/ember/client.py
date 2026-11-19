@@ -25,10 +25,30 @@ class EmberClient:
             client.set("key", b"value")
     """
 
-    def __init__(self, addr: str = "localhost:6380", password: str | None = None):
-        self._channel = grpc.insecure_channel(addr)
+    def __init__(
+        self,
+        addr: str = "localhost:6380",
+        password: str | None = None,
+        username: str | None = None,
+        tls: bool = False,
+        root_certificates: bytes | None = None,
+    ):
+        """Connects to ``addr``.
+
+        ``username`` picks the ACL user the password belongs to; without it
+        the password is checked against the default user. ``tls`` connects
+        over TLS, which a server with ``tls-port`` set requires for gRPC.
+        ``root_certificates`` are PEM CA certificates to trust, and turn TLS
+        on; without them the system's are used.
+        """
+        if tls or root_certificates is not None:
+            credentials = grpc.ssl_channel_credentials(root_certificates)
+            self._channel = grpc.secure_channel(addr, credentials)
+        else:
+            self._channel = grpc.insecure_channel(addr)
         self._stub = ember_pb2_grpc.EmberCacheStub(self._channel)
         self._password = password
+        self._username = username
 
     def __enter__(self):
         return self
@@ -41,9 +61,11 @@ class EmberClient:
         self._channel.close()
 
     def _metadata(self) -> list[tuple[str, str]]:
-        if self._password:
-            return [("authorization", self._password)]
-        return []
+        if not self._password:
+            return []
+        if self._username:
+            return [("username", self._username), ("authorization", self._password)]
+        return [("authorization", self._password)]
 
     # --- strings ---
 
