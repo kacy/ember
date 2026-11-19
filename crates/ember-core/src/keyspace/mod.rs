@@ -671,7 +671,7 @@ impl Keyspace {
     /// are fewer) and removes the one with the oldest `last_access` time.
     /// `protect` is never chosen, because the caller is about to write to
     /// it. Returns `false` if no other key exists.
-    fn try_evict(&mut self, protect: &str) -> bool {
+    fn try_evict(&mut self, protect: &[&str]) -> bool {
         let len = self.entries.len();
         let victim = if len <= EVICTION_SAMPLE_SIZE {
             self.least_recently_used(0..len, protect)
@@ -703,13 +703,13 @@ impl Keyspace {
     fn least_recently_used(
         &self,
         positions: impl Iterator<Item = usize>,
-        protect: &str,
+        protect: &[&str],
     ) -> Option<usize> {
         positions
             .filter(|&i| {
                 self.entries
                     .get_index(i)
-                    .is_some_and(|(key, _)| key.as_str() != protect)
+                    .is_some_and(|(key, _)| !protect.contains(&key.as_str()))
             })
             .min_by_key(|&i| self.entries[i].last_access_secs)
     }
@@ -726,6 +726,13 @@ impl Keyspace {
     /// and fragmentation that our per-entry estimates can't account for,
     /// preventing the OS from OOM-killing us before eviction triggers.
     fn enforce_memory_limit(&mut self, protect: &str, estimated_increase: usize) -> bool {
+        self.enforce_memory_limit_for(&[protect], estimated_increase)
+    }
+
+    /// Like [`enforce_memory_limit`](Self::enforce_memory_limit), but
+    /// eviction skips every key in `protect`. For writes that read or
+    /// change more than one key.
+    fn enforce_memory_limit_for(&mut self, protect: &[&str], estimated_increase: usize) -> bool {
         let Some(max) = self.config.max_memory else {
             return true;
         };
@@ -734,13 +741,15 @@ impl Keyspace {
             return true;
         }
         let evict = self.config.eviction_policy == EvictionPolicy::AllKeysLru;
-        // eviction can free everything but the protected key, so check
-        // first that the write fits beside it. otherwise a write too large
-        // for the limit would evict every other key and fail anyway
-        let protected = self
-            .entries
-            .get(protect)
-            .map_or(0, |entry| memory::entry_size(protect, &entry.value));
+        // eviction can free everything but the protected keys, so check
+        // first that the write fits beside them. otherwise a write too
+        // large for the limit would evict every other key and fail anyway
+        let protected: usize = protect
+            .iter()
+            .enumerate()
+            .filter(|&(i, key)| !protect[..i].contains(key))
+            .filter_map(|(_, &key)| self.entries.get(key).map(|e| e.entry_size(key)))
+            .sum();
         if evict && protected + estimated_increase <= limit {
             while self.memory.used_bytes() + estimated_increase > limit {
                 if !self.try_evict(protect) {

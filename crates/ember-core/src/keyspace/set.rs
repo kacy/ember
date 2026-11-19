@@ -388,6 +388,18 @@ impl Keyspace {
             return Ok(present == Some(true));
         }
 
+        // the member only moves, so the write can add at most a new
+        // destination key. make room for it before removing, keeping both
+        // keys from eviction, so the add below always fits
+        let increase = if self.entries.contains_key(destination) {
+            0
+        } else {
+            memory::entry_size(destination, &empty_set())
+        };
+        if !self.enforce_memory_limit_for(&[source, destination], increase) {
+            return Err(WriteError::OutOfMemory);
+        }
+
         let removed = self.edit(source, Value::as_set_mut, |set| {
             let removed = set.remove(member);
             (removed, removed)
@@ -395,15 +407,7 @@ impl Keyspace {
         if removed != Some(true) {
             return Ok(false);
         }
-
-        // add to destination (creates the set if needed). on failure, put
-        // the member back so a failed move changes nothing; the removal just
-        // freed the memory this needs.
-        if let Err(e) = self.sadd(destination, &[member.to_string()]) {
-            let _ = self.sadd(source, &[member.to_string()]);
-            return Err(e);
-        }
-
+        self.sadd(destination, &[member.to_string()])?;
         Ok(true)
     }
 

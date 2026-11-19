@@ -397,6 +397,48 @@ fn a_write_too_large_for_the_limit_evicts_nothing() {
     assert!(ks.take_evicted().is_empty());
 }
 
+/// A keyspace under LRU eviction that has room for the keys it holds now
+/// and `room` more bytes.
+fn lru_capped(ks: &mut Keyspace, room: usize) {
+    cap_memory(ks, room);
+    let max = ks.config.max_memory;
+    ks.update_memory_config(max, EvictionPolicy::AllKeysLru);
+}
+
+#[test]
+fn lmove_and_copy_never_evict_their_source() {
+    let mut ks = Keyspace::new();
+    ks.rpush("list", &[Bytes::from("a"), Bytes::from("b")])
+        .unwrap();
+    ks.set("str".into(), Bytes::from("v"), None, false, false);
+    lru_capped(&mut ks, 0);
+
+    // a new destination needs room, and only the source could make it
+    assert_eq!(
+        ks.lmove("list", "dest", true, true),
+        Err(WriteError::OutOfMemory)
+    );
+    assert_eq!(ks.llen("list"), Ok(2));
+    assert!(ks.take_evicted().is_empty());
+
+    // the copy makes room by evicting the list, not the string it reads
+    assert_eq!(ks.copy("str", "copy", false), Ok(true));
+    assert!(ks.exists("str"));
+    assert_eq!(ks.take_evicted(), ["list"]);
+}
+
+#[test]
+fn lmove_rotating_a_one_element_list_keeps_its_ttl() {
+    let mut ks = Keyspace::new();
+    ks.rpush("list", &[Bytes::from("only")]).unwrap();
+    assert!(ks.expire("list", 100));
+    assert_eq!(
+        ks.lmove("list", "list", true, false),
+        Ok(Some(Bytes::from("only")))
+    );
+    assert!(matches!(ks.ttl("list"), TtlResult::Seconds(_)));
+}
+
 /// Caps `ks` at its current usage plus `room` bytes, without eviction.
 fn cap_memory(ks: &mut Keyspace, room: usize) {
     let used = ks.stats().used_bytes;

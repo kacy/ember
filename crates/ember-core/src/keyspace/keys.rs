@@ -283,8 +283,10 @@ impl Keyspace {
             .get(dest)
             .map(|e| e.entry_size(dest))
             .unwrap_or(0);
+        // the source is read, so eviction must keep it too: the AOF logs
+        // the copy as a COPY from the source
         let net_increase = new_size.saturating_sub(old_dest_size);
-        if !self.enforce_memory_limit(dest, net_increase) {
+        if !self.enforce_memory_limit_for(&[source, dest], net_increase) {
             return Err(CopyError::OutOfMemory);
         }
 
