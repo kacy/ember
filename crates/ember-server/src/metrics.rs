@@ -17,7 +17,7 @@ use http_body_util::Full;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use tokio::net::TcpListener;
@@ -84,7 +84,22 @@ pub fn install_recorder() -> Result<PrometheusHandle, Box<dyn std::error::Error>
     Ok(handle)
 }
 
+/// Most metrics and health connections served at once. Prometheus and a
+/// health checker need a handful.
+const MAX_HTTP_CONNECTIONS: usize = 64;
+
+/// How long a client has to send its request headers.
+const HTTP_HEADER_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a metrics or health connection may stay open in all.
+const HTTP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Spawns the HTTP server for `/metrics` and `/health` on the given address.
+///
+/// It follows protected mode like the RESP listeners, serves at most
+/// [`MAX_HTTP_CONNECTIONS`] connections at once, and closes slow ones, so
+/// clients that open connections and send nothing can't use up its file
+/// descriptors.
 ///
 /// Also spawns the prometheus upkeep task (required when using `install_recorder`
 /// instead of `install`).
@@ -110,14 +125,22 @@ pub fn spawn_http_server(addr: SocketAddr, handle: PrometheusHandle, ctx: Arc<Se
         };
 
         info!("metrics and health endpoint on http://{addr}");
+        let slots = Arc::new(tokio::sync::Semaphore::new(MAX_HTTP_CONNECTIONS));
 
         loop {
-            let (stream, _) = match listener.accept().await {
+            let (stream, peer) = match listener.accept().await {
                 Ok(conn) => conn,
                 Err(e) => {
                     warn!("metrics listener accept error: {e}");
+                    tokio::time::sleep(crate::server::ACCEPT_ERROR_BACKOFF).await;
                     continue;
                 }
+            };
+            if crate::server::is_protected_mode_violation(&ctx, Some(peer.ip())) {
+                continue;
+            }
+            let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+                continue;
             };
 
             let handle = handle.clone();
@@ -130,13 +153,17 @@ pub fn spawn_http_server(addr: SocketAddr, handle: PrometheusHandle, ctx: Arc<Se
                     async move { handle_request(req, &handle, &ctx).await }
                 });
 
-                if let Err(e) = http1::Builder::new()
-                    .serve_connection(TokioIo::new(stream), service)
-                    .await
+                let connection = http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(HTTP_HEADER_TIMEOUT)
+                    .serve_connection(TokioIo::new(stream), service);
+                // a connection reset or a client gone is not worth a warning,
+                // and running out of time just closes the connection
+                if let Ok(Err(e)) = tokio::time::timeout(HTTP_CONNECTION_TIMEOUT, connection).await
                 {
-                    // connection reset / client gone — not worth logging at warn
                     tracing::debug!("http connection error: {e}");
                 }
+                drop(slot);
             });
         }
     });
@@ -174,7 +201,8 @@ async fn handle_request(
 async fn build_health_response(ctx: &ServerContext) -> Response<Full<Bytes>> {
     let uptime = ctx.start_time.elapsed().as_secs();
     let used_bytes = ctx.memory_used_bytes.load();
-    let max_bytes = ctx.max_memory.unwrap_or(0) as u64;
+    // the limit CONFIG SET maxmemory last applied, not the startup one
+    let max_bytes = ctx.max_memory_limit.load(Ordering::Relaxed);
 
     let (cluster_json, is_healthy) = if let Some(ref coordinator) = ctx.cluster {
         let summary = coordinator.health_summary().await;

@@ -21,6 +21,12 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- TLS, protected mode and metrics fixes (#470):
+  - `port = 0` turns the plaintext listener off, for a server that only serves TLS. it bound a random plaintext port on every worker, outside of mTLS, although the production checklist said the plain port could be turned off. a server with `port = 0` needs `tls-port` and can't run in cluster mode
+  - protected mode looks at the `default` ACL user and applies when that user is on and needs no password. it only looked at `requirepass`, so an ACL file that left `default` open without a password exposed the server
+  - the metrics and health endpoint follows protected mode, serves at most 64 connections at once, gives a client 5 seconds to send its headers and closes a connection after 30 seconds. clients that opened connections and sent nothing could use up the server's file descriptors
+  - the RESP, TLS and metrics listeners wait 50 ms after a failed accept. errors such as running out of file descriptors repeat at once, and retrying straight away kept a core busy
+  - `/health` reports the `maxmemory` currently in force, not the one the server started with
 - ACL fixes (#468):
   - command rules apply in the order given, and the last rule that matches a command decides, as in Redis. `-@all +@read` refused every read command, because a denied category always beat an allowed one. ACL LIST and GETUSER print the rules in order
   - ACL SETUSER and `--aclfile` accept `#<sha256>` and `!<sha256>` password rules, so ACL LIST output loads back
