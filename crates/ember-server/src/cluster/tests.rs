@@ -489,6 +489,79 @@ async fn a_replica_sends_writes_to_its_primary_and_serves_reads() {
 }
 
 #[tokio::test]
+async fn a_replica_sends_reads_of_other_primaries_slots_to_them() {
+    let (coord, _rx) = test_coordinator();
+    let (mine, other) = (NodeId::new(), NodeId::new());
+    {
+        let mut state = coord.state.write().await;
+        state.add_node(ClusterNode::new_primary(
+            mine,
+            "127.0.0.1:6380".parse().unwrap(),
+        ));
+        state.add_node(ClusterNode::new_primary(
+            other,
+            "127.0.0.1:6381".parse().unwrap(),
+        ));
+        state.slot_map.assign(key_slot(b"foo"), mine);
+        state.slot_map.assign(key_slot(b"bar"), other);
+    }
+    coord.cluster_replicate(&mine.0.to_string()).await;
+
+    assert_eq!(
+        coord.check_command(&get("foo"), false).await,
+        SlotCheck::Local
+    );
+    let slot = key_slot(b"bar");
+    assert_eq!(
+        coord.check_command(&get("bar"), false).await,
+        SlotCheck::Reply(Frame::Error(format!("MOVED {slot} 127.0.0.1:6381")))
+    );
+}
+
+#[tokio::test]
+async fn a_node_with_slots_cannot_become_a_replica() {
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    let primary = add_primary(&coord, false).await;
+    let reply = coord.cluster_replicate(&primary.0.to_string()).await;
+    assert!(matches!(reply, Frame::Error(ref e) if e.contains("without assigned slots")));
+    assert!(!coord.is_replica().await);
+}
+
+#[tokio::test]
+async fn forget_drops_the_node_its_slots_and_its_gossip_entry() {
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    let other = add_primary(&coord, false).await;
+    coord
+        .gossip
+        .lock()
+        .await
+        .add_seed(other, "127.0.0.1:17000".parse().unwrap());
+
+    assert_eq!(
+        coord.cluster_forget(&other.0.to_string()).await,
+        Frame::Simple("OK".into())
+    );
+    let state = coord.state.read().await;
+    assert!(!state.nodes.contains_key(&other));
+    assert!(state.slot_map.slots_for_node(other).is_empty());
+    drop(state);
+    assert!(coord.gossip.lock().await.members().all(|m| m.id != other));
+}
+
+#[tokio::test]
+async fn setslot_node_needs_a_known_primary() {
+    let (coord, _rx) = test_coordinator_bootstrapped();
+    let reply = coord
+        .cluster_setslot_node(0, &NodeId::new().0.to_string())
+        .await;
+    assert!(matches!(reply, Frame::Error(ref e) if e.contains("don't know")));
+    let primary = add_primary(&coord, false).await;
+    let replica = add_replica(&coord, primary).await;
+    let reply = coord.cluster_setslot_node(0, &replica.0.to_string()).await;
+    assert!(matches!(reply, Frame::Error(ref e) if e.contains("not a master")));
+}
+
+#[tokio::test]
 async fn is_replica_returns_false_initially() {
     let (coord, _rx) = test_coordinator();
     assert!(

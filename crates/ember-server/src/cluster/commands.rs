@@ -185,16 +185,26 @@ impl ClusterCoordinator {
             }
         }
 
-        let mut state = self.state.write().await;
-        match state.remove_node(node_id) {
-            Some(_) => {
-                drop(state);
-                self.save_config().await;
-                Frame::Simple("OK".into())
+        // the node goes from the cluster state with its slots, and from
+        // gossip, which would otherwise keep probing it
+        {
+            let mut state = self.state.write().await;
+            if state.remove_node(node_id).is_some() {
+                for slot in state
+                    .slot_map
+                    .slots_for_node(node_id)
+                    .iter()
+                    .flat_map(|r| r.iter())
+                {
+                    state.slot_map.unassign(slot);
+                }
+                state.rebuild_slot_lists();
+                state.update_health();
             }
-            // already removed by reconciliation — that's fine
-            None => Frame::Simple("OK".into()),
         }
+        self.gossip.lock().await.remove_member(node_id);
+        self.save_config().await;
+        Frame::Simple("OK".into())
     }
 
     /// CLUSTER SETSLOT <slot> IMPORTING <node-id>
@@ -267,6 +277,15 @@ impl ClusterCoordinator {
             Ok(id) => id,
             Err(_) => return Frame::Error("ERR Invalid node ID".into()),
         };
+        // a slot given to an unknown node or a replica would be served by
+        // nobody
+        match self.state.read().await.nodes.get(&node_id) {
+            None => return Frame::Error(format!("ERR I don't know about node {node_id}")),
+            Some(node) if node.role != NodeRole::Primary => {
+                return Frame::Error("ERR Target node is not a master".into())
+            }
+            Some(_) => {}
+        }
 
         {
             let mut migration = self.migration.write().unwrap();
@@ -315,7 +334,8 @@ impl ClusterCoordinator {
     /// In order, it replies with:
     /// - READONLY for a write while failover has paused writes
     /// - MOVED to the slot's primary for a write on a replica, or READONLY
-    ///   if that primary is unknown. Replicas serve every read
+    ///   if that primary is unknown. Replicas serve reads of their own
+    ///   primary's slots, and send other reads to the slot's primary
     /// - CLUSTERDOWN for a write on a primary that can't reach a majority
     ///   of the primaries
     /// - CROSSSLOT when the keys hash to different slots
@@ -354,14 +374,25 @@ impl ClusterCoordinator {
         let Some(first) = first else {
             return SlotCheck::Local;
         };
-        if is_replica {
-            return SlotCheck::Local;
-        }
         let slot = key_slot(first.as_bytes());
         if keys.iter().any(|key| key_slot(key.as_bytes()) != slot) {
             return SlotCheck::Reply(Frame::Error(
                 "CROSSSLOT Keys in request don't hash to the same slot".into(),
             ));
+        }
+        if is_replica {
+            // a replica holds its primary's data only, so reads of slots
+            // another primary owns go to it. a slot with no known owner,
+            // as before gossip has told this node about it, is served here
+            let primary = state.nodes.get(&self.local_id).and_then(|n| n.replicates);
+            let owner = state.slot_map.owner(slot);
+            if owner.is_none() || owner == primary {
+                return SlotCheck::Local;
+            }
+            return match primary_for_slot(&state, slot) {
+                Some(addr) => SlotCheck::Reply(Frame::Error(format!("MOVED {slot} {addr}"))),
+                None => SlotCheck::Local,
+            };
         }
         let migration = self.migration.read().unwrap_or_else(|e| e.into_inner());
         slot_check(&state, &migration, first.as_bytes(), slot, asking)
@@ -416,7 +447,8 @@ impl ClusterCoordinator {
             return Frame::Error("ERR Cannot replicate self".into());
         }
 
-        // verify the target exists and is a primary
+        // verify the target exists and is a primary, and that this node
+        // serves no slots, which would be left without a primary
         {
             let state = self.state.read().await;
             match state.nodes.get(&primary_id) {
@@ -425,6 +457,11 @@ impl ClusterCoordinator {
                     return Frame::Error("ERR Target node is not a primary".into())
                 }
                 _ => {}
+            }
+            if !state.slot_map.slots_for_node(self.local_id).is_empty() {
+                return Frame::Error(
+                    "ERR To set a master the node must be empty and without assigned slots.".into(),
+                );
             }
         }
 

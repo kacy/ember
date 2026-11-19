@@ -217,6 +217,9 @@ impl ClusterCoordinator {
 
             while let Some(event) = event_rx.recv().await {
                 let mut post_action = PostAction::None;
+                // a CLUSTER MEET placeholder replaced by the node's real id,
+                // to drop from gossip too once the state lock is released
+                let mut replaced_placeholder = None;
 
                 let needs_save = {
                     let mut state = coordinator.state.write().await;
@@ -245,6 +248,7 @@ impl ClusterCoordinator {
                                     // Preserve the data-port address from the placeholder.
                                     let saved = state.nodes[&stale].addr;
                                     state.nodes.remove(&stale);
+                                    replaced_placeholder = Some(stale);
                                     saved
                                 } else {
                                     // No placeholder — derive data addr from gossip port.
@@ -376,6 +380,10 @@ impl ClusterCoordinator {
                         }
                     }
                 };
+
+                if let Some(stale) = replaced_placeholder {
+                    coordinator.gossip.lock().await.remove_member(stale);
+                }
 
                 // Handle post-lock actions outside the state write-lock.
                 match post_action {
