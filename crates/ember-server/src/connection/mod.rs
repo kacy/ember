@@ -377,6 +377,8 @@ where
         if !session.is_authenticated() || frames.iter().any(is_auth_frame) {
             for frame in frames.drain(..) {
                 if is_auth_frame(&frame) {
+                    // AUTH uses up ASKING like any other command
+                    asking = false;
                     let (reply, ok) = session.auth(frame, ctx);
                     reply.serialize(&mut out);
                     if !ok {

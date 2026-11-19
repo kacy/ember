@@ -322,7 +322,9 @@ impl Keyspace {
         }
         let entry = self.entries.get(key)?;
         let ttl_ms = match time::remaining_ms(entry.expires_at_ms) {
-            Some(ms) => ms.min(i64::MAX as u64) as i64,
+            // a key due to expire this millisecond still has a TTL: 0 would
+            // tell RESTORE to keep it forever
+            Some(ms) => ms.clamp(1, i64::MAX as u64) as i64,
             None => -1,
         };
         Some((&entry.value, ttl_ms))

@@ -603,6 +603,15 @@ async fn migrating_a_slot_moves_its_keys_and_routes_new_ones_to_the_target() {
     target.ok(&["ASKING"]).await;
     target.ok(&["SET", &created, "3"]).await;
 
+    // ASKING covers the next command only, even one that fails to parse
+    target.ok(&["ASKING"]).await;
+    target.err(&["GET"]).await;
+    let moved = target.cmd(&["GET", &created]).await;
+    assert!(
+        matches!(&moved, Frame::Error(e) if e.starts_with("MOVED")),
+        "{moved:?}"
+    );
+
     // keys on both sides: a multi-key command waits for the move
     let busy = source.cmd(&["MGET", &old, &moved_later]).await;
     assert!(

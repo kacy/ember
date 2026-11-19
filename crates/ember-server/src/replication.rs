@@ -550,8 +550,11 @@ impl ReplicationServer {
         let (queue_tx, mut queue) = mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
         // aborted on every return, including an error during the full sync
-        let forwarder =
-            AbortOnDrop(tokio::spawn(forward_events(rx, queue_tx, Arc::clone(&queued))));
+        let forwarder = AbortOnDrop(tokio::spawn(forward_events(
+            rx,
+            queue_tx,
+            Arc::clone(&queued),
+        )));
 
         // --- full sync ---
         self.tracker.full_sync_started();

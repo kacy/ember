@@ -58,7 +58,11 @@ pub(super) async fn process(
             )
             .await
         }
-        Err(e) => Frame::Error(format!("ERR {e}")),
+        Err(e) => {
+            // ASKING covers only the next command, even one that fails
+            *asking = false;
+            Frame::Error(format!("ERR {e}"))
+        }
     }
 }
 
@@ -77,6 +81,10 @@ pub(crate) async fn run_command(
     client_id: u64,
     session: &Session,
 ) -> Frame {
+    // ASKING covers only the next command, as in Redis, even one refused
+    // below
+    let was_asking = std::mem::take(asking);
+
     // reject oversized keys/values, as the pipelined path does
     if let Some(err) = validate_command_sizes(
         &cmd,
@@ -102,9 +110,6 @@ pub(crate) async fn run_command(
         *asking = true;
         return Frame::Simple("OK".into());
     }
-
-    // consume the asking flag for this command
-    let was_asking = std::mem::take(asking);
 
     let cmd_name = cmd.command_name();
     let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();
@@ -165,6 +170,10 @@ pub(super) async fn prepare_command(
         }
     }
 
+    // ASKING covers only the next command, as in Redis, even one that
+    // fails to parse or is refused below
+    let was_asking = std::mem::take(asking);
+
     let cmd = match Command::from_frame(frame) {
         Ok(cmd) => cmd,
         Err(e) => {
@@ -201,9 +210,6 @@ pub(super) async fn prepare_command(
         *asking = true;
         return PreparedDispatch::Immediate(PendingResponse::Immediate(Frame::Simple("OK".into())));
     }
-
-    // consume the asking flag for this command
-    let was_asking = std::mem::take(asking);
 
     let cmd_name = cmd.command_name();
     let needs_timing = ctx.metrics_enabled || slow_log.is_enabled();

@@ -302,11 +302,22 @@ async fn transfer_key(
 
     if !req.copy {
         // the key is still marked in flight, so no write lands between the
-        // RESTORE and this delete
-        let _ = cx
+        // RESTORE and this delete. if the delete fails, both nodes hold the
+        // key, and the client must hear of it
+        let failed = match cx
             .engine
             .send_to_shard(idx, ShardRequest::Del { key: key.clone() })
-            .await;
+            .await
+        {
+            Ok(ShardResponse::Err(e)) => Some(e),
+            Err(e) => Some(e.to_string()),
+            Ok(_) => None,
+        };
+        if let Some(e) = failed {
+            return Frame::Error(format!(
+                "ERR the key was copied to the target but not deleted here: {e}"
+            ));
+        }
         if let Some(c) = &cx.ctx.cluster {
             c.mark_key_migrated(ember_cluster::key_slot(key.as_bytes()))
                 .await;
