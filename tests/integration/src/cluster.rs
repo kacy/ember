@@ -299,10 +299,30 @@ async fn cluster_migrate_missing_key() {
     let mut c = server.connect().await;
 
     // as in Redis, a missing key isn't an error
+    let port = server.port.to_string();
     let reply = c
-        .cmd(&["MIGRATE", "127.0.0.1", "6380", "key", "0", "1000"])
+        .cmd(&["MIGRATE", "127.0.0.1", &port, "key", "0", "1000"])
         .await;
     assert_eq!(reply, Frame::Simple("NOKEY".into()));
+}
+
+#[tokio::test]
+async fn migrate_only_reaches_nodes_of_the_cluster() {
+    let server = cluster_server();
+    let mut c = server.connect().await;
+    c.ok(&["SET", "key", "v"]).await;
+    let err = c
+        .err(&["MIGRATE", "127.0.0.1", "1", "key", "0", "1000"])
+        .await;
+    assert!(err.contains("not a node of this cluster"), "{err}");
+
+    // and only in cluster mode
+    let standalone = TestServer::start();
+    let mut c = standalone.connect().await;
+    let err = c
+        .err(&["MIGRATE", "127.0.0.1", "1", "key", "0", "1000"])
+        .await;
+    assert!(err.contains("cluster support disabled"), "{err}");
 }
 
 #[tokio::test]

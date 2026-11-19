@@ -208,24 +208,55 @@ pub(in crate::connection) struct MigrateRequest {
 }
 
 pub(in crate::connection) async fn migrate(req: MigrateRequest, cx: &ExecCtx<'_>) -> Frame {
+    // MIGRATE moves keys between nodes of one cluster. any other target
+    // would let a client make the server connect wherever it likes and
+    // hand over data and the credentials given with AUTH
+    let Some(cluster) = cx.ctx.cluster.as_ref() else {
+        return Frame::Error("ERR This instance has cluster support disabled".into());
+    };
+    let target = match cluster_target(cluster, &req.host, req.port).await {
+        Ok(addr) => addr,
+        Err(reply) => return reply,
+    };
+
     // other clients must not change the key between the dump and the local
     // delete, or their write is lost. hold it until the move is complete.
-    let cluster = cx.ctx.cluster.as_ref();
-    if let Some(c) = cluster {
-        if !c.begin_key_transfer(req.key.as_bytes()).await {
-            return Frame::Error("ERR the key is already being migrated".into());
+    if !cluster.begin_key_transfer(req.key.as_bytes()).await {
+        return Frame::Error("ERR the key is already being migrated".into());
+    }
+    let reply = transfer_key(&req, target, cx).await;
+    cluster.end_key_transfer(req.key.as_bytes()).await;
+    reply
+}
+
+/// Resolves the MIGRATE target and checks it is a node of this cluster.
+/// The address checked is the one connected to, so a DNS answer can't
+/// change between the two.
+async fn cluster_target(
+    cluster: &crate::cluster::ClusterCoordinator,
+    host: &str,
+    port: u16,
+) -> Result<std::net::SocketAddr, Frame> {
+    let addrs = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| Frame::Error(format!("IOERR can't resolve the target: {e}")))?;
+    for addr in addrs {
+        if cluster.is_node_addr(addr).await {
+            return Ok(addr);
         }
     }
-    let reply = transfer_key(&req, cx).await;
-    if let Some(c) = cluster {
-        c.end_key_transfer(req.key.as_bytes()).await;
-    }
-    reply
+    Err(Frame::Error(
+        "ERR the MIGRATE target is not a node of this cluster".into(),
+    ))
 }
 
 /// Copies the key to the target with RESTORE, then, unless COPY was given,
 /// deletes it locally, so later commands for it are sent there with ASK.
-async fn transfer_key(req: &MigrateRequest, cx: &ExecCtx<'_>) -> Frame {
+async fn transfer_key(
+    req: &MigrateRequest,
+    target: std::net::SocketAddr,
+    cx: &ExecCtx<'_>,
+) -> Frame {
     let key = &req.key;
     let idx = cx.engine.shard_for_key(key);
     let dump_req = ShardRequest::DumpKey { key: key.clone() };
@@ -259,9 +290,8 @@ async fn transfer_key(req: &MigrateRequest, cx: &ExecCtx<'_>) -> Frame {
     }
     commands.push(Frame::Array(restore));
 
-    let addr = format!("{}:{}", req.host, req.port);
     let timeout = Duration::from_millis(req.timeout_ms.max(1000));
-    let replies = match tokio::time::timeout(timeout, send_commands(&addr, &commands)).await {
+    let replies = match tokio::time::timeout(timeout, send_commands(target, &commands)).await {
         Ok(Ok(replies)) => replies,
         Ok(Err(e)) => return Frame::Error(format!("IOERR error talking to the target: {e}")),
         Err(_) => return Frame::Error("IOERR timeout talking to the target".into()),
@@ -285,8 +315,12 @@ async fn transfer_key(req: &MigrateRequest, cx: &ExecCtx<'_>) -> Frame {
     Frame::Simple("OK".into())
 }
 
+/// Largest reply data MIGRATE reads from the target. The replies to AUTH,
+/// ASKING and RESTORE are a few bytes each.
+const MAX_MIGRATE_REPLY: usize = 64 * 1024;
+
 /// Sends `commands` to `addr` in one write and reads one reply for each.
-async fn send_commands(addr: &str, commands: &[Frame]) -> io::Result<Vec<Frame>> {
+async fn send_commands(addr: std::net::SocketAddr, commands: &[Frame]) -> io::Result<Vec<Frame>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut stream = tokio::net::TcpStream::connect(addr).await?;
@@ -305,6 +339,12 @@ async fn send_commands(addr: &str, commands: &[Frame]) -> io::Result<Vec<Frame>>
                 replies.push(frame);
             }
             Ok(None) => {
+                if read_buf.len() > MAX_MIGRATE_REPLY {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "the target's reply is too long",
+                    ));
+                }
                 if stream.read_buf(&mut read_buf).await? == 0 {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,

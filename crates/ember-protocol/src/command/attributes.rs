@@ -488,7 +488,7 @@ impl Command {
             | Command::ClusterCountKeysInSlot { .. }
             | Command::ClusterGetKeysInSlot { .. } => CLUSTER | ADMIN | SLOW,
             Command::Migrate { .. } | Command::Restore { .. } => {
-                CLUSTER | KEYSPACE | WRITE | DANGEROUS | SLOW
+                CLUSTER | KEYSPACE | WRITE | ADMIN | DANGEROUS | SLOW
             }
             Command::Asking => CLUSTER | FAST,
 
