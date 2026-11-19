@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use ember_core::{Engine, ShardRequest, ShardResponse};
+use ember_core::{Engine, PopWaiter, ShardRequest, ShardResponse};
 use ember_protocol::{parse_request, Command, Frame};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 use crate::connection_common::{
     format_monitor_event, validate_command_sizes, Session, TransactionState,
@@ -237,10 +237,9 @@ async fn check_watched_keys(watched: &[(String, Option<u64>)], engine: &Engine) 
 
 /// Handles a BLPOP or BRPOP command.
 ///
-/// Blocking list pops break the pipeline model — the connection may need to
-/// wait for data to arrive. For each key, a oneshot waiter channel is sent
-/// to the owning shard. The first shard to respond wins; the rest are
-/// dropped (shard detects dead waiters and discards them).
+/// Blocking list pops break the pipeline model, since the connection may need
+/// to wait for data to arrive. Each key's shard gets the same [`PopWaiter`],
+/// and the client takes one element in total.
 pub(super) async fn handle_blocking_pop_cmd(
     frame: Frame,
     engine: &Engine,
@@ -281,36 +280,44 @@ pub(super) async fn handle_blocking_pop_cmd(
         None
     };
 
-    // create a single mpsc channel — all shards race to deliver the first
-    // result. capacity of 1 ensures only the first pop is delivered.
-    let (waiter_tx, mut waiter_rx) = mpsc::channel(1);
-
+    // every shard gets the same waiter, and the first claim takes it. keys
+    // are tried in order and each shard replies before the next is asked,
+    // so the first key holding a list with elements, or another type,
+    // decides the reply, as in Redis
+    let (waiter, mut rx) = PopWaiter::new();
+    let mut stop_with = None;
     for key in &keys {
         let idx = engine.shard_for_key(key);
         let req = if is_left {
             ShardRequest::BLPop {
                 key: key.clone(),
-                waiter: waiter_tx.clone(),
+                waiter: waiter.clone(),
             }
         } else {
             ShardRequest::BRPop {
                 key: key.clone(),
-                waiter: waiter_tx.clone(),
+                waiter: waiter.clone(),
             }
         };
-        // dispatch — we ignore the reply channel since blocking ops
-        // communicate through the waiter mpsc instead
-        if let Err(e) = engine.dispatch_to_shard(idx, req).await {
-            return Frame::Error(format!("ERR {e}"));
+        // the shard drops the reply when it registers the waiter
+        match engine.dispatch_to_shard(idx, req).await {
+            Ok(reply) => {
+                if let Ok(ShardResponse::WrongType) = reply.await {
+                    stop_with = Some(super::exec::wrongtype_error());
+                    break;
+                }
+            }
+            Err(e) => {
+                stop_with = Some(Frame::Error(format!("ERR {e}")));
+                break;
+            }
+        }
+        if !rx.is_empty() {
+            break;
         }
     }
 
-    // drop our copy of the sender so the channel closes when all shard
-    // waiters are gone (timeout or immediate pop)
-    drop(waiter_tx);
-
-    // race the receiver against the timeout. timeout of 0 means block
-    // indefinitely — cap at 300 seconds to prevent truly infinite waits.
+    // a timeout of 0 means block indefinitely, capped at 300 seconds
     let timeout_dur = if timeout_secs == 0.0 {
         Duration::from_secs(300)
     } else {
@@ -318,20 +325,30 @@ pub(super) async fn handle_blocking_pop_cmd(
         // still overflows Duration, so saturate instead of panicking
         Duration::try_from_secs_f64(timeout_secs).unwrap_or(Duration::MAX)
     };
+    let popped = match stop_with {
+        Some(_) => None,
+        None => tokio::time::timeout(timeout_dur, rx.recv())
+            .await
+            .ok()
+            .flatten(),
+    };
 
-    let result = tokio::time::timeout(timeout_dur, waiter_rx.recv()).await;
+    // stopping without an element claims the waiter so no shard pops one
+    // later. if a shard claimed it first, its element is already on the way
+    let popped = match popped {
+        Some(item) => Some(item),
+        None if waiter.claim() => None,
+        None => rx.recv().await,
+    };
 
     let cmd_name = if is_left { "blpop" } else { "brpop" };
 
-    let response = match result {
-        // got a result before timeout
-        Ok(Some((key, data))) => Frame::Array(vec![
+    let response = match popped {
+        Some((key, data)) => Frame::Array(vec![
             Frame::Bulk(Bytes::from(key.into_bytes())),
             Frame::Bulk(data),
         ]),
-        // channel closed (all shards had empty lists and no push arrived)
-        // or timeout expired
-        Ok(None) | Err(_) => Frame::Null,
+        None => stop_with.unwrap_or(Frame::Null),
     };
 
     if let Some(start) = start {

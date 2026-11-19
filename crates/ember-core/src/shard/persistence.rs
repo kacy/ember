@@ -849,7 +849,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let handle = spawn_persistent_shard(dir.path());
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = PopWaiter::new();
         let _ = handle
             .dispatch(ShardRequest::BLPop {
                 key: "q".into(),
