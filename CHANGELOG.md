@@ -2,6 +2,9 @@
 
 ## unreleased
 
+### added
+- TLS and ACL username options for the Go, Python and TypeScript clients: `WithTLS` and `WithUsername`, `tls`/`root_certificates` and `username`, and `tls`/`rootCerts` and `username`. a server with `tls-port` serves gRPC over TLS only, which the clients couldn't connect to (#PR)
+
 ### changed
 - file layout version 6 for AOF and snapshot files. files from version 5 are no longer read (#469):
   - an encrypted file's key is derived from its header too: the file type, the version and the flags. an encrypted AOF relabeled as a snapshot, or a header with a changed version or flags, no longer decrypts
@@ -21,6 +24,13 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- CLI, Rust client and SDK fixes (#PR):
+  - `ember-cli cluster reshard` stops when GETKEYSINSLOT or SETSLOT NODE fails. a GETKEYSINSLOT error read as an empty slot, so the slot was handed over with its keys left behind. a slot whose MIGRATING step fails goes back to STABLE on the target, a node id prefix must match exactly one node, and IPv6 addresses such as `[::1]:6379` lose their brackets before connecting
+  - `ember-cli benchmark` no longer hangs when a client fails to connect or authenticate, or when there are fewer requests than clients. `--clients 0` and `--keyspace 0` are refused instead of panicking, prepopulate writes every key in the range with `-P` above 1, and a wrong password is reported
+  - `--tls-ca-cert` and `--tls-insecure` turn TLS on. without `--tls` the CLI connected in plaintext and sent the password unprotected
+  - the REPL leaves AUTH, HELLO and MIGRATE with AUTH, ACL SETUSER, and CONFIG SET of a password out of its history, quoted or not
+  - `ember-client` keeps messages that arrive while SUBSCRIBE or PSUBSCRIBE waits for its confirmations, and `unsubscribe(&[])` reads one confirmation per channel. a message could be taken for a confirmation and lost, and the confirmations left over then came back as replies
+  - `ember-client` and `ember-cli` skip OS certificates that can't be parsed instead of refusing to connect
 - pub/sub fixes (#477):
   - a subscriber whose receiver lags on one channel keeps listening to it. it stopped listening to that channel and, with its other channels quiet, never received another message
   - PSUBSCRIBE to a pattern the connection already has is a no-op, as in Redis. a repeated PSUBSCRIBE replaced the subscription without releasing the first, so PUBSUB NUMPAT never dropped back
