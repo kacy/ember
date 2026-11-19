@@ -3967,3 +3967,36 @@ fn client_setname_refuses_names_that_break_client_list() {
     assert!(Command::from_frame(cmd(&["CLIENT", "SETNAME", &long])).is_err());
     assert!(Command::from_frame(cmd(&["CLIENT", "SETNAME", "app-1:worker"])).is_ok());
 }
+
+#[test]
+fn vadd_batch_with_one_dimension_reads_trailing_options_as_options() {
+    let parsed = Command::from_frame(cmd(&[
+        "VADD_BATCH",
+        "vecs",
+        "DIM",
+        "1",
+        "a",
+        "1.0",
+        "b",
+        "2.0",
+        "M",
+        "32",
+        "EF",
+        "128",
+    ]))
+    .unwrap();
+    let Command::VAddBatch {
+        entries,
+        connectivity,
+        expansion_add,
+        ..
+    } = parsed
+    else {
+        panic!("expected VAddBatch");
+    };
+    assert_eq!(
+        entries,
+        vec![("a".to_owned(), vec![1.0]), ("b".to_owned(), vec![2.0])]
+    );
+    assert_eq!((connectivity, expansion_add), (32, 128));
+}

@@ -981,9 +981,10 @@ pub(crate) fn format_float(val: f64) -> String {
     let s = format!("{:.17e}", val);
     // Parse back to get the clean representation
     let reparsed: f64 = s.parse().unwrap_or(val);
-    // If it's a whole number that fits in i64, format without decimals
-    if reparsed == reparsed.trunc() && reparsed >= i64::MIN as f64 && reparsed <= i64::MAX as f64 {
-        format!("{}", reparsed as i64)
+    // a whole number prints without decimals, with its exact digits. going
+    // through i64 instead saturated at 2^63, printing 2^63 as i64::MAX
+    if reparsed == reparsed.trunc() && reparsed.abs() < 1e21 {
+        format!("{reparsed:.0}")
     } else {
         // Use ryu-like formatting via Display which strips trailing zeros
         let formatted = format!("{}", reparsed);

@@ -25,6 +25,16 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
+- config and command edge cases (#481):
+  - `stats-poll-interval-secs = 0` and `replication-broadcast-capacity = 0` are refused at startup. both panicked
+  - `--host ::` and `--host ::1` bind to IPv6. an IPv6 address failed to parse
+  - CONFIG SET maxmemory refuses a limit below one byte per shard, which left every shard a limit of 0 and refused every write. CONFIG REWRITEs run one at a time, since they share a temp file
+  - `slowlog-max-len 0` keeps no entries. it kept one
+  - with `timeout 0`, a client that stops reading its replies is still disconnected after 300 seconds. turning the idle timeout off turned the write timeout off too
+  - BITOP over keys that hold no data deletes the destination, as in Redis, instead of storing an empty string
+  - PEXPIRETIME of a time past `i64::MAX` ms stays positive. it wrapped to a negative number
+  - INCRBYFLOAT and the other float replies print 2^63 exactly. they printed `9223372036854775807`
+  - VADD_BATCH reads trailing `METRIC`, `QUANT`, `M` and `EF` options as options with a dimension of 1, where they read as one more element. with other dimensions, `M` or `EF` after the elements failed to parse
 - a node that sees a replica win a slot claim at a newer epoch now records it as a primary. the role update a promoted replica sends could arrive after a newer update about the same node, such as one refuting a suspicion, and was then dropped as stale, leaving peers listing the new primary as a replica (#480)
 - CLI, Rust client and SDK fixes (#478):
   - `ember-cli cluster reshard` stops when GETKEYSINSLOT or SETSLOT NODE fails. a GETKEYSINSLOT error read as an empty slot, so the slot was handed over with its keys left behind. a slot whose MIGRATING step fails goes back to STABLE on the target, a node id prefix must match exactly one node, and IPv6 addresses such as `[::1]:6379` lose their brackets before connecting

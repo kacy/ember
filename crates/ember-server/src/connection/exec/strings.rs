@@ -114,15 +114,22 @@ pub(in crate::connection) async fn bitop(
     }
 
     let dest_idx = cx.engine.shard_for_key(&dest);
-    let req = ShardRequest::Set {
-        key: dest,
-        value: Bytes::from(result),
-        expire: None,
-        nx: false,
-        xx: false,
+    // an empty result deletes dest, as in Redis, rather than storing ""
+    let req = if result.is_empty() {
+        ShardRequest::Del { key: dest }
+    } else {
+        ShardRequest::Set {
+            key: dest,
+            value: Bytes::from(result),
+            expire: None,
+            nx: false,
+            xx: false,
+        }
     };
     match cx.engine.send_to_shard(dest_idx, req).await {
-        Ok(ShardResponse::Ok) | Ok(ShardResponse::Value(_)) => Frame::Integer(result_len as i64),
+        Ok(ShardResponse::Ok | ShardResponse::Value(_) | ShardResponse::Bool(_)) => {
+            Frame::Integer(result_len as i64)
+        }
         Ok(ShardResponse::OutOfMemory) => super::oom_error(),
         Ok(other) => Frame::Error(format!("ERR unexpected shard response: {other:?}")),
         Err(e) => Frame::Error(format!("ERR {e}")),
