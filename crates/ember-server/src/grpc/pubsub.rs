@@ -1,7 +1,7 @@
 //! Pub/sub command handlers for the gRPC service.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::Bytes;
 use tokio_stream::wrappers::ReceiverStream;
@@ -75,44 +75,43 @@ pub(super) async fn subscribe(
     let (tx, rx) = tokio::sync::mpsc::channel(256);
     let pubsub = Arc::clone(&svc.pubsub);
 
-    // collect all broadcast receivers
-    let mut channel_rxs: Vec<(
-        String,
-        tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
-    )> = Vec::new();
-    let mut pattern_rxs: Vec<(
-        String,
-        tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
-    )> = Vec::new();
-
+    let mut channel_rxs = HashMap::new();
+    let mut pattern_rxs = HashMap::new();
     for ch in &req.channels {
-        channel_rxs.push((ch.clone(), pubsub.subscribe(ch)));
+        if !channel_rxs.contains_key(ch) {
+            channel_rxs.insert(ch.clone(), pubsub.subscribe(ch));
+        }
     }
     for pat in &req.patterns {
-        if let Some(rx) = pubsub.psubscribe(pat) {
-            pattern_rxs.push((pat.clone(), rx));
+        if !pattern_rxs.contains_key(pat) {
+            if let Some(rx) = pubsub.psubscribe(pat) {
+                pattern_rxs.insert(pat.clone(), rx);
+            }
         }
     }
 
     tokio::spawn(async move {
         loop {
-            // build a future that races all receivers
-            let event = tokio::select! {
-                biased;
-                result = recv_any_channel(&mut channel_rxs) => result,
-                result = recv_any_pattern(&mut pattern_rxs) => result,
+            // a client that disconnects ends the stream even on a channel
+            // that never gets a message, so its subscriptions are released
+            let msg = tokio::select! {
+                msg = crate::pubsub::recv_any(&mut channel_rxs, &mut pattern_rxs) => msg,
+                _ = tx.closed() => break,
             };
-
-            match event {
-                Some(evt) => {
-                    if tx.send(Ok(evt)).await.is_err() {
-                        break; // client disconnected
-                    }
+            let Some(msg) = msg else { break };
+            let event = SubscribeEvent {
+                kind: if msg.pattern.is_some() {
+                    "pmessage"
+                } else {
+                    "message"
                 }
-                None => {
-                    // all receivers closed
-                    break;
-                }
+                .to_string(),
+                channel: msg.channel.to_string(),
+                data: msg.data.to_vec(),
+                pattern: msg.pattern.as_deref().map(str::to_owned),
+            };
+            if tx.send(Ok(event)).await.is_err() {
+                break;
             }
         }
 
@@ -167,74 +166,4 @@ pub(super) async fn pub_sub_num_pat(
 ) -> Result<Response<IntResponse>, Status> {
     let frame = svc.call(request, |_| Command::PubSubNumPat).await?;
     int_response(frame)
-}
-
-/// Waits for the next message on any channel subscription receiver.
-/// Returns None when all receivers are closed.
-async fn recv_any_channel(
-    rxs: &mut [(
-        String,
-        tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
-    )],
-) -> Option<SubscribeEvent> {
-    if rxs.is_empty() {
-        // no channel subscriptions — park forever so pattern branch can drive
-        std::future::pending::<()>().await;
-        return None;
-    }
-
-    loop {
-        // poll each receiver in round-robin (tokio::select! on a slice
-        // requires a loop because we can't use select! with dynamic count).
-        for (_, rx) in rxs.iter_mut() {
-            match rx.try_recv() {
-                Ok(msg) => {
-                    return Some(SubscribeEvent {
-                        kind: "message".to_string(),
-                        channel: msg.channel.to_string(),
-                        data: msg.data.to_vec(),
-                        pattern: None,
-                    });
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
-            }
-        }
-        // yield to avoid busy-spinning
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
-}
-
-/// Waits for the next message on any pattern subscription receiver.
-/// Returns None when all receivers are closed.
-async fn recv_any_pattern(
-    rxs: &mut [(
-        String,
-        tokio::sync::broadcast::Receiver<crate::pubsub::PubMessage>,
-    )],
-) -> Option<SubscribeEvent> {
-    if rxs.is_empty() {
-        std::future::pending::<()>().await;
-        return None;
-    }
-
-    loop {
-        for (pat, rx) in rxs.iter_mut() {
-            match rx.try_recv() {
-                Ok(msg) => {
-                    return Some(SubscribeEvent {
-                        kind: "pmessage".to_string(),
-                        channel: msg.channel.to_string(),
-                        data: msg.data.to_vec(),
-                        pattern: Some(pat.clone()),
-                    });
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return None,
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(1)).await;
-    }
 }

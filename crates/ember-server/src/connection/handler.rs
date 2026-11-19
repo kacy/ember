@@ -493,7 +493,7 @@ where
         }
 
         tokio::select! {
-            msg = recv_any_message(&mut subs.channels, &mut subs.patterns) => {
+            msg = crate::pubsub::recv_any(&mut subs.channels, &mut subs.patterns) => {
                 // stop delivering to a user that was deleted, switched off
                 // or lost SUBSCRIBE
                 let subscribe = Command::Subscribe { channels: Vec::new() };
@@ -600,14 +600,14 @@ fn handle_sub_command(
     match cmd {
         Command::Subscribe { channels } => {
             for ch in channels {
-                let total = channel_rxs.len() + pattern_rxs.len();
-                if total >= ctx.limits.max_subscriptions_per_conn {
-                    Frame::Error("ERR max subscriptions per connection reached".into())
-                        .serialize(out);
-                    continue;
-                }
                 // subscribing twice to the same channel is a no-op, as in Redis
                 if !channel_rxs.contains_key(&ch) {
+                    let total = channel_rxs.len() + pattern_rxs.len();
+                    if total >= ctx.limits.max_subscriptions_per_conn {
+                        Frame::Error("ERR max subscriptions per connection reached".into())
+                            .serialize(out);
+                        continue;
+                    }
                     channel_rxs.insert(ch.clone(), pubsub.subscribe(&ch));
                 }
                 let count = channel_rxs.len() + pattern_rxs.len();
@@ -633,21 +633,27 @@ fn handle_sub_command(
                     .serialize(out);
                     continue;
                 }
-                let total = channel_rxs.len() + pattern_rxs.len();
-                if total >= ctx.limits.max_subscriptions_per_conn {
-                    Frame::Error("ERR max subscriptions per connection reached".into())
-                        .serialize(out);
-                    continue;
+                // subscribing twice to the same pattern is a no-op, as in
+                // Redis. subscribing again would replace the receiver
+                // without releasing the first, and the pattern's
+                // subscriber count would never drop back
+                if !pattern_rxs.contains_key(&pat) {
+                    let total = channel_rxs.len() + pattern_rxs.len();
+                    if total >= ctx.limits.max_subscriptions_per_conn {
+                        Frame::Error("ERR max subscriptions per connection reached".into())
+                            .serialize(out);
+                        continue;
+                    }
+                    // psubscribe returns None if the pattern exceeds its
+                    // internal length cap — this is a backstop; the check
+                    // above should have already rejected oversized patterns.
+                    let Some(rx) = pubsub.psubscribe(&pat) else {
+                        Frame::Error(format!("ERR pattern too long ({} bytes)", pat.len()))
+                            .serialize(out);
+                        continue;
+                    };
+                    pattern_rxs.insert(pat.clone(), rx);
                 }
-                // psubscribe returns None if the pattern exceeds its internal
-                // length cap — this is a backstop; the check above should have
-                // already rejected oversized patterns.
-                let Some(rx) = pubsub.psubscribe(&pat) else {
-                    Frame::Error(format!("ERR pattern too long ({} bytes)", pat.len()))
-                        .serialize(out);
-                    continue;
-                };
-                pattern_rxs.insert(pat.clone(), rx);
                 let count = channel_rxs.len() + pattern_rxs.len();
                 serialize_sub_response(b"psubscribe", &pat, count, out);
             }
@@ -662,62 +668,6 @@ fn handle_sub_command(
         ),
         _ => {}
     }
-}
-
-/// Receives a message from any active subscription (channels or patterns).
-///
-/// Uses `FuturesUnordered` to efficiently await all broadcast receivers
-/// concurrently, avoiding busy-wait polling. Returns `None` only when
-/// there are no active subscriptions.
-async fn recv_any_message(
-    channel_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
-    pattern_rxs: &mut HashMap<String, broadcast::Receiver<PubMessage>>,
-) -> Option<PubMessage> {
-    use std::pin::Pin;
-
-    use futures::stream::{FuturesUnordered, StreamExt};
-
-    if channel_rxs.is_empty() && pattern_rxs.is_empty() {
-        // no subscriptions — sleep forever (will be cancelled by select)
-        return std::future::pending::<Option<PubMessage>>().await;
-    }
-
-    type RecvFuture<'a> = Pin<
-        Box<
-            dyn std::future::Future<Output = Result<PubMessage, broadcast::error::RecvError>>
-                + Send
-                + 'a,
-        >,
-    >;
-
-    // collect all receivers into a FuturesUnordered so we await them
-    // all concurrently without spinning. each future resolves when its
-    // broadcast channel has a message (or reports lag).
-    let mut pending: FuturesUnordered<RecvFuture<'_>> = FuturesUnordered::new();
-
-    for rx in channel_rxs.values_mut() {
-        pending.push(Box::pin(rx.recv()));
-    }
-    for rx in pattern_rxs.values_mut() {
-        pending.push(Box::pin(rx.recv()));
-    }
-
-    while let Some(result) = pending.next().await {
-        match result {
-            Ok(msg) => return Some(msg),
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!("subscriber lagged, missed {n} messages");
-                // the receiver auto-advances past the gap, so the next
-                // call to recv() will return the oldest available message.
-                // we drop through to re-poll on the next loop iteration.
-            }
-            Err(broadcast::error::RecvError::Closed) => {
-                // sender was dropped — channel was removed. skip it.
-            }
-        }
-    }
-
-    None
 }
 
 /// Serializes a subscribe/unsubscribe response: ["type", channel, count]
