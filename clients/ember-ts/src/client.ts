@@ -78,9 +78,16 @@ export class EmberClient {
    */
   constructor(address = 'localhost:6380', options: ClientOptions = {}) {
     const Ctor = loadStub();
-    this.stub = new Ctor(address, grpc.credentials.createInsecure());
+    const credentials =
+      options.tls || options.rootCerts
+        ? grpc.credentials.createSsl(options.rootCerts ?? null)
+        : grpc.credentials.createInsecure();
+    this.stub = new Ctor(address, credentials);
     this.meta = new grpc.Metadata();
     if (options.password) {
+      if (options.username) {
+        this.meta.set('username', options.username);
+      }
       this.meta.set('authorization', options.password);
     }
   }

@@ -34,7 +34,17 @@ client.close();
 const client = new EmberClient('localhost:6380', { password: 'secret' });
 ```
 
-The password is sent as the `authorization` gRPC metadata header on every call.
+The password is sent as the `authorization` gRPC metadata header on every call. To log in as an ACL user, add `username`.
+
+## tls
+
+A server with `tls-port` set serves gRPC over TLS only. Set `tls: true` to trust the system's certificate authorities, or pass `rootCerts` with a PEM buffer to trust your own CA:
+
+```ts
+import { readFileSync } from 'node:fs';
+
+const client = new EmberClient('localhost:6380', { rootCerts: readFileSync('ca.crt') });
+```
 
 ## api
 
