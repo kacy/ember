@@ -21,7 +21,7 @@
 - cluster mode is about as fast as standalone without pipelining: about 860k requests a second against 320k on a 32-core machine. with a pipeline of 16 it serves about 2.3M against 320k, 15% below standalone. every command locked the migration state, an async mutex shared by every connection, and read the cluster state up to three times. it now reads each once, and the migration state takes a shared lock (#453)
 
 ### fixes
-- cluster command fixes (#PR):
+- cluster command fixes (#474):
   - a replica sends reads of slots owned by another primary to that primary with MOVED. it served them from its own data, which only holds its primary's slots, and so answered as if the keys didn't exist
   - CLUSTER FORGET removes the node's slots and stops gossip from probing it. the slots stayed assigned to the forgotten node
   - the random id CLUSTER MEET uses until the node answers is dropped from gossip once the real id arrives. gossip kept probing it, then reported it failed
