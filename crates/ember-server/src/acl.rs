@@ -5,7 +5,7 @@
 //! `--aclfile` or ACL SETUSER add more users. A user with access to every
 //! command and key skips the detailed checks through two boolean flags.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LockResult, RwLock, RwLockReadGuard};
 
@@ -69,7 +69,6 @@ pub fn category_from_name(name: &str) -> Option<u64> {
 }
 
 /// Returns the display name for a single-bit category flag.
-#[allow(dead_code)]
 pub fn category_name(flag: u64) -> &'static str {
     for &(name, val) in CATEGORY_NAMES {
         if val == flag {
@@ -97,14 +96,10 @@ pub struct AclUser {
     pub password_hashes: Vec<[u8; 32]>,
     /// When true, authentication succeeds without a password.
     pub nopass: bool,
-    /// Bitmask of allowed categories.
-    pub allowed_categories: u64,
-    /// Bitmask of denied categories (applied after allowed).
-    pub denied_categories: u64,
-    /// Explicitly allowed commands (overrides category deny).
-    pub allowed_commands: HashSet<String>,
-    /// Explicitly denied commands (overrides category allow).
-    pub denied_commands: HashSet<String>,
+    /// Command rules in the order they were given. The last rule that
+    /// matches a command decides whether the user may run it, as in Redis.
+    /// No rules means no commands.
+    command_rules: Vec<CommandRule>,
     /// Key glob patterns. Empty means no keys allowed (unless `allkeys`).
     pub key_patterns: Vec<String>,
     /// Fast path: skip key pattern matching.
@@ -120,10 +115,7 @@ impl AclUser {
             enabled: false,
             password_hashes: Vec::new(),
             nopass: false,
-            allowed_categories: 0,
-            denied_categories: 0,
-            allowed_commands: HashSet::new(),
-            denied_commands: HashSet::new(),
+            command_rules: Vec::new(),
             key_patterns: Vec::new(),
             allkeys: false,
             allcommands: false,
@@ -136,14 +128,62 @@ impl AclUser {
             enabled: true,
             password_hashes: Vec::new(),
             nopass: true,
-            allowed_categories: ALL_CATEGORIES,
-            denied_categories: 0,
-            allowed_commands: HashSet::new(),
-            denied_commands: HashSet::new(),
+            command_rules: vec![CommandRule::Category {
+                flags: ALL_CATEGORIES,
+                allow: true,
+            }],
             key_patterns: Vec::new(),
             allkeys: true,
             allcommands: true,
         }
+    }
+
+    /// Adds a command rule, dropping an earlier rule for the same command
+    /// or category, which the new one overrides.
+    fn push_rule(&mut self, rule: CommandRule) {
+        if matches!(
+            rule,
+            CommandRule::Category {
+                flags: ALL_CATEGORIES,
+                ..
+            }
+        ) {
+            // +@all and -@all override every earlier rule
+            self.command_rules.clear();
+            if rule
+                == (CommandRule::Category {
+                    flags: ALL_CATEGORIES,
+                    allow: false,
+                })
+            {
+                self.allcommands = false;
+                return;
+            }
+        } else {
+            self.command_rules.retain(|r| !r.same_target(&rule));
+        }
+        self.command_rules.push(rule);
+        self.allcommands = matches!(
+            self.command_rules.as_slice(),
+            [CommandRule::Category {
+                flags: ALL_CATEGORIES,
+                allow: true
+            }]
+        );
+    }
+
+    /// Whether the user may run the command `name` (lowercase), which
+    /// belongs to `categories`.
+    fn may_run(&self, name: &str, categories: u64) -> bool {
+        self.command_rules
+            .iter()
+            .rev()
+            .find_map(|rule| match rule {
+                CommandRule::Category { flags, allow } if flags & categories != 0 => Some(*allow),
+                CommandRule::Command { name: n, allow } if n == name => Some(*allow),
+                _ => None,
+            })
+            .unwrap_or(false)
     }
 
     /// Verifies a password against this user's stored hashes using
@@ -156,6 +196,42 @@ impl AclUser {
         self.password_hashes
             .iter()
             .any(|stored| bool::from(hash.ct_eq(stored)))
+    }
+}
+
+/// One `+`/`-` rule for a command or category.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CommandRule {
+    /// `+@category` or `-@category`. `flags` is one category, or
+    /// [`ALL_CATEGORIES`] for `@all`.
+    Category { flags: u64, allow: bool },
+    /// `+command` or `-command`, lowercase.
+    Command { name: String, allow: bool },
+}
+
+impl CommandRule {
+    /// Whether both rules are about the same command or category.
+    fn same_target(&self, other: &CommandRule) -> bool {
+        match (self, other) {
+            (Self::Category { flags: a, .. }, Self::Category { flags: b, .. }) => a == b,
+            (Self::Command { name: a, .. }, Self::Command { name: b, .. }) => a == b,
+            _ => false,
+        }
+    }
+
+    /// The rule as ACL SETUSER takes it.
+    fn to_rule_string(&self) -> String {
+        match self {
+            Self::Category { flags, allow } => {
+                let name = if *flags == ALL_CATEGORIES {
+                    "all"
+                } else {
+                    category_name(*flags)
+                };
+                format!("{}@{name}", if *allow { '+' } else { '-' })
+            }
+            Self::Command { name, allow } => format!("{}{name}", if *allow { '+' } else { '-' }),
+        }
     }
 }
 
@@ -203,20 +279,14 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
             user.nopass = false;
             user.password_hashes.clear();
         }
-        "allcommands" => {
-            user.allcommands = true;
-            user.allowed_categories = ALL_CATEGORIES;
-            user.denied_categories = 0;
-            user.allowed_commands.clear();
-            user.denied_commands.clear();
-        }
-        "nocommands" => {
-            user.allcommands = false;
-            user.allowed_categories = 0;
-            user.denied_categories = ALL_CATEGORIES;
-            user.allowed_commands.clear();
-            user.denied_commands.clear();
-        }
+        "allcommands" => user.push_rule(CommandRule::Category {
+            flags: ALL_CATEGORIES,
+            allow: true,
+        }),
+        "nocommands" => user.push_rule(CommandRule::Category {
+            flags: ALL_CATEGORIES,
+            allow: false,
+        }),
         "allkeys" => {
             user.allkeys = true;
             user.key_patterns.clear();
@@ -245,51 +315,42 @@ pub fn apply_rule(user: &mut AclUser, rule: &str) -> Result<(), String> {
             let hash = sha256_hash(password);
             user.password_hashes.retain(|h| h != &hash);
         }
-        _ if rule.starts_with("+@") => {
-            let cat_name = &rule[2..];
-            if cat_name == "all" {
-                user.allowed_categories = ALL_CATEGORIES;
-                user.denied_categories = 0;
-                user.allcommands = true;
-            } else {
-                let flag = category_from_name(cat_name)
-                    .ok_or_else(|| format!("ERR unknown ACL category '{cat_name}'"))?;
-                user.allowed_categories |= flag;
-                user.denied_categories &= !flag;
+        // a password given by its SHA-256 hash, as ACL LIST prints it
+        _ if rule.starts_with('#') => {
+            let hash = hex_decode(&rule[1..])
+                .ok_or("ERR the password hash must be 64 hexadecimal characters")?;
+            if !user.password_hashes.contains(&hash) {
+                user.password_hashes.push(hash);
             }
+            user.nopass = false;
         }
-        _ if rule.starts_with("-@") => {
+        _ if rule.starts_with('!') => {
+            let hash = hex_decode(&rule[1..])
+                .ok_or("ERR the password hash must be 64 hexadecimal characters")?;
+            user.password_hashes.retain(|h| h != &hash);
+        }
+        _ if rule.starts_with("+@") || rule.starts_with("-@") => {
             let cat_name = &rule[2..];
-            if cat_name == "all" {
-                user.denied_categories = ALL_CATEGORIES;
-                user.allowed_categories = 0;
-                user.allcommands = false;
+            let flags = if cat_name.eq_ignore_ascii_case("all") {
+                ALL_CATEGORIES
             } else {
-                let flag = category_from_name(cat_name)
-                    .ok_or_else(|| format!("ERR unknown ACL category '{cat_name}'"))?;
-                user.denied_categories |= flag;
-                user.allowed_categories &= !flag;
-                // any deny ends the allow-everything fast path, or
-                // `+@all -@dangerous` would still allow FLUSHALL
-                user.allcommands = false;
-            }
+                category_from_name(cat_name)
+                    .ok_or_else(|| format!("ERR unknown ACL category '{cat_name}'"))?
+            };
+            user.push_rule(CommandRule::Category {
+                flags,
+                allow: rule.starts_with('+'),
+            });
         }
-        _ if rule.starts_with('+') => {
-            let cmd = rule[1..].to_ascii_lowercase();
-            if cmd.is_empty() {
+        _ if rule.starts_with('+') || rule.starts_with('-') => {
+            let name = rule[1..].to_ascii_lowercase();
+            if name.is_empty() {
                 return Err("ERR empty command name".into());
             }
-            user.denied_commands.remove(&cmd);
-            user.allowed_commands.insert(cmd);
-        }
-        _ if rule.starts_with('-') => {
-            let cmd = rule[1..].to_ascii_lowercase();
-            if cmd.is_empty() {
-                return Err("ERR empty command name".into());
-            }
-            user.allowed_commands.remove(&cmd);
-            user.denied_commands.insert(cmd);
-            user.allcommands = false;
+            user.push_rule(CommandRule::Command {
+                name,
+                allow: rule.starts_with('+'),
+            });
         }
         _ if rule.starts_with('~') => {
             let pattern = &rule[1..];
@@ -327,27 +388,10 @@ pub fn check_permission(
     // check command permission
     if !user.allcommands {
         let lower_name = cmd_name.to_ascii_lowercase();
-
-        // explicit deny takes priority
-        if user.denied_commands.contains(&lower_name) {
+        if !user.may_run(&lower_name, categories) {
             return Some(Frame::Error(format!(
                 "NOPERM this user has no permissions to run the '{lower_name}' command"
             )));
-        }
-
-        // explicit allow overrides category
-        if !user.allowed_commands.contains(&lower_name) {
-            // check categories: denied bits take priority
-            if categories & user.denied_categories != 0 {
-                return Some(Frame::Error(format!(
-                    "NOPERM this user has no permissions to run the '{lower_name}' command"
-                )));
-            }
-            if categories != 0 && categories & user.allowed_categories == 0 {
-                return Some(Frame::Error(format!(
-                    "NOPERM this user has no permissions to run the '{lower_name}' command"
-                )));
-            }
         }
     }
 
@@ -439,16 +483,14 @@ impl AclState {
     /// Deletes users by name. Returns the number deleted.
     /// The "default" user cannot be deleted.
     pub fn del_users(&mut self, names: &[String]) -> Result<usize, String> {
-        let mut count = 0;
-        for name in names {
-            if name == "default" {
-                return Err("ERR The 'default' user cannot be removed".into());
-            }
-            if self.users.remove(name).is_some() {
-                count += 1;
-            }
+        // check first, so a refused call deletes nobody
+        if names.iter().any(|name| name == "default") {
+            return Err("ERR The 'default' user cannot be removed".into());
         }
-        Ok(count)
+        Ok(names
+            .iter()
+            .filter(|name| self.users.remove(name.as_str()).is_some())
+            .count())
     }
 
     /// Returns all usernames.
@@ -504,26 +546,7 @@ fn format_user_line(name: &str, user: &AclUser) -> String {
         }
     }
 
-    if user.allcommands {
-        parts.push("+@all".into());
-    } else {
-        for &(cat_name, flag) in CATEGORY_NAMES {
-            if user.allowed_categories & flag != 0 && user.denied_categories & flag == 0 {
-                parts.push(format!("+@{cat_name}"));
-            }
-        }
-        for &(cat_name, flag) in CATEGORY_NAMES {
-            if user.denied_categories & flag != 0 {
-                parts.push(format!("-@{cat_name}"));
-            }
-        }
-        for cmd in sorted_set(&user.allowed_commands) {
-            parts.push(format!("+{cmd}"));
-        }
-        for cmd in sorted_set(&user.denied_commands) {
-            parts.push(format!("-{cmd}"));
-        }
-    }
+    parts.push(format_commands(user));
 
     if user.allkeys {
         parts.push("~*".into());
@@ -572,33 +595,7 @@ fn format_user_detail(user: &AclUser) -> Frame {
 
     // commands
     fields.push(Frame::Bulk(bytes::Bytes::from_static(b"commands")));
-    let cmd_str = if user.allcommands {
-        "+@all".to_string()
-    } else {
-        let mut parts = Vec::new();
-        for &(cat_name, flag) in CATEGORY_NAMES {
-            if user.allowed_categories & flag != 0 && user.denied_categories & flag == 0 {
-                parts.push(format!("+@{cat_name}"));
-            }
-        }
-        for &(cat_name, flag) in CATEGORY_NAMES {
-            if user.denied_categories & flag != 0 {
-                parts.push(format!("-@{cat_name}"));
-            }
-        }
-        for cmd in sorted_set(&user.allowed_commands) {
-            parts.push(format!("+{cmd}"));
-        }
-        for cmd in sorted_set(&user.denied_commands) {
-            parts.push(format!("-{cmd}"));
-        }
-        if parts.is_empty() {
-            "-@all".to_string()
-        } else {
-            parts.join(" ")
-        }
-    };
-    fields.push(Frame::Bulk(bytes::Bytes::from(cmd_str)));
+    fields.push(Frame::Bulk(bytes::Bytes::from(format_commands(user))));
 
     // keys
     fields.push(Frame::Bulk(bytes::Bytes::from_static(b"keys")));
@@ -626,10 +623,33 @@ fn hex_encode(bytes: &[u8; 32]) -> String {
     s
 }
 
-fn sorted_set(set: &HashSet<String>) -> Vec<&str> {
-    let mut v: Vec<&str> = set.iter().map(String::as_str).collect();
-    v.sort();
-    v
+/// Parses 64 hex characters into a SHA-256 hash.
+fn hex_decode(hex: &str) -> Option<[u8; 32]> {
+    if hex.len() != 64 || !hex.is_ascii() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (byte, pair) in out.iter_mut().zip(hex.as_bytes().chunks(2)) {
+        let pair = std::str::from_utf8(pair).ok()?;
+        *byte = u8::from_str_radix(pair, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// The user's command rules in order, starting from `-@all`, which is
+/// what a user with no rules has. ACL SETUSER reproduces them.
+fn format_commands(user: &AclUser) -> String {
+    let rules = user.command_rules.iter().map(CommandRule::to_rule_string);
+    match user.command_rules.first() {
+        Some(CommandRule::Category {
+            flags: ALL_CATEGORIES,
+            allow: true,
+        }) => rules.collect::<Vec<_>>().join(" "),
+        _ => std::iter::once("-@all".to_owned())
+            .chain(rules)
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -862,11 +882,29 @@ mod tests {
     fn rule_categories() {
         let mut user = AclUser::new();
         apply_rule(&mut user, "+@read").unwrap();
-        assert_eq!(user.allowed_categories & cat::READ, cat::READ);
+        assert!(user.may_run("get", cat::READ | cat::STRING | cat::FAST));
 
         apply_rule(&mut user, "-@read").unwrap();
-        assert_eq!(user.allowed_categories & cat::READ, 0);
-        assert_eq!(user.denied_categories & cat::READ, cat::READ);
+        assert!(!user.may_run("get", cat::READ | cat::STRING | cat::FAST));
+    }
+
+    #[test]
+    fn the_last_matching_rule_decides() {
+        let mut user = AclUser::new();
+        for rule in ["-@all", "+@read"] {
+            apply_rule(&mut user, rule).unwrap();
+        }
+        assert!(user.may_run("get", cat::READ | cat::STRING | cat::FAST));
+        assert!(!user.may_run("set", cat::WRITE | cat::STRING | cat::SLOW));
+
+        // a later category rule overrides an earlier command rule
+        for rule in ["+set", "-@string"] {
+            apply_rule(&mut user, rule).unwrap();
+        }
+        assert!(!user.may_run("set", cat::WRITE | cat::STRING | cat::SLOW));
+        assert!(!user.may_run("get", cat::READ | cat::STRING | cat::FAST));
+        apply_rule(&mut user, "+get").unwrap();
+        assert!(user.may_run("get", cat::READ | cat::STRING | cat::FAST));
     }
 
     #[test]
@@ -877,18 +915,18 @@ mod tests {
 
         apply_rule(&mut user, "-@all").unwrap();
         assert!(!user.allcommands);
-        assert_eq!(user.denied_categories, ALL_CATEGORIES);
+        assert!(!user.may_run("get", cat::READ | cat::STRING | cat::FAST));
     }
 
     #[test]
     fn rule_specific_commands() {
         let mut user = AclUser::new();
         apply_rule(&mut user, "+get").unwrap();
-        assert!(user.allowed_commands.contains("get"));
+        assert!(user.may_run("get", cat::READ | cat::STRING | cat::FAST));
 
         apply_rule(&mut user, "-get").unwrap();
-        assert!(!user.allowed_commands.contains("get"));
-        assert!(user.denied_commands.contains("get"));
+        assert!(!user.may_run("get", cat::READ | cat::STRING | cat::FAST));
+        assert_eq!(user.command_rules.len(), 1, "the old rule was replaced");
     }
 
     #[test]
@@ -912,11 +950,10 @@ mod tests {
         let mut user = AclUser::new();
         apply_rule(&mut user, "allcommands").unwrap();
         assert!(user.allcommands);
-        assert_eq!(user.allowed_categories, ALL_CATEGORIES);
 
         apply_rule(&mut user, "nocommands").unwrap();
         assert!(!user.allcommands);
-        assert_eq!(user.denied_categories, ALL_CATEGORIES);
+        assert!(!user.may_run("get", cat::READ | cat::STRING | cat::FAST));
     }
 
     #[test]
@@ -959,8 +996,7 @@ mod tests {
     #[test]
     fn permission_check_denied_command() {
         let mut user = AclUser::unrestricted();
-        user.allcommands = false;
-        user.denied_commands.insert("set".into());
+        apply_rule(&mut user, "-set").unwrap();
 
         let cmd = ember_protocol::Command::Set {
             key: "foo".into(),
@@ -979,9 +1015,7 @@ mod tests {
     #[test]
     fn permission_check_denied_category() {
         let mut user = AclUser::unrestricted();
-        user.allcommands = false;
-        user.allowed_categories = cat::READ | cat::STRING | cat::FAST;
-        user.denied_categories = cat::WRITE;
+        apply_rule(&mut user, "-@write").unwrap();
 
         let cmd = ember_protocol::Command::Set {
             key: "foo".into(),
@@ -998,9 +1032,8 @@ mod tests {
     #[test]
     fn permission_check_allowed_command_overrides_denied_category() {
         let mut user = AclUser::unrestricted();
-        user.allcommands = false;
-        user.denied_categories = cat::WRITE;
-        user.allowed_commands.insert("set".into());
+        apply_rule(&mut user, "-@write").unwrap();
+        apply_rule(&mut user, "+set").unwrap();
 
         let cmd = ember_protocol::Command::Set {
             key: "foo".into(),
@@ -1177,8 +1210,37 @@ mod tests {
         assert!(alice.enabled);
         assert!(alice.verify_password("pass"));
         assert!(!alice.verify_password("wrong"));
-        assert_eq!(alice.allowed_categories & cat::READ, cat::READ);
+        assert!(alice.may_run("get", cat::READ | cat::STRING | cat::FAST));
         assert_eq!(alice.key_patterns, vec!["user:*"]);
+    }
+
+    #[test]
+    fn acl_list_output_loads_back_as_the_same_user() {
+        let mut state = AclState::new(None);
+        let rules: Vec<String> = ["on", ">secret", "-@all", "+@read", "-keys", "~app:*"]
+            .map(String::from)
+            .into();
+        state.set_user("alice", &rules).unwrap();
+        let line = state
+            .list()
+            .into_iter()
+            .find(|l| l.starts_with("user alice "))
+            .unwrap();
+        let reloaded: Vec<String> = line.split(' ').skip(2).map(String::from).collect();
+        state.set_user("copy", &reloaded).unwrap();
+        let copy = state.get_user("copy").unwrap();
+        assert!(copy.verify_password("secret"));
+        assert!(copy.may_run("get", cat::READ | cat::STRING | cat::FAST));
+        assert!(!copy.may_run("keys", cat::READ | cat::KEYSPACE | cat::SLOW));
+        assert_eq!(copy.key_patterns, ["app:*"]);
+    }
+
+    #[test]
+    fn deluser_refusing_default_deletes_nobody() {
+        let mut state = AclState::new(None);
+        state.set_user("bob", &["on".into()]).unwrap();
+        assert!(state.del_users(&["bob".into(), "default".into()]).is_err());
+        assert!(state.get_user("bob").is_some());
     }
 
     #[test]
