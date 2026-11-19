@@ -299,18 +299,9 @@ impl ClusterCoordinator {
             if node_id == self.local_id {
                 state.bump_local_epoch();
             }
-
-            let new_slots = state.slot_map.slots_for_node(node_id);
-            if let Some(node) = state.nodes.get_mut(&node_id) {
-                node.slots = new_slots;
-            }
-
+            // the previous owner, which may be a third node, lost the slot
+            state.rebuild_slot_lists();
             let local_slots = state.slot_map.slots_for_node(self.local_id);
-            if node_id != self.local_id {
-                if let Some(node) = state.nodes.get_mut(&self.local_id) {
-                    node.slots = local_slots.clone();
-                }
-            }
 
             state.update_health();
             (local_slots, state.local_epoch())
@@ -402,12 +393,8 @@ impl ClusterCoordinator {
     /// taking writes then, as Redis Cluster does, so writes aren't
     /// acknowledged on both sides and lost when the partition heals.
     fn reaches_majority_of_primaries(&self, state: &ClusterState) -> bool {
-        let primaries = state
-            .nodes
-            .values()
-            .filter(|n| n.role == NodeRole::Primary && !n.flags.handshake);
         let (mut total, mut reachable) = (0, 0);
-        for node in primaries {
+        for node in state.voting_primaries() {
             total += 1;
             if node.id == self.local_id || node.is_healthy() {
                 reachable += 1;

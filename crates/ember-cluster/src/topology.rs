@@ -361,6 +361,7 @@ impl ClusterState {
         local_node.config_epoch = 1;
         let local_id = local_node.id;
         let slot_map = SlotMap::single_node(local_id);
+        local_node.slots = slot_map.slots_for_node(local_id);
         let mut nodes = HashMap::new();
         nodes.insert(local_id, local_node);
 
@@ -420,6 +421,22 @@ impl ClusterState {
     /// Returns all primary nodes.
     pub fn primaries(&self) -> impl Iterator<Item = &ClusterNode> {
         self.nodes.values().filter(|n| n.role == NodeRole::Primary)
+    }
+
+    /// The primaries that serve at least one slot. As in Redis Cluster,
+    /// only these vote in failover elections and count toward a quorum. A
+    /// primary whose slots were all taken over, such as one that failed
+    /// and was replaced, would otherwise count against the quorum forever.
+    pub fn voting_primaries(&self) -> impl Iterator<Item = &ClusterNode> {
+        self.primaries()
+            .filter(|n| !n.slots.is_empty() && !n.flags.handshake)
+    }
+
+    /// Recomputes every node's slot list from the slot map.
+    pub fn rebuild_slot_lists(&mut self) {
+        for (id, node) in self.nodes.iter_mut() {
+            node.slots = self.slot_map.slots_for_node(*id);
+        }
     }
 
     /// Returns all replica nodes.
@@ -540,13 +557,6 @@ impl ClusterState {
     /// The local node's config epoch, sent with its slot claims.
     pub fn local_epoch(&self) -> u64 {
         self.local_node().map_or(0, |n| n.config_epoch)
-    }
-
-    /// Recomputes every node's slot list from the slot map.
-    fn rebuild_slot_lists(&mut self) {
-        for (id, node) in self.nodes.iter_mut() {
-            node.slots = self.slot_map.slots_for_node(*id);
-        }
     }
 
     /// Promotes a replica to primary, transferring slots from its current primary.
